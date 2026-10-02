@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Install once with: uv tool install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.10
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+  - repo: local
+    hooks:
+      - id: forbidden-names
+        name: forbidden names
+        entry: python3 tools/check_forbidden_names.py
+        language: system
+        types: [text]
+      - id: spdx-header
+        name: SPDX license header
+        entry: python3 tools/check_spdx.py
+        language: system
+        files: \.(py|sh|toml|ya?ml|md)$

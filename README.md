@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # NOBLIVION
 
 A Claude Code plugin for local memory recall, guards and trust scoring. It runs on your machine with a local SQLite store.

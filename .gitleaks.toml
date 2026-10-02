@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# gitleaks configuration: the default rule set, with no project allowlist.
+title = "NOBLIVION gitleaks config"
+
+[extend]
+useDefault = true
