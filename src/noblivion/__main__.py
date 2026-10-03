@@ -3,8 +3,9 @@
 
 Commands in this version: ``index`` (see ``noblivion.indexer``),
 ``consent embeddings`` (see ``noblivion.embedding``), ``serve`` (the store
-in the foreground, see ``noblivion.store``) and ``ensure-running`` (start
-the store in the background unless it runs, see ``noblivion.launcher``).
+in the foreground, see ``noblivion.store``), ``ensure-running`` (start
+the store in the background unless it runs, see ``noblivion.launcher``) and
+``mine`` (the transcript miner, see ``noblivion.miner``).
 """
 
 from __future__ import annotations
@@ -16,7 +17,8 @@ USAGE = (
     "usage: noblivion index [--force] [--allow-shrink] [--memory-dir DIR] [--json]\n"
     "       noblivion consent embeddings [--revoke]\n"
     "       noblivion serve [--port PORT] [--lock-wait SECONDS]\n"
-    "       noblivion ensure-running [--json]"
+    "       noblivion ensure-running [--json]\n"
+    "       noblivion mine [--since YYYY-MM-DD] [--max-seconds S] [--json]"
 )
 
 
@@ -38,6 +40,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from noblivion import launcher
 
         return launcher.main(rest)
+    if command == "mine":
+        from noblivion import miner
+
+        return miner.main(rest)
     if command == "consent" and rest[:1] == ["embeddings"]:
         from noblivion import embedding
 

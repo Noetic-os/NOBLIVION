@@ -1421,16 +1421,41 @@ runs only on the local machine.
 - Row: `source_type = 'transcript_mined'`, `category = <kind>`,
   `root = <transcript project folder name>`,
   `path = <session_id>#<line>`, no source marker, trust prior 0.3.
-- Within one run, the same tool error shape and the same findings hash are
-  stored once.
+  `<session_id>` is the transcript file name without `.jsonl` (Claude Code
+  names the file after the session; a resumed session can carry an older
+  `sessionId` in its lines, the file name is unique). `<line>` is the
+  1-based line number in the file.
+- Content: `# <title>` (for example `# Tool error: Bash` and the command), an
+  empty line, then one paragraph with the date, the first 8 characters of
+  the session id and the extracted text.
+- `hash` is the sha256 of the kind and the dedupe shape: the tool name and
+  the first error line for a tool error, the findings block for a review,
+  the stored text for a correction. All are taken after redaction.
+- The same tool error shape and the same findings block are stored once.
+  The check reads `hash`, so it holds across runs, not only within one.
+- API records: Claude Code writes one assistant API message as several
+  lines with the same `message.id` (one content block per line, or a
+  repeat while it streams). The miner merges each run of such lines into
+  one record: the line with the largest `usage.output_tokens` is the base,
+  and the content blocks of all the lines are joined, each block once.
+  Keeping only one line would lose the tool calls in the other lines.
 
 ### 11.2 Redaction and idempotence
 
-- Redact at extract and again before insert. A fail token skips the
-  candidate. Nothing unredacted reaches the database or the embedder.
+- Redact at extract and again before insert: secrets
+  (`redact_at_rest`, section 5.7) and then injection patterns
+  (`redact_injection`, section 15.4). A fail token skips the candidate.
+  Nothing unredacted reaches the database or the embedder.
 - `miner_state` keeps the byte offset per transcript. A run reads from the
   offset. If a file shrank or its mtime moved back, the miner reads it from
   the start; the unique `(project, root, path)` key makes a re-read safe.
+  A file with the same size and mtime as its stored offset is not opened.
+- On a resume the miner replays the assistant lines of the last 4 MiB
+  before the offset, without output, so a tool error after the offset is
+  still paired with its call and a correction keeps its context. It counts
+  the newlines before the offset to get the line number.
+- A last line without a newline is a line still being written. It is left
+  for the next run; the offset stops before it.
 
 ### 11.3 Who sees mined rows
 
@@ -1448,8 +1473,17 @@ pages and files, which may hold prompt injection (section 15).
 
 - `miner.enabled` (default `true`). The `SessionEnd` hook starts
   `noblivion mine` detached, at most once per 10 minutes (stamp file).
-- On demand: `noblivion mine [--since <date>]`.
-- One run at a time: `flock` on `mine.lock`.
+- On demand: `noblivion mine [--since <date>]`. `--since YYYY-MM-DD`
+  skips files with an older mtime.
+- One run at a time: `flock` on `mine.lock`. A second run exits 4 at once.
+- Bounded: a run stops after `miner.max_run_s` seconds (default 300) at a
+  line end and keeps the offsets, so the next run goes on from there.
+- The hook is `hooks/mine_session_end.py`. It runs
+  `NOBLIVION_MINE_CMD` (a shell command line) when set, else
+  `<data dir>/venv/bin/noblivion mine` when that file exists, else
+  nothing. Its stamp file is `<data dir>/cache/mine.stamp`.
+- `miner.enabled = false` (or `NOBLIVION_MINER=0`): the hook starts
+  nothing, and `noblivion mine` reads no transcript and opens no database.
 
 ## 12. Configuration
 
@@ -1496,6 +1530,8 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 | `dedup.min_cosine` | none | `0.82` |
 | `dedup.archive_retention_days` | none | `90` |
 | `miner.enabled` | `NOBLIVION_MINER` | `true` |
+| `miner.transcript_glob` | none | `~/.claude/projects/*/*.jsonl` |
+| `miner.max_run_s` | none | `300` |
 | `guard.generic_args_extra` | none | `[]` |
 | `guard.evidence_stop_extra` | none | `[]` |
 | `labels.ticket_prefixes` | none | `[]` (no ticket key labels) |
