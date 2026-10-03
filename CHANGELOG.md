@@ -6,6 +6,40 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## 0.1.2 - 2026-10-04
+
+Fixes from the first real install on a second host. After the plugin
+update, type `/noblivion:setup` in the next session: the store venv must be
+rebuilt for 0.1.2.
+
+### Added
+
+- The slash command `/noblivion:setup` (`skills/setup/SKILL.md`). It runs
+  `install.sh` with the plugin data dir that Claude Code fills in, so the
+  setup works from the chat, also in the VS Code chat with no terminal. The
+  SessionStart line now names it first and the terminal command second.
+  (NOBLIVION-29)
+- `install.sh` starts the store at the end (`noblivion ensure-running`).
+  Memory recall works from the next prompt of the session that ran it. So
+  the path from `claude plugin install` to working recall is at most two
+  sessions, not three. `--no-start` skips the start. An empty `--data-dir`
+  is refused. (NOBLIVION-29)
+
+### Fixed
+
+- After `claude plugin uninstall`, the data dir came back at once with an
+  empty `noblivion.db`. Cause: `uninstall.sh` sent SIGTERM to the store and
+  did not wait. The store was still stopping when Claude Code deleted the
+  data dir, and its stop opened a new connection for the WAL checkpoint;
+  `db.connect` made the folder and the file again. Now only `install.sh`
+  makes the data dir. `db.connect` opens an existing database only unless
+  the caller asks to create one. Only the store and `noblivion index` make
+  a new database, and only after `install.sh` has run (the install stamp in
+  `venv/`). `mine`, `trust`, `dedup` and `consent` exit with code 6 without
+  a database. The launcher, the store and every hook never make a missing
+  data dir. A running store stops when its data dir is deleted.
+  `uninstall.sh` waits until the store has exited. (NOBLIVION-28)
+
 ## 0.1.1 - 2026-10-04
 
 Fixes from the fresh-install test of 0.1.0. After the plugin update, run
