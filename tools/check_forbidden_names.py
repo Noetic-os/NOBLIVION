@@ -1,9 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Fail when a tracked file, a given path or the git history holds a forbidden name.
 
-The patterns live in tools/forbidden_names.txt: one case-insensitive Python regex
-per line. Lines that start with "#" and blank lines are ignored. The list file is
-excluded from every scan, because it must hold the names it forbids.
+The patterns are case-insensitive Python regexes, one per line. Lines that
+start with "#" and blank lines are ignored. The real list is private, so the
+repository does not hold it. The script takes the list from the first source
+that is set:
+
+1. ``--names-file PATH``.
+2. The environment variable ``NOBLIVION_FORBIDDEN_NAMES``: the patterns,
+   one per line. CI sets it from a repository secret.
+3. The environment variable ``NOBLIVION_FORBIDDEN_NAMES_FILE``: the path of a
+   list file.
+4. ``tools/forbidden_names.local.txt``: a local list. Git ignores this file.
+5. ``tools/forbidden_names.example.txt``: generic examples only. The script
+   prints a notice when it falls back to this file, because the real names are
+   then not checked. This happens in a pull request from a fork, where CI gets
+   no secrets.
+
+When the list comes from a private source (1 to 4), a finding names the
+pattern number, not the matched text, so a CI log does not show the list.
 
 Usage:
     python tools/check_forbidden_names.py            # scan all tracked files
@@ -19,14 +34,24 @@ Exit status: 0 when clean, 1 when a name is found, 2 on a usage error.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-LIST_FILE = "tools/forbidden_names.txt"
-EXCLUDED = frozenset({LIST_FILE})
+ENV_PATTERNS = "NOBLIVION_FORBIDDEN_NAMES"
+ENV_FILE = "NOBLIVION_FORBIDDEN_NAMES_FILE"
+LOCAL_FILE = "tools/forbidden_names.local.txt"
+EXAMPLE_FILE = "tools/forbidden_names.example.txt"
+# The list files hold the names they forbid, so no scan reads them.
+EXCLUDED = frozenset({LOCAL_FILE, EXAMPLE_FILE})
+FALLBACK_NOTICE = (
+    f"NOTICE: {ENV_PATTERNS} and {ENV_FILE} are not set and there is no {LOCAL_FILE}. "
+    f"The scan uses the generic examples in {EXAMPLE_FILE} only, so the real "
+    "forbidden names are NOT checked. This is expected in a pull request from a fork."
+)
 
 
 def repo_root() -> Path:
@@ -36,26 +61,53 @@ def repo_root() -> Path:
     return Path(out.stdout.strip())
 
 
-def load_patterns(path: Path) -> list[re.Pattern[str]]:
+def parse_patterns(text: str, source: str, private: bool) -> list[re.Pattern[str]]:
     patterns = []
-    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for lineno, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         try:
             patterns.append(re.compile(line, re.IGNORECASE))
         except re.error as exc:
-            raise SystemExit(f"{path}:{lineno}: bad regex {line!r}: {exc}") from exc
+            shown = "" if private else f" {line!r}"
+            raise SystemExit(f"{source}:{lineno}: bad regex{shown}: {exc}") from exc
     if not patterns:
-        raise SystemExit(f"{path}: no patterns found")
+        raise SystemExit(f"{source}: no patterns found")
     return patterns
 
 
-def first_hit(text: str, patterns: Iterable[re.Pattern[str]]) -> str | None:
-    for pattern in patterns:
+def load_patterns(path: Path, private: bool = True) -> list[re.Pattern[str]]:
+    return parse_patterns(path.read_text(encoding="utf-8"), str(path), private)
+
+
+def resolve_patterns(
+    root: Path, names_file: str | None, environ: dict[str, str] | None = None
+) -> tuple[list[re.Pattern[str]], bool]:
+    """Return the patterns, and True when they come from a private source."""
+    env = os.environ if environ is None else environ
+    if names_file:
+        return load_patterns(Path(names_file)), True
+    inline = env.get(ENV_PATTERNS, "")
+    if inline.strip():
+        return parse_patterns(inline, f"${ENV_PATTERNS}", True), True
+    from_env = env.get(ENV_FILE, "").strip()
+    if from_env:
+        return load_patterns(Path(from_env)), True
+    local = root / LOCAL_FILE
+    if local.is_file():
+        return load_patterns(local), True
+    print(FALLBACK_NOTICE, file=sys.stderr)
+    if env.get("GITHUB_ACTIONS") == "true":
+        print(f"::notice title=Forbidden names::{FALLBACK_NOTICE}")
+    return load_patterns(root / EXAMPLE_FILE, private=False), False
+
+
+def first_hit(text: str, patterns: Iterable[re.Pattern[str]], private: bool = False) -> str | None:
+    for number, pattern in enumerate(patterns, 1):
         match = pattern.search(text)
         if match:
-            return match.group(0)
+            return f"pattern #{number}" if private else repr(match.group(0))
     return None
 
 
@@ -70,10 +122,12 @@ def tracked_files(root: Path) -> list[str]:
     return [p for p in out.decode("utf-8", "surrogateescape").split("\0") if p]
 
 
-def scan_file(display: str, path: Path, patterns: list[re.Pattern[str]]) -> Iterator[str]:
-    hit = first_hit(display, patterns)
+def scan_file(
+    display: str, path: Path, patterns: list[re.Pattern[str]], private: bool = False
+) -> Iterator[str]:
+    hit = first_hit(display, patterns, private)
     if hit:
-        yield f"{display}:0: forbidden name {hit!r} in the file path"
+        yield f"{display}:0: forbidden name {hit} in the file path"
     try:
         data = path.read_bytes()
     except (FileNotFoundError, IsADirectoryError):
@@ -81,12 +135,14 @@ def scan_file(display: str, path: Path, patterns: list[re.Pattern[str]]) -> Iter
     if b"\0" in data:
         return  # binary file
     for lineno, line in enumerate(data.decode("utf-8", "replace").splitlines(), 1):
-        hit = first_hit(line, patterns)
+        hit = first_hit(line, patterns, private)
         if hit:
-            yield f"{display}:{lineno}: forbidden name {hit!r}"
+            yield f"{display}:{lineno}: forbidden name {hit}"
 
 
-def scan_paths(root: Path, paths: list[str], patterns: list[re.Pattern[str]]) -> list[str]:
+def scan_paths(
+    root: Path, paths: list[str], patterns: list[re.Pattern[str]], private: bool = False
+) -> list[str]:
     findings: list[str] = []
     for given in paths:
         path = Path(given)
@@ -98,11 +154,11 @@ def scan_paths(root: Path, paths: list[str], patterns: list[re.Pattern[str]]) ->
             rel = given
         if is_excluded(rel):
             continue
-        findings.extend(scan_file(rel, path, patterns))
+        findings.extend(scan_file(rel, path, patterns, private))
     return findings
 
 
-def scan_history(root: Path, patterns: list[re.Pattern[str]]) -> list[str]:
+def scan_history(root: Path, patterns: list[re.Pattern[str]], private: bool = False) -> list[str]:
     cmd = [
         "git",
         "log",
@@ -132,13 +188,13 @@ def scan_history(root: Path, patterns: list[re.Pattern[str]]) -> list[str]:
         lineno += 1
         if current_file is not None and is_excluded(current_file):
             continue
-        hit = first_hit(line, patterns)
+        hit = first_hit(line, patterns, private)
         if hit:
             if current_file is None:
                 where = "(commit message)"
             else:
                 where = current_file or "(diff header)"
-            findings.append(f"commit {commit} {where}: forbidden name {hit!r}")
+            findings.append(f"commit {commit} {where}: forbidden name {hit}")
     return findings
 
 
@@ -146,22 +202,23 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("paths", nargs="*", help="paths to scan (default: all tracked files)")
     parser.add_argument("--history", action="store_true", help="scan `git log -p --all`")
-    parser.add_argument("--names-file", help=f"pattern list (default: {LIST_FILE})")
+    parser.add_argument(
+        "--names-file", help=f"pattern list file (default: ${ENV_PATTERNS}, see the docstring)"
+    )
     args = parser.parse_args(argv)
 
     root = repo_root()
-    names_file = Path(args.names_file) if args.names_file else root / LIST_FILE
-    patterns = load_patterns(names_file)
+    patterns, private = resolve_patterns(root, args.names_file)
 
     if args.history:
         if args.paths:
             parser.error("--history takes no paths")
-        findings = scan_history(root, patterns)
+        findings = scan_history(root, patterns, private)
     elif args.paths:
-        findings = scan_paths(root, args.paths, patterns)
+        findings = scan_paths(root, args.paths, patterns, private)
     else:
         files = [root / p for p in tracked_files(root)]
-        findings = scan_paths(root, [str(p) for p in files], patterns)
+        findings = scan_paths(root, [str(p) for p in files], patterns, private)
 
     for finding in findings:
         print(finding)

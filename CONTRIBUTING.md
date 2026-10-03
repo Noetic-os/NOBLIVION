@@ -88,8 +88,25 @@ messages.
 2. Use `Path.home()` or `~` for a home folder. Never write a literal user
    path.
 3. Run `python3 tools/check_forbidden_names.py` before each push.
-4. When you find a new name that must not appear, add a pattern to
-   `tools/forbidden_names.txt`.
+4. When you find a new name that must not appear, add a pattern to the
+   private list (see below).
+
+The real forbidden-names list is private, so the repository does not hold
+it. The scanner reads the list from the first source that is set:
+
+1. The environment variable `NOBLIVION_FORBIDDEN_NAMES`: the patterns, one
+   case-insensitive Python regex per line. CI sets it from the repository
+   secret of the same name.
+2. The environment variable `NOBLIVION_FORBIDDEN_NAMES_FILE`: the path of a
+   list file.
+3. `tools/forbidden_names.local.txt`: a local list file. Git ignores it.
+4. `tools/forbidden_names.example.txt`: generic examples only.
+
+When the scanner falls back to the example file, it prints a notice: the
+real names are then not checked. A pull request from a fork gets no secrets,
+so its CI run uses the example file. A maintainer runs the full check after
+the merge. When the list comes from a private source, a finding names the
+pattern number, not the matched text.
 
 The `--history` scan checks every commit, not only the last one. A name in
 an old commit fails the gate too. Fix it before you push.

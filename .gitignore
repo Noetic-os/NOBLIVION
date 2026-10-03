@@ -8,3 +8,6 @@ dist/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# A local forbidden-names list (never commit it)
+tools/forbidden_names.local.txt

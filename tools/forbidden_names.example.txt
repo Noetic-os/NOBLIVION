@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Generic examples of forbidden-name patterns. They are not the real list.
+#
+# Format: one case-insensitive Python regex per line. Lines that start with
+# "#" and blank lines are ignored.
+#
+# The real list is private. CI reads it from the repository secret
+# NOBLIVION_FORBIDDEN_NAMES. For a local run, put your own list in
+# tools/forbidden_names.local.txt (git ignores that file) or set
+# NOBLIVION_FORBIDDEN_NAMES or NOBLIVION_FORBIDDEN_NAMES_FILE.
+#
+# The scanner falls back to this file only when no private list is set,
+# for example in a pull request from a fork.
+
+# an internal host name
+example-internal-host
+# an organisation name
+acme-internal
+# an internal domain
+corp\.example\b
+intranet\.example\b
+# a user path
+/home/jdoe\b
+# a private network range (RFC 2544 benchmark range, used here as an example)
+198\.18\.
+# a ticket key of a private tracker
+EXAMPLETICKET-[0-9]+

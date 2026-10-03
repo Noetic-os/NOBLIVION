@@ -67,9 +67,16 @@ jobs:
           rm -f "$tarball" checksums.txt gitleaks
       - name: gitleaks (full history)
         run: gitleaks git --config .gitleaks.toml --redact --no-banner -v .
+      # The real list is the repository secret NOBLIVION_FORBIDDEN_NAMES. A pull
+      # request from a fork gets no secrets: the variable is empty, and the script
+      # prints a notice and scans with tools/forbidden_names.example.txt only.
       - name: Forbidden names (tracked files)
+        env:
+          NOBLIVION_FORBIDDEN_NAMES: ${{ secrets.NOBLIVION_FORBIDDEN_NAMES }}
         run: python tools/check_forbidden_names.py
       - name: Forbidden names (full history)
+        env:
+          NOBLIVION_FORBIDDEN_NAMES: ${{ secrets.NOBLIVION_FORBIDDEN_NAMES }}
         run: python tools/check_forbidden_names.py --history
 
   spdx:
