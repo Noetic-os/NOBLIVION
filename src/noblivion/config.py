@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,13 +37,22 @@ TRUST_RANKING_MODES = ("off", "shadow", "on")
 LOG_LEVELS = ("debug", "info", "warning", "error")
 
 
+INSTALL_STAMP = "noblivion-install.json"  # in the store venv, written by install.sh
+
+
 def data_dir(env: Mapping[str, str] | None = None) -> Path:
-    """``NOBLIVION_DATA_DIR``, else ``CLAUDE_PLUGIN_DATA``, else the XDG data dir."""
+    """``NOBLIVION_DATA_DIR``, else ``CLAUDE_PLUGIN_DATA``, else the folder of
+    the store venv this runs in (``install.sh`` makes ``<data dir>/venv``, so
+    a ``noblivion`` command run from a terminal finds the plugin's data dir),
+    else the XDG data dir."""
     env = os.environ if env is None else env
     for key in ("NOBLIVION_DATA_DIR", "CLAUDE_PLUGIN_DATA"):
         value = env.get(key, "").strip()
         if value:
             return Path(os.path.expanduser(value))
+    venv = Path(sys.prefix)
+    if (venv / INSTALL_STAMP).is_file():
+        return venv.parent
     xdg = env.get("XDG_DATA_HOME", "").strip()
     base = Path(os.path.expanduser(xdg)) if xdg else Path.home() / ".local" / "share"
     return base / "noblivion"

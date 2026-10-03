@@ -9,7 +9,9 @@ there is no import cycle.
 The hooks folder is found in this order:
 
 1. ``${CLAUDE_PLUGIN_ROOT}/hooks`` (the installed plugin; the memory sync
-   hook passes the variable to the indexer command);
+   hook passes the variable to the indexer command), then the plugin root
+   in the venv's install stamp (``install.sh``; a command run from a
+   terminal);
 2. the ``hooks`` folder next to this package (the plugin layout, where the
    package is ``<plugin root>/noblivion``);
 3. the ``hooks`` folder of the source tree (``src/noblivion`` -> ``hooks``).
@@ -24,7 +26,9 @@ labels need no config.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import sys
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from types import ModuleType
@@ -45,10 +49,24 @@ def hooks_dirs(env: Mapping[str, str] | None = None) -> list[Path]:
     root = env.get("CLAUDE_PLUGIN_ROOT", "").strip()
     if root:
         out.append(Path(os.path.expanduser(root)) / "hooks")
+    stamp = installed_plugin_root()
+    if stamp is not None:
+        out.append(stamp / "hooks")
     here = Path(__file__).resolve().parent
     out.append(here.parent / "hooks")
     out.append(here.parent.parent / "hooks")
     return out
+
+
+def installed_plugin_root() -> Path | None:
+    """The plugin root that ``install.sh`` built this venv from (its stamp
+    file in the venv), or ``None``."""
+    try:
+        doc = json.loads((Path(sys.prefix) / config.INSTALL_STAMP).read_text(encoding="utf-8"))
+        root = doc.get("plugin_root")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return Path(root) if isinstance(root, str) and root else None
 
 
 def rules_path(env: Mapping[str, str] | None = None) -> Path | None:

@@ -1,0 +1,10 @@
+{
+  "name": "noblivion",
+  "version": "0.0.0",
+  "description": "Local memory recall, guards and trust scoring for Claude Code. The store runs on this machine.",
+  "author": {
+    "name": "NOBLIVION contributors"
+  },
+  "license": "AGPL-3.0-or-later",
+  "keywords": ["memory", "recall", "hooks", "guards", "sqlite"]
+}

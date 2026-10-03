@@ -22,7 +22,8 @@ USAGE = (
     "       noblivion trust recompute [--json]\n"
     "       noblivion serve [--port PORT] [--lock-wait SECONDS]\n"
     "       noblivion ensure-running [--json]\n"
-    "       noblivion mine [--since YYYY-MM-DD] [--max-seconds S] [--json]"
+    "       noblivion mine [--since YYYY-MM-DD] [--max-seconds S] [--json]\n"
+    "       noblivion migrate-from-legacy [--apply | --undo] [--json]"
 )
 
 
@@ -56,6 +57,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from noblivion import trust
 
         return trust.main(rest)
+    if command == "migrate-from-legacy":
+        from noblivion import legacy
+
+        return legacy.main(rest)
     if command == "consent" and rest[:1] == ["embeddings"]:
         from noblivion import embedding
 

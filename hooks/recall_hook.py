@@ -596,6 +596,11 @@ CONFIG_SETTINGS: Tuple[Tuple[str, Tuple[str, ...], str], ...] = (
     ("NOBLIVION_RECALL_INDEX_K", (), "recall.index_k"),
     ("NOBLIVION_RECALL_PROJECT", ("NOBLIVION_PROJECT",), "namespace"),
 )
+# Config key ``recall.env``: an object of ``NOBLIVION_RECALL_*`` env defaults
+# (the index flags, which are env-only). The installer ships the reference
+# tuning in ``config/config.default.json``. An env var that is set wins.
+CONFIG_ENV_KEY = "recall.env"
+CONFIG_ENV_NAME = re.compile(r"NOBLIVION_RECALL_[A-Z0-9_]+")
 
 
 def base_url(environ: Optional[Mapping[str, str]] = None) -> str:
@@ -659,7 +664,8 @@ def session_env(environ: Mapping[str, str], payload: Mapping[str, Any]) -> Dict[
     folder and its root filled in.
 
     ``CONFIG_SETTINGS`` names the settings that may come from the config file
-    when their env var is not set.
+    when their env var is not set. ``recall.env`` in the config file gives
+    defaults for the other ``NOBLIVION_RECALL_*`` env vars.
 
     The memory folder is ``NOBLIVION_RECALL_MEMORY_DIR`` (or
     ``NOBLIVION_MEMORY_DIR``), else the folder Claude Code keeps for the
@@ -677,6 +683,17 @@ def session_env(environ: Mapping[str, str], payload: Mapping[str, Any]) -> Dict[
             value = cfg.get(key, None, env)
         if (
             isinstance(value, (int, float, str))
+            and not isinstance(value, bool)
+            and str(value).strip()
+        ):
+            env[name] = str(value).strip()
+    defaults = cfg.get(CONFIG_ENV_KEY, None, env)
+    for name, value in defaults.items() if isinstance(defaults, Mapping) else ():
+        if (
+            isinstance(name, str)
+            and CONFIG_ENV_NAME.fullmatch(name)
+            and not (env.get(name) or "").strip()
+            and isinstance(value, (int, float, str))
             and not isinstance(value, bool)
             and str(value).strip()
         ):

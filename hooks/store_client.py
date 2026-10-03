@@ -23,7 +23,9 @@ The HTTP request itself belongs to the caller (``recall_hook.http_get_json``),
 so this module opens no socket.
 
 Run as a script, it is the ``SessionStart`` hook: it starts the launcher and
-exits 0 at once, whatever happens.
+exits 0 at once, whatever happens. Under the plugin (``CLAUDE_PLUGIN_ROOT``
+is set) it also prints one line when the store venv is missing or was built
+for another plugin version (``install_notice``, design doc section 13.2).
 
 Settings (design doc section 12.3):
 
@@ -62,6 +64,10 @@ BIN_ENV = "NOBLIVION_BIN"
 BIN_KEY = "store.bin"
 AUTOSTART_ENV = "NOBLIVION_STORE_AUTOSTART"
 VENV_BIN = Path("venv") / "bin" / "noblivion"  # under the data dir
+INSTALL_STAMP = Path("venv") / "noblivion-install.json"  # written by install.sh
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+PLUGIN_ROOT_ENV = "CLAUDE_PLUGIN_ROOT"
+PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA"
 TOKEN_RE = re.compile(r"[0-9a-f]{64}")
 LOOPBACK = "127.0.0.1"
 
@@ -259,13 +265,72 @@ def request_start(
         return "error"
 
 
+def plugin_version(root: Optional[Path] = None) -> Optional[str]:
+    """The ``version`` of ``.claude-plugin/plugin.json`` in the plugin root
+    (the parent of this file's folder), or None."""
+    base = PLUGIN_ROOT if root is None else root
+    try:
+        with (base / ".claude-plugin" / "plugin.json").open(encoding="utf-8") as fh:
+            version = json.load(fh).get("version")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return version if isinstance(version, str) else None
+
+
+def installed_version(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    """The plugin version ``install.sh`` built the venv for, or None."""
+    try:
+        with (data_dir(env) / INSTALL_STAMP).open(encoding="utf-8") as fh:
+            version = json.load(fh).get("version")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return version if isinstance(version, str) else None
+
+
+def install_notice(
+    started: str, env: Optional[Mapping[str, str]] = None, root: Optional[Path] = None
+) -> Optional[str]:
+    """One line for the session when the store venv is missing (``started``
+    is ``no_launcher``) or was built for another plugin version. None when
+    all is well or the store is not started from hooks."""
+    base = PLUGIN_ROOT if root is None else root
+    e = os.environ if env is None else env
+    plugin_data = (e.get(PLUGIN_DATA_ENV) or "").strip()
+    script = 'bash "%s"' % (base / "scripts" / "install.sh")
+    if plugin_data:  # a terminal has no CLAUDE_PLUGIN_DATA: name the folder
+        script = '%s="%s" %s' % (PLUGIN_DATA_ENV, plugin_data, script)
+    if started == "no_launcher":
+        return (
+            "NOBLIVION: the memory store is not installed, so memory recall is off. "
+            "Tell the user to run: %s" % script
+        )
+    if started == "off":
+        return None
+    want, have = plugin_version(base), installed_version(env)
+    if want and have and want != have:
+        return (
+            "NOBLIVION: the memory store was built for plugin version %s, the plugin is %s. "
+            "Tell the user to run: %s" % (have, want, script)
+        )
+    return None
+
+
 def main(stdin=None, environ: Optional[Mapping[str, str]] = None) -> int:
-    """The SessionStart hook: start the launcher, print nothing, exit 0."""
+    """The SessionStart hook: start the launcher, exit 0. It prints nothing,
+    except the ``install_notice`` line when it runs under the plugin."""
     try:
         (stdin or sys.stdin).read()
     except Exception:  # noqa: BLE001
         pass
-    request_start(environ, check_stamp=False)
+    started = request_start(environ, check_stamp=False)
+    try:
+        env = os.environ if environ is None else environ
+        if (env.get(PLUGIN_ROOT_ENV) or "").strip():
+            notice = install_notice(started, env)
+            if notice:
+                print(notice)
+    except Exception:  # noqa: BLE001 - a hook never fails on a notice
+        pass
     return 0
 
 

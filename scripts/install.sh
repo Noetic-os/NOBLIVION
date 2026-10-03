@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Build the NOBLIVION store venv in the data dir (design doc 0001, section 13.2).
+#
+# The Claude Code plugin system places the plugin files. This script only
+# makes what the store needs: the venv (numpy, fastembed), the embedding
+# model cache, the token, the default config file and a first index.
+#
+# Usage: install.sh [--data-dir DIR] [--no-embed] [--no-model] [--dry-run]
+#
+#   --data-dir DIR  the data dir. Default: NOBLIVION_DATA_DIR, else
+#                   CLAUDE_PLUGIN_DATA, else ${XDG_DATA_HOME:-~/.local/share}/noblivion.
+#                   The plugin hooks use CLAUDE_PLUGIN_DATA: the SessionStart
+#                   hook prints the exact command when the venv is missing.
+#   --no-embed      no numpy and fastembed: keyword search only.
+#   --no-model      do not download the embedding model now.
+#   --dry-run       print the steps, change nothing.
+#
+# Needs python3 3.9 or newer (the hooks) and uv (the venv). uv fetches a
+# python 3.11 or newer for the venv when the system has none.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DATA_DIR=""
+EMBED=1
+MODEL=1
+DRY_RUN=0
+
+die() {
+    printf 'noblivion install: %s\n' "$*" >&2
+    exit 1
+}
+
+say() {
+    printf 'noblivion install: %s\n' "$*"
+}
+
+run() {
+    if [ "$DRY_RUN" = 1 ]; then
+        printf 'would run:'
+        printf ' %q' "$@"
+        printf '\n'
+    else
+        "$@"
+    fi
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --data-dir)
+            [ $# -ge 2 ] || die "--data-dir needs a folder"
+            DATA_DIR="$2"
+            shift 2
+            ;;
+        --no-embed) EMBED=0; MODEL=0; shift ;;
+        --no-model) MODEL=0; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        -h | --help)
+            sed -n '4,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        *) die "unknown option $1 (see --help)" ;;
+    esac
+done
+
+if [ -z "$DATA_DIR" ]; then
+    DATA_DIR="${NOBLIVION_DATA_DIR:-${CLAUDE_PLUGIN_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/noblivion}}"
+fi
+VENV="$DATA_DIR/venv"
+
+# 1. python3 for the hooks, uv for the venv.
+command -v python3 >/dev/null 2>&1 || die "python3 not found. The hooks need python3 3.9 or newer."
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' \
+    || die "python3 is $(python3 -V 2>&1). The hooks need python3 3.9 or newer."
+if ! command -v uv >/dev/null 2>&1; then
+    printf '%s\n' \
+        "noblivion install: uv not found. uv builds the store venv." \
+        "Install it with the official installer, then run this script again:" \
+        "    curl -LsSf https://astral.sh/uv/install.sh | sh" \
+        "Other ways: https://docs.astral.sh/uv/getting-started/installation/" >&2
+    exit 1
+fi
+
+VERSION="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' \
+    "$ROOT/.claude-plugin/plugin.json")"
+say "plugin $VERSION at $ROOT"
+say "data dir $DATA_DIR"
+[ "$DRY_RUN" = 1 ] && say "dry run: nothing changes"
+
+run mkdir -p -m 700 "$DATA_DIR"
+
+# 2. The venv with the locked store dependencies, then the package itself.
+EXTRA=()
+[ "$EMBED" = 1 ] && EXTRA=(--extra embed)
+REQS="$DATA_DIR/.install-requirements.txt"
+run uv venv --quiet --allow-existing --python ">=3.11" "$VENV"
+run uv export --quiet --project "$ROOT" --frozen --no-dev --no-emit-project --no-hashes \
+    ${EXTRA[@]+"${EXTRA[@]}"} --output-file "$REQS"
+run uv pip install --quiet --python "$VENV/bin/python" -r "$REQS"
+run rm -f "$REQS"
+run uv pip install --quiet --python "$VENV/bin/python" --no-deps --reinstall-package noblivion "$ROOT"
+
+# 3. The default config file, unless one exists. It holds the shipped recall
+#    tuning (recall.env). The user's file is never overwritten.
+if [ ! -e "$DATA_DIR/config.json" ]; then
+    run install -m 600 "$ROOT/config/config.default.json" "$DATA_DIR/config.json"
+else
+    say "config.json exists, kept as it is"
+fi
+
+# 4. The embedding model. A failure is not fatal: keyword search still works.
+if [ "$MODEL" = 1 ]; then
+    if [ "$DRY_RUN" = 1 ]; then
+        say "would download the embedding model to $DATA_DIR/models"
+    elif NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/python" - <<'PY'
+from noblivion import config, embedding
+
+s = embedding.load_embedding_settings()
+if s.backend == "fastembed":
+    print(f"noblivion install: downloading {s.model} (about 70 MB)")
+    embedding.FastEmbedEmbedder(
+        s.model, models_dir=config.data_dir() / "models", allow_download=True
+    ).load()
+PY
+    then
+        say "embedding model ready"
+    else
+        say "the model download failed: setting embedding.backend to none (keyword search only)"
+        NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/python" - <<'PY'
+import json, os
+from noblivion import config
+
+path = config.data_dir() / "config.json"
+doc = json.loads(path.read_text()) if path.exists() else {}
+doc.setdefault("embedding", {})["backend"] = "none"
+tmp = path.with_suffix(".tmp")
+tmp.write_text(json.dumps(doc, indent=2) + "\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
+    fi
+fi
+
+# 5. The token (mode 0600), unless one exists. The store also makes it.
+if [ ! -e "$DATA_DIR/token" ]; then
+    if [ "$DRY_RUN" = 1 ]; then
+        say "would write $DATA_DIR/token"
+    else
+        (umask 077 && python3 -c 'import secrets; print(secrets.token_hex(32))' >"$DATA_DIR/token")
+    fi
+fi
+
+# 6. The install stamp: the SessionStart hook compares its version with the
+#    plugin's and asks for a new run of this script after a plugin update.
+if [ "$DRY_RUN" = 1 ]; then
+    say "would write $VENV/noblivion-install.json"
+else
+    python3 -c 'import json, sys
+json.dump({"version": sys.argv[1], "plugin_root": sys.argv[2]}, open(sys.argv[3], "w"))' \
+        "$VERSION" "$ROOT" "$VENV/noblivion-install.json"
+fi
+
+# 7. A first index of the memory files, then the check for old hand-installed
+#    hooks (a dry run: it only prints what --apply would remove).
+run env NOBLIVION_DATA_DIR="$DATA_DIR" CLAUDE_PLUGIN_ROOT="$ROOT" "$VENV/bin/noblivion" index
+run env NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/noblivion" migrate-from-legacy
+
+say "done. The store starts at the next Claude Code session."

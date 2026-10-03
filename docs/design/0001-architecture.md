@@ -68,7 +68,7 @@ Words used in this document:
                            - indexer, trust recompute, embed backfill
                                        ^
  CLI tools (plugin venv) --------------+  same SQLite file, same rules
-   noblivion index | mine | dedup | trust | doctor | migrate
+   noblivion index | mine | dedup | trust | doctor | migrate-from-legacy
 ```
 
 - Hooks stay stdlib `python3`. They load siblings by file path, as today.
@@ -104,10 +104,10 @@ Python versions:
 | `stop-check-log.jsonl`, `stop-check-state/` | hooks | stop check log and correction markers |
 | `index.lock`, `mine.lock` | store, CLI | one indexer scan and one miner run at a time |
 | `dedup/` | CLI | dedup plans, write-ahead logs, backups, latch file |
-| `migrated/` | CLI | old hook files moved by `noblivion migrate` |
+| `migrated/<utc>/` | CLI | old hook files moved by `noblivion migrate-from-legacy --apply`, with `manifest.json` for `--undo` |
 | `logs/store.log` | store | rotating log, 5 x 1 MB |
-| `config.json` | user | optional config (section 12) |
-| `venv/`, `models/` | installer | store venv and embedding model cache |
+| `config.json` | user | optional config (section 12); `install.sh` writes the shipped default when it is missing |
+| `venv/`, `models/` | installer | store venv and embedding model cache; `venv/noblivion-install.json` holds the plugin version and root the venv was built from |
 | `backups/` | store | DB copy taken before each migration |
 
 The data dir is mode 0700. Every file in it is mode 0600.
@@ -1561,7 +1561,8 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 | `recall.shared_roots` | none | `[]` |
 | `recall.timeout_s` | `NOBLIVION_RECALL_TIMEOUT_S` | `2.0` |
 | `recall.min_score` | `NOBLIVION_RECALL_MIN_SCORE` | `0.3` |
-| `recall.index_k` | `NOBLIVION_RECALL_INDEX_K` | `35` |
+| `recall.index_k` | `NOBLIVION_RECALL_INDEX_K` | `35` (shipped config: `30`) |
+| `recall.env` | the `NOBLIVION_RECALL_*` env vars it names | `{}`; the shipped config turns on the ranked index and its steps (section 13.2) |
 | `trust.events` | `NOBLIVION_TRUST_EVENTS` | `1` (on; `0`, `off`, `false` or `no` turns it off) |
 | `trust.ranking` | `NOBLIVION_TRUST_RANKING` | `off` |
 | `trust.prior_mined` | none | `0.3` |
@@ -1643,66 +1644,126 @@ this document.
 ### 13.1 Plugin layout
 
 ```
-.claude-plugin/plugin.json      name, version, description, license
+.claude-plugin/plugin.json      name, version, description, author, license
+.claude-plugin/marketplace.json the repo is also a one-plugin marketplace (source "./")
 hooks/hooks.json                hook entries, commands use ${CLAUDE_PLUGIN_ROOT}
 hooks/*.py                      stdlib hooks (hook_config.py: settings; corpus.py: local corpus helpers;
                                 store_client.py: store discovery, listener proof, launcher start,
                                 and the SessionStart hook)
 .mcp.json                       the recall MCP server (stdio)
 mcp/recall_mcp.py
-noblivion/                      store and CLI package (needs the venv)
+config/config.default.json      the config install.sh writes when none exists
+src/noblivion/                  store and CLI package (installed into the venv)
 scripts/install.sh, scripts/uninstall.sh
 docs/
 ```
 
 - Hook commands run `python3 "${CLAUDE_PLUGIN_ROOT}/hooks/<name>.py"`.
-- The store and CLI run from `<data dir>/venv/bin/python`.
+  Claude Code runs them through the shell, so they use the system
+  `python3`. Plugins get no bundled runtime and no install-time hook.
+- The hook bindings are those of the reference install, under the new file
+  names: SessionStart (`store_client.py`, `guard_table.py --rebuild`;
+  `compact`: `recall_hook.py --reset-rows`; `startup|resume|clear|compact`:
+  `continuity_hook.py`; `startup|resume|clear`: `trust_session_line.py`),
+  UserPromptSubmit (`stop_checks.py --mark-correction`, `recall_hook.py`),
+  PreToolUse (`Bash`, `Read|Grep`, `Edit|Write|MultiEdit`: `guard_hook.py`;
+  `Agent|Task`: `subagent_rules_hook.py`), PostToolUse
+  (`Write|Edit|MultiEdit`: `memory_fields_hook.py`, `memory_sync_hook.py`;
+  `Bash`: `error_recall_hook.py`, `memory_sync_hook.py`), PostToolUseFailure
+  (`Bash`: `error_recall_hook.py`, `guard_hook.py`), PreCompact
+  (`manual|auto`: `continuity_hook.py`), SubagentStart
+  (`subagent_rules_hook.py`), Stop (`stop_checks.py`, `trust_flush.py`),
+  and the new SessionEnd (`mine_session_end.py`, the transcript miner).
+  `trust_report.py` has no binding: the trust flush refreshes the report.
+  The reference install also set a trust A/B mode on some commands; that
+  experiment flag is not shipped. `tests/test_plugin_package.py` holds the table.
+- The store and CLI run from `<data dir>/venv/bin/python`. The package is
+  installed into the venv (not editable), because `${CLAUDE_PLUGIN_ROOT}`
+  changes on every plugin update.
+- `.mcp.json` passes `CLAUDE_PLUGIN_DATA` to the MCP server in its `env`,
+  because Claude Code exports that variable to hooks only.
 - The MCP tool is renamed to `noblivion_recall`. The `GROUNDED MEMORY <id>:`
-  prefix of its answer stays, because the trust flush reads it.
+  prefix of its answer stays, because the trust flush reads it. Under the
+  plugin its full name is `mcp__plugin_noblivion_noblivion__noblivion_recall`.
+- Users add the repo with `/plugin marketplace add <owner>/NOBLIVION` and
+  install with `/plugin install noblivion@noblivion`.
 
 ### 13.2 Install
 
-`install.sh` (also run by a `SessionStart` check when the venv is missing,
-which then only prints the command to run):
+`install.sh [--data-dir DIR] [--no-embed] [--no-model] [--dry-run]`:
 
-1. Check `python3` >= 3.9 for hooks and `uv` on `PATH`. Without `uv`,
-   print how to get it and stop.
-2. `uv venv` in `<data dir>/venv` with python 3.11+, then install the
-   pinned store dependencies (`numpy`, `fastembed`) from a lock file.
-3. Download the embedding model to `<data dir>/models/`. On failure, set
-   `embedding.backend = none` in the config and say so. Keyword search
-   still works.
-4. Write the `token` file (mode 0600) if missing.
-5. Run `noblivion doctor`.
+1. Check `python3` >= 3.9 for hooks and `uv` on `PATH`. Without `uv`, print
+   the official install command and stop. The script never runs it.
+2. `uv venv` in `<data dir>/venv` with python 3.11+, then install the locked
+   store dependencies (`uv export --frozen --extra embed` from `uv.lock`),
+   then the package itself with `--no-deps`. `--no-embed` leaves out numpy
+   and fastembed: keyword search only.
+3. Copy `config/config.default.json` to `<data dir>/config.json` when that
+   file is missing. It ships the reference recall tuning in `recall.env`
+   (the ranked index, apply lines, hygiene, re-rank, rule rows, row dedupe,
+   drop rows with no rule, the label leg and the shown set) and
+   `recall.index_k = 30`. It does not ship the reference index score floor
+   (0.52), because that number was measured with another embedding model.
+   Trust flags stay with E5.
+4. Download the embedding model to `<data dir>/models/` (`--no-model`
+   skips it). On failure, set `embedding.backend = none` in the config and
+   say so. Keyword search still works.
+5. Write the `token` file (mode 0600) if missing.
+6. Write `venv/noblivion-install.json` (plugin version and root).
+7. Run `noblivion index` once and `noblivion migrate-from-legacy` as a dry
+   run, so the user sees any old hooks to remove.
+
+The data dir is `--data-dir`, else `NOBLIVION_DATA_DIR`, else
+`CLAUDE_PLUGIN_DATA`, else `${XDG_DATA_HOME:-~/.local/share}/noblivion`. A
+terminal has no `CLAUDE_PLUGIN_DATA`, so the `SessionStart` hook prints the
+exact command, with the plugin's data dir, when the venv is missing or was
+built for another plugin version (the stamp of step 6). A `noblivion`
+command run from the venv finds its data dir and the plugin's `hooks/`
+folder (label rules for `index`, `memory_fields.py` for `dedup`) through
+the same stamp.
 
 Plugin install through the Claude Code plugin system places the files.
-`install.sh` only builds the venv, the model cache and the token.
+`install.sh` only builds the venv, the model cache, the config and the
+token. Run it again after a plugin update.
 
 ### 13.3 Uninstall
 
-`uninstall.sh` stops the store and removes the venv and the model cache.
-It keeps `noblivion.db`, the config and the token unless `--purge` is
-given. It never touches memory files.
+`uninstall.sh [--data-dir DIR] [--purge] [--dry-run]` stops the store and
+removes the venv and the model cache. It keeps `noblivion.db`, the config
+and the token unless `--purge` is given. It refuses a folder that holds no
+venv, store file or database. It never touches memory files. The plugin
+itself is removed with `claude plugin uninstall noblivion`.
 
 ## 14. Migration from hand-installed hooks
 
 Some users run the reference hooks by hand: copies in
 `~/.claude/hooks/claude_code_*.py`, hand-written entries in
-`~/.claude/settings.json`, and an MCP entry in `~/.mcp.json`.
+`~/.claude/settings.json`, and an MCP entry in `~/.mcp.json`. With the
+plugin as well, every hook runs twice.
 
-`noblivion migrate` (E8):
+`noblivion migrate-from-legacy [--apply | --undo] [--home DIR] [--json]` (E8):
 
-1. Lists the old hook files, the settings entries that run them, the old
-   MCP entry, and the old env vars that are set.
-2. Prints the plan and asks for `yes`. `--dry-run` only prints.
-3. Backs up `settings.json` and `.mcp.json` to
+1. Lists the old hook files (the known reference file names only; another
+   `claude_code_*.py` is reported and left alone), links in the hooks
+   folder that point to one of them, the settings entries whose command
+   runs one of them, the MCP entries that run one, and the old env vars set
+   for them (in the settings `env`, inline in the old commands, in the old
+   MCP `env`).
+2. Without `--apply` it only prints the plan. A dry run is the default.
+3. `--apply` backs up `settings.json` and `.mcp.json` to
    `<file>.noblivion-backup-<utc>`.
-4. Removes only the entries whose command runs one of the old hook files,
-   and the old MCP entry. It keeps every other entry byte for byte.
-5. Moves the old hook files to `<data dir>/migrated/`. It does not delete
-   them.
-6. Prints the env var rename table (section 12.5) for vars it found.
-7. `noblivion migrate --undo` restores the backups and the files.
+4. It removes only the entries whose command runs one of the old hook
+   files, and the old MCP entry. A matcher group or event left empty is
+   removed. Every other key and entry keeps its value and its order (the
+   file is written again as JSON, so whitespace may change).
+5. Moves the old hook files to `<data dir>/migrated/<utc>/`. It does not
+   delete them.
+6. Prints the env var rename table (section 12.5, data file
+   `src/noblivion/legacy_env.json`, by suffix) for the vars it found.
+7. `--undo` restores the backups and the files of the last `--apply`.
+
+The command is `migrate-from-legacy`, not `migrate`, so it is not mistaken
+for the schema migrations of section 6.6.
 
 What does not carry over:
 
