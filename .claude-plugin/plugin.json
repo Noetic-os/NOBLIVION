@@ -1,6 +1,6 @@
 {
   "name": "noblivion",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local memory recall, guards and trust scoring for Claude Code. The store runs on this machine.",
   "author": {
     "name": "NOBLIVION contributors"

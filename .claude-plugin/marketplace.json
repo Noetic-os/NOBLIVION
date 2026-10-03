@@ -9,7 +9,7 @@
       "name": "noblivion",
       "source": "./",
       "description": "Local memory recall, guards and trust scoring for Claude Code.",
-      "version": "0.1.0"
+      "version": "0.1.1"
     }
   ]
 }
