@@ -69,6 +69,11 @@ EXIT_LOCKED = 4
 
 Labeller = Callable[[str, str], Iterable[str]]  # (file text, file stem) -> labels
 StatCache = dict[str, tuple[int, int, "str | None"]]
+# A file whose mtime is this close to the scan is not put in the stat cache. A
+# rewrite with the same size inside one tick of the file system clock keeps
+# the old mtime, so a cached entry would hide the new text until the next
+# change ("racy" entries, as in git). Two seconds covers coarse clocks too.
+STAT_CACHE_MIN_AGE_NS = 2_000_000_000
 
 # -- frontmatter and content ---------------------------------------------------
 
@@ -217,6 +222,7 @@ def read_folder(root: str, folder: Path, stat_cache: StatCache | None = None) ->
     if not folder.is_dir():
         return Folder(root, folder, exists=False)
     result = Folder(root, folder, exists=True)
+    cache_before_ns = time.time_ns() - STAT_CACHE_MIN_AGE_NS
     for p in sorted(folder.iterdir(), key=lambda q: q.name):
         try:
             if not _wanted(p):
@@ -230,7 +236,10 @@ def read_folder(root: str, folder: Path, stat_cache: StatCache | None = None) ->
                 raw = p.read_bytes()
                 digest = hashlib.sha256(raw).hexdigest() if raw.strip() else None
                 if stat_cache is not None:
-                    stat_cache[key] = (st.st_size, st.st_mtime_ns, digest)
+                    if st.st_mtime_ns < cache_before_ns:
+                        stat_cache[key] = (st.st_size, st.st_mtime_ns, digest)
+                    else:
+                        stat_cache.pop(key, None)  # too new to trust: hash it again next scan
         except OSError:
             result.unreadable.append(p.name)
             continue

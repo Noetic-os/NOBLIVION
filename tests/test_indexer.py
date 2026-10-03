@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -457,6 +458,8 @@ def test_labeller_error_gives_no_labels(conn, tmp_path):
 
 def test_stat_cache_skips_the_read_of_an_unchanged_file(conn, tmp_path, monkeypatch):
     folder = make_folder(tmp_path, "proj-demo", {"user_alice.md": "x\n"})
+    hour_ago = time.time() - 3600
+    os.utime(folder / "user_alice.md", (hour_ago, hour_ago))
     cache: indexer.StatCache = {}
     indexer.scan(conn, [folder], stat_cache=cache)
     assert str(folder / "user_alice.md") in cache

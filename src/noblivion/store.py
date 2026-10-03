@@ -68,6 +68,10 @@ class BindRefusedError(ValueError):
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
+    # The stdlib listen backlog is 5. Hooks of several sessions connect at the
+    # same moment (up to 4 calls per hook process); a full backlog drops the
+    # SYN and the client retries after 1 s, past the 300 ms listener proof.
+    request_queue_size = 128
 
     def __init__(self, address: tuple[str, int], store: Store) -> None:
         self.store = store

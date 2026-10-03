@@ -12,11 +12,14 @@ do not import the package (section 5.2); E4 copies the same steps:
 3. A store with another version gets ``SIGTERM``; a new one is started.
 4. ``spawn.stamp`` younger than 30 s: another caller starts the store.
 5. Else touch the stamp and start ``python -m noblivion.store`` detached.
+   Steps 4 and 5 check and touch the stamp under ``flock`` on the stamp, so
+   callers at the same moment start one store, not one each.
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import hmac
 import http.client
@@ -149,18 +152,41 @@ def ensure_running(
             except OSError:
                 pass
             lock_wait = RESTART_LOCK_WAIT_S
-    stamp = data_dir / config.SPAWN_STAMP_FILE
-    try:
-        if clock() - stamp.stat().st_mtime < SPAWN_STAMP_MAX_AGE_S and not lock_wait:
-            return STATE_STARTING
-    except OSError:
-        pass
     data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(stamp, os.O_WRONLY | os.O_CREAT, 0o600)
-    os.close(fd)
-    os.utime(stamp, None)
+    if not claim_spawn(data_dir / config.SPAWN_STAMP_FILE, clock, force=bool(lock_wait)):
+        return STATE_STARTING
     spawn(data_dir, lock_wait_s=lock_wait)
     return STATE_STARTED
+
+
+def claim_spawn(stamp: Path, clock=time.time, *, force: bool = False) -> bool:
+    """True when this caller starts the store (steps 4 and 5 of section 3.2).
+
+    The check of the stamp age and the touch run under ``flock`` on the
+    stamp, so of several callers at one moment exactly one wins. A caller
+    that makes the stamp file wins; a caller that finds it checks its age.
+    ``force`` (a store of another version was stopped) skips the age check.
+    """
+    for _ in range(3):
+        try:
+            fd = os.open(stamp, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+            created = True
+        except FileExistsError:
+            try:
+                fd = os.open(stamp, os.O_RDWR)
+            except FileNotFoundError:
+                continue  # removed between the two opens: try again
+            created = False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            if not created and not force:
+                if clock() - os.fstat(fd).st_mtime < SPAWN_STAMP_MAX_AGE_S:
+                    return False
+            os.utime(fd)
+            return True
+        finally:
+            os.close(fd)  # closing the fd releases the flock
+    return False
 
 
 def main(argv: Sequence[str] | None = None) -> int:

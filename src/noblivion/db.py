@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import sqlite3
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -32,8 +33,9 @@ KEEP_BACKUPS = 3
 SOURCE_MD = "claude_code_md"
 SOURCE_MINED = "transcript_mined"
 
+WAL_PRAGMA = "PRAGMA journal_mode = WAL"
 _CONNECTION_PRAGMAS = (
-    "PRAGMA journal_mode = WAL",
+    WAL_PRAGMA,
     "PRAGMA synchronous = NORMAL",
     "PRAGMA foreign_keys = ON",
     f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}",
@@ -78,15 +80,48 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         # Create the file before SQLite does, so it is 0600 from the start. The
         # WAL and SHM files take the mode of the database file.
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-        os.close(fd)
+        #
+        # Never open and close an existing database file here: closing any fd
+        # of a file drops every POSIX lock this process holds on it, also the
+        # locks of other open SQLite connections (the store opens one per
+        # request). Another process could then write under a reader, which
+        # gave "database disk image is malformed". O_EXCL opens nothing when
+        # the file exists.
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
     conn = sqlite3.connect(
         str(path), timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None, check_same_thread=True
     )
     conn.row_factory = sqlite3.Row
     for pragma in _CONNECTION_PRAGMAS:
-        conn.execute(pragma)
+        if pragma == WAL_PRAGMA:
+            _set_wal(conn)
+        else:
+            conn.execute(pragma)
     return conn
+
+
+def _set_wal(conn: sqlite3.Connection) -> None:
+    """``PRAGMA journal_mode = WAL`` with a retry up to the busy timeout.
+
+    The switch of a new database to WAL takes an exclusive lock, and SQLite
+    does not run the busy handler for it. When the store and a CLI tool open a
+    new database at the same moment, one of them got "database is locked" at
+    once. Retry until ``BUSY_TIMEOUT_MS``, as for any other lock.
+    """
+    deadline = time.monotonic() + BUSY_TIMEOUT_MS / 1000
+    while True:
+        try:
+            conn.execute(WAL_PRAGMA).fetchall()
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) or time.monotonic() >= deadline:
+                raise
+        time.sleep(0.01)
 
 
 @contextmanager

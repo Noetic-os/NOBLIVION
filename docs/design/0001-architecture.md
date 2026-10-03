@@ -125,7 +125,10 @@ The data dir is mode 0700. Every file in it is mode 0600.
    release `store.lock` instead of exiting at step 5. No proof: go to
    step 3.
 3. The hook checks `spawn.stamp`. If its mtime is less than 30 s old,
-   another hook started the store already. The hook stops.
+   another hook started the store already. The hook stops. The check and
+   the touch of step 4 run under `flock` on `spawn.stamp` (a caller that
+   creates the file wins), so callers at the same moment start one store,
+   not one each (E3d).
 4. Else the hook touches `spawn.stamp` and starts
    `<data dir>/venv/bin/python -m noblivion.store` as a detached child
    (`start_new_session=True`, stdin from `/dev/null`, output to the log,
@@ -160,6 +163,9 @@ Entry points (E3c):
 ### 3.3 Port
 
 - Default port: 8894. Config key `port`, env `NOBLIVION_PORT`.
+- The listen backlog is 128, not the stdlib 5. Hooks of several sessions
+  connect at once; a full backlog drops the SYN and the client retries
+  after 1 s, past the 300 ms proof below (E3d measured 1 s to 8 s).
 - Port `0` means "any free port". The store writes the real port to
   `store.json`.
 - The hooks find the store only through `store.json`. They never fall back
@@ -721,6 +727,9 @@ description is left out with its blank line.
   rows already in the database while the scan runs (section 3.2).
 - Every `index.interval_s` seconds (default 30) while the store runs. The
   scan is stat-only (size and mtime) until a file differs, so it is cheap.
+  A file whose mtime is less than 2 s before the scan is not cached: a
+  rewrite with the same size in one tick of a coarse file system clock
+  keeps the mtime, and the cache would hide it (E3d).
 - On demand: `noblivion index [--force] [--allow-shrink]`, also
   `python -m noblivion.indexer`. Exit codes: 0 done; 1 a file was skipped
   (not readable or not redactable), so nothing was deleted; 2 the shrink
@@ -762,6 +771,14 @@ PRAGMA trusted_schema = OFF;
   never block a writer.
 - A write transaction holds at most one batch (default 200 rows). Long
   jobs commit per batch, so a hook write never waits more than one batch.
+- The switch of a new database to WAL takes an exclusive lock, and SQLite
+  does not run the busy handler for it. `connect` retries
+  `PRAGMA journal_mode = WAL` until `busy_timeout`, so the store and a CLI
+  tool can open a new database at the same moment (E3d).
+- No code opens and closes the database file outside SQLite. POSIX locks
+  belong to the process, so closing any fd of the file drops the locks of
+  every open connection; another process could then checkpoint and delete
+  the WAL under them. `connect` creates a new file with `O_EXCL` only (E3d).
 - The data dir must be on a local file system. WAL needs shared memory
   that network file systems do not give. `doctor` warns on NFS and SMB.
 
@@ -1678,7 +1695,7 @@ judge or OpenRouter uses a fake server on loopback.
 | Schema | migrations from every older `user_version`; refuse a newer one; backup created; `foreign_key_check` empty after every delete path |
 | Defect 1 reproducer | two connections: recompute reads, ingest commits, recompute writes; assert the event is counted (by design ingest blocks on `BEGIN IMMEDIATE`; the test proves it) |
 | Defect 2 reproducer | insert a row, store an event, delete through the indexer path; assert 0 rows in `feedback` and `feedback_events` |
-| Concurrency | 8 threads of ingest plus the indexer plus a CLI process writing; no `database is locked` error past `busy_timeout`; counter reload seen by search |
+| Concurrency | 8 threads of ingest plus the indexer plus a CLI process writing; no `database is locked` error past `busy_timeout`; counter reload seen by search. E3d (`tests/test_store_concurrency*.py`): a live `noblivion serve` with hook processes searching while the indexer CLI, the store scan and two backfills write; read-then-write transactions in several processes; first open of a new database by several processes; `ensure-running` races; `SIGKILL` in a write transaction. `NOBLIVION_STRESS_FULL=1` runs the full load |
 | Lifecycle | two starts race (one wins the lock); stale `store.json`; port held by a foreign server that fakes `service` (hook sends no token); proof with a wrong token; version mismatch restarts; idle exit; `SIGTERM` checkpoint |
 | RAM reload | a CLI commit with an older clock is still seen; one reload at a time; a re-embed does not rebuild BM25 |
 | Root scoping | a rule in root A never in the pool for root B; same file name in two roots; `path` event resolution with and without `root` |
