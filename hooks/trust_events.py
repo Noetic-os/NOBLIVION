@@ -81,7 +81,12 @@ MODE_NO_GUARD_ROWS = "a"
 # (REVIEW-4453 n4: an optional source, and shown is not a trial).
 RECALL_EVENTS = frozenset({"UserPromptSubmit", "PreToolUse"})
 
-_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")  # as recall_hook
+# The store's session-id rule (noblivion.trust.SESSION_ID_PATTERN), copied
+# because the hooks do not import the package. A session the store refuses
+# is not recorded, so its events are never sent (NOBLIVION-21). A test
+# checks that the two strings match.
+SESSION_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"  # used with fullmatch
+_SESSION_ID_RE = re.compile(SESSION_ID_PATTERN)
 _STEM_RE = re.compile(r"^[\w.-]{1,200}$")  # as the guard hook's _SAFE_ID
 _FILE_RE = re.compile(r"^[\w.-]{1,200}\.md$")
 # A source name, as the daemon checks it (the store's source-name check).
@@ -141,7 +146,7 @@ def cache_dir(environ: Optional[Mapping[str, str]] = None) -> str:
 
 
 def valid_sid(session_id: Any) -> Optional[str]:
-    if isinstance(session_id, str) and _SESSION_ID_RE.match(session_id):
+    if isinstance(session_id, str) and _SESSION_ID_RE.fullmatch(session_id):
         return session_id
     return None
 

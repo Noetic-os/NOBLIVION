@@ -385,6 +385,9 @@ def connect_store(environ: Mapping[str, str], timeout_s: float = POST_TIMEOUT_S)
 
 Poster = Callable[[str, str, bytes, float], Any]
 COUNT_KEYS = ("inserted", "duplicate", "unknown", "rejected")
+# A store answer that the same body gets again on every try (NOBLIVION-21):
+# the batch is dropped and logged, not sent again at every Stop.
+PERMANENT_REASONS = frozenset({"http_400", "http_413", "http_422"})
 
 
 def _post(url: str, token: str, body: bytes, timeout_s: float) -> Any:
@@ -412,7 +415,9 @@ def flush_events(
     connect: Optional[Callable[[Mapping[str, str]], Tuple[str, str]]] = None,
 ) -> str:
     """Send the unsent lines. Returns the status for the log line. The sent
-    offset moves only when every batch was accepted."""
+    offset moves only when every batch was accepted or refused for good
+    (``PERMANENT_REASONS``); a refused batch is dropped and counted in the
+    status."""
     events, end, bad = read_unsent(cache, sid, int(state.get("sent") or 0))
     if not events:
         if end != state.get("sent"):
@@ -428,10 +433,15 @@ def flush_events(
     send = post or _post
     total = dict.fromkeys(COUNT_KEYS, 0)
     root = state.get("root") if isinstance(state.get("root"), str) else None
+    dropped: Dict[str, int] = {}
     for body in batches(sid, events, root=root):
         try:
             counts = _counts(send(url, token, body, POST_TIMEOUT_S))
         except PostError as exc:
+            if exc.reason in PERMANENT_REASONS:
+                n = len(json.loads(body)["events"])
+                dropped[exc.reason] = dropped.get(exc.reason, 0) + n
+                continue
             if not exc.reason.startswith("http_"):
                 with contextlib.suppress(Exception):
                     sc().forget(environ)  # no answer: prove again next time
@@ -441,10 +451,13 @@ def flush_events(
         for k in COUNT_KEYS:
             total[k] += counts[k]
     state["sent"] = end
-    return (
+    status = (
         "ok events={} inserted={inserted} duplicate={duplicate} unknown={unknown} "
         "rejected={rejected} bad={bad}"
     ).format(len(events), bad=bad, **total)
+    for reason in sorted(dropped):
+        status += f" dropped:{reason}={dropped[reason]}"
+    return status
 
 
 # ── 4. other sessions, the report, pruning ──────────────────────────────────

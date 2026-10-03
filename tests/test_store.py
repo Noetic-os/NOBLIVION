@@ -759,6 +759,26 @@ def test_spawn_store_starts_a_detached_process(tmp_path, monkeypatch):
             pass
 
 
+def test_sigterm_right_after_store_json_stops_cleanly(tmp_path, monkeypatch):
+    """NOBLIVION-20: a SIGTERM sent as soon as store.json exists must reach the
+    handler, so the store exits 0 and deletes store.json. Before the fix the
+    handler was installed after open() wrote store.json; about 1 in 10 such
+    SIGTERMs killed the process and left a stale store.json."""
+    for attempt in range(8):
+        base = tmp_path / f"run{attempt}"
+        for key, value in store_env(base).items():
+            monkeypatch.setenv(key, value)
+        data = base / "data"
+        pid = launcher.spawn_store(data)
+        deadline = time.monotonic() + 30
+        while launcher.read_store_json(data) is None and time.monotonic() < deadline:
+            time.sleep(0.0005)
+        os.kill(pid, signal.SIGTERM)
+        _, status = os.waitpid(pid, 0)
+        assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, (attempt, status)
+        assert launcher.read_store_json(data) is None, attempt
+
+
 # -- config keys of the store (section 12.3) -----------------------------------------
 
 

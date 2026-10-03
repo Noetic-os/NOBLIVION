@@ -556,3 +556,75 @@ def test_end_to_end_the_events_reach_a_live_store(tmp_path):
         assert tuple(row) == (1, 1.0)
     finally:
         run.stop()
+
+
+# 5. one session-id rule for hook and store (NOBLIVION-21) ----------------
+SESSION_IDS = [
+    "_abc",
+    ".abc",
+    "-abc",
+    ":abc",
+    "abc",
+    "a:b",
+    "a.b_c-d",
+    "8f14e45f-ceea-467f-a8d5-6f8b2c1d9e0a",
+    "abc\n",
+    "",
+    "a" * 128,
+    "a" * 129,
+    "a/b",
+    "a b",
+    "été",
+]
+
+
+def _store_accepts(sid: str) -> bool:
+    from noblivion import trust
+
+    try:
+        trust.parse_batch({"session_id": sid, "events": []})
+    except trust.BatchRefused as exc:
+        assert exc.status == 400
+        return False
+    return True
+
+
+def test_the_hook_holds_the_store_session_id_pattern():
+    from noblivion import trust
+
+    assert te.SESSION_ID_PATTERN == trust.SESSION_ID_PATTERN
+
+
+@pytest.mark.parametrize("sid", SESSION_IDS)
+def test_hook_and_store_give_one_verdict_on_a_session_id(sid):
+    assert (te.valid_sid(sid) is not None) == _store_accepts(sid)
+
+
+def test_an_underscore_session_id_is_refused_by_hook_and_store(env):
+    assert te.valid_sid("_abc") is None
+    assert not _store_accepts("_abc")
+    assert not te.append_events(
+        env["NOBLIVION_RECALL_CACHE_DIR"], "_abc", te.index_events([5], TS), env
+    )
+    assert fl.run_child("_abc", "", env, post=Recorder(), refresh=_no_refresh) == "skip:bad_session"
+
+
+@pytest.mark.parametrize("reason", sorted(fl.PERMANENT_REASONS))
+def test_a_permanent_refusal_drops_the_batch_and_is_not_sent_again(env, reason):
+    _append(env, te.index_events([5, 6], TS))
+    refused = Recorder(exc=fl.PostError(reason))
+    status = _run(env, refused)
+    assert status.startswith("ok events=2") and f"dropped:{reason}=2" in status
+    assert len(refused.bodies) == 1
+    sent = fl.load_state(env["NOBLIVION_RECALL_CACHE_DIR"], SID)["sent"]
+    assert sent == _events_path(env).stat().st_size
+    again = Recorder(exc=fl.PostError(reason))
+    assert _run(env, again).startswith("ok:nothing")
+    assert again.bodies == []
+
+
+@pytest.mark.parametrize("reason", ["http_401", "http_404", "http_500", "http_503"])
+def test_a_passing_refusal_keeps_the_offset(env, reason):
+    _append(env, te.index_events([5], TS))
+    assert _run(env, Recorder(exc=fl.PostError(reason))).startswith(f"fail:{reason}")
+    assert fl.load_state(env["NOBLIVION_RECALL_CACHE_DIR"], SID)["sent"] == 0

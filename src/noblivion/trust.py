@@ -59,7 +59,10 @@ REPORT_LIST_CAP = 500
 MEMORY_INDEX_PATH = "MEMORY.md"
 INDEX_CATEGORIES = frozenset({"index", "topic"})
 
-_SESSION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")  # used with fullmatch
+# The one session-id rule (NOBLIVION-21). hooks/trust_events.py holds the same
+# string because the hooks do not import the package; a test checks they match.
+SESSION_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"  # used with fullmatch
+_SESSION_ID_RE = re.compile(SESSION_ID_PATTERN)
 _MD_LINK_RE = re.compile(r"\]\(\s*<?([^()<>\s]+?\.md)>?\s*\)")
 
 # One session counts once per memory and kind. A recall is exposure only; it
@@ -198,7 +201,11 @@ def parse_batch(body: Mapping[str, object], *, now: datetime | None = None) -> B
     now = _utc(now) if now is not None else datetime.now(timezone.utc)
     session_id = body.get("session_id")
     if not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
-        raise BatchRefused(400, "session_id must be 1-128 characters of [A-Za-z0-9._:-]")
+        raise BatchRefused(
+            400,
+            "session_id must be 1-128 characters of [A-Za-z0-9._:-]"
+            " and start with a letter or digit",
+        )
     events = body.get("events")
     if not isinstance(events, list):
         raise BatchRefused(400, "events must be a list")

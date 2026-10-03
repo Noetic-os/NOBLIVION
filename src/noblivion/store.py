@@ -615,6 +615,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     _setup_logging(settings.data_dir, store_settings.log_level)
 
     store = Store(settings, store_settings, lock_wait_s=args.lock_wait)
+
+    def on_signal(signum: int, _frame: object) -> None:
+        store.request_stop(signal.Signals(signum).name)
+
+    # Install the handlers before open() writes store.json (NOBLIVION-20): a
+    # caller that sees store.json may send SIGTERM at once. With the default
+    # action the process dies and leaves a stale store.json; with the handler
+    # serve() stops at once and close() deletes store.json.
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
     try:
         store.open()
     except StoreLockedError:
@@ -627,11 +637,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         log.error("bind failed on port %s: %s", store_settings.port, type(exc).__name__)
         return EXIT_BIND
 
-    def on_signal(signum: int, _frame: object) -> None:
-        store.request_stop(signal.Signals(signum).name)
-
-    signal.signal(signal.SIGTERM, on_signal)
-    signal.signal(signal.SIGINT, on_signal)
     store.start_background()
     return store.serve()
 
