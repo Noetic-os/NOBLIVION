@@ -98,6 +98,10 @@ Python versions:
 | `token` | installer | 32 random bytes, hex, mode 0600 (section 4.1) |
 | `spawn.stamp` | hooks | mtime marks the last start attempt |
 | `cache/by-session/` | hooks | per-session recall cache and trust event spool |
+| `cache/` (other files) | hooks | continuity state, memory sync stamps and log, trust report and dedup status files |
+| `guard-table.json` | hooks | the guard table compiled from the memory rule fields |
+| `guard-log.jsonl`, `guard-state/` | hooks | guard hook log and per-agent state |
+| `stop-check-log.jsonl`, `stop-check-state/` | hooks | stop check log and correction markers |
 | `index.lock`, `mine.lock` | store, CLI | one indexer scan and one miner run at a time |
 | `dedup/` | CLI | dedup plans, write-ahead logs, backups, latch file |
 | `migrated/` | CLI | old hook files moved by `noblivion migrate` |
@@ -1343,6 +1347,13 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 | `miner.enabled` | `NOBLIVION_MINER` | `true` |
 | `guard.generic_args_extra` | none | `[]` |
 | `guard.evidence_stop_extra` | none | `[]` |
+| `labels.ticket_prefixes` | none | `[]` (no ticket key labels) |
+| `labels.service_prefixes` | none | `[]` (no service labels) |
+| `stop.shared_checkouts` | none | `[]` |
+| `stop.worktree_prefixes` | none | `[]` |
+| `stop.test_command` | none | `python3 -m pytest -q <absolute test path>` |
+| `stop.deploy_hosts` | none | `[]` (the deploy stop check is off) |
+| `sync.index_command` | `NOBLIVION_MEMORY_SYNC_CMD` | `<data dir>/venv/bin/noblivion index` when installed, else none |
 | `log_level` | `NOBLIVION_LOG_LEVEL` | `info` |
 
 `OPENROUTER_API_KEY` keeps its common name. It is never in the config file.
@@ -1364,6 +1375,15 @@ implementation:
 - The lists are extended, never replaced, by the config. The defaults live
   in one Python module so the leak scanner checks them.
 - The host alias map of the label rules is removed. It has no generic form.
+- The label rules made ticket key labels and service labels for the
+  reference project's own prefixes. The prefixes now come from
+  `labels.ticket_prefixes` and `labels.service_prefixes`. With none set,
+  no such labels are made.
+- The stop checks named one private checkout, worktree folder, test
+  command and deploy host. These are now the `stop.*` keys. With
+  `stop.deploy_hosts` empty, the deploy check never fires.
+- The hooks read the config file and the data dir through one stdlib
+  module, `hooks/hook_config.py`. The default word lists live there.
 
 ### 12.5 Env var rename
 
@@ -1385,7 +1405,7 @@ this document.
 ```
 .claude-plugin/plugin.json      name, version, description, license
 hooks/hooks.json                hook entries, commands use ${CLAUDE_PLUGIN_ROOT}
-hooks/*.py                      stdlib hooks
+hooks/*.py                      stdlib hooks (hook_config.py: settings; corpus.py: local corpus helpers)
 .mcp.json                       the recall MCP server (stdio)
 mcp/recall_mcp.py
 noblivion/                      store and CLI package (needs the venv)

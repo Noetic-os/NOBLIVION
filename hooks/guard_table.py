@@ -1,0 +1,1005 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Compile the memory rule fields into a local guard table, and match commands.
+
+Work item WI-2 ("guard table compiler").
+
+``rebuild(folder)`` reads every memory file in ``folder`` ONLY through
+``memory_fields.read_fields`` and writes one JSON table, atomically,
+to ``table_path()`` (env ``NOBLIVION_GUARD_TABLE``, default
+``<data dir>/guard-table.json``). Each entry carries the memory id (the file
+stem), rule, apply, scope, triggers (for the later rows-only leg) and the
+``violates`` regex. A ``violates`` regex is kept only when
+``memory_fields.check_fields`` reports no problem for that file; a
+refused one goes to ``skipped`` with the problems in plain words, and never
+stops the rebuild.
+
+WI-3d: an entry also carries ``complies`` (the optional ``complies:`` regex, a
+run of the rule's own command) and ``run_first`` (the shortest piece of
+``example_ok`` that ``complies`` matches: a ``$( )`` substitution, a shell
+segment, or the whole example; the guard hook prints it as the command to run
+before an override). A ``complies`` with problems is dropped alone (the
+``violates`` stays) and listed in ``skipped``. ``complies_match(command)`` is
+what the hook calls on a failed Bash call.
+
+``match(command)`` is what the WI-3 PreToolUse hook calls. It compiles each
+``violates`` regex once and applies it to the raw Bash command AND to each shell
+segment of it (split on ``&&``, ``||``, ``;``, ``|``, ``&``, bare parentheses and
+newlines, outside quotes; heredoc bodies are data and are dropped from the
+segments, and the whole-command test skips them too). So
+``^git\\s+stash\\s+pop\\s*$`` also fires on
+``cd x && git stash pop``. A segment is also tried with its leading ``VAR=value``
+assignments removed. Each hit records whether a segment or only the whole
+command matched.
+
+Table version 2: the key ``label_index`` holds the subject
+label index over EVERY memory file, not only the files with rule fields
+(``memory_labels.build_index``: labels, the number of memories per
+label, and per memory its stem, name, mtime and a short text). The guard hook
+and the recall hook match it (``label_rows``). Only a key is
+added: a reader of version 1 reads ``entries`` as before. When the labeller
+cannot be loaded or fails, the table has no ``label_index`` (no label rows)
+and ``label_error`` says why; the guard entries are built all the same.
+
+Callers:
+  * the WI-1 PostToolUse hook ``memory_fields_hook.py`` calls
+    ``rebuild(memory_dir())`` after a memory write;
+  * SessionStart runs ``guard_table.py --rebuild``: fail-open,
+    exit 0 always, silent on success.
+
+No daemon call, no network. Standard library only.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import re
+import sys
+import tempfile
+import time
+from collections.abc import Mapping
+from pathlib import Path
+from re import Pattern
+from typing import Any, Dict, List, Optional, Tuple
+
+_TOOLS = Path(__file__).resolve().parent
+
+
+def _hook_config():
+    """``hook_config.py`` from this file's folder (data dir, config file)."""
+    path = Path(__file__).resolve().parent / "hook_config.py"
+    spec = importlib.util.spec_from_file_location("hook_config", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(str(path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_CFG = _hook_config()
+LIVE = _CFG.default_memory_dir()
+DEFAULT_TABLE = _CFG.data_dir() / "guard-table.json"
+TABLE_VERSION = 2  # 2: the label index key
+# Index and topic files are not memories.
+_NOT_MEMORY = re.compile(r"^(MEMORY|MEMORY_ARCHIVE|topic_.*)\.md$")
+
+
+def _load(name: str):
+    path = _TOOLS / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(name)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_MF = None
+_ML = None
+
+
+def _mf():
+    global _MF
+    if _MF is None:
+        _MF = _load("memory_fields")
+    return _MF
+
+
+def _ml():
+    global _ML
+    if _ML is None:
+        _ML = _load("memory_labels")
+    return _ML
+
+
+def _label_doc(path: Path, text: str) -> Dict[str, object]:
+    """The label index row of one memory file."""
+    ml = _ml()
+    name, desc, body = ml.name_and_description(text, path.stem)
+    try:
+        mtime = int(path.stat().st_mtime)
+    except OSError:
+        mtime = 0
+    return {
+        "id": path.stem,
+        "name": name,
+        "labels": ml.memory_labels(text, path.stem),
+        "mtime": mtime,
+        "text": ml.short_text(desc, body),
+    }
+
+
+def table_path() -> Path:
+    return Path(os.environ.get("NOBLIVION_GUARD_TABLE") or DEFAULT_TABLE).expanduser()
+
+
+def memory_dir() -> Path:
+    return Path(os.environ.get("NOBLIVION_MEMORY_DIR") or LIVE).expanduser()
+
+
+# --------------------------------------------------------------------------
+# building
+# --------------------------------------------------------------------------
+def build(folder: Path) -> Dict[str, Any]:
+    """The table for ``folder``, not written. Raises when ``folder`` is not a
+    directory, so a missing folder never replaces a good table."""
+    folder = Path(folder)
+    if not folder.is_dir():
+        raise FileNotFoundError(f"memory folder {folder} does not exist")
+    mf = _mf()
+    entries: List[Dict[str, object]] = []
+    skipped: List[Dict[str, object]] = []
+    label_docs: List[Dict[str, object]] = []
+    label_error = ""
+    for path in sorted(folder.glob("*.md")):
+        if _NOT_MEMORY.match(path.name):
+            continue
+        mem_id = path.stem
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            skipped.append({"id": mem_id, "violates": "", "problems": [f"unreadable: {exc}"]})
+            continue
+        if not label_error:
+            try:  # every memory file, rule fields or not
+                label_docs.append(_label_doc(path, text))
+            except Exception as exc:  # noqa: BLE001 - labels never stop the guard build
+                label_error = f"{type(exc).__name__}: {exc}"[:300]
+        fields = mf.read_fields(text)
+        pat = str(fields.get("violates") or "")
+        triggers = [
+            t
+            for t in (fields.get("triggers") or [])
+            if isinstance(t, str) and not mf.trigger_problem(t)
+        ]
+        if not (fields.get("rule") or pat or triggers):
+            continue
+        kind = "feedback" if path.name.startswith("feedback_") else "other"
+        violates, complies, run_first = "", "", ""
+        cpat = str(fields.get("complies") or "")
+        if pat:
+            try:
+                problems = mf.check_fields(fields, kind)
+                # A bad status: or project: line is a briefing problem. It must
+                # never switch off a guard regex.
+                sp = getattr(mf, "status_project_problems", None)
+                other = sp(fields, kind) if sp else []
+                problems = [p for p in problems if p not in other]
+                cprobs = mf.complies_problems(fields) if cpat else []
+            except Exception as exc:  # noqa: BLE001 - one file never stops the build
+                problems, cprobs = [f"check failed: {exc}"], []
+            vprobs = [p for p in problems if p not in cprobs]
+            if vprobs:
+                skipped.append({"id": mem_id, "violates": pat, "problems": vprobs})
+            else:
+                violates = pat
+                if cprobs:  # a bad complies is dropped alone
+                    skipped.append({"id": mem_id, "complies": cpat, "problems": cprobs})
+                elif cpat:
+                    complies = cpat
+                    run_first = first_command(str(fields.get("example_ok") or ""), cpat, pat)
+                    if not run_first:
+                        complies = ""
+                        skipped.append(
+                            {
+                                "id": mem_id,
+                                "complies": cpat,
+                                "problems": ["no piece of example_ok is a run of complies"],
+                            }
+                        )
+        entries.append(
+            {
+                "id": mem_id,
+                "rule": str(fields.get("rule") or ""),
+                "apply": str(fields.get("apply") or ""),
+                "scope": str(fields.get("scope") or ""),
+                "triggers": triggers,
+                "violates": violates,
+                "complies": complies,
+                "run_first": run_first,
+            }
+        )
+    table: Dict[str, Any] = {
+        "version": TABLE_VERSION,
+        "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "source": str(folder),
+        "entries": entries,
+        "skipped": skipped,
+    }
+    if not label_error:
+        try:
+            table["label_index"] = _ml().build_index(label_docs)
+        except Exception as exc:  # noqa: BLE001 - labels never stop the guard build
+            label_error = f"{type(exc).__name__}: {exc}"[:300]
+    if label_error:
+        table["label_error"] = label_error
+    return table
+
+
+def write_atomic(path: Path, data: Dict[str, object]) -> None:
+    """Write ``data`` as JSON to ``path`` through a temp file in the same folder
+    and ``os.replace``: a reader sees the old table or the new one, never half."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, separators=(",", ":"))
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def rebuild(folder: Optional[Path] = None, out: Optional[Path] = None) -> Dict[str, Any]:
+    """Build the table for ``folder`` (default ``memory_dir()``) and write it to
+    ``out`` (default ``table_path()``). Returns the table."""
+    table = build(Path(folder) if folder is not None else memory_dir())
+    write_atomic(Path(out) if out is not None else table_path(), table)
+    return table
+
+
+# --------------------------------------------------------------------------
+# shell segments
+# --------------------------------------------------------------------------
+# ``<<WORD``, ``<<-WORD``, ``<<'WORD'``, ``<<"WORD"``, ``<<\WORD``. A quoted
+# terminator is any text (``'END-DOC'``, ``"END OF DOC"``). A bare one starts
+# with a letter or ``_`` (so ``1<<2`` is not a heredoc) and runs to the next
+# blank, quote or shell operator (``END-DOC``, ``EOF.1``).
+_HEREDOC = re.compile(r"<<(-?)[ \t]*(?:(['\"])([^'\"\n]+)\2|\\?([A-Za-z_][^\s'\"<>;&|()]*))")
+
+
+def _heredoc_word(m: re.Match[str]) -> str:
+    return m.group(3) if m.group(3) is not None else m.group(4)
+
+
+def segments(command: str) -> List[str]:
+    """The top-level simple commands of ``command``: split on ``&&``, ``||``,
+    ``;``, ``|``, ``&``, bare ``(`` / ``)`` and newlines outside quotes and
+    outside ``$( )``. Heredoc bodies are dropped. Stripped, empty ones left out."""
+    return _lex(command)[0]
+
+
+def without_heredoc_bodies(command: str) -> str:
+    """``command`` with every heredoc body (and its terminator line) removed.
+    A body is data (a file, a script, a commit message), not a command. A
+    backslash-newline outside single quotes and heredoc bodies is removed too:
+    the shell joins those lines."""
+    return _lex(command)[1]
+
+
+def _lex(command: str) -> Tuple[List[str], str]:
+    out: List[str] = []
+    cut: List[Tuple[int, int]] = []  # heredoc body ranges and line continuations
+    cur: List[str] = []
+    stack: List[str] = []  # "'", '"', "(" for $( ), <( ), >( )
+    pending: List[Tuple[str, bool]] = []  # heredoc terminators waiting for a newline
+    i, n = 0, len(command)
+
+    def flush() -> None:
+        s = "".join(cur).strip()
+        if s:
+            out.append(s)
+        cur.clear()
+
+    while i < n:
+        c = command[i]
+        top = stack[-1] if stack else ""
+        if top == "'":
+            cur.append(c)
+            if c == "'":
+                stack.pop()
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            if command[i + 1] == "\n":  # a line continuation: the shell joins the lines
+                cut.append((i, i + 2))
+                i += 2
+                continue
+            cur.append(command[i : i + 2])
+            i += 2
+            continue
+        if top == '"':
+            cur.append(c)
+            if c == '"':
+                stack.pop()
+            elif c == "$" and command.startswith("$(", i):
+                stack.append("(")
+                cur.append("(")
+                i += 1
+            i += 1
+            continue
+        # top level or inside $( )
+        if c == "#" and (i == 0 or command[i - 1] in " \t\n;|&()"):
+            # a comment runs to the line end: a quote character in it opens no
+            # quote, and its text is no part of a segment (as ``_Scan.cmd``)
+            j = command.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if c in "'\"":
+            stack.append(c)
+            cur.append(c)
+            i += 1
+            continue
+        if c == "<" and command.startswith("<<", i) and not command.startswith("<<<", i):
+            m = _HEREDOC.match(command, i)
+            if m:
+                pending.append((_heredoc_word(m), m.group(1) == "-"))
+                cur.append(m.group(0))
+                i = m.end()
+                continue
+        if c == "\n" and pending:
+            i += 1
+            start = i
+            for word, dash in pending:  # skip each body up to its terminator
+                while i <= n:
+                    j = command.find("\n", i)
+                    line = command[i:] if j < 0 else command[i:j]
+                    i = n if j < 0 else j + 1
+                    if (line.lstrip("\t") if dash else line) == word or j < 0:
+                        break
+            pending.clear()
+            cut.append((start, i))
+            if not stack:
+                flush()
+            else:
+                cur.append("\n")
+            continue
+        if c == "(" and i > 0 and command[i - 1] in "$<>":
+            stack.append("(")
+            cur.append(c)
+            i += 1
+            continue
+        if top == "(":
+            cur.append(c)
+            if c == "(":
+                stack.append("(")
+            elif c == ")":
+                stack.pop()
+            i += 1
+            continue
+        # top level: separators
+        two = command[i : i + 2]
+        if two in ("&&", "||"):
+            flush()
+            i += 2
+            continue
+        if c in ";|\n()":
+            flush()
+            i += 1
+            continue
+        if c == "&":
+            prev = command[i - 1] if i > 0 else ""
+            nxt = command[i + 1] if i + 1 < n else ""
+            if prev in "<>" or nxt == ">":  # 2>&1, &>file, <&3
+                cur.append(c)
+            else:
+                flush()
+            i += 1
+            continue
+        cur.append(c)
+        i += 1
+    flush()
+    kept, last = [], 0
+    for a, b in cut:
+        kept.append(command[last:a])
+        last = b
+    kept.append(command[last:])
+    return out, "".join(kept)
+
+
+_ASSIGN = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S*)\s+)+")
+
+
+# One shell word: quoted parts, escapes and plain characters, glued together.
+_ARG = r"""(?:'[^']*'|"(?:[^"\\]|\\.)*"|\\.|[^\s'"\\])+"""
+# Leading wrappers that run the next word as the command.
+_WRAPPER = re.compile(
+    r"^(?:"
+    r"[A-Za-z_][A-Za-z0-9_]*=" + _ARG + r"?"
+    r"|env(?:\s+(?:-C\s*"
+    + _ARG
+    + r"|--chdir="
+    + _ARG
+    + r"|-u\s*"
+    + _ARG
+    + r"|--unset="
+    + _ARG
+    + r"|-i|--ignore-environment|-0|--null|--"
+    r"|[A-Za-z_][A-Za-z0-9_]*=" + _ARG + r"?))*"
+    r"|sudo(?:\s+(?:-[ugCDprtUh]\s*" + _ARG + r"|--[a-z-]+=" + _ARG + r"|-[A-Za-z]+|--))*"
+    r"|nohup"
+    r"|command(?:\s+-p)?"
+    r"|exec(?:\s+(?:-[cl]+|-a\s*" + _ARG + r"))*"
+    r"|time(?:\s+-p)?"
+    r"|nice(?:\s+(?:-n\s*" + _ARG + r"|--adjustment=" + _ARG + r"|-\d+))*"
+    r"|if|then|else|elif|while|until|do|\{|!"
+    r"|setsid(?:\s+(?:-[cfw]+|--ctty|--fork|--wait))*"
+    r"|timeout(?:\s+(?:-[sk]\s*"
+    + _ARG
+    + r"|--signal="
+    + _ARG
+    + r"|--kill-after="
+    + _ARG
+    + r"|--preserve-status|--foreground|-v|--verbose))*\s+\d+(?:\.\d+)?[smhd]?"
+    r")\s+"
+)
+# git global options between ``git`` and its subcommand. Memory regexes are
+# written as ``git\s+<subcommand>``; agents here run ``git -C <path> ...``.
+_GIT_OPT = (
+    r"(?:-[Cc]\s+"
+    + _ARG
+    + r"|--(?:git-dir|work-tree|namespace|config-env)(?:=|\s+)"
+    + _ARG
+    + r"|--(?:exec-path|super-prefix)(?:="
+    + _ARG
+    + r")?"
+    + r"|--no-pager|--paginate|--no-optional-locks|--bare|--no-replace-objects"
+    + r"|--(?:literal|glob|noglob|icase)-pathspecs|--no-lazy-fetch|--no-advice|-[Pp])"
+)
+_GIT_GLOBALS = re.compile(r"(?<![^\s/(\"'`])git(?:\s+" + _GIT_OPT + r")+(?=\s|$)")
+
+
+def _normalize(text: str, lead: bool = True) -> str:
+    """``text`` with leading wrappers (``VAR=val``, ``env ...``, ``sudo``,
+    ``nohup``, ``setsid``, ``timeout <n>``, ``command``, ``exec``, ``time``,
+    ``nice``, and the shell words ``if then else elif while until do { !``)
+    removed when ``lead``, and with
+    the git global options removed after every ``git`` word."""
+    if lead:
+        while True:
+            t = _WRAPPER.sub("", text, count=1)
+            if t == text or not t.strip():
+                break
+            text = t
+    return _GIT_GLOBALS.sub("git", text)
+
+
+def _variants(segment: str) -> List[str]:
+    """The raw segment, the segment without leading assignments, and the
+    segment normalized by ``_normalize``. Duplicates and empties left out."""
+    out = [segment]
+    for v in (_ASSIGN.sub("", segment, count=1), _normalize(segment)):
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
+# --------------------------------------------------------------------------
+# quoted text and comments (review finding F1)
+# --------------------------------------------------------------------------
+# A command that only MENTIONS a guarded command must not fire: ``grep -rn
+# "gh pr merge"``, ``git commit -m "... git push --force ..."``, ``echo x  #
+# git push --force``. So a guard regex is searched on a MASKED view of the
+# command: the text inside single and double quotes and every ``#`` comment is
+# replaced by ``MASK`` (one character for one character, so positions stay
+# where they were; the quote characters stay). Not masked, because the shell
+# runs it: ``$( )`` and backticks inside double quotes, and a quoted string
+# that is itself a command line (``bash|sh|zsh|dash|ksh|su ... -c '...'``,
+# ``eval '...'``, ``ssh host '...'``; this covers ``sudo -u x bash -c``,
+# ``docker exec c sh -c`` and ``kubectl exec p -- sh -c``). Such an executed
+# string is masked by the same rules inside, and is ALSO matched as a command
+# line of its own (``EXEC_DEPTH`` levels deep; deeper text stays unmasked).
+MASK = "\x00"
+EXEC_DEPTH = 3
+_SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh", "su"))
+_EXEC_WORDS = frozenset(("eval", "ssh"))
+_LEAD_WORDS = frozenset(
+    (
+        "sudo",
+        "env",
+        "nohup",
+        "setsid",
+        "timeout",
+        "time",
+        "command",
+        "exec",
+        "nice",
+        "ionice",
+        "stdbuf",
+        "doas",
+    )
+)
+_SHELL_C = re.compile(r"-[A-Za-z]*c[A-Za-z]*")
+_DQ_UNESCAPE = re.compile(r"\\([\\\"$`\n])")
+
+
+def _base(word: str) -> str:
+    return word.rsplit("/", 1)[-1]
+
+
+def _executes(words: List[str]) -> bool:
+    """True when a quoted word that follows ``words`` (the earlier words of the
+    same simple command) is run as a command line by the shell."""
+    if not words:
+        return False
+    if _SHELL_C.fullmatch(words[-1]) and any(_base(w) in _SHELLS for w in words[:-1]):
+        return True
+    for w in words:  # eval / ssh as the command word, after wrappers
+        b = _base(w)
+        if b in _EXEC_WORDS:
+            return True
+        if b in _LEAD_WORDS or w.startswith("-") or "=" in w or w.replace(".", "").isdigit():
+            continue
+        return False
+    return False
+
+
+class _Scan:
+    """One pass over a command line (heredoc bodies already removed). Sets
+    ``dead[i]`` for quoted text that is data and ``comment[i]`` for comment
+    text; collects the executed strings in ``execd``."""
+
+    def __init__(self, s: str, depth: int):
+        self.s, self.depth = s, depth
+        self.dead = bytearray(len(s))
+        self.comment = bytearray(len(s))
+        self.execd: List[str] = []
+
+    def run(self) -> _Scan:
+        self.cmd(0, "")
+        return self
+
+    def _mark(self, arr: bytearray, a: int, b: int) -> None:
+        if b > a:
+            arr[a:b] = b"\x01" * (b - a)
+
+    def _sub(self, off: int, text: str) -> None:
+        """An executed string at ``off``: mask inside by the same rules, and
+        keep it for its own match. Past ``EXEC_DEPTH`` it stays unmasked."""
+        if self.depth >= EXEC_DEPTH:
+            return
+        self.execd.append(text)
+        inner = _Scan(text, self.depth + 1).run()
+        self.dead[off : off + len(text)] = inner.dead
+        self.comment[off : off + len(text)] = inner.comment
+
+    def cmd(self, i: int, stop: str) -> int:
+        """Scan command text from ``i`` up to ``stop`` (``)`` or a backtick;
+        ``""`` for the end). Returns the index after ``stop``."""
+        s, n = self.s, len(self.s)
+        words: List[str] = []
+        cur: List[str] = []
+        depth = 0
+
+        def end_word() -> None:
+            if cur:
+                words.append("".join(cur))
+                cur.clear()
+
+        while i < n:
+            c = s[i]
+            if stop == ")" and c == ")" and depth == 0:
+                return i + 1
+            if stop == "`" and c == "`":
+                return i + 1
+            if c == "\\":
+                cur.append(s[i : i + 2])
+                i += 2
+                continue
+            if c in " \t":
+                end_word()
+                i += 1
+                continue
+            if c == "#" and not cur:
+                j = s.find("\n", i)
+                j = n if j < 0 else j
+                self._mark(self.comment, i, j)
+                i = j
+                continue
+            if c == "'":
+                j = s.find("'", i + 1)
+                j = n if j < 0 else j
+                if not cur and _executes(words):
+                    self._sub(i + 1, s[i + 1 : j])
+                else:
+                    self._mark(self.dead, i + 1, j)
+                cur.append("'")
+                i = j + 1
+                continue
+            if c == '"':
+                run = not cur and _executes(words)
+                j = self.dq(i, live=run)
+                if run:
+                    body = s[i + 1 : j - 1] if j - 1 > i else ""
+                    if "\\" in body:  # positions shift: leave it unmasked here
+                        if self.depth < EXEC_DEPTH:
+                            self.execd.append(_DQ_UNESCAPE.sub(r"\1", body))
+                    else:
+                        self._sub(i + 1, body)
+                cur.append('"')
+                i = j
+                continue
+            if c == "$" and s.startswith("$(", i):
+                i = self.cmd(i + 2, ")")
+                cur.append("$")
+                continue
+            if c == "`":
+                i = self.cmd(i + 1, "`")
+                cur.append("`")
+                continue
+            if c == "<" and s.startswith("<<", i) and not s.startswith("<<<", i):
+                m = _HEREDOC.match(s, i)
+                if m:  # the body is gone; hide the operator too
+                    self._mark(self.dead, i, m.end())
+                    end_word()
+                    i = m.end()
+                    continue
+            if c in ";|&\n":
+                end_word()
+                words.clear()
+                i += 1
+                continue
+            if c == "(":
+                depth += 1
+                end_word()
+                words.clear()
+                i += 1
+                continue
+            if c == ")":
+                depth = max(0, depth - 1)
+                end_word()
+                words.clear()
+                i += 1
+                continue
+            cur.append(c)
+            i += 1
+        return n
+
+    def dq(self, i: int, live: bool) -> int:
+        """A double-quoted string that opens at ``i``. Its text is dead unless
+        ``live``; ``$( )`` and backticks in it are scanned as commands.
+        Returns the index after the closing quote."""
+        s, n = self.s, len(self.s)
+        j = i + 1
+        while j < n:
+            c = s[j]
+            if c == "\\":
+                if not live:
+                    self._mark(self.dead, j, min(j + 2, n))
+                j += 2
+                continue
+            if c == '"':
+                return j + 1
+            if c == "$" and s.startswith("$(", j):
+                j = self.cmd(j + 2, ")")
+                continue
+            if c == "`":
+                j = self.cmd(j + 1, "`")
+                continue
+            if not live:
+                self.dead[j] = 1
+            j += 1
+        return n
+
+
+def command_views(command: str, depth: int = 0) -> List[Tuple[str, str, bytearray]]:
+    """``[(masked, raw, dead)]``: the command line and, after it, each string
+    it executes (``bash -c '...'`` ...), recursively. ``raw`` is the line
+    without heredoc bodies and with comments masked; ``masked`` also masks the
+    quoted data; ``dead[i]`` is set where ``raw`` holds quoted data."""
+    body = _lex(command)[1]
+    sc = _Scan(body, depth).run()
+    raw = "".join(MASK if sc.comment[k] else ch for k, ch in enumerate(body))
+    masked = "".join(MASK if (sc.comment[k] or sc.dead[k]) else ch for k, ch in enumerate(body))
+    out = [(masked, raw, sc.dead)]
+    for x in sc.execd:
+        out.extend(command_views(x, depth + 1))
+    return out
+
+
+def command_segments(command: str) -> List[str]:
+    """The shell segments of every masked view of ``command``: what the rows
+    leg (triggers) of the guard hook matches against."""
+    out: List[str] = []
+    for masked, _raw, _dead in command_views(command):
+        for seg in _lex(masked)[0]:
+            if seg not in out:
+                out.append(seg)
+    return out
+
+
+def variants(segment: str) -> List[str]:
+    """Public name of ``_variants`` for the guard hook."""
+    return _variants(segment)
+
+
+_RAW_TRIES = 32
+
+
+def _live_hit(rx: Pattern[str], raw: str, dead: bytearray) -> bool:
+    """True when ``rx`` has a match in ``raw`` that STARTS outside quoted data
+    and does not END in the quoted data of another simple command. It keeps a
+    quoted argument of a live command visible (``docker restart "x-runner"``)
+    while a mention inside quotes stays out: ``grep "gh pr merge"`` (the match
+    starts in quotes) and ``docker compose logs | grep "-p obs"`` (the match
+    starts on a live command, crosses a live ``|``, ``;``, ``&`` or newline
+    and ends in the quotes of the next command). At most ``_RAW_TRIES``
+    matches are tried."""
+    size = len(dead)
+    pos = 0
+    for _ in range(_RAW_TRIES):
+        m = rx.search(raw, pos)
+        if m is None:
+            return False
+        a, b = m.start(), m.end()
+        if a >= size or not dead[a]:
+            last = b - 1
+            if last <= a or last >= size or not dead[last]:
+                return True
+            cut = next((k for k in range(a, last) if raw[k] in ";|&\n" and not dead[k]), -1)
+            if cut < 0:
+                return True
+            # the greedy match ran into the next command: try inside this one
+            m = rx.search(raw, a, cut)
+            if m is not None and not dead[m.start()]:
+                return True
+        pos = a + 1
+    return False
+
+
+# --------------------------------------------------------------------------
+# matching
+# --------------------------------------------------------------------------
+_COMPILED: Dict[str, Optional[Pattern[str]]] = {}
+_LOADED: Dict[str, Any] = {"key": None, "table": None}
+
+
+def _compile(pat: str) -> Optional[Pattern[str]]:
+    if pat not in _COMPILED:
+        try:
+            _COMPILED[pat] = re.compile(pat)
+        except re.error:
+            _COMPILED[pat] = None
+    return _COMPILED[pat]
+
+
+def load_table(path: Optional[Path] = None) -> Dict[str, Any]:
+    """The table at ``path`` (default ``table_path()``), cached by mtime and
+    size. An absent or broken table reads as empty: the guard fails open."""
+    p = Path(path) if path is not None else table_path()
+    try:
+        st = p.stat()
+        key = (str(p), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {"entries": []}
+    if _LOADED["key"] != key:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+                data = {"entries": []}
+        except (OSError, ValueError):
+            data = {"entries": []}
+        _LOADED["key"], _LOADED["table"] = key, data
+    return _LOADED["table"]
+
+
+def match(command: str, table: Optional[Mapping[str, Any]] = None) -> List[Dict[str, object]]:
+    """Every entry whose ``violates`` regex matches ``command``. One hit per
+    memory. The regex runs on the views of ``command_views``: quoted data,
+    ``#`` comments and heredoc bodies are masked, executed strings (``bash -c
+    '...'``) are matched as their own command lines. ``via`` is ``"segment"``
+    when a shell segment of a masked view matched (``segment`` holds it, the
+    masked characters shown as ``_``), ``"whole"`` when only a whole masked
+    view matched (a regex that spans ``&&`` or ``|``), and ``"raw"`` when only
+    the unmasked view matched with the match starting outside quoted data and
+    not ending in the quoted data of another simple command (a quoted argument
+    of a live command, ``docker restart "x-runner"``)."""
+    if not isinstance(command, str) or not command.strip():
+        return []
+    if table is None:
+        table = load_table()
+    views = []
+    for masked, raw, dead in command_views(command):
+        segs = [(seg, _variants(seg)) for seg in _lex(masked)[0]]
+        views.append((segs, masked, _normalize(masked, lead=False), raw, dead))
+    hits: List[Dict[str, object]] = []
+    for e in table.get("entries") or []:
+        pat = e.get("violates") if isinstance(e, dict) else None
+        if not pat:
+            continue
+        rx = _compile(pat)
+        if rx is None:
+            continue
+        via, seg = "", ""
+        for segs, masked, masked_n, raw, dead in views:
+            for sg, vs in segs:
+                if any(rx.search(v) for v in vs):
+                    via, seg = "segment", sg.replace(MASK, "_")
+                    break
+            if not via and (rx.search(masked) or rx.search(masked_n)):
+                via = "whole"
+            if not via and _live_hit(rx, raw, dead):
+                via = "raw"
+            if via:
+                break
+        if via:
+            hits.append(
+                {
+                    "id": e.get("id", ""),
+                    "regex": pat,
+                    "rule": e.get("rule", ""),
+                    "apply": e.get("apply", ""),
+                    "scope": e.get("scope", ""),
+                    "via": via,
+                    "segment": seg,
+                    "complies": e.get("complies", "") or "",
+                    "run_first": e.get("run_first", "") or "",
+                }
+            )
+    return hits
+
+
+# --------------------------------------------------------------------------
+# WI-3d: the compliant form
+# --------------------------------------------------------------------------
+_SUBST = re.compile(r"\$\(([^()]*)\)")
+
+
+def _complies_hit(rx: Pattern[str], command: str) -> bool:
+    """``rx`` over the raw command, the command with the git global options
+    removed, and each shell segment variant (wrappers and ``VAR=`` removed)."""
+    if rx.search(command) or rx.search(_normalize(command, lead=False)):
+        return True
+    return any(rx.search(v) for seg in command_segments(command) for v in variants(seg))
+
+
+_SHELL_WORDS = frozenset(
+    {
+        "do",
+        "done",
+        "then",
+        "else",
+        "elif",
+        "fi",
+        "esac",
+        "while",
+        "until",
+        "for",
+        "if",
+        "case",
+        "in",
+        "{",
+        "}",
+        "!",
+    }
+)
+
+
+def _raw_segments(command: str) -> List[str]:
+    """The shell segments of ``command`` as the ORIGINAL text. The masked view
+    blanks quoted data but keeps every offset, so each masked segment is cut
+    from the raw text at the same place. A segment the lexer changed (not found
+    in the masked view) is left out: a suggested command must run as shown."""
+    out: List[str] = []
+    for masked, raw, _dead in command_views(command):
+        pos = 0
+        for seg in _lex(masked)[0]:
+            at = masked.find(seg, pos)
+            if at < 0:
+                continue
+            pos = at + len(seg)
+            piece = raw[at:pos]
+            if piece not in out:
+                out.append(piece)
+    return out
+
+
+def first_command(example_ok: str, complies: str, violates: str) -> str:
+    """The shortest piece of ``example_ok`` (a ``$( )`` substitution, a shell
+    segment, or the whole example) that ``complies`` matches and ``violates``
+    does not. ``""`` when there is none."""
+    rx = _compile(complies)
+    if rx is None or not example_ok.strip():
+        return ""
+    one = {"entries": [{"id": "_", "violates": violates}]}
+    pieces = [m.group(1) for m in _SUBST.finditer(example_ok)] + _raw_segments(example_ok)
+    pieces.append(example_ok)
+    best = ""
+    for p in pieces:
+        p = p.strip()
+        if not p or (best and len(p) >= len(best)):
+            continue
+        if p.split(None, 1)[0] in _SHELL_WORDS:  # a loop or if body cut out: cannot run alone
+            continue
+        if _complies_hit(rx, p) and not match(p, one):
+            best = p
+    return best
+
+
+def complies_match(command: str, table: Optional[Mapping[str, Any]] = None) -> List[str]:
+    """The ids of the entries whose ``complies`` matches ``command``: a run of
+    the rule's own command. An entry whose ``violates`` also matches
+    ``command`` is left out (a violation is never a compliant run). Fails
+    open: a broken regex is skipped."""
+    if not isinstance(command, str) or not command.strip():
+        return []
+    if table is None:
+        table = load_table()
+    out: List[str] = []
+    hit_ids = None
+    for e in table.get("entries") or []:
+        if not isinstance(e, dict) or not e.get("violates") or not e.get("complies"):
+            continue
+        rx = _compile(str(e["complies"]))
+        if rx is None or not _complies_hit(rx, command):
+            continue
+        if hit_ids is None:
+            hit_ids = {str(h["id"]) for h in match(command, table)}
+        if str(e.get("id", "")) not in hit_ids:
+            out.append(str(e.get("id", "")))
+    return out
+
+
+# --------------------------------------------------------------------------
+# CLI
+# --------------------------------------------------------------------------
+def main(argv: Optional[List[str]] = None) -> int:
+    """``--rebuild``: rebuild the table; exit 0 always, silent on success, one
+    stderr line on failure (a SessionStart hook fails open). ``--report``: print
+    the skipped regexes after a rebuild. ``--match CMD``: print the hits as JSON."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--match" in args:
+        try:
+            cmd = args[args.index("--match") + 1]
+            print(json.dumps(match(cmd), indent=1))
+        except Exception as exc:  # noqa: BLE001
+            print(f"guard table: match failed: {exc}", file=sys.stderr)
+        return 0
+    if "--rebuild" in args:
+        try:
+            table = rebuild()
+            if "--report" in args:
+                n = sum(1 for e in table["entries"] if e["violates"])
+                li = table.get("label_index") or {}
+                labels = (
+                    f"label index {li.get('n', 0)} memories, {len(li.get('labels') or [])} labels"
+                    if li
+                    else f"no label index ({table.get('label_error', 'unknown')})"
+                )
+                print(
+                    f"{len(table['entries'])} entries, {n} guards, "
+                    f"{len(table['skipped'])} skipped, {labels} -> {table_path()}"
+                )
+                for s in table["skipped"]:
+                    print(f"  skipped {s['id']}: {'; '.join(s['problems'])}")
+        except Exception as exc:  # noqa: BLE001 - fail open
+            try:
+                print(f"guard table: rebuild failed: {exc}", file=sys.stderr)
+            except Exception:  # noqa: BLE001, S110 - a hook fails open
+                pass
+        return 0
+    print((__doc__ or "").split("\n\n")[0], file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

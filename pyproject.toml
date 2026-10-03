@@ -27,9 +27,19 @@ line-length = 100
 target-version = "py310"
 src = ["src", "tests", "tools"]
 
+[tool.ruff.per-file-target-version]
+# The hooks run on the user's python3, 3.9 or newer (design doc 0001, section 2).
+"hooks/*.py" = "py39"
+
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.ruff.lint.per-file-ignores]
+# The hooks are moved from the reference implementation and run on python 3.9:
+# they keep the `typing` aliases (Optional, List, ...), printf formatting and
+# their long message strings, so the moved code stays comparable line by line.
+"hooks/*.py" = ["E501", "UP006", "UP031", "UP035", "UP045"]
