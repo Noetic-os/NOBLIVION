@@ -57,6 +57,34 @@ Every on/off switch reads its value the same way. The Default column says
 `noblivion` command runs from the store venv, it also finds the data dir
 from the install stamp in that venv.
 
+### Shared Claude Code and Codex settings
+
+Use the same absolute `NOBLIVION_DATA_DIR` for both clients. Use the same
+`NOBLIVION_PROJECT` value, or one `namespace` value in their shared
+`config.json`. The default namespace is `claude_code`; Codex can use it.
+Use one Markdown folder for notes both clients should find. Set
+`NOBLIVION_MEMORY_DIR` for each adapter, or list the folder in
+`NOBLIVION_MEMORY_DIRS` or `memory_dirs` for the shared store.
+
+```json
+{
+  "namespace": "my_project",
+  "memory_dirs": ["/absolute/shared/memory"]
+}
+```
+
+`NOBLIVION_MEMORY_DIRS` replaces the default folder list. Include existing
+Claude Code folders if you still want to index them. The two clients also
+need the same recall root for project scoped searches. See
+[shared-memory.md](shared-memory.md) and [codex.md](codex.md).
+
+The MCP save tool records which client wrote a note. This is provenance,
+not a database namespace. It does not separate the two clients' searches.
+
+| Env var | Config key | Default | Meaning |
+| --- | --- | --- | --- |
+| `NOBLIVION_SOURCE_CLIENT` | none | `claude_code` | Client name written by `noblivion_remember` into a new note. The Codex installer sets `codex`. Allowed values are `codex` and `claude_code`. |
+
 ## Store
 
 | Env var | Config key | Default | Meaning |
@@ -284,5 +312,6 @@ environment, never from the config file.
 | --- | --- | --- | --- |
 | `NOBLIVION_MINER` | `miner.enabled` | on (switch) | The miner, at session end and from the command line. |
 | `NOBLIVION_MINE_CMD` | none | `<data dir>/venv/bin/noblivion mine` | The command the session end hook runs. |
+| `NOBLIVION_MINER_STAMP_DIR` | none | `<data dir>/cache` | Folder for the miner start throttle stamp. The Codex adapter uses its own state folder so a Claude Code session does not suppress a Codex miner start. |
 | none | `miner.transcript_glob` | `~/.claude/projects/*/*.jsonl` | The transcripts to read. |
 | none | `miner.max_run_s` | `300` | The time budget of one run, in seconds. The next run goes on from where this one stopped. |

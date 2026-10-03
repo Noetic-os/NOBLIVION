@@ -18,6 +18,10 @@ the slash command `/noblivion:setup` once after the first install and once
 after each plugin update. It runs `install.sh` for you and starts the store
 in the same session.
 
+To add Codex to this same store, follow [Codex setup](codex.md) after the
+store install. [Shared memory](shared-memory.md) explains the data folder,
+project namespace and Markdown folder that both clients must use.
+
 ## Requirements
 
 - Claude Code with plugin support.
@@ -43,6 +47,11 @@ gives the plugin in `CLAUDE_PLUGIN_DATA`. The slash command
 `/noblivion:setup` gets this folder from Claude Code. A terminal does not
 have this variable. For this reason the first session also prints the full
 terminal command with the folder in it.
+
+For Claude Code and Codex on one computer, use the same absolute data dir.
+Set `NOBLIVION_DATA_DIR` for both clients, or point Codex at the existing
+Claude Code plugin data dir. A different folder makes a different SQLite
+database. See [Codex setup](codex.md).
 
 Only `install.sh` makes the data dir. The store, the command line tools and
 the hooks never make it. They also never make a new `noblivion.db`, except

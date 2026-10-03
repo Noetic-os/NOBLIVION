@@ -953,7 +953,7 @@ def test_mcp_initialize_list_call_round_trip(daemon, env):
     assert out[0]["result"]["protocolVersion"] == "2025-06-18"
     assert out[0]["result"]["serverInfo"]["name"] == "noblivion-recall"
     tools = out[1]["result"]["tools"]
-    assert [t["name"] for t in tools] == ["noblivion_recall"]
+    assert [t["name"] for t in tools] == ["noblivion_recall", "noblivion_remember"]
     # `query` is not required, because a fetch has no query. Exactly one of
     # the two is required, which this schema cannot express, so the tool
     # body says so instead (tested below).
