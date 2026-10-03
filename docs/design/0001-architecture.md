@@ -619,6 +619,14 @@ the source of truth. The indexer never writes a memory file.
 - Labels come from the label rules of the reference hooks (ported in E2a
   without the host alias map). A label that the redactor would change is
   dropped. Index and topic files get no labels.
+- The rules stay in one file, `hooks/memory_labels.py`, because the hooks
+  are stdlib and run without the package. `noblivion.labels` loads that
+  file by path (`${CLAUDE_PLUGIN_ROOT}/hooks`, else the `hooks` folder next
+  to the package or the source tree) and passes the store config's
+  `labels.ticket_prefixes` and `labels.service_prefixes`. So a row holds
+  the labels that the guard table holds for the same file. No hook imports
+  the package. When the file is not found, `noblivion index` warns and
+  stores no labels.
 
 ### 5.3 Content format
 

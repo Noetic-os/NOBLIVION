@@ -48,8 +48,9 @@ With none of them, the worker runs nothing and logs ``status=no_indexer``.
 
 It runs through ``/bin/sh -c`` with a small environment: ``PATH``, ``SHELL``,
 ``HOME``, ``LOGNAME``, ``USER``, and the ``NOBLIVION_*``,
-``CLAUDE_PLUGIN_DATA`` and ``XDG_*`` variables, so the indexer finds the same
-data dir. When another scan holds the index lock the command exits non-zero,
+``CLAUDE_PLUGIN_DATA``, ``CLAUDE_PLUGIN_ROOT`` and ``XDG_*`` variables, so the
+indexer finds the same data dir and the label rules of these hooks
+(``noblivion.labels``). When another scan holds the index lock the command exits non-zero,
 so a failed run is tried again (bounded).
 
 Log: one line per trigger and one per run in ``memory_sync.log`` under
@@ -369,7 +370,7 @@ def mirror_command(
 
 
 _PASS_PREFIXES = ("NOBLIVION_", "XDG_")
-_PASS_KEYS = ("HOME", "LOGNAME", "USER", "CLAUDE_PLUGIN_DATA")
+_PASS_KEYS = ("HOME", "LOGNAME", "USER", "CLAUDE_PLUGIN_DATA", "CLAUDE_PLUGIN_ROOT")
 
 
 def cron_like_env(environ: Optional[Mapping[str, str]] = None) -> Dict[str, str]:

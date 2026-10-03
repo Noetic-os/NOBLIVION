@@ -67,7 +67,7 @@ EXIT_BLOCKED = 2
 EXIT_SCHEMA = 3
 EXIT_LOCKED = 4
 
-Labeller = Callable[[str, str], Iterable[str]]
+Labeller = Callable[[str, str], Iterable[str]]  # (file text, file stem) -> labels
 StatCache = dict[str, tuple[int, int, "str | None"]]
 
 # -- frontmatter and content ---------------------------------------------------
@@ -440,7 +440,7 @@ def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
     labels = None
     if labeller is not None:
         try:
-            labels = list(labeller(text, parsed.name))
+            labels = list(labeller(text, Path(entry.path).stem))
         except Exception:  # noqa: BLE001 - one labeller fault never stops the scan
             labels = None
     return _Prepared(entry, parsed.category, content, labels_json(labels, parsed.category))
@@ -615,6 +615,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     db_path = args.db or settings.db_path
     lock_path = db_path.parent / config.INDEX_LOCK_FILE
     dirs = args.memory_dir if args.memory_dir else settings.resolved_memory_dirs()
+    from noblivion import labels  # labels loads the hook rules by path
+
+    labeller = labels.make_labeller(settings)
+    if labeller is None:
+        msg = f"label rules {labels.RULES_FILE} not found or broken; rows get no labels"
+        print(f"noblivion index: {msg}", file=sys.stderr)
     try:
         with index_lock(lock_path, args.lock_timeout):
             conn = db.open_db(db_path, allow_migrate=False)
@@ -626,6 +632,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     force=args.force,
                     allow_shrink=args.allow_shrink,
                     delete_grace_days=settings.delete_grace_days,
+                    labeller=labeller,
                 )
             finally:
                 conn.close()

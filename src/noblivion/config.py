@@ -61,6 +61,15 @@ def lookup(cfg: Mapping, dotted: str, default: object = None) -> object:
     return node
 
 
+def string_list(cfg: Mapping, dotted: str) -> tuple[str, ...]:
+    """A config list of strings, stripped, empty items left out. ``()`` for a
+    missing key or a value that is not a list."""
+    value = lookup(cfg, dotted)
+    if not isinstance(value, list):
+        return ()
+    return tuple(s.strip() for s in value if isinstance(s, str) and s.strip())
+
+
 def default_memory_dirs() -> list[Path]:
     """Every folder that matches ``~/.claude/projects/*/memory``."""
     projects = Path.home() / ".claude" / "projects"
@@ -87,6 +96,8 @@ class Settings:
     memory_dirs: tuple[Path, ...] | None  # None: the default glob, read at scan time
     delete_grace_days: int
     archive_retention_days: int
+    ticket_prefixes: tuple[str, ...] = ()  # labels.ticket_prefixes
+    service_prefixes: tuple[str, ...] = ()  # labels.service_prefixes
 
     @property
     def db_path(self) -> Path:
@@ -131,4 +142,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         archive_retention_days=_non_negative_int(
             lookup(cfg, "dedup.archive_retention_days"), DEFAULT_ARCHIVE_RETENTION_DAYS
         ),
+        ticket_prefixes=string_list(cfg, "labels.ticket_prefixes"),
+        service_prefixes=string_list(cfg, "labels.service_prefixes"),
     )

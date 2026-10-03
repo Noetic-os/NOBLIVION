@@ -80,6 +80,17 @@ def _hook_config():
 
 
 _PREFIX_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,31}$")
+_NEVER = re.compile(r"(?!x)x")  # matches nothing
+
+
+def valid_prefixes(values: Any) -> Tuple[str, ...]:
+    """The items of ``values`` that have the prefix shape (a letter, then up
+    to 31 letters or digits), stripped, in order. ``()`` for a value that is
+    not a list or a tuple."""
+    if not isinstance(values, (list, tuple)):
+        return ()
+    got = (v.strip() for v in values if isinstance(v, str))
+    return tuple(p for p in got if _PREFIX_SHAPE.match(p))
 
 
 def _prefixes(key: str) -> Tuple[str, ...]:
@@ -88,29 +99,52 @@ def _prefixes(key: str) -> Tuple[str, ...]:
         got = _hook_config().string_list(key)
     except Exception:  # noqa: BLE001 - labels fail open
         return ()
-    return tuple(p for p in got if _PREFIX_SHAPE.match(p))
+    return valid_prefixes(list(got))
 
 
-TICKET_PREFIXES = tuple(p.upper() for p in _prefixes("labels.ticket_prefixes"))
-SERVICE_PREFIXES = tuple(p.lower() for p in _prefixes("labels.service_prefixes"))
-_NEVER = re.compile(r"(?!x)x")  # matches nothing
-_KEY_RX = (
-    re.compile(
-        r"(?<![A-Za-z0-9_])(" + "|".join(map(re.escape, TICKET_PREFIXES)) + r")-(\d{1,6})(?![0-9])",
-        re.IGNORECASE,
-    )
-    if TICKET_PREFIXES
-    else _NEVER
-)
-_SERVICE_RX = (
-    re.compile(
-        r"(?<![A-Za-z0-9_.-])((?:"
-        + "|".join(map(re.escape, SERVICE_PREFIXES))
-        + r")-[a-z][a-z0-9]*(?:-[a-z0-9]+)*)(?![A-Za-z0-9_-])"
-    )
-    if SERVICE_PREFIXES
-    else _NEVER
-)
+class Rules:
+    """The prefix rules of one config: the ticket key and the service
+    patterns. ``rules(ticket, service)`` builds one from explicit lists (the
+    indexer passes the store's config); the module default ``RULES`` reads
+    the hook config once, at import."""
+
+    __slots__ = ("ticket_prefixes", "service_prefixes", "key_rx", "service_rx")
+
+    def __init__(self, ticket_prefixes: Iterable[str] = (), service_prefixes: Iterable[str] = ()):
+        self.ticket_prefixes = tuple(p.upper() for p in valid_prefixes(list(ticket_prefixes)))
+        self.service_prefixes = tuple(p.lower() for p in valid_prefixes(list(service_prefixes)))
+        self.key_rx = (
+            re.compile(
+                r"(?<![A-Za-z0-9_])("
+                + "|".join(map(re.escape, self.ticket_prefixes))
+                + r")-(\d{1,6})(?![0-9])",
+                re.IGNORECASE,
+            )
+            if self.ticket_prefixes
+            else _NEVER
+        )
+        self.service_rx = (
+            re.compile(
+                r"(?<![A-Za-z0-9_.-])((?:"
+                + "|".join(map(re.escape, self.service_prefixes))
+                + r")-[a-z][a-z0-9]*(?:-[a-z0-9]+)*)(?![A-Za-z0-9_-])"
+            )
+            if self.service_prefixes
+            else _NEVER
+        )
+
+
+def rules(ticket_prefixes: Iterable[str] = (), service_prefixes: Iterable[str] = ()) -> Rules:
+    """The rules for these prefix lists (config ``labels.ticket_prefixes`` and
+    ``labels.service_prefixes``). A prefix of the wrong shape is dropped."""
+    return Rules(ticket_prefixes, service_prefixes)
+
+
+RULES = Rules(_prefixes("labels.ticket_prefixes"), _prefixes("labels.service_prefixes"))
+TICKET_PREFIXES = RULES.ticket_prefixes
+SERVICE_PREFIXES = RULES.service_prefixes
+_KEY_RX = RULES.key_rx
+_SERVICE_RX = RULES.service_rx
 
 # --------------------------------------------------------------------------
 # files
@@ -172,16 +206,18 @@ def _add(out: Dict[str, str], label: str, kind: str) -> None:
         out[label] = kind
 
 
-def labels(text: str) -> Dict[str, str]:
+def labels(text: str, rules: Optional[Rules] = None) -> Dict[str, str]:
     """``{label: kind}`` for ``text``, in order of first appearance. Never
-    raises on text; a non-string gives no labels."""
+    raises on text; a non-string gives no labels. ``rules`` (default
+    ``RULES``, the hook config) gives the ticket and service prefixes."""
     out: Dict[str, str] = {}
     if not isinstance(text, str) or not text:
         return out
+    r = RULES if rules is None else rules
     found: List[Tuple[int, str, str]] = []
-    for m in _KEY_RX.finditer(text):
+    for m in r.key_rx.finditer(text):
         found.append((m.start(), f"{m.group(1).upper()}-{int(m.group(2))}", KIND_KEY))
-    for m in _SERVICE_RX.finditer(text):
+    for m in r.service_rx.finditer(text):
         found.append((m.start(), m.group(1), KIND_SERVICE))
     for m in _PATH_TOKEN_RX.finditer(text):
         # One pass for files and tools: the last path part of a token.
@@ -215,10 +251,12 @@ def labels(text: str) -> Dict[str, str]:
     return out
 
 
-def memory_labels(text: str, stem: str = "") -> Dict[str, str]:
+def memory_labels(text: str, stem: str = "", rules: Optional[Rules] = None) -> Dict[str, str]:
     """The labels of one memory file: ``labels`` of its whole text (front
-    matter and body). The file's own name is not a label of it."""
-    out = labels(text)
+    matter and body). The file's own name is not a label of it. The store's
+    indexer calls this too (``noblivion.labels``), so a row holds the labels
+    the guard table holds."""
+    out = labels(text, rules)
     own = f"{stem}.md".lower() if stem else ""
     if own in out:
         del out[own]
