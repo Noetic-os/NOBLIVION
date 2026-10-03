@@ -251,8 +251,8 @@ plan fixes it. Section 18 lists this as an open decision.
   open requests (5 s limit), runs `PRAGMA wal_checkpoint(TRUNCATE)`,
   deletes `store.json` and releases the lock. The checkpoint opens the
   existing database only: after the data dir was deleted it makes nothing.
-- The jobs thread checks every tick that the data dir exists. When it is
-  gone (an uninstall), the store stops with reason `data dir removed`.
+- The serve loop checks every tick (0.25 s) that the data dir exists. When
+  it is gone (an uninstall), the store stops with reason `data dir removed`.
 - On a crash the lock is released by the OS. `store.json` may stay. The
   next hook gets no answer from that port and starts a new store. The new
   store overwrites `store.json`.

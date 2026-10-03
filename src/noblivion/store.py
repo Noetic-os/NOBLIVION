@@ -479,10 +479,6 @@ class Store:
                 next_scan = self.clock() + interval
                 backfilled_state = None
                 while not self._jobs_stop.wait(JOB_TICK_S):
-                    if not self.data_dir.is_dir():
-                        # An uninstall deleted the data dir: stop, make nothing.
-                        self.request_stop("data dir removed")
-                        break
                     state = self.embedding.state
                     if self.clock() >= next_maintenance:
                         self.maintenance_once(conn)
@@ -532,6 +528,11 @@ class Store:
         while not self._stop.wait(tick):
             if idle_limit and self.idle_for() >= idle_limit:
                 self.request_stop("idle")
+            elif not self.data_dir.is_dir():
+                # An uninstall deleted the data dir: stop and make nothing
+                # (NOBLIVION-28). Checked here, not in the jobs thread, which
+                # ends on its first fault.
+                self.request_stop("data dir removed")
         log.info("store stopping: %s", self.stop_reason)
         self.server.shutdown()
         server_thread.join(DRAIN_TIMEOUT_S)
