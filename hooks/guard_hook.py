@@ -212,7 +212,7 @@ class _NoConfig:
     def data_dir() -> Path:
         for name in ("NOBLIVION_DATA_DIR", "CLAUDE_PLUGIN_DATA"):
             raw = (os.environ.get(name) or "").strip()
-            if raw:
+            if raw and "${" not in raw:
                 return Path(os.path.expanduser(raw))
         xdg = (os.environ.get("XDG_DATA_HOME") or "").strip()
         base = Path(os.path.expanduser(xdg)) if xdg else Path.home() / ".local" / "share"

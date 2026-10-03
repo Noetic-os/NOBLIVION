@@ -37,7 +37,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from noblivion import __version__, config, db, embedding, indexer, ranking, trust
-from noblivion.launcher import TOKEN_RE, health_proof
+from noblivion.launcher import TOKEN_RE, clear_start_error, health_proof, write_start_error
 from noblivion.rest import Handler, read_trust
 
 log = logging.getLogger("noblivion.store")
@@ -210,7 +210,7 @@ class Store:
         """
         if self.host != LOOPBACK:
             raise BindRefusedError(f"the store binds {LOOPBACK} only")
-        self.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        config.private_dir(self.data_dir)
         self._lock_fd = acquire_lock(self.lock_path, self.lock_wait_s)
         try:
             self.token = ensure_token(self.data_dir)
@@ -602,6 +602,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def bind_error_text(port: int, exc: OSError) -> str:
+    """One line with the reason, for the log and ``store.error``. The text
+    starts with ``bind failed on port N`` (docs/troubleshooting.md)."""
+    detail = exc.strerror or str(exc) or type(exc).__name__
+    text = f"bind failed on port {port}: {detail}"
+    if exc.errno == errno.EADDRINUSE:
+        text += (
+            '. Another program uses the port: set "port" in config.json to 0'
+            " (any free port) or to a free port"
+        )
+    return text
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     os.umask(0o077)
@@ -611,7 +624,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from dataclasses import replace
 
         store_settings = replace(store_settings, port=args.port)
-    settings.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    config.private_dir(settings.data_dir)
     _setup_logging(settings.data_dir, store_settings.log_level)
 
     store = Store(settings, store_settings, lock_wait_s=args.lock_wait)
@@ -632,10 +645,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_OK
     except db.SchemaError as exc:
         log.error("schema: %s", exc)
+        write_start_error(settings.data_dir, f"database schema fault: {exc}")
         return EXIT_SCHEMA
     except OSError as exc:
-        log.error("bind failed on port %s: %s", store_settings.port, type(exc).__name__)
+        reason = bind_error_text(store_settings.port, exc)
+        log.error("%s", reason)
+        write_start_error(settings.data_dir, reason)
         return EXIT_BIND
+    clear_start_error(settings.data_dir)
 
     store.start_background()
     return store.serve()

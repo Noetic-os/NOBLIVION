@@ -172,7 +172,7 @@ def log_line(state: Path, event: str, **fields: Any) -> None:
     for key, value in fields.items():
         parts.append(f"{key}={_SAFE_NAME.sub('_', str(value))[:120]}")
     try:
-        state.mkdir(parents=True, exist_ok=True)
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
         with open(state / LOG_NAME, "a", encoding="utf-8") as fh:
             fh.write(" ".join(parts) + "\n")
     except OSError:
@@ -215,7 +215,7 @@ def _read_stamp(path: Path) -> int:
 
 def _write_stamp(path: Path, stamp: int) -> bool:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         tmp.write_text(str(int(stamp)), encoding="utf-8")
         os.replace(tmp, path)
@@ -419,7 +419,7 @@ def worker_lock(state: Path, wait_s: float, sleep: Callable[[float], None] = tim
     if _fcntl is None:  # pragma: no cover - POSIX only
         yield True
         return
-    state.mkdir(parents=True, exist_ok=True)
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
     fh = open(state / LOCK_NAME, "a+", encoding="utf-8")
     try:
         deadline = time.monotonic() + wait_s

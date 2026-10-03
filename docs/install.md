@@ -32,8 +32,9 @@ All state lives in one folder, the data dir. NOBLIVION picks the first of
 these:
 
 1. `NOBLIVION_DATA_DIR`, when it is set.
-2. `CLAUDE_PLUGIN_DATA`. Claude Code sets this for the hooks of an
-   installed plugin.
+2. `CLAUDE_PLUGIN_DATA`. Claude Code sets this for the hooks and the MCP
+   server of an installed plugin. A value that still holds `${` (a config
+   file passed it unexpanded) counts as unset.
 3. `$XDG_DATA_HOME/noblivion`, else `~/.local/share/noblivion`.
 
 When the plugin is installed, the data dir is the folder that Claude Code
@@ -49,25 +50,42 @@ The data dir holds these files:
 | `config.json` | your settings (see [configuration.md](configuration.md)) |
 | `token` | the shared secret between the hooks and the store, mode 0600 |
 | `store.json` | the port and process id of the running store |
+| `store.error` | why the last store start failed; removed by a good start |
 | `venv/` | the store venv |
 | `models/` | the embedding model cache |
 | `cache/` | hook state: recall logs, trust events, sync state |
 | `logs/store.log` | the store log |
 | `migrated/` | old hook files moved by the migration, if you ran it |
 
+The data dir has mode 0700. Claude Code can make the folder with your
+umask (for example 0775) before NOBLIVION runs. So `install.sh`, the
+SessionStart hook and the store set it to 0700 also when it exists.
+
 ## Install with the plugin marketplace
 
-1. In Claude Code, add this repository as a marketplace. Replace `<owner>`
-   with the GitHub account that hosts this repository:
+Each step shows the slash command in a Claude Code session and the same
+step as a terminal command. Use either one.
+
+1. Add this repository as a marketplace. Replace `<owner>` with the GitHub
+   account that hosts this repository. Use the HTTPS URL:
 
    ```text
-   /plugin marketplace add <owner>/NOBLIVION
+   /plugin marketplace add https://github.com/<owner>/NOBLIVION.git
    ```
+
+   ```sh
+   claude plugin marketplace add https://github.com/<owner>/NOBLIVION.git
+   ```
+
+   The HTTPS URL uses your git HTTPS credentials (for example a token in a
+   git credential helper). The short form `<owner>/NOBLIVION` can clone
+   over SSH. On a machine with no GitHub SSH key it then fails with
+   `Permission denied (publickey)`.
 
    To install from a local clone, give the path of the clone instead:
 
-   ```text
-   /plugin marketplace add /path/to/NOBLIVION
+   ```sh
+   claude plugin marketplace add /path/to/NOBLIVION
    ```
 
 2. Install the plugin:
@@ -75,6 +93,12 @@ The data dir holds these files:
    ```text
    /plugin install noblivion@noblivion
    ```
+
+   ```sh
+   claude plugin install noblivion@noblivion
+   ```
+
+   `claude plugin list` shows the installed plugins.
 
 3. Start a new Claude Code session. The SessionStart hook sees that the
    venv is missing. It prints one line with the exact command to run, for
@@ -87,7 +111,14 @@ The data dir holds these files:
 
 4. Copy the command from that line. Run it in a terminal.
 5. Start a new Claude Code session. The SessionStart hook starts the
-   store in the background.
+   store in the background. When the store cannot start, the session
+   shows one line with the reason, for example:
+
+   ```text
+   NOBLIVION: the memory store could not start, so memory recall is off: bind failed on port 8894: Address already in use. ...
+   ```
+
+   See [The store is not running](troubleshooting.md#the-store-is-not-running).
 
 ## What install.sh does
 
@@ -96,7 +127,8 @@ The data dir holds these files:
 1. It checks for `python3` 3.9 or newer and for `uv`. Without `uv`, it
    prints the official install command for `uv` and stops. It does not
    install `uv` for you.
-2. It makes the data dir with mode 0700.
+2. It makes the data dir and sets it to mode 0700, also when the folder
+   exists.
 3. It makes the venv in `<data dir>/venv` with Python 3.11 or newer. It
    installs the locked store dependencies (`numpy` and `fastembed`) and
    the `noblivion` package.
@@ -152,24 +184,33 @@ the machine. Read [dedup-and-privacy.md](dedup-and-privacy.md) first.
 
 ## Uninstall
 
+The steps below keep your database (the memory index and the trust
+history), `config.json` and `token`, so a later install starts where you
+stopped.
+
 1. Stop the store and remove the venv and the model cache:
 
    ```sh
    CLAUDE_PLUGIN_DATA="<data dir>" bash "<plugin dir>/scripts/uninstall.sh"
    ```
 
-   This keeps `noblivion.db`, `config.json` and `token`. Add `--purge` to
-   remove the whole data dir. Add `--dry-run` to see the steps first.
-   The script refuses a folder that does not look like a NOBLIVION data
-   dir.
+   This keeps `noblivion.db`, `config.json` and `token`. Add `--dry-run`
+   to see the steps first. The script refuses a folder that does not look
+   like a NOBLIVION data dir.
 
-2. Remove the plugin:
+2. Remove the plugin and keep the data dir:
 
-   ```text
-   /plugin uninstall noblivion
+   ```sh
+   claude plugin uninstall noblivion --keep-data
    ```
 
-   From a terminal, `claude plugin uninstall noblivion` does the same.
+**Warning.** `claude plugin uninstall noblivion` without `--keep-data`, and
+`/plugin uninstall noblivion` in a session, delete the whole data dir:
+`noblivion.db`, `config.json`, `token`, the logs and the cache. The
+database cannot be recovered after that.
+
+To remove everything on purpose, run `uninstall.sh --purge` (it deletes
+the data dir), then `claude plugin uninstall noblivion`.
 
 The uninstall never touches your memory files.
 

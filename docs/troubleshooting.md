@@ -58,22 +58,30 @@ When the store answers but finds nothing:
 
 ## The store is not running
 
+When the store cannot start, the session start shows one line:
+`NOBLIVION: the memory store could not start, so memory recall is off:
+<reason>`. The reason is also in `<data dir>/store.error` and in the log.
+`noblivion ensure-running` prints `noblivion: store failed: <reason>` and
+exits with code 1.
+
 1. Check that the venv exists: `<data dir>/venv/bin/noblivion`. If it does
    not, run `install.sh`. See [install.md](install.md). At session start,
    the plugin prints the exact command when the venv is missing.
 2. Check that autostart is on. `NOBLIVION_STORE_AUTOSTART=0` stops every
    hook from starting the store.
-3. Start the store in the foreground to see its errors:
+3. Run `noblivion ensure-running`. It waits up to 10 seconds for the
+   store and prints `started`, `running` or `failed` with the reason.
+4. Start the store in the foreground to see its errors:
 
    ```sh
    noblivion serve
    ```
 
-4. Read `<data dir>/logs/store.log`.
+5. Read `<data dir>/logs/store.log`.
 
 | Log line | Cause | What to do |
 | --- | --- | --- |
-| `bind failed on port N` | Another program uses the port. | Stop that program, or set `port` (or `NOBLIVION_PORT`) to another port. `0` picks a free port. |
+| `bind failed on port N: Address already in use` | Another program uses the port. This happens only with a fixed `port`. | Stop that program, or set `port` (or `NOBLIVION_PORT`) to `0` (the default: the system picks a free port) or to another port. |
 | `another store runs; exiting` | A store already holds `store.lock`. | Nothing. The running store serves the hooks. |
 | `schema: ...` | The database is from a newer version, or is damaged. | Update the plugin, or move `noblivion.db` away and run `noblivion index` to build a new one. Trust history is in the old file. |
 | `store stopping: idle` | The store had no request for 30 minutes. | Nothing. The next prompt starts it again. |
@@ -99,8 +107,8 @@ Common causes:
 
 To fix it:
 
-1. Find the program on the port, for example with `ss -ltnp` or
-   `lsof -i :8894`.
+1. Find the program on the port in `store.json`, for example with
+   `ss -ltnp` or `lsof -i :<port>`.
 2. If it is an old NOBLIVION store, stop it. If it is another program,
    set another `port` in `config.json`.
 3. Run `noblivion ensure-running --json`.

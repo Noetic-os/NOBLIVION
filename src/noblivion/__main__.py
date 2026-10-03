@@ -24,7 +24,7 @@ USAGE = (
     "       noblivion trust report [--json] [--limit N]\n"
     "       noblivion trust recompute [--json]\n"
     "       noblivion serve [--port PORT] [--lock-wait SECONDS]\n"
-    "       noblivion ensure-running [--json]\n"
+    "       noblivion ensure-running [--json] [--wait SECONDS]\n"
     "       noblivion mine [--since YYYY-MM-DD] [--max-seconds S] [--json]\n"
     "       noblivion migrate-from-legacy [--apply | --undo] [--json]"
 )

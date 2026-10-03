@@ -197,10 +197,85 @@ def test_mcp_json_runs_the_recall_server():
     (arg,) = server["args"]
     assert arg == "${CLAUDE_PLUGIN_ROOT}/mcp/recall_mcp.py"
     assert (ROOT / "mcp" / "recall_mcp.py").is_file()
-    # MCP servers get no CLAUDE_PLUGIN_DATA of their own: pass the hooks' data dir.
-    assert server["env"] == {"CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}"}
+    # Claude Code sets CLAUDE_PLUGIN_DATA for the server by itself. An env
+    # entry "${CLAUDE_PLUGIN_DATA}" reached the server as literal text
+    # (NOBLIVION-24), so the server has no env block.
+    assert "env" not in server
     source = (ROOT / "mcp" / "recall_mcp.py").read_text(encoding="utf-8")
     assert 'TOOL_NAME = "noblivion_recall"' in source
+
+
+# The ${...} names Claude Code expands in a plugin's JSON files, per field.
+# Measured on Claude Code 2.1.92 and 2.1.261 (NOBLIVION-24): in .mcp.json
+# "command" and "args" expand ${CLAUDE_PLUGIN_ROOT}, but an "env" value
+# "${CLAUDE_PLUGIN_DATA}" reached the server as literal text. The plugin
+# reference names only the plugin variables, never a user variable. A hook
+# command runs in a shell that has CLAUDE_PLUGIN_ROOT, CLAUDE_PLUGIN_DATA and
+# CLAUDE_PROJECT_DIR in its environment, so those expand there.
+VAR_REF = re.compile(r"\$\{([^}]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+EXPANDED = {
+    "mcp.command": {"CLAUDE_PLUGIN_ROOT"},
+    "mcp.args": {"CLAUDE_PLUGIN_ROOT"},
+    "hook.command": {"CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA", "CLAUDE_PROJECT_DIR"},
+}
+
+
+def _var_refs(value, field, out):
+    """Collect ``(field, variable)`` for each ``$NAME`` or ``${...}`` in
+    every string under ``value``."""
+    if isinstance(value, str):
+        for match in VAR_REF.finditer(value):
+            out.append((field, match.group(1) or match.group(2)))
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _var_refs(item, field, out)
+            _var_refs(key, field, out)
+    elif isinstance(value, list):
+        for item in value:
+            _var_refs(item, field, out)
+
+
+def _unexpanded_refs(mcp_json: Path = MCP_JSON):
+    """Every variable reference in the plugin JSON files that Claude Code
+    does not expand in that field."""
+    found = []
+    for name, server in _load(mcp_json)["mcpServers"].items():
+        for key, value in server.items():
+            refs = []
+            _var_refs(value, "mcp." + key, refs)
+            found += [
+                (f".mcp.json {name}.{key}", v) for f, v in refs if v not in EXPANDED.get(f, ())
+            ]
+    for event, groups in _load(HOOKS_JSON)["hooks"].items():
+        for group in groups:
+            for handler in group["hooks"]:
+                for key, value in handler.items():
+                    refs = []
+                    _var_refs(value, "hook." + key, refs)
+                    found += [
+                        (f"hooks.json {event}.{key}", v)
+                        for f, v in refs
+                        if v not in EXPANDED.get(f, ())
+                    ]
+    for path in (PLUGIN, MARKETPLACE):
+        refs = []
+        _var_refs(_load(path), "manifest", refs)
+        found += [(path.name, v) for _, v in refs]
+    return found
+
+
+def test_plugin_json_passes_no_unexpanded_variable():
+    assert _unexpanded_refs() == []
+
+
+def test_unexpanded_variable_check_catches_the_v010_env_block(tmp_path):
+    """The check above fails on the shipped v0.1.0 .mcp.json (NOBLIVION-24)."""
+    bad = tmp_path / ".mcp.json"
+    doc = _load(MCP_JSON)
+    (name,) = doc["mcpServers"]
+    doc["mcpServers"][name]["env"] = {"CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}"}
+    bad.write_text(json.dumps(doc), encoding="utf-8")
+    assert _unexpanded_refs(bad) == [(f".mcp.json {name}.env", "CLAUDE_PLUGIN_DATA")]
 
 
 def test_json_files_parse_and_hold_no_comment_lines():

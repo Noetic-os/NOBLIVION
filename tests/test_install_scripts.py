@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -32,7 +33,19 @@ def _bin(tmp_path: Path, with_uv: bool) -> Path:
     folder = tmp_path / "bin"
     folder.mkdir(parents=True)
     (folder / "python3").symlink_to(sys.executable)
-    for tool in ("dirname", "sed", "mkdir", "rm", "tr", "grep", "ps", "kill", "env", "install"):
+    for tool in (
+        "dirname",
+        "sed",
+        "mkdir",
+        "chmod",
+        "rm",
+        "tr",
+        "grep",
+        "ps",
+        "kill",
+        "env",
+        "install",
+    ):
         found = shutil.which(tool)
         if found:
             (folder / tool).symlink_to(found)
@@ -88,6 +101,16 @@ def test_install_data_dir_order(tmp_path):
     assert "download" not in proc.stdout
 
 
+def test_install_sets_an_existing_data_dir_to_0700(tmp_path):
+    """Claude Code makes the data dir with the user's umask before install.sh
+    runs; install.sh must still leave it 0700 (NOBLIVION-27)."""
+    data = tmp_path / "plugin-data"
+    data.mkdir(mode=0o775)
+    data.chmod(0o775)
+    _run(INSTALL, ["--no-embed"], tmp_path, extra={"CLAUDE_PLUGIN_DATA": str(data)})
+    assert stat.S_IMODE(data.stat().st_mode) == 0o700
+
+
 def test_install_without_uv_prints_the_official_command(tmp_path):
     proc = _run(INSTALL, [], tmp_path, with_uv=False)
     assert proc.returncode == 1
@@ -114,6 +137,9 @@ def test_uninstall_dry_run_and_run_keep_the_database(tmp_path):
     proc = _run(UNINSTALL, ["--data-dir", str(data)], tmp_path / "again")
     assert proc.returncode == 0, proc.stderr
     assert sorted(p.name for p in data.iterdir()) == ["noblivion.db", "token"]
+    # The next step keeps the data too: plain "claude plugin uninstall"
+    # deletes the data dir (NOBLIVION-26).
+    assert "claude plugin uninstall noblivion --keep-data" in proc.stdout
 
 
 def test_uninstall_refuses_a_folder_that_is_not_a_data_dir(tmp_path):

@@ -25,11 +25,12 @@ STORE_JSON_FILE = "store.json"
 TOKEN_FILE = "token"
 SPAWN_STAMP_FILE = "spawn.stamp"
 STORE_LOG_FILE = "logs/store.log"
+STORE_ERROR_FILE = "store.error"  # why the last start failed; removed on a good start
 
 DEFAULT_NAMESPACE = "claude_code"
 DEFAULT_DELETE_GRACE_DAYS = 14
 DEFAULT_ARCHIVE_RETENTION_DAYS = 90
-DEFAULT_PORT = 8894
+DEFAULT_PORT = 0  # any free port; the hooks read the real port from store.json
 DEFAULT_IDLE_EXIT_S = 1800
 DEFAULT_INDEX_INTERVAL_S = 30
 DEFAULT_PRIOR_MINED = 0.3
@@ -53,7 +54,7 @@ def data_dir(env: Mapping[str, str] | None = None) -> Path:
     env = os.environ if env is None else env
     for key in ("NOBLIVION_DATA_DIR", "CLAUDE_PLUGIN_DATA"):
         value = env.get(key, "").strip()
-        if value:
+        if value and "${" not in value:  # "${...}": a config passed it unexpanded
             return Path(os.path.expanduser(value))
     venv = Path(sys.prefix)
     if (venv / INSTALL_STAMP).is_file():
@@ -61,6 +62,19 @@ def data_dir(env: Mapping[str, str] | None = None) -> Path:
     xdg = env.get("XDG_DATA_HOME", "").strip()
     base = Path(os.path.expanduser(xdg)) if xdg else Path.home() / ".local" / "share"
     return base / "noblivion"
+
+
+def private_dir(path: Path) -> Path:
+    """Make ``path`` (and its parents) and set it to mode 0700. ``mkdir -m``
+    does not change a folder that exists, and Claude Code may make the data
+    dir before the store does, with the user's umask (NOBLIVION-27)."""
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        if path.stat().st_mode & 0o077:
+            path.chmod(0o700)
+    except OSError:
+        pass
+    return path
 
 
 def load_file(env: Mapping[str, str] | None = None) -> dict:

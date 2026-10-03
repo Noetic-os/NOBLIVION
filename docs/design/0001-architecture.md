@@ -109,8 +109,12 @@ Python versions:
 | `config.json` | user | optional config (section 12); `install.sh` writes the shipped default when it is missing |
 | `venv/`, `models/` | installer | store venv and embedding model cache; `venv/noblivion-install.json` holds the plugin version and root the venv was built from |
 | `backups/` | store | DB copy taken before each migration |
+| `store.error` | store, launcher | why the last start failed (`{reason, pid, at}`); a good start removes it |
 
-The data dir is mode 0700. Every file in it is mode 0600.
+The data dir is mode 0700. Every file in it is mode 0600. Claude Code can
+make the data dir with the user's umask before NOBLIVION runs, so
+`install.sh`, the SessionStart hook, the launcher and the store set an
+existing data dir to 0700 too (NOBLIVION-27).
 
 ### 3.2 Start
 
@@ -152,10 +156,14 @@ Entry points (E3c):
 
 - `noblivion serve [--port N] [--lock-wait S]` and
   `python -m noblivion.store` run steps 5 to 7 in the foreground.
-- `noblivion ensure-running [--json]` runs steps 1 to 4 and prints
-  `running`, `starting` or `started`. It imports only the stdlib and
-  `noblivion.config`, so it returns fast. The code is
-  `noblivion.launcher`.
+- `noblivion ensure-running [--json] [--wait S]` runs steps 1 to 4. When
+  it started a store (or another caller is starting one), it then waits up
+  to `S` seconds (default 10) for a proven store of its version. It prints
+  `running`, `starting`, `started` or `failed` with the reason, and exits
+  1 on `failed` (NOBLIVION-25). A failure is `store.error`, the child store
+  exiting with a code other than 0, or no proven store in time; the
+  launcher writes `store.error` when the store did not. It imports only
+  the stdlib and `noblivion.config`. The code is `noblivion.launcher`.
 - The hooks cannot import the package. `hooks/store_client.py` (E4) holds
   their side: it reads `store.json` and `token`, runs the listener proof of
   section 3.3, and starts the launcher. It does not copy steps 1 to 4. It
@@ -163,7 +171,11 @@ Entry points (E3c):
   (`start_new_session`, no output, never waited for), and the launcher runs
   steps 1 to 4, the version check and the atomic `flock` start check
   included. As a script it is the
-  `SessionStart` hook: it starts the launcher and exits 0 at once. A REST
+  `SessionStart` hook: it starts the launcher, waits at most 5 s for the
+  launcher's exit code and exits 0. When the launcher exits with code 1,
+  the hook prints one line with the reason from `store.error`, as a
+  `systemMessage` for the user and as context for the model. A launcher
+  still waiting after 5 s is left running in the background. A REST
   hook that finds the store down or unproven also starts the launcher, but
   only when `spawn.stamp` is older than 30 s, so a prompt does not fork a
   launcher while a start is under way. The hook only reads the stamp's
@@ -176,7 +188,10 @@ Entry points (E3c):
 
 ### 3.3 Port
 
-- Default port: 8894. Config key `port`, env `NOBLIVION_PORT`.
+- Default port: 0, any free port (since 0.1.1). Config key `port`, env
+  `NOBLIVION_PORT`. The fixed default 8894 of 0.1.0 was taken on a test
+  host, and the store then could not start (NOBLIVION-25). The hooks find
+  the port only through `store.json`, so no caller needs a fixed port.
 - The listen backlog is 128, not the stdlib 5. Hooks of several sessions
   connect at once; a full backlog drops the SYN and the client retries
   after 1 s, past the 300 ms proof below (E3d measured 1 s to 8 s).
@@ -186,7 +201,8 @@ Entry points (E3c):
   to the config port. No `store.json` means no store: the hook starts one
   (section 3.2) and fails open.
 - If the bind fails because the port is in use, the store logs the error
-  and exits with code 2. It does not try another port, because a silent
+  with its reason (`bind failed on port N: Address already in use`),
+  writes it to `store.error` and exits with code 2. It does not try another port, because a silent
   port change would hide a foreign listener.
 
 Listener proof. A port in `store.json` can belong to another process: the
@@ -1574,7 +1590,7 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 
 | Key | Env var | Default |
 |---|---|---|
-| `port` | `NOBLIVION_PORT` | `8894` |
+| `port` | `NOBLIVION_PORT` | `0` (any free port) |
 | `idle_exit_s` | `NOBLIVION_IDLE_EXIT_S` | `1800` |
 | `namespace` | `NOBLIVION_PROJECT` | `claude_code` |
 | `memory_dirs` | `NOBLIVION_MEMORY_DIRS` (`:`-separated) | all `~/.claude/projects/*/memory`; plus the hooks' folder `NOBLIVION_MEMORY_DIR` when it is set |
@@ -1711,13 +1727,22 @@ docs/
 - The store and CLI run from `<data dir>/venv/bin/python`. The package is
   installed into the venv (not editable), because `${CLAUDE_PLUGIN_ROOT}`
   changes on every plugin update.
-- `.mcp.json` passes `CLAUDE_PLUGIN_DATA` to the MCP server in its `env`,
-  because Claude Code exports that variable to hooks only.
+- `.mcp.json` has no `env` block. Claude Code sets `CLAUDE_PLUGIN_ROOT`
+  and `CLAUDE_PLUGIN_DATA` for the MCP server by itself. In 0.1.0 an `env`
+  entry `"CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}"` reached the server
+  as the literal text (measured on Claude Code 2.1.92 and 2.1.261), so the
+  tool found no store (NOBLIVION-24). The data dir rule treats a value
+  that still holds `${` as unset. `tests/test_plugin_package.py` fails on
+  any variable in the plugin JSON files that Claude Code does not expand
+  in that field.
 - The MCP tool is renamed to `noblivion_recall`. The `GROUNDED MEMORY <id>:`
   prefix of its answer stays, because the trust flush reads it. Under the
   plugin its full name is `mcp__plugin_noblivion_noblivion__noblivion_recall`.
-- Users add the repo with `/plugin marketplace add <owner>/NOBLIVION` and
-  install with `/plugin install noblivion@noblivion`.
+- Users add the repo with
+  `claude plugin marketplace add https://github.com/<owner>/NOBLIVION.git`
+  (the short form `<owner>/NOBLIVION` can clone over SSH) and install with
+  `claude plugin install noblivion@noblivion` (or the `/plugin` slash
+  commands).
 
 ### 13.2 Install
 
@@ -1762,8 +1787,11 @@ token. Run it again after a plugin update.
 `uninstall.sh [--data-dir DIR] [--purge] [--dry-run]` stops the store and
 removes the venv and the model cache. It keeps `noblivion.db`, the config
 and the token unless `--purge` is given. It refuses a folder that holds no
-venv, store file or database. It never touches memory files. The plugin
-itself is removed with `claude plugin uninstall noblivion`.
+venv, store file or database. It never touches memory files. Then the
+plugin is removed with `claude plugin uninstall noblivion --keep-data`.
+Without `--keep-data`, `claude plugin uninstall` (and `/plugin uninstall`)
+deletes the whole data dir, the database and the token included
+(NOBLIVION-26). The script prints this next step.
 
 ## 14. Migration from hand-installed hooks
 

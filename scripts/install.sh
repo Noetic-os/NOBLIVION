@@ -89,6 +89,9 @@ say "data dir $DATA_DIR"
 [ "$DRY_RUN" = 1 ] && say "dry run: nothing changes"
 
 run mkdir -p -m 700 "$DATA_DIR"
+# mkdir -m does not change a folder that exists, and Claude Code makes the
+# data dir with the user's umask before this script runs (NOBLIVION-27).
+run chmod 700 "$DATA_DIR"
 
 # 2. The venv with the locked store dependencies, then the package itself.
 EXTRA=()

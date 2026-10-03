@@ -25,8 +25,9 @@ a Claude Code prompt.
 2. When no store runs, this command starts one in the background.
 3. The store takes a lock file, `store.lock`. A second store sees the lock
    and exits.
-4. The store binds to `127.0.0.1` on port `8894`. It writes the port and
-   its process id to `store.json` in the data dir.
+4. The store binds to `127.0.0.1` on a free port that the system picks
+   (config key `port`, default `0`). It writes the port and its process id
+   to `store.json` in the data dir. The hooks read the port from there.
 5. When no request comes for 30 minutes, the store stops.
 
 A hook that finds no store also asks for a start, at most once every 30
@@ -34,8 +35,9 @@ seconds. The hook does not wait for the start. It prints nothing for this
 prompt. The next prompt finds the store.
 
 The store never listens on another address than `127.0.0.1`. When it
-cannot bind to the port, it exits. It does not move to another port by
-itself.
+cannot bind to a fixed port, it exits. It does not move to another port by
+itself. It writes the reason to `store.error`, and the session start shows
+one line with that reason.
 
 ### The handshake
 

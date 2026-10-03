@@ -242,7 +242,7 @@ def write_atomic(path: Path, data: Dict[str, object]) -> None:
     """Write ``data`` as JSON to ``path`` through a temp file in the same folder
     and ``os.replace``: a reader sees the old table or the new one, never half."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -963,8 +963,9 @@ def complies_match(command: str, table: Optional[Mapping[str, Any]] = None) -> L
 # CLI
 # --------------------------------------------------------------------------
 def main(argv: Optional[List[str]] = None) -> int:
-    """``--rebuild``: rebuild the table; exit 0 always, silent on success, one
-    stderr line on failure (a SessionStart hook fails open). ``--report``: print
+    """``--rebuild``: rebuild the table; exit 0 always, silent on success and
+    when the memory folder does not exist, one stderr line on failure (a
+    SessionStart hook fails open). ``--report``: print
     the skipped regexes after a rebuild. ``--match CMD``: print the hits as JSON."""
     args = list(sys.argv[1:] if argv is None else argv)
     if "--match" in args:
@@ -976,7 +977,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     if "--rebuild" in args:
         try:
-            table = rebuild()
+            folder = memory_dir()
+            if not folder.is_dir():
+                # A fresh install has no memory folder yet: no memory, no
+                # guards. That is not an error (NOBLIVION-27). An absent
+                # table reads as empty; an old table stays as it is.
+                if "--report" in args:
+                    print(f"no memory folder {folder}: no guards")
+                return 0
+            table = rebuild(folder)
             if "--report" in args:
                 n = sum(1 for e in table["entries"] if e["violates"])
                 li = table.get("label_index") or {}

@@ -77,11 +77,24 @@ def data_dir(env: Optional[Mapping[str, str]] = None) -> Path:
     e = _env(env)
     for name in (DATA_DIR_ENV, PLUGIN_DATA_ENV):
         raw = str(e.get(name) or "").strip()
-        if raw:
+        if raw and "${" not in raw:  # "${...}": a config passed it unexpanded
             return Path(os.path.expanduser(raw))
     xdg = str(e.get("XDG_DATA_HOME") or "").strip()
     base = Path(os.path.expanduser(xdg)) if xdg else Path.home() / ".local" / "share"
     return base / "noblivion"
+
+
+def private_dir(path: Path) -> Path:
+    """Make ``path`` (and its parents) and set it to mode 0700, also when it
+    exists: Claude Code can make the data dir with the user's umask before
+    any NOBLIVION code runs (NOBLIVION-27)."""
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        if path.stat().st_mode & 0o077:
+            path.chmod(0o700)
+    except OSError:
+        pass
+    return path
 
 
 def cache_dir(env: Optional[Mapping[str, str]] = None) -> Path:

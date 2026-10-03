@@ -22,10 +22,13 @@ client side of ``noblivion.launcher``:
 The HTTP request itself belongs to the caller (``recall_hook.http_get_json``),
 so this module opens no socket.
 
-Run as a script, it is the ``SessionStart`` hook: it starts the launcher and
-exits 0 at once, whatever happens. Under the plugin (``CLAUDE_PLUGIN_ROOT``
-is set) it also prints one line when the store venv is missing or was built
-for another plugin version (``install_notice``, design doc section 13.2).
+Run as a script, it is the ``SessionStart`` hook: it starts the launcher,
+waits at most 5 s for its exit code and exits 0, whatever happens. When the
+launcher reports a failed start (for example the port is in use), it prints
+one line with the reason (``store.error``). Under the plugin
+(``CLAUDE_PLUGIN_ROOT`` is set) it also prints one line when the store venv
+is missing or was built for another plugin version (``install_notice``,
+design doc section 13.2).
 
 Settings (design doc section 12.3):
 
@@ -56,6 +59,10 @@ from typing import Any, Callable, Dict, Optional, Tuple
 STORE_JSON_FILE = "store.json"
 TOKEN_FILE = "token"
 SPAWN_STAMP_FILE = "spawn.stamp"
+STORE_ERROR_FILE = "store.error"  # why the last start failed (noblivion.launcher)
+HOOK_WAIT_S = 5.0  # SessionStart waits this long for ensure-running (hook timeout 10 s)
+HOOK_POLL_S = 0.05
+START_REASON_MAX_CHARS = 240
 PROOF_PREFIX = "noblivion-health:"
 PROBE_TIMEOUT_S = 0.3
 PROOF_TTL_S = 30.0  # a long-lived caller (the MCP server) proves again after this
@@ -231,12 +238,14 @@ def request_start(
     check_stamp: bool = True,
     clock: Callable[[], float] = time.time,
     popen: Callable[..., Any] = subprocess.Popen,
+    on_child: Optional[Callable[[Any], None]] = None,
 ) -> str:
     """Ask the launcher to start the store. Never waits and never raises.
 
     Returns ``off`` (autostart off), ``starting`` (``spawn.stamp`` is younger
     than 30 s, so a start is under way), ``no_launcher`` (no entry point),
-    ``spawned`` or ``error``.
+    ``spawned`` or ``error``. ``on_child`` gets the launcher's process
+    handle, so the SessionStart hook can wait a short time for its exit code.
     """
     try:
         e = os.environ if env is None else env
@@ -261,7 +270,10 @@ def request_start(
             close_fds=True,
             env=dict(e),
         )
-        child.returncode = 0  # detached: never waited for, no ResourceWarning
+        if on_child is not None:
+            on_child(child)
+        else:
+            child.returncode = 0  # detached: never waited for, no ResourceWarning
         return "spawned"
     except Exception:  # noqa: BLE001 - a hook never fails on a start
         return "error"
@@ -317,22 +329,113 @@ def install_notice(
     return None
 
 
-def main(stdin=None, environ: Optional[Mapping[str, str]] = None) -> int:
-    """The SessionStart hook: start the launcher, exit 0. It prints nothing,
-    except the ``install_notice`` line when it runs under the plugin."""
+def read_start_error(folder: Path, since: float) -> Optional[str]:
+    """The reason in ``store.error`` (written by the store or the launcher)
+    when the file is at most 1 s older than ``since``, else None."""
+    path = folder / STORE_ERROR_FILE
+    try:
+        if path.stat().st_mtime < since - 1.0:
+            return None
+        info = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    reason = info.get("reason") if isinstance(info, dict) else None
+    return reason if isinstance(reason, str) and reason.strip() else None
+
+
+def wait_for_launcher(
+    child: Any,
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    since: float,
+    wait_s: float = HOOK_WAIT_S,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Optional[str]:
+    """Wait at most ``wait_s`` for ``noblivion ensure-running`` to exit.
+    Returns the reason when it reports a failed start (exit code not 0),
+    else None. A launcher still running after ``wait_s`` is left running."""
+    deadline = clock() + wait_s
+    code = child.poll()
+    while code is None and clock() < deadline:
+        sleep(HOOK_POLL_S)
+        code = child.poll()
+    if code is None:
+        child.returncode = 0  # left running, detached: no ResourceWarning
+        return None
+    if code == 0:
+        return None
+    reason = read_start_error(data_dir(env), since)
+    return reason or "the launcher exited with code %d" % code
+
+
+def start_failure_line(reason: str, env: Optional[Mapping[str, str]] = None) -> str:
+    """The one line for the user when the store cannot start (NOBLIVION-25)."""
+    reason = " ".join(reason.split())
+    if len(reason) > START_REASON_MAX_CHARS:
+        reason = reason[: START_REASON_MAX_CHARS - 3] + "..."
+    log = data_dir(env) / "logs" / "store.log"
+    return "NOBLIVION: the memory store could not start, so memory recall is off: %s (log: %s)" % (
+        reason.rstrip("."),
+        log,
+    )
+
+
+def secure_data_dir(env: Optional[Mapping[str, str]] = None) -> None:
+    """Set an existing data dir to mode 0700. Claude Code makes it with the
+    user's umask before any NOBLIVION code runs (NOBLIVION-27)."""
+    try:
+        folder = data_dir(env)
+        if folder.is_dir():
+            _hook_config().private_dir(folder)
+    except Exception:  # noqa: BLE001 - a hook never fails on a mode
+        pass
+
+
+def main(
+    stdin=None, environ: Optional[Mapping[str, str]] = None, wait_s: float = HOOK_WAIT_S
+) -> int:
+    """The SessionStart hook: start the launcher, exit 0.
+
+    It waits at most ``wait_s`` for the launcher. When the launcher reports
+    a failed start, it prints one line for the user (``systemMessage``) and
+    for the model. Under the plugin it also prints the ``install_notice``
+    line. Else it prints nothing."""
     try:
         (stdin or sys.stdin).read()
     except Exception:  # noqa: BLE001
         pass
-    started = request_start(environ, check_stamp=False)
+    env = os.environ if environ is None else environ
+    secure_data_dir(env)
+    since = time.time()
+    children: list = []
+    started = request_start(environ, check_stamp=False, on_child=children.append)
+    lines = []
     try:
-        env = os.environ if environ is None else environ
+        if children:
+            reason = wait_for_launcher(children[0], env, since=since, wait_s=wait_s)
+            if reason:
+                lines.append(start_failure_line(reason, env))
         if (env.get(PLUGIN_ROOT_ENV) or "").strip():
             notice = install_notice(started, env)
             if notice:
-                print(notice)
+                lines.append(notice)
     except Exception:  # noqa: BLE001 - a hook never fails on a notice
         pass
+    if lines and lines[0].startswith("NOBLIVION: the memory store could not start"):
+        print(
+            json.dumps(
+                {
+                    "systemMessage": lines[0],
+                    "hookSpecificOutput": {
+                        "hookEventName": "SessionStart",
+                        "additionalContext": " ".join(lines),
+                    },
+                }
+            )
+        )
+    elif lines:
+        print(lines[0])
     return 0
 
 

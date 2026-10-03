@@ -52,7 +52,20 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 SERVER_NAME = "noblivion-recall"
-SERVER_VERSION = "1.0.0"
+
+
+def _plugin_version() -> str:
+    """The ``version`` of ``.claude-plugin/plugin.json``, so the MCP
+    ``serverInfo`` names the plugin version (NOBLIVION-24)."""
+    path = Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json"
+    try:
+        version = json.loads(path.read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError, AttributeError):
+        return "0.0.0"
+    return version if isinstance(version, str) else "0.0.0"
+
+
+SERVER_VERSION = _plugin_version()
 PROTOCOL_VERSION = "2025-06-18"
 TOOL_NAME = "noblivion_recall"
 K_DEFAULT = 5

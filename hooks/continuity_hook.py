@@ -236,7 +236,7 @@ def log_line(
     ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     line = f"{ts} event={event} session={sid[:128]} rows={rows} chars={chars} ms={ms} {status}\n"
     try:
-        os.makedirs(cache, exist_ok=True)
+        os.makedirs(cache, mode=0o700, exist_ok=True)
         with open(os.path.join(cache, LOG_NAME), "a", encoding="utf-8") as fh:
             fh.write(line)
     except OSError:
@@ -279,7 +279,7 @@ def save_state(cache: str, session_id: Any, state: Mapping[str, Any]) -> bool:
     if path is None:
         return False
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(

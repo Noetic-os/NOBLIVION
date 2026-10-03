@@ -66,18 +66,24 @@ name in plain prose. See [docs/dedup-and-privacy.md](docs/dedup-and-privacy.md).
 You need Claude Code, `python3` 3.9 or newer, and
 [uv](https://docs.astral.sh/uv/).
 
-1. In Claude Code, add the marketplace. Replace `<owner>` with the GitHub
-   account that hosts this repository:
+1. Add the marketplace. Replace `<owner>` with the GitHub account that
+   hosts this repository. Use the HTTPS URL; the short form
+   `<owner>/NOBLIVION` can clone over SSH:
 
-   ```text
-   /plugin marketplace add <owner>/NOBLIVION
+   ```sh
+   claude plugin marketplace add https://github.com/<owner>/NOBLIVION.git
    ```
+
+   In a Claude Code session, `/plugin marketplace add <same URL>` does the
+   same.
 
 2. Install the plugin:
 
-   ```text
-   /plugin install noblivion@noblivion
+   ```sh
+   claude plugin install noblivion@noblivion
    ```
+
+   In a session: `/plugin install noblivion@noblivion`.
 
 3. Start a new Claude Code session. The first session prints the command
    that builds the store. Run that command in a terminal. It looks like

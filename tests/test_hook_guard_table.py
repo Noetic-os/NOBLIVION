@@ -139,6 +139,19 @@ def test_rebuild_of_a_missing_folder_raises_and_keeps_the_old_table(tmp_path, fo
     assert table_file.read_bytes() == before
 
 
+def test_rebuild_hook_is_silent_without_a_memory_folder(tmp_path, monkeypatch, capsys):
+    """A fresh install has no memory folder: the SessionStart rebuild prints
+    no error line and writes no table (NOBLIVION-27)."""
+    out = tmp_path / "table.json"
+    monkeypatch.setenv("NOBLIVION_MEMORY_DIR", str(tmp_path / "absent"))
+    monkeypatch.setenv("NOBLIVION_GUARD_TABLE", str(out))
+    assert gt.main(["--rebuild"]) == 0
+    assert capsys.readouterr() == ("", "")
+    assert not out.exists() and gt.load_table(out) == {"entries": []}
+    assert gt.main(["--rebuild", "--report"]) == 0
+    assert "no memory folder" in capsys.readouterr().out
+
+
 def test_the_table_carries_what_the_guard_hook_needs(folder, table_file):
     """The table carries what the guard hook needs and nothing it has to recompute."""
     table = gt.rebuild(folder)
@@ -404,7 +417,7 @@ def test_cli_rebuild_is_silent_on_success(folder, tmp_path):
     assert len(json.loads(out.read_text())["entries"]) == 3
 
 
-def test_cli_rebuild_fails_open_and_keeps_the_old_table(tmp_path):
+def test_cli_rebuild_without_a_memory_folder_is_silent_and_keeps_the_old_table(tmp_path):
     out = tmp_path / "t.json"
     out.write_text('{"entries": ["old"]}')
     r = _cli(
@@ -415,8 +428,7 @@ def test_cli_rebuild_fails_open_and_keeps_the_old_table(tmp_path):
         "--rebuild",
     )
     assert r.returncode == 0
-    assert r.stdout == ""
-    assert "rebuild failed" in r.stderr
+    assert r.stdout == "" and r.stderr == ""  # no memory yet is not an error (NOBLIVION-27)
     assert out.read_text() == '{"entries": ["old"]}'
 
 
@@ -428,6 +440,7 @@ def test_cli_rebuild_fails_open_on_an_unwritable_table(folder, tmp_path):
         "--rebuild",
     )
     assert r.returncode == 0 and r.stdout == ""
+    assert "rebuild failed" in r.stderr
 
 
 def test_cli_match_prints_hits(folder, tmp_path):

@@ -12,7 +12,10 @@
 #
 # It stops the store and removes the venv and the model cache. It keeps
 # noblivion.db, config.json and the token unless --purge is given. It never
-# touches memory files. Remove the plugin itself with: claude plugin uninstall noblivion
+# touches memory files. Then remove the plugin and keep the data with:
+#   claude plugin uninstall noblivion --keep-data
+# Without --keep-data, Claude Code deletes the whole data dir, the database
+# (memory index and trust history), config.json and the token included.
 set -euo pipefail
 
 DATA_DIR=""
@@ -44,7 +47,7 @@ while [ $# -gt 0 ]; do
         --purge) PURGE=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h | --help)
-            sed -n '4,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '4,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) die "unknown option $1 (see --help)" ;;
@@ -81,7 +84,10 @@ fi
 if [ "$PURGE" = 1 ]; then
     rm -rf -- "$DATA_DIR"
     printf 'noblivion uninstall: removed %s\n' "$DATA_DIR"
+    printf 'noblivion uninstall: now remove the plugin: claude plugin uninstall noblivion\n'
 else
     rm -rf -- "$DATA_DIR/venv" "$DATA_DIR/models"
     printf 'noblivion uninstall: removed the venv and the model cache; kept the database, config and token in %s\n' "$DATA_DIR"
+    printf 'noblivion uninstall: now remove the plugin and keep this data: claude plugin uninstall noblivion --keep-data\n'
+    printf 'noblivion uninstall: without --keep-data, Claude Code deletes %s, the database included\n' "$DATA_DIR"
 fi

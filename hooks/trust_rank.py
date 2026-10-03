@@ -322,7 +322,7 @@ def _debug(cache: str, record: Mapping[str, Any]) -> None:
     """One JSON line; the file moves to ``.1`` past DEBUG_MAX_BYTES. Never raises."""
     path = os.path.join(cache, DEBUG_NAME)
     try:
-        os.makedirs(cache, exist_ok=True)
+        os.makedirs(cache, mode=0o700, exist_ok=True)
         with contextlib.suppress(OSError):
             if os.path.getsize(path) > DEBUG_MAX_BYTES:
                 os.replace(path, path + ".1")

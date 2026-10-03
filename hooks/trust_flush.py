@@ -678,7 +678,12 @@ def _fallback_cache(env: Mapping[str, str]) -> str:
     explicit = (env.get("NOBLIVION_RECALL_CACHE_DIR") or "").strip()
     if explicit:
         return os.path.expanduser(explicit)
-    data = (env.get("NOBLIVION_DATA_DIR") or env.get("CLAUDE_PLUGIN_DATA") or "").strip()
+    data = ""
+    for name in ("NOBLIVION_DATA_DIR", "CLAUDE_PLUGIN_DATA"):
+        raw = (env.get(name) or "").strip()
+        if raw and "${" not in raw:  # "${...}": a config passed it unexpanded
+            data = raw
+            break
     if not data:
         xdg = (env.get("XDG_DATA_HOME") or "").strip() or os.path.join(
             os.path.expanduser("~"), ".local", "share"

@@ -1639,7 +1639,7 @@ def save_seen(path: Optional[str], seen: set) -> None:
     if not path:
         return
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(sorted(seen), fh)
@@ -1743,7 +1743,7 @@ def save_last_index(
         "ids": _candidate_ids(candidates),
     }
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(doc, fh)
@@ -1864,7 +1864,7 @@ def save_shown_set(cache: str, state: Mapping[str, Any], path: Optional[str] = N
         if kind in state:
             doc[kind] = sorted({x for x in (state.get(kind) or ()) if isinstance(x, str) and x})
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(doc, fh)
@@ -1958,7 +1958,7 @@ def session_lock(path: Optional[str]):
         yield
         return
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
         fh = open(path + ".lock", "a")
     except OSError:
         yield
@@ -1991,7 +1991,7 @@ def log_line(
     ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     line = f"{ts} event={event} session={sid} hits={hits} chars={chars} ms={ms} {status}\n"
     try:
-        os.makedirs(cache, exist_ok=True)
+        os.makedirs(cache, mode=0o700, exist_ok=True)
         with open(os.path.join(cache, "recall.log"), "a", encoding="utf-8") as fh:
             fh.write(line)
     except OSError:
