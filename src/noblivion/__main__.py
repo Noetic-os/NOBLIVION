@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The ``noblivion`` command: ``noblivion <command> [options]``.
 
-Commands in this version: ``index`` (see ``noblivion.indexer``) and
-``consent embeddings`` (see ``noblivion.embedding``).
+Commands in this version: ``index`` (see ``noblivion.indexer``),
+``consent embeddings`` (see ``noblivion.embedding``), ``serve`` (the store
+in the foreground, see ``noblivion.store``) and ``ensure-running`` (start
+the store in the background unless it runs, see ``noblivion.launcher``).
 """
 
 from __future__ import annotations
@@ -12,7 +14,9 @@ from collections.abc import Sequence
 
 USAGE = (
     "usage: noblivion index [--force] [--allow-shrink] [--memory-dir DIR] [--json]\n"
-    "       noblivion consent embeddings [--revoke]"
+    "       noblivion consent embeddings [--revoke]\n"
+    "       noblivion serve [--port PORT] [--lock-wait SECONDS]\n"
+    "       noblivion ensure-running [--json]"
 )
 
 
@@ -26,6 +30,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         from noblivion import indexer
 
         return indexer.main(rest)
+    if command == "serve":
+        from noblivion import store
+
+        return store.main(rest)
+    if command == "ensure-running":
+        from noblivion import launcher
+
+        return launcher.main(rest)
     if command == "consent" and rest[:1] == ["embeddings"]:
         from noblivion import embedding
 

@@ -95,7 +95,7 @@ Python versions:
 | `noblivion.db` (+ `-wal`, `-shm`) | store, CLI | the SQLite database |
 | `store.lock` | store | `flock` held for the store's lifetime |
 | `store.json` | store | `{pid, port, version, started_at}`, written atomically after bind |
-| `token` | installer | 32 random bytes, hex, mode 0600 (section 4.1) |
+| `token` | store | 32 random bytes, hex, mode 0600 (section 4.1); the store makes it at start when it is missing or malformed (section 19) |
 | `spawn.stamp` | hooks | mtime marks the last start attempt |
 | `cache/by-session/` | hooks | per-session recall cache and trust event spool |
 | `cache/` (other files) | hooks | continuity state, memory sync stamps and log, trust report and dedup status files |
@@ -120,7 +120,10 @@ The data dir is mode 0700. Every file in it is mode 0600.
 2. Proof good and the same full version as the plugin: the hook stops. The
    store runs. Proof good and a different version: the hook sends `SIGTERM`
    to the pid in `store.json`, because an old store may run an old
-   redactor, and goes to step 3. No proof: go to step 3.
+   redactor, and goes to step 4 (it skips the stamp check). The new store
+   gets `--lock-wait 10`, so it waits up to 10 s for the old store to
+   release `store.lock` instead of exiting at step 5. No proof: go to
+   step 3.
 3. The hook checks `spawn.stamp`. If its mtime is less than 30 s old,
    another hook started the store already. The hook stops.
 4. Else the hook touches `spawn.stamp` and starts
@@ -141,6 +144,18 @@ The data dir is mode 0700. Every file in it is mode 0600.
 Any REST hook that finds the store down also runs steps 3 and 4. So a store
 that exited on idle comes back on the next prompt. That hook call itself
 fails open (section 3.5).
+
+Entry points (E3c):
+
+- `noblivion serve [--port N] [--lock-wait S]` and
+  `python -m noblivion.store` run steps 5 to 7 in the foreground.
+- `noblivion ensure-running [--json]` runs steps 1 to 4 and prints
+  `running`, `starting` or `started`. It imports only the stdlib and
+  `noblivion.config`, so it returns fast. The code is
+  `noblivion.launcher`; a stdlib hook that cannot import the package
+  copies its steps (E4).
+- Exit codes of the store: 0 stopped, or another store holds the lock;
+  2 the bind failed; 3 a schema fault (section 6.6).
 
 ### 3.3 Port
 
@@ -300,8 +315,12 @@ General rules for every route:
   `Content-Length`; without it the answer is 411, because the stdlib server
   does not decode a chunked body. A larger `Content-Length`: 413 before any
   read.
-- Query string cap: 8 KB. Query text `q` is cut to 2000 characters. (The
-  hooks already cut it to 300.)
+- Query string cap: 8 KB; a longer one: 414
+  `{"detail": "query string too long"}`. Query text `q` is cut to 2000
+  characters. (The hooks already cut it to 300.)
+- A known path with the wrong method: 405 `{"detail": "method not
+  allowed"}`. A body that is not JSON: 400. An internal fault outside a
+  read route: 503 `{"detail": "store error"}`.
 - The base URL is `http://127.0.0.1:<port>`. The hooks keep their
   plaintext guard: plain http only to a loopback IP literal. The guard
   refuses the name `localhost`, so the hooks never use it.
@@ -318,7 +337,7 @@ token replaces it and needs no user action.
 ### 4.2 `GET /api/memories/search`
 
 Query: `q` (required), `project` (optional), `top_k` (int, default 5,
-clamp 1..50).
+clamp 1..50, a non-number reads as 5). A missing `q` reads as empty.
 
 The answer is one joined text, as in the reference implementation. Entries
 are joined with `"\n---\n"`. Each entry is redacted on its own before the
@@ -349,6 +368,8 @@ Notes:
   in this answer.
 - The answer stays below 512 KB. Entries that do not fit are left out from
   the end.
+- A fault inside the ranker gives the "no hits" answer plus
+  `"reason": "index or fetch failed; see the daemon log"` (section 4).
 
 ### 4.3 `GET /api/memories/index`
 
@@ -488,6 +509,10 @@ Answer 200:
   batch or already stored.
 - Errors: 400, 403, 413 with `{"detail": ...}`. A store failure: 503
   `{"detail": "memory feedback store failed"}`. Nothing is half written.
+- Until E5 (trust in the store) lands, the store runs the request checks
+  of section 4.1, parses the body, and then answers this 503 to every
+  batch. It stores no event. The Stop hook keeps its send offset on a
+  non-200 answer (section 3.5), so the spool is sent again after E5.
 
 ### 4.6 `GET /api/memory/trust/report`
 
@@ -536,6 +561,7 @@ Rules (unchanged from the reference implementation):
   and trust never falls below trust_0. Retire and demote rest on the
   session counts, not on trust.
 - Store failure: 503 `{"detail": "trust report unavailable"}`.
+- Until E5 lands, the store checks `persona` and then answers this 503.
 
 ### 4.7 `GET /health` (also `/api/health`)
 
@@ -545,7 +571,8 @@ Without a token:
 {"status": "ok", "service": "noblivion", "version": "0.1.0", "proof": "<64 hex>"}
 ```
 
-`proof` is present only when the request has `nonce` (section 3.3).
+`proof` is present only when the request has `nonce` (section 3.3) of 32
+to 128 hex characters. A wrong token gets the short form, not 401.
 
 With a valid token:
 
