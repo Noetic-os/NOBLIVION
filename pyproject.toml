@@ -42,6 +42,7 @@ src = ["src", "tests", "tools"]
 [tool.ruff.per-file-target-version]
 # The hooks run on the user's python3, 3.9 or newer (design doc 0001, section 2).
 "hooks/*.py" = "py39"
+"mcp/*.py" = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
@@ -58,3 +59,4 @@ markers = [
 # they keep the `typing` aliases (Optional, List, ...), printf formatting and
 # their long message strings, so the moved code stays comparable line by line.
 "hooks/*.py" = ["E501", "UP006", "UP031", "UP035", "UP045"]
+"mcp/*.py" = ["E501", "UP006", "UP031", "UP035", "UP045"]

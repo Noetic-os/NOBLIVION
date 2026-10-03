@@ -28,6 +28,11 @@ ENTRY_POINTS = [
     ("memory_sync_hook.py", []),
     ("trust_session_line.py", []),
     ("guard_table.py", ["--rebuild"]),
+    ("recall_hook.py", []),
+    ("recall_hook.py", ["--reset-rows"]),
+    ("error_recall_hook.py", []),
+    ("subagent_rules_hook.py", []),
+    ("store_client.py", []),
 ]
 
 
@@ -67,6 +72,7 @@ def test_every_moved_module_is_present() -> None:
         "continuity_hook",
         "corpus",
         "credential_guard",
+        "error_recall_hook",
         "guard_hook",
         "guard_table",
         "hook_config",
@@ -76,7 +82,10 @@ def test_every_moved_module_is_present() -> None:
         "memory_labels",
         "memory_sync_hook",
         "memory_text",
+        "recall_hook",
         "stop_checks",
+        "store_client",
+        "subagent_rules_hook",
         "trust_events",
         "trust_rank",
         "trust_session_line",
@@ -197,7 +206,7 @@ def test_memory_sync_runs_the_installed_indexer(hook_env) -> None:
     assert "SECRET_TOKEN" not in passed
 
 
-def test_continuity_briefing_works_without_the_recall_hook(hook_env) -> None:
+def test_continuity_briefing_works_when_the_store_is_down(hook_env) -> None:
     memory = hook_env["home"] / "memory"
     memory.mkdir()
     (memory / "MEMORY.md").write_text("# index\n", encoding="utf-8")
@@ -212,7 +221,7 @@ def test_continuity_briefing_works_without_the_recall_hook(hook_env) -> None:
         "NOBLIVION_RECALL_MEMORY_DIR": str(memory),
         "NOBLIVION_RECALL_CACHE_DIR": str(hook_env["data"] / "cache"),
     }
-    assert not (HOOKS / "recall_hook.py").exists()
+    assert not (hook_env["data"] / "store.json").exists()
     text, rows, status = cont.briefing({"cwd": "/srv/proj-demo"}, env)
     assert status == "recency_only"
     assert rows == 1

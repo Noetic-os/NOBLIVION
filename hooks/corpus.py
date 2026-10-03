@@ -1,17 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The local memory corpus helpers of the prompt recall hook, for the hooks
-that need them before the recall hook itself is ported.
+"""The local memory corpus helpers of the prompt recall hook.
 
-The continuity hook used to import the whole recall hook for this code. The
-recall hook talks to the store over REST and moves later (E4, design doc
-section 4.0). These helpers are pure: they read the memory folder and the
-recall hook's per-session cache files, and need no store. They are copied
-from the reference recall hook without a change in behaviour.
+These helpers are pure: they read the memory folder and the recall hook's
+per-session cache files, and need no store. The recall hook
+(``recall_hook.py``) re-exports them under their old names, and the
+continuity hook and ``memory_text`` use them without loading the recall hook.
 
 ``recall_index`` is the one REST call. It uses ``recall_hook.py`` from this
-folder when that file exists. Without it, it raises ``RecallUnavailable``,
-and a caller falls back to its local order (the continuity hook then ranks
-by recency alone and logs ``recency_only``).
+folder (loaded once). Without that file it raises ``RecallUnavailable``; when
+the store is down it raises the recall hook's ``RecallError``. A caller then
+falls back to its local order (the continuity hook ranks by recency alone and
+logs ``recency_only``).
 
 Standard library only.
 """
@@ -501,7 +500,14 @@ class RecallUnavailable(Exception):
     """The recall hook is not installed next to this file."""
 
 
+_RECALL_HOOK: Any = None
+
+
 def _recall_hook():
+    """``recall_hook.py`` from this folder, loaded once per process."""
+    global _RECALL_HOOK
+    if _RECALL_HOOK is not None:
+        return _RECALL_HOOK
     path = _HERE / f"{RECALL_HOOK}.py"
     if not path.is_file():
         raise RecallUnavailable("recall_hook_absent")
@@ -511,12 +517,20 @@ def _recall_hook():
     mod = importlib.util.module_from_spec(spec)
     sys.modules.setdefault(RECALL_HOOK, mod)
     spec.loader.exec_module(mod)
+    _RECALL_HOOK = mod
     return mod
 
 
-def recall_index(query: str, k: int, environ: Optional[Mapping[str, str]] = None) -> List[Any]:
+def recall_index(
+    query: str,
+    k: int,
+    environ: Optional[Mapping[str, str]] = None,
+    root: Optional[str] = None,
+) -> List[Any]:
     """The store's ranked index for ``query`` (rows with ``title`` and
-    ``mid``), through ``recall_hook.recall_index``. Raises
-    ``RecallUnavailable`` when the recall hook is not installed, and whatever
-    the recall hook raises when the store does not answer."""
-    return _recall_hook().recall_index(query, k, environ)
+    ``mid``), through ``recall_hook.recall_index``. ``root`` defaults to the
+    root of the memory folder named by the env (``recall_hook.session_root``).
+    Raises ``RecallUnavailable`` when the recall hook is not installed, and
+    ``recall_hook.RecallError`` when the store is down, unproven or does not
+    answer."""
+    return _recall_hook().recall_index(query, k, environ, root)

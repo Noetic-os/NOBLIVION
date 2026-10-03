@@ -155,8 +155,22 @@ Entry points (E3c):
 - `noblivion ensure-running [--json]` runs steps 1 to 4 and prints
   `running`, `starting` or `started`. It imports only the stdlib and
   `noblivion.config`, so it returns fast. The code is
-  `noblivion.launcher`; a stdlib hook that cannot import the package
-  copies its steps (E4).
+  `noblivion.launcher`.
+- The hooks cannot import the package. `hooks/store_client.py` (E4) holds
+  their side: it reads `store.json` and `token`, runs the listener proof of
+  section 3.3, and starts the launcher. It does not copy steps 1 to 4. It
+  runs `<venv>/bin/noblivion ensure-running` as a detached child
+  (`start_new_session`, no output, never waited for), and the launcher runs
+  steps 1 to 4, the version check and the atomic `flock` start check
+  included. As a script it is the
+  `SessionStart` hook: it starts the launcher and exits 0 at once. A REST
+  hook that finds the store down or unproven also starts the launcher, but
+  only when `spawn.stamp` is older than 30 s, so a prompt does not fork a
+  launcher while a start is under way. The hook only reads the stamp's
+  age; the launcher alone locks and touches it. The entry point is config key
+  `store.bin` (env `NOBLIVION_BIN`), default `<data dir>/venv/bin/noblivion`;
+  no executable there means no start. `NOBLIVION_STORE_AUTOSTART=0` turns
+  every hook start off.
 - Exit codes of the store: 0 stopped, or another store holds the lock;
   2 the bind failed; 3 a schema fault (section 6.6).
 
@@ -279,6 +293,37 @@ these changes and nothing else in the REST client:
   schema.
 - The injected header text names the reference project. It is rewritten.
 - The trust report CLI prints `root`.
+
+How E4 built these (the hooks are `hooks/recall_hook.py`,
+`hooks/error_recall_hook.py`, `hooks/subagent_rules_hook.py` and
+`mcp/recall_mcp.py`; the continuity hook reaches the store through
+`corpus.recall_index`):
+
+- One client path: `recall_hook.store_get` proves the listener
+  (`store_client.connect`) and then sends the token. The proof request gets
+  at most half the call budget (at least 0.3 s); the request gets the rest.
+  A proof is kept for 30 s per process (data dir, port, token), so the
+  long-lived MCP server does not prove on every call; a request that gets
+  no answer drops the kept proof. Reasons in the hook log: `store_down`,
+  `no_token`, `foreign_listener`.
+- `root`: the hook entry derives it from the event's `cwd`. The memory
+  folder is `NOBLIVION_RECALL_MEMORY_DIR` (or `NOBLIVION_MEMORY_DIR`), else
+  `~/.claude/projects/<slug of cwd>/memory` when it exists. The root is
+  `NOBLIVION_RECALL_ROOT`, else the parent folder name of the memory folder,
+  else the slug of `cwd`. Without either, no `root` is sent. The MCP server
+  uses `CLAUDE_PROJECT_DIR`, else its working dir, as `cwd`. The local
+  re-rank, the rule rows and the error recall hook read the same folder.
+- Keyword mode: the prompt hook and the subagent hook keep the store order.
+  They skip the local re-rank (log `:rerank_off:keyword`) instead of fusing
+  their BM25 with null scores, and skip the index score floor (log
+  `:floor_off:keyword`). The error recall hook in `store` mode (renamed
+  from `daemon`) treats a keyword answer as a failure and uses its local
+  BM25.
+- The MCP tool `include_mined=true` lists candidates from
+  `/api/memories/index?include_mined=1` (titles and ids, no bodies);
+  `fetch_id` reads one. A store that is down or unproven is the tool error
+  `noblivion_recall: memory store not running (<reason>)`.
+- The trust report CLI is not part of E4; it moves with E5.
 
 Release gate: the E4 contract tests run the ported hooks against a live
 store, keyword mode included. An unported hook is not supported. In
@@ -1461,6 +1506,10 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 | `stop.deploy_hosts` | none | `[]` (the deploy stop check is off) |
 | `sync.index_command` | `NOBLIVION_MEMORY_SYNC_CMD` | `<data dir>/venv/bin/noblivion index` when installed, else none |
 | `log_level` | `NOBLIVION_LOG_LEVEL` | `info` |
+| `store.bin` | `NOBLIVION_BIN` | `<data dir>/venv/bin/noblivion` (the launcher the hooks start) |
+| none | `NOBLIVION_STORE_AUTOSTART` | on; `0` stops every hook from starting the store |
+| none | `NOBLIVION_RECALL_MEMORY_DIR` | the memory folder of the session's `cwd` (section 4.0) |
+| none | `NOBLIVION_RECALL_ROOT` | derived from the memory folder or `cwd` (section 4.0) |
 
 `OPENROUTER_API_KEY` keeps its common name. It is never in the config file.
 
@@ -1511,7 +1560,9 @@ this document.
 ```
 .claude-plugin/plugin.json      name, version, description, license
 hooks/hooks.json                hook entries, commands use ${CLAUDE_PLUGIN_ROOT}
-hooks/*.py                      stdlib hooks (hook_config.py: settings; corpus.py: local corpus helpers)
+hooks/*.py                      stdlib hooks (hook_config.py: settings; corpus.py: local corpus helpers;
+                                store_client.py: store discovery, listener proof, launcher start,
+                                and the SessionStart hook)
 .mcp.json                       the recall MCP server (stdio)
 mcp/recall_mcp.py
 noblivion/                      store and CLI package (needs the venv)
