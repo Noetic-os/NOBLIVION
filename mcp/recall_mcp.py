@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """
-recall_mcp — stdio MCP server with one tool: ``noblivion_recall``
+recall_mcp — stdio MCP server for shared recall and notes
 =================================================================
 The prompt hook (``hooks/recall_hook.py``) recalls memory automatically.
 This server is the explicit path: the model calls
@@ -14,6 +14,10 @@ ranked-index line carries (``GET /api/memories/fetch/{id}``). Exactly one of
 section 11.3) lists candidates from the ranked index with the
 transcript-mined rows included (``GET /api/memories/index?include_mined=1``);
 the model reads one with ``fetch_id``.
+
+``noblivion_remember`` saves a verified, redacted Markdown note in the
+configured shared memory folder. The same indexer then serves it to both
+Codex and Claude Code.
 
 The server is stdlib only, so it speaks the MCP stdio transport directly: one
 JSON-RPC 2.0 message per line on stdin, one per line on stdout. Methods:
@@ -42,11 +46,15 @@ selects the namespace for both), plus
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import hashlib
 import importlib.util
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
@@ -68,6 +76,7 @@ def _plugin_version() -> str:
 SERVER_VERSION = _plugin_version()
 PROTOCOL_VERSION = "2025-06-18"
 TOOL_NAME = "noblivion_recall"
+REMEMBER_NAME = "noblivion_remember"
 K_DEFAULT = 5
 K_MAX = 20
 # W6, change F3. The re-ordered fetch puts the
@@ -100,8 +109,8 @@ def _load_hook():
 TOOL_SCHEMA: Dict[str, Any] = {
     "name": TOOL_NAME,
     "description": (
-        "Search the local NOBLIVION memory store (the indexed Claude Code "
-        "memory files) and return the matching memories as data: one line per hit, "
+        "Search the local NOBLIVION memory store (indexed project Markdown "
+        "files) and return the matching memories as data: one line per hit, "
         "'- [entity] title: body (score)'. Use it before you act on a repo, host, "
         "ticket or process question that a past session may have settled. "
         "Pass fetch_id instead of query to read ONE memory in full, by the id shown "
@@ -148,6 +157,139 @@ TOOL_SCHEMA: Dict[str, Any] = {
         "additionalProperties": False,
     },
 }
+
+REMEMBER_SCHEMA: Dict[str, Any] = {
+    "name": REMEMBER_NAME,
+    "description": (
+        "Save one verified, durable project lesson in the shared NOBLIVION "
+        "Markdown corpus. Supply evidence. Do not save secrets, guesses, "
+        "raw transcripts, or task chatter. The same note is available to "
+        "Codex and Claude Code after indexing."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            name: {"type": "string"} for name in ("title", "rule", "apply", "body", "evidence")
+        },
+        "required": ["title", "rule", "apply", "body", "evidence"],
+        "additionalProperties": False,
+    },
+}
+
+
+def _redactor():
+    """Load the store's stdlib redactor without importing its venv package."""
+    path = Path(__file__).resolve().parent.parent / "src" / "noblivion" / "redaction.py"
+    spec = importlib.util.spec_from_file_location("noblivion_mcp_redaction", path)
+    if spec is None or spec.loader is None:
+        raise ImportError("redaction")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def noblivion_remember(
+    args: Dict[str, Any], environ: Optional[Dict[str, str]] = None
+) -> Dict[str, Any]:
+    """Save a redacted note as a source file. The existing indexer owns DB writes."""
+    env = os.environ if environ is None else environ
+    raw_dir = env.get("NOBLIVION_MEMORY_DIR", "").strip()
+    if not raw_dir:
+        return _tool_error("NOBLIVION_MEMORY_DIR must name the shared memory folder")
+    folder = Path(os.path.expanduser(raw_dir))
+    if not folder.is_absolute() or not folder.is_dir():
+        return _tool_error("NOBLIVION_MEMORY_DIR must be an existing absolute folder")
+    if not isinstance(args, dict) or set(args) != set(REMEMBER_SCHEMA["inputSchema"]["required"]):
+        return _tool_error("title, rule, apply, body, and evidence are required; no other fields")
+    caps = {"title": 160, "rule": 400, "apply": 1200, "body": 6000, "evidence": 1500}
+    try:
+        redactor = _redactor()
+        values = {}
+        for name, limit in caps.items():
+            value = args[name]
+            if not isinstance(value, str) or not value.strip() or len(value) > limit:
+                return _tool_error(f"{name} must be nonempty and at most {limit} characters")
+            clean = redactor.redact_at_rest(value.strip())
+            if clean == redactor.REDACTION_FAILED_TOKEN:
+                return _tool_error("secret redaction failed; note was not saved")
+            values[name] = clean
+    except Exception as exc:  # noqa: BLE001 - fail closed before any file write
+        return _tool_error(f"note validation failed ({type(exc).__name__})")
+    source = env.get("NOBLIVION_SOURCE_CLIENT", "claude_code").strip()
+    if source not in ("codex", "claude_code"):
+        return _tool_error("NOBLIVION_SOURCE_CLIENT must be codex or claude_code")
+    ident = hashlib.sha256(values["title"].encode("utf-8")).hexdigest()[:16]
+    path = folder.resolve() / f"reference_{source}_{ident}.md"
+    front = {
+        "name": f"reference-{source}-{ident}",
+        "description": values["title"],
+        "type": "reference",
+        "source_client": source,
+        "status": "active",
+        "rule": values["rule"],
+        "apply": values["apply"],
+        "scope": "always",
+    }
+    content = "---\n" + "".join(
+        f"{key}: {json.dumps(value, ensure_ascii=False)}\n" for key, value in front.items()
+    )
+    content += "---\n\n# " + values["title"].replace("\n", " ") + "\n\n"
+    content += values["body"] + "\n\nEvidence: " + values["evidence"] + "\n"
+    try:
+        if path.exists():
+            if path.read_text(encoding="utf-8") != content:
+                return _tool_error("a note with this title already exists; edit it directly")
+            saved = "already saved"
+        else:
+            fd, temp = tempfile.mkstemp(prefix=".noblivion-note-", dir=str(path.parent))
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as out:
+                    out.write(content)
+                os.chmod(temp, 0o600)
+                os.link(temp, path)  # atomic and refuses to replace a concurrent writer
+            finally:
+                if os.path.exists(temp):
+                    os.unlink(temp)
+            saved = "saved"
+    except FileExistsError:
+        return _tool_error("a note with this title was saved concurrently; retry recall")
+    except OSError as exc:
+        return _tool_error(f"note save failed ({type(exc).__name__})")
+    # The existing sync hook schedules the normal indexer. The store's periodic
+    # scan remains the fallback if this short hook call fails.
+    sync_event = {
+        "hook_event_name": "PostToolUse",
+        "session_id": "mcp-memory-write",
+        "cwd": str(path.parent),
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(path)},
+    }
+    with contextlib.suppress(Exception):  # a saved note remains durable
+        subprocess.run(
+            [sys.executable, str(_HOOKS / "memory_sync_hook.py")],
+            input=json.dumps(sync_event),
+            text=True,
+            capture_output=True,
+            env=dict(env),
+            timeout=5,
+            check=False,
+        )
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": json.dumps(
+                    {
+                        "saved": str(path),
+                        "status": saved,
+                        "source_client": source,
+                        "indexing": "scheduled or next store scan",
+                    }
+                ),
+            }
+        ],
+        "isError": False,
+    }
 
 
 def tool_schema(environ: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
@@ -478,11 +620,13 @@ def handle(message: Any, environ: Optional[Dict[str, str]] = None) -> Optional[D
     if method == "ping":
         return _result(req_id, {})
     if method == "tools/list":
-        return _result(req_id, {"tools": [tool_schema(environ)]})
+        return _result(req_id, {"tools": [tool_schema(environ), REMEMBER_SCHEMA]})
     if method == "tools/call":
         name = params.get("name")
         raw_args = params.get("arguments")
         args: Dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
+        if name == REMEMBER_NAME:
+            return _result(req_id, noblivion_remember(args, environ))
         if name != TOOL_NAME:
             return _error(req_id, -32602, f"Unknown tool: {name}")
         return _result(

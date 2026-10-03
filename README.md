@@ -2,24 +2,21 @@
 
 # NOBLIVION
 
-NOBLIVION is a plugin for Claude Code. It gives Claude Code a memory that
-it can search. It runs on your own machine.
-
-You keep notes for Claude Code as Markdown files in its memory folders.
-NOBLIVION indexes these files in a local database. On each prompt, it finds
-the notes that match the prompt and adds them to the context. It also keeps
-track of which notes help, and it can stop a tool call that breaks one of
-your own rules.
+NOBLIVION gives Claude Code and Codex one searchable memory on your own
+machine. The Claude Code plugin and the Codex adapter use the same local
+store. The store indexes Markdown notes in SQLite. Each client can find
+project notes and rules. The store also tracks which notes help, and a hook
+can stop a tool call that breaks a rule.
 
 Status: in development. There is no release yet.
 
 ## What it does
 
-- **Recall.** On each prompt, a hook asks the local store for the notes
-  that match. The hook adds the best notes to the context of the prompt.
-- **Recall on request.** An MCP tool, `noblivion_recall`, lets Claude Code
-  search the notes when it needs them. (MCP is the Model Context Protocol,
-  the way Claude Code talks to tools.)
+- **Recall.** On each prompt, a client hook asks the local store for notes
+  that match. The hook adds the best notes to the prompt context.
+- **Recall on request.** The MCP tool `noblivion_recall` lets either client
+  search notes and fetch one full note by ID. Codex can also save a reviewed
+  note with `noblivion_remember`.
 - **Error recall.** When a shell command fails, a hook looks for notes
   about that error.
 - **Guards.** Hooks read rules from your notes. Before a tool call, they
@@ -44,6 +41,8 @@ Status: in development. There is no release yet.
 - It does not sync notes between machines. Your Markdown files are the
   source of truth. Sync them with any file tool.
 - It does not change how Claude Code loads `CLAUDE.md` or `MEMORY.md`.
+  Codex still loads its own project instructions.
+- It does not increase either client's compute or usage allowance.
 - It does not support Windows in this version.
 - It does not serve more than one operating system user from one store.
 
@@ -61,14 +60,13 @@ your consent. Before text leaves the machine, NOBLIVION removes secrets
 and replaces paths, user names and IP addresses. It does not catch every
 name in plain prose. See [docs/dedup-and-privacy.md](docs/dedup-and-privacy.md).
 
-## Quick install
+## Quick install for Claude Code
 
 You need Claude Code, `python3` 3.9 or newer, and
 [uv](https://docs.astral.sh/uv/).
 
 1. Add the marketplace. Replace `<owner>` with the GitHub account that
-   hosts this repository. Use the HTTPS URL; the short form
-   `<owner>/NOBLIVION` can clone over SSH:
+   hosts this repository. Use the HTTPS URL:
 
    ```sh
    claude plugin marketplace add https://github.com/<owner>/NOBLIVION.git
@@ -101,9 +99,34 @@ You need Claude Code, `python3` 3.9 or newer, and
 The full steps, and the same step as a terminal command, are in
 [docs/install.md](docs/install.md).
 
+## Add Codex to the same memory
+
+Use the same computer, operating system user, NOBLIVION data folder and
+project namespace as Claude Code. Select an existing memory folder that the
+store already indexes. You can use the default Claude Code memory folder
+for the project, or add your folder to `memory_dirs` in the shared
+`config.json`. From a checkout of this repository, run:
+
+```sh
+python3 scripts/install_codex.py \
+  --data-dir /absolute/shared/data \
+  --memory-dir /absolute/shared/memory \
+  --workspace /absolute/project/repo
+```
+
+Use the Claude Code plugin's existing data folder when you have one. The
+Codex hooks apply to the listed workspace and its Git worktrees. The MCP
+server is a user-level Codex tool, so it is available in all Codex
+workspaces. Call it only for the intended project. The installer uses the
+existing store. Open Codex CLI and use `/hooks` to review the new hooks.
+See [Codex setup](docs/codex.md) and [shared memory](docs/shared-memory.md)
+for the full steps and limits.
+
 ## Documentation
 
 - [Install, update and uninstall](docs/install.md)
+- [Codex setup](docs/codex.md)
+- [Shared memory for Claude Code and Codex](docs/shared-memory.md)
 - [Configuration](docs/configuration.md): every setting, with its default
 - [How recall works](docs/how-recall-works.md)
 - [Guards and stop checks](docs/guards.md)

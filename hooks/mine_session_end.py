@@ -12,6 +12,7 @@ Rules:
   config key ``miner.enabled`` is false.
 - At most one start per ``MIN_INTERVAL_S`` (10 minutes): the stamp file
   ``mine.stamp`` in ``<data dir>/cache`` holds the time of the last start.
+  ``NOBLIVION_MINER_STAMP_DIR`` can keep a client-specific stamp elsewhere.
 - The command: ``NOBLIVION_MINE_CMD`` when set (a shell command line, for
   tests or an override), else ``<data dir>/venv/bin/noblivion mine`` when that
   file exists (the installer creates it). With neither, nothing runs.
@@ -30,6 +31,7 @@ MIN_INTERVAL_S = 600.0
 STAMP_NAME = "mine.stamp"
 CMD_ENV = "NOBLIVION_MINE_CMD"
 ENABLED_ENV = "NOBLIVION_MINER"
+STAMP_DIR_ENV = "NOBLIVION_MINER_STAMP_DIR"
 ENABLED_KEY = "miner.enabled"
 MINER_ENTRY = Path("venv") / "bin" / "noblivion"  # under the data dir
 
@@ -115,7 +117,10 @@ def run_hook(
     argv = command(environ)
     if argv is None:
         return "no_miner"
-    stamp = _CFG.cache_dir(_env(environ)) / STAMP_NAME
+    env = _env(environ)
+    override = str(env.get(STAMP_DIR_ENV) or "").strip()
+    stamp_dir = Path(override).expanduser() if override else _CFG.cache_dir(env)
+    stamp = stamp_dir / STAMP_NAME
     moment = now()
     if not _due(stamp, moment):
         return "throttled"
