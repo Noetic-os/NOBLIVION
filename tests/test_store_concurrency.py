@@ -281,7 +281,7 @@ def test_live_store_under_multi_process_load(tmp_path, fake_ollama):
             assert health["vector_rev"] >= vector_seen
 
         on_disk = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.glob("*.md")}
-        with closing(db.connect(settings.db_path)) as conn, db.read_tx(conn):
+        with closing(db.connect(settings.db_path, create=True)) as conn, db.read_tx(conn):
             rows = conn.execute(
                 "SELECT id, path, hash, content, rev FROM memories "
                 "WHERE archived_at IS NULL AND deleted_at IS NULL"
@@ -349,7 +349,7 @@ def test_read_then_write_transactions_lose_no_update(tmp_path, fake_ollama):
     write_fillers(folder, FILLERS)
     env = store_env(tmp_path)
     settings = config.load_settings(env)
-    db.open_db(settings.db_path).close()
+    db.open_db(settings.db_path, create=True).close()
     assert run_index_cli(env).returncode == 0
 
     stop = tmp_path / "stop"
@@ -405,7 +405,7 @@ def test_read_then_write_transactions_lose_no_update(tmp_path, fake_ollama):
     assert cli_runs
     for run in cli_runs:
         assert run.returncode == 0, run.stderr
-    with closing(db.connect(settings.db_path)) as conn:
+    with closing(db.connect(settings.db_path, create=True)) as conn:
         assert db.get_meta(conn, "stress_counter") == str(RMW_PROCS * RMW_COUNT)
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
@@ -426,7 +426,7 @@ def test_concurrent_first_open_migrates_once(tmp_path):
         assert report["ok"], report
         assert report["version"] == db.latest_version()
         assert report["revs"] == [0, 0]
-    with closing(db.connect(path)) as conn:
+    with closing(db.connect(path, create=True)) as conn:
         assert conn.execute("SELECT count(*) FROM meta WHERE key = 'db_id'").fetchone()[0] == 1
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -443,7 +443,7 @@ def test_same_size_rewrite_in_one_clock_tick_is_indexed(tmp_path):
     path = folder / "feedback_tick.md"
     write_note(folder, path.name, "tick", "Version one of the tick rule.", "alpha")
     first = path.stat()
-    with closing(db.open_db(tmp_path / "data" / config.DB_FILE)) as conn:
+    with closing(db.open_db(tmp_path / "data" / config.DB_FILE, create=True)) as conn:
         cache: indexer.StatCache = {}
         indexer.scan(conn, [folder], stat_cache=cache)
         write_note(folder, path.name, "tick", "Version two of the tick rule.", "alpha")
@@ -460,7 +460,7 @@ def test_stat_cache_still_skips_old_unchanged_files(tmp_path):
     write_note(folder, "feedback_old.md", "old", "An old rule.", "beta")
     hour_ago = time.time() - 3600
     os.utime(folder / "feedback_old.md", (hour_ago, hour_ago))
-    with closing(db.open_db(tmp_path / "data" / config.DB_FILE)) as conn:
+    with closing(db.open_db(tmp_path / "data" / config.DB_FILE, create=True)) as conn:
         cache: indexer.StatCache = {}
         indexer.scan(conn, [folder], stat_cache=cache)
         assert str(folder / "feedback_old.md") in cache
@@ -521,10 +521,10 @@ def test_a_new_connection_keeps_the_locks_of_open_connections(tmp_path):
     process could take the lock, checkpoint and delete the WAL under an open
     connection ("disk I/O error", "database disk image is malformed")."""
     path = tmp_path / "data" / config.DB_FILE
-    db.open_db(path).close()
-    with closing(db.connect(path)) as held:
+    db.open_db(path, create=True).close()
+    with closing(db.connect(path, create=True)) as held:
         held.execute("SELECT count(*) FROM meta").fetchone()  # a WAL reader: SHARED lock
-        db.connect(path).close()  # a second connection of this process, as per request
+        db.connect(path, create=True).close()  # a second connection of this process, as per request
         other = subprocess.run(
             [
                 sys.executable,

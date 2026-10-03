@@ -71,7 +71,7 @@ def write(path: Path, records, mode: str = "w") -> Path:
 
 @pytest.fixture
 def conn(tmp_path):
-    c = db.open_db(tmp_path / "data" / "noblivion.db")
+    c = db.open_db(tmp_path / "data" / "noblivion.db", create=True)
     yield c
     c.close()
 
@@ -349,7 +349,7 @@ def test_store_search_never_returns_mined_rows_and_index_only_on_request(tmp_pat
     try:
         projects = tmp_path / "transcripts"
         write(projects / PROJECT_DIR / "s-one.jsonl", session_one())
-        with closing(db.connect(run.store.settings.db_path)) as c:
+        with closing(db.connect(run.store.settings.db_path, create=True)) as c:
             assert mine(c, projects, project="claude_code").inserted == 3
         search = run.get("/api/memories/search?q=sprinkler+water+make")[1]
         assert search["results"] == ["No memories available."]
@@ -373,6 +373,7 @@ def cli_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     projects = tmp_path / "home" / ".claude" / "projects"
     write(projects / PROJECT_DIR / "s-one.jsonl", session_one())
+    db.open_db(data / "noblivion.db", create=True).close()  # install.sh made it
     return data
 
 
@@ -380,7 +381,7 @@ def test_cli_mines_the_default_glob_from_home(cli_env, capsys):
     assert cli_main(["mine", "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["inserted"] == 3
-    with closing(db.connect(cli_env / "noblivion.db")) as c:
+    with closing(db.connect(cli_env / "noblivion.db", create=True)) as c:
         assert len(rows(c)) == 3
     assert cli_main(["mine"]) == 0
     assert "inserted=0" in capsys.readouterr().out
@@ -390,12 +391,14 @@ def test_opt_out_by_env_and_config_reads_nothing(cli_env, monkeypatch, capsys):
     monkeypatch.setenv("NOBLIVION_MINER", "0")
     assert cli_main(["mine"]) == 0
     assert "off" in capsys.readouterr().out
-    assert not (cli_env / "noblivion.db").exists()
+    with closing(db.connect(cli_env / "noblivion.db")) as c:
+        assert rows(c) == []
     monkeypatch.delenv("NOBLIVION_MINER")
     cli_env.mkdir(parents=True, exist_ok=True)
     (cli_env / "config.json").write_text(json.dumps({"miner": {"enabled": False}}))
     assert cli_main(["mine"]) == 0
-    assert not (cli_env / "noblivion.db").exists()
+    with closing(db.connect(cli_env / "noblivion.db")) as c:
+        assert rows(c) == []
 
 
 def test_settings_defaults_and_bad_values(tmp_path):

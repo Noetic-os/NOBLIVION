@@ -795,6 +795,9 @@ def consent_main(argv: Sequence[str] | None = None, stdin=None, stdout=None) -> 
     except db.SchemaError as exc:
         print(f"noblivion consent: {exc}", file=sys.stderr)
         return 3
+    except db.DatabaseMissing as exc:
+        print(f"noblivion consent: {exc}", file=sys.stderr)
+        return 6
     try:
         if args.revoke:
             revoke_consent(conn)

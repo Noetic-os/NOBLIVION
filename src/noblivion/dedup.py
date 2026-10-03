@@ -99,6 +99,7 @@ EXIT_USAGE = 2
 EXIT_SCHEMA = 3
 EXIT_LOCKED = 4
 EXIT_LATCH = 5
+EXIT_NO_DB = 6  # no database: dedup never makes one (NOBLIVION-28)
 
 _RUN_ID_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{6}$")
 
@@ -1398,6 +1399,9 @@ def main(
     except db.SchemaError as exc:
         print(f"noblivion dedup: {exc}", file=sys.stderr)
         return EXIT_SCHEMA
+    except db.DatabaseMissing as exc:
+        print(f"noblivion dedup: {exc}", file=sys.stderr)
+        return EXIT_NO_DB
     try:
         return _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_s)
     except DedupError as exc:

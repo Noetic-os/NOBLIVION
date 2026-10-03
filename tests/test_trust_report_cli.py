@@ -23,7 +23,7 @@ def data(tmp_path, monkeypatch):
     for key in ("CLAUDE_PLUGIN_DATA", "NOBLIVION_CONFIG", "NOBLIVION_PROJECT"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("NOBLIVION_DATA_DIR", str(folder))
-    db.open_db(folder / "noblivion.db").close()
+    db.open_db(folder / "noblivion.db", create=True).close()
     return folder
 
 

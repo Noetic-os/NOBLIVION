@@ -1639,7 +1639,7 @@ def save_seen(path: Optional[str], seen: set) -> None:
     if not path:
         return
     try:
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        _make_dirs(os.path.dirname(path))
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(sorted(seen), fh)
@@ -1743,7 +1743,7 @@ def save_last_index(
         "ids": _candidate_ids(candidates),
     }
     try:
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        _make_dirs(os.path.dirname(path))
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(doc, fh)
@@ -1864,7 +1864,7 @@ def save_shown_set(cache: str, state: Mapping[str, Any], path: Optional[str] = N
         if kind in state:
             doc[kind] = sorted({x for x in (state.get(kind) or ()) if isinstance(x, str) and x})
     try:
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        _make_dirs(os.path.dirname(path))
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(doc, fh)
@@ -1958,7 +1958,7 @@ def session_lock(path: Optional[str]):
         yield
         return
     try:
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        _make_dirs(os.path.dirname(path))
         fh = open(path + ".lock", "a")
     except OSError:
         yield
@@ -1991,7 +1991,7 @@ def log_line(
     ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     line = f"{ts} event={event} session={sid} hits={hits} chars={chars} ms={ms} {status}\n"
     try:
-        os.makedirs(cache, mode=0o700, exist_ok=True)
+        _make_dirs(cache)
         with open(os.path.join(cache, "recall.log"), "a", encoding="utf-8") as fh:
             fh.write(line)
     except OSError:
@@ -3015,6 +3015,13 @@ def main(stdin=None, stdout=None, environ: Optional[Dict[str, str]] = None) -> i
             log_line(cache_dir(env), "-", None, 0, 0, 0, f"fail:internal:{type(exc).__name__}")
         return 0
     return 0
+
+
+def _make_dirs(path: Any) -> None:
+    """Make a state folder, but never the data dir itself: after an uninstall
+    deleted it, a hook must not make it again (hook_config.make_dirs,
+    NOBLIVION-28). Raises OSError."""
+    _sibling_module("hook_config").make_dirs(path)
 
 
 if __name__ == "__main__":

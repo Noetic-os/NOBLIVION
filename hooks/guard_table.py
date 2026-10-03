@@ -242,7 +242,7 @@ def write_atomic(path: Path, data: Dict[str, object]) -> None:
     """Write ``data`` as JSON to ``path`` through a temp file in the same folder
     and ``os.replace``: a reader sees the old table or the new one, never half."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _make_dirs(path.parent)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -1008,6 +1008,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     print((__doc__ or "").split("\n\n")[0], file=sys.stderr)
     return 0
+
+
+def _make_dirs(path: Any) -> None:
+    """Make a state folder, but never the data dir itself: after an uninstall
+    deleted it, a hook must not make it again (hook_config.make_dirs,
+    NOBLIVION-28). Raises OSError."""
+    _CFG.make_dirs(path)
 
 
 if __name__ == "__main__":

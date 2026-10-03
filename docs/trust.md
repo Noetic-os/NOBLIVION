@@ -66,8 +66,9 @@ The store updates the score:
 it computed again. Add `--json` for JSON output.
 
 `noblivion trust report` and `noblivion trust recompute` exit with code 3
-on a database schema error, and with code 5 when the database stays locked
-or another database error occurs. They then print one line and no
+on a database schema error, with code 5 when the database stays locked
+or another database error occurs, and with code 6 when there is no
+database. They then print one line and no
 traceback.
 
 ## Trust in ranking

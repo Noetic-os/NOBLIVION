@@ -236,7 +236,7 @@ def log_line(
     ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     line = f"{ts} event={event} session={sid[:128]} rows={rows} chars={chars} ms={ms} {status}\n"
     try:
-        os.makedirs(cache, mode=0o700, exist_ok=True)
+        _make_dirs(cache)
         with open(os.path.join(cache, LOG_NAME), "a", encoding="utf-8") as fh:
             fh.write(line)
     except OSError:
@@ -279,7 +279,7 @@ def save_state(cache: str, session_id: Any, state: Mapping[str, Any]) -> bool:
     if path is None:
         return False
     try:
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        _make_dirs(os.path.dirname(path))
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(
@@ -751,6 +751,13 @@ def main(stdin=None, stdout=None, environ: Optional[Mapping[str, str]] = None) -
     except Exception:  # noqa: BLE001, S110 - a hook fails open
         pass
     return 0
+
+
+def _make_dirs(path: Any) -> None:
+    """Make a state folder, but never the data dir itself: after an uninstall
+    deleted it, a hook must not make it again (hook_config.make_dirs,
+    NOBLIVION-28). Raises OSError."""
+    _CFG.make_dirs(path)
 
 
 if __name__ == "__main__":

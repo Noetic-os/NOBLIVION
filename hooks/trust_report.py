@@ -155,7 +155,7 @@ def write_cache(
     doc["fetched_at"] = t.astimezone(_dt.timezone.utc).isoformat(timespec="seconds")
     doc["counts"] = {name: len(report.get(name) or []) for name in LISTS}
     path = cache_file(environ)
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    _make_dirs(os.path.dirname(path))
     tmp = f"{path}.{os.getpid()}.tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -251,6 +251,13 @@ def main(argv: Optional[Sequence[str]] = None, environ: Optional[Mapping[str, st
     else:
         print(render(report, max(1, args.limit)))
     return 0
+
+
+def _make_dirs(path: Any) -> None:
+    """Make a state folder, but never the data dir itself: after an uninstall
+    deleted it, a hook must not make it again (hook_config.make_dirs,
+    NOBLIVION-28). Raises OSError."""
+    _load("hook_config").make_dirs(path)
 
 
 if __name__ == "__main__":

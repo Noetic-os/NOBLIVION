@@ -404,7 +404,7 @@ def log_line(
     rec.update(extra)
     try:  # best effort: a log failure never blocks a decision
         p = log_path(env)
-        p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _make_dirs(p.parent)
         fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -458,7 +458,7 @@ class SessionState:
 
     def __init__(self, env: Mapping[str, str], session_id: object, agent: str = "main"):
         folder = state_dir(env)
-        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _make_dirs(folder)
         self.path = _state_file(env, session_id, agent)
         self.new = not self.path.exists()
         if self.new:
@@ -1702,6 +1702,17 @@ def main(
         if armed:
             _disarm()
     return 0
+
+
+def _make_dirs(path: Any) -> None:
+    """Make a state folder, but never the data dir itself: after an uninstall
+    deleted it, a hook must not make it again (hook_config.make_dirs,
+    NOBLIVION-28). Raises OSError."""
+    make = getattr(_cfg(), "make_dirs", None)
+    if make is None:  # the stand-in: no hook_config.py next to this file
+        Path(path).mkdir(mode=0o700, parents=True, exist_ok=True)
+    else:
+        make(path)
 
 
 if __name__ == "__main__":

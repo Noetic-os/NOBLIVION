@@ -51,6 +51,7 @@ JOB_TICK_S = 0.5
 EXIT_OK = 0
 EXIT_BIND = 2
 EXIT_SCHEMA = 3
+EXIT_NOT_INSTALLED = 4  # no data dir, or no database and install.sh has not run
 
 INDEX_SCANNING = "scanning"
 INDEX_IDLE = "idle"
@@ -210,11 +211,13 @@ class Store:
         """
         if self.host != LOOPBACK:
             raise BindRefusedError(f"the store binds {LOOPBACK} only")
-        config.private_dir(self.data_dir)
+        config.private_dir(self.data_dir, create=False)
         self._lock_fd = acquire_lock(self.lock_path, self.lock_wait_s)
         try:
             self.token = ensure_token(self.data_dir)
-            db.open_db(self.settings.db_path, allow_migrate=True).close()
+            # A new database only after install.sh has run (NOBLIVION-28).
+            create = config.is_installed(self.data_dir)
+            db.open_db(self.settings.db_path, allow_migrate=True, create=create).close()
             self.server = make_server(self.host, self.store_settings.port, self)
             self.port = int(self.server.server_address[1])
             self.started_at = time.time()
@@ -262,8 +265,10 @@ class Store:
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
-        """A connection for this thread only (section 6.1); closed after use."""
-        conn = db.connect(self.settings.db_path)
+        """A connection for this thread only (section 6.1); closed after use.
+        It opens the existing database only: a request or the stop after an
+        uninstall deleted the data dir does not make it again (NOBLIVION-28)."""
+        conn = db.connect(self.settings.db_path, create=False)
         try:
             yield conn
         finally:
@@ -474,6 +479,10 @@ class Store:
                 next_scan = self.clock() + interval
                 backfilled_state = None
                 while not self._jobs_stop.wait(JOB_TICK_S):
+                    if not self.data_dir.is_dir():
+                        # An uninstall deleted the data dir: stop, make nothing.
+                        self.request_stop("data dir removed")
+                        break
                     state = self.embedding.state
                     if self.clock() >= next_maintenance:
                         self.maintenance_once(conn)
@@ -624,7 +633,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         from dataclasses import replace
 
         store_settings = replace(store_settings, port=args.port)
-    config.private_dir(settings.data_dir)
+    try:
+        config.private_dir(settings.data_dir, create=False)
+    except config.DataDirMissing as exc:
+        print(f"noblivion serve: {exc}", file=sys.stderr)
+        return EXIT_NOT_INSTALLED
     _setup_logging(settings.data_dir, store_settings.log_level)
 
     store = Store(settings, store_settings, lock_wait_s=args.lock_wait)
@@ -647,6 +660,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         log.error("schema: %s", exc)
         write_start_error(settings.data_dir, f"database schema fault: {exc}")
         return EXIT_SCHEMA
+    except (db.DatabaseMissing, config.DataDirMissing) as exc:
+        log.error("not installed: %s", exc)
+        write_start_error(settings.data_dir, f"not installed: {exc}")
+        return EXIT_NOT_INSTALLED
     except OSError as exc:
         reason = bind_error_text(store_settings.port, exc)
         log.error("%s", reason)

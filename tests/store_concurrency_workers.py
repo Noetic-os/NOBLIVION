@@ -32,7 +32,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from noblivion import db, embedding, launcher, rest  # noqa: E402
-from store_helpers import fake_vector  # noqa: E402
+from store_helpers import fake_vector, mark_installed  # noqa: E402
 
 PAIR_QUERY = "kiwi"
 PAIR_FILE_RE = re.compile(r"^feedback_pair(\d+)_([ab])\.md$")
@@ -102,6 +102,7 @@ def store_env(base: Path, **extra: str) -> dict[str, str]:
         HOME=str(base),
     )
     env.update(extra)
+    mark_installed(base / "data")  # install.sh has run (NOBLIVION-28)
     return env
 
 
@@ -331,7 +332,7 @@ def role_backfill(args: dict) -> dict:
     """A second embedding backfill process (as a re-embed CLI would run)."""
     stop = Path(args["stop"])
     embedder = embedding.OllamaEmbedder(FAKE_MODEL, args["ollama_url"])
-    conn = db.connect(args["db"])
+    conn = db.connect(args["db"], create=True)
     passes = embedded = 0
     try:
         while not stop.exists():
@@ -352,7 +353,7 @@ def role_rmw(args: dict) -> dict:
     read, so no other process can commit between the read and the write.
     """
     wait_until(args["start_at"])
-    conn = db.connect(args["db"])
+    conn = db.connect(args["db"], create=True)
     done = 0
     try:
         for _ in range(args["count"]):
@@ -368,7 +369,7 @@ def role_rmw(args: dict) -> dict:
 def role_open_db(args: dict) -> dict:
     """Open a fresh database: connect and migrate, as the store and the CLI do."""
     wait_until(args["start_at"])
-    conn = db.open_db(args["db"], allow_migrate=args.get("allow_migrate", True))
+    conn = db.open_db(args["db"], allow_migrate=args.get("allow_migrate", True), create=True)
     try:
         return {"version": db.user_version(conn), "revs": list(db.revisions(conn))}
     finally:

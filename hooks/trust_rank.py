@@ -322,7 +322,7 @@ def _debug(cache: str, record: Mapping[str, Any]) -> None:
     """One JSON line; the file moves to ``.1`` past DEBUG_MAX_BYTES. Never raises."""
     path = os.path.join(cache, DEBUG_NAME)
     try:
-        os.makedirs(cache, mode=0o700, exist_ok=True)
+        _make_dirs(cache)
         with contextlib.suppress(OSError):
             if os.path.getsize(path) > DEBUG_MAX_BYTES:
                 os.replace(path, path + ".1")
@@ -395,3 +395,20 @@ def apply_index_trust(
     if md == MODE_SHADOW:
         return rows, note
     return trusted, note
+
+
+def _make_dirs(path: Any) -> None:
+    """Make a state folder, but never the data dir itself: after an uninstall
+    deleted it, a hook must not make it again (hook_config.make_dirs,
+    NOBLIVION-28). Raises OSError."""
+    import importlib.util
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        "hook_config", os.path.join(here, "hook_config.py")
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("hook_config")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.make_dirs(path)

@@ -340,7 +340,7 @@ def test_end_to_end_ranked_index_rule_rows_and_mcp_fetch(tmp_path, real_store):
 
 def test_end_to_end_mcp_search_and_include_mined(tmp_path, real_store):
     run, folder = real_store
-    with closing(db.connect(run.store.settings.db_path)) as conn:
+    with closing(db.connect(run.store.settings.db_path, create=True)) as conn:
         from store_helpers import add_memory
 
         add_memory(

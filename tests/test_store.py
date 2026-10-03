@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from noblivion import __version__, config, db, embedding, launcher, rest, store
-from store_helpers import FakeEmbedder, add_memory
+from store_helpers import FakeEmbedder, add_memory, mark_installed
 
 TOKEN_KEYS = {"status", "service", "version"}
 FULL_HEALTH_KEYS = TOKEN_KEYS | {
@@ -85,6 +85,7 @@ def make_store(tmp_path: Path, **overrides) -> store.Store:
     store_settings = replace(store_settings, **overrides.pop("store_settings", {}))
     overrides.setdefault("embedding_service", fake_service())
     overrides.setdefault("labeller", None)
+    mark_installed(settings.data_dir)
     return store.Store(settings, store_settings, **overrides)
 
 
@@ -368,7 +369,7 @@ def test_index_top_k_clamp_and_non_number(running):
 def test_index_include_mined(tmp_path):
     run = Running(make_store(tmp_path))
     try:
-        with closing(db.connect(run.store.settings.db_path)) as conn:
+        with closing(db.connect(run.store.settings.db_path, create=True)) as conn:
             add_memory(conn, "mined note", "kubectl rollout restart", source_type=db.SOURCE_MINED)
         plain = run.get("/api/memories/index?q=rollout+restart")[1]
         assert plain["results"] == []
@@ -383,7 +384,7 @@ def test_index_include_mined(tmp_path):
 def test_index_trust_fields_in_shadow_mode(tmp_path):
     run = Running(make_store(tmp_path, store_settings={"trust_ranking": "shadow"}))
     try:
-        with closing(db.connect(run.store.settings.db_path)) as conn:
+        with closing(db.connect(run.store.settings.db_path, create=True)) as conn:
             a = add_memory(conn, "alpha rule", "alpha bravo charlie")
             add_memory(conn, "alpha mined", "alpha bravo", source_type=db.SOURCE_MINED)
             with db.write_tx(conn):
@@ -406,7 +407,7 @@ def test_keyword_mode_has_null_scores(tmp_path):
     service = embedding.EmbeddingService(embedding.EmbeddingSettings(backend="none"))
     run = Running(make_store(tmp_path, embedding_service=service))
     try:
-        with closing(db.connect(run.store.settings.db_path)) as conn:
+        with closing(db.connect(run.store.settings.db_path, create=True)) as conn:
             add_memory(conn, "alpha rule", "alpha bravo charlie")
         body = run.get("/api/memories/index?q=alpha")[1]
         assert body["mode"] == "keyword"
@@ -469,7 +470,10 @@ def test_fetch_other_namespace_and_archived(running):
     top = running.get("/api/memories/index?q=pytest+venv")[1]["results"][0]
     body = running.get(f"/api/memories/fetch/{top['id']}?project=other_space")[1]
     assert body["namespace"] == "other_space" and body["reason"].startswith("no memory")
-    with closing(db.connect(running.store.settings.db_path)) as conn, db.write_tx(conn):
+    with (
+        closing(db.connect(running.store.settings.db_path, create=True)) as conn,
+        db.write_tx(conn),
+    ):
         rev = db.bump_rev(conn)
         conn.execute(
             "UPDATE memories SET archived_at = ?, rev = ? WHERE id = ?",
@@ -625,7 +629,7 @@ def test_answers_while_the_model_loads(tmp_path):
 
     run = Running(make_store(tmp_path, embedding_service=fake_service(SlowEmbedder())))
     try:
-        with closing(db.connect(run.store.settings.db_path)) as conn:
+        with closing(db.connect(run.store.settings.db_path, create=True)) as conn:
             add_memory(conn, "alpha rule", "alpha bravo")
         body = run.get("/api/memories/index?q=alpha")[1]
         assert body["mode"] == "keyword" and len(body["results"]) == 1
@@ -640,6 +644,7 @@ def test_answers_while_the_model_loads(tmp_path):
 
 def test_ensure_running_starts_once_then_waits(tmp_path):
     env = {"NOBLIVION_DATA_DIR": str(tmp_path / "data")}
+    (tmp_path / "data").mkdir()
     calls = []
     spawn = lambda data_dir, lock_wait_s=0.0: calls.append(lock_wait_s)  # noqa: E731
     assert launcher.ensure_running(env, spawn=spawn) == "started"
@@ -707,6 +712,7 @@ def store_env(tmp_path: Path) -> dict[str, str]:
         HOME=str(tmp_path),
     )
     env.pop("CLAUDE_PLUGIN_DATA", None)
+    mark_installed(tmp_path / "data")  # install.sh has run (NOBLIVION-28)
     return env
 
 

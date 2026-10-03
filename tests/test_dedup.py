@@ -110,7 +110,7 @@ def garden(tmp_path, no_network):
         "NOBLIVION_DEDUP_MODEL": FakeJudge.model,
         dedup.KEY_ENV: "test-placeholder-not-a-key",
     }
-    conn = db.open_db(data / "noblivion.db")
+    conn = db.open_db(data / "noblivion.db", create=True)
     indexer.scan(conn, [folder])
     ids = {r["path"]: r["id"] for r in conn.execute("SELECT id, path FROM memories")}
     with db.write_tx(conn):

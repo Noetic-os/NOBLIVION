@@ -203,7 +203,7 @@ def save_pending(
     path = os.path.join(folder, tool_use_id + ".json")
     doc = {"ts": time.time(), "agent_type": agent_type, "prompt": prompt}
     try:
-        os.makedirs(folder, mode=0o700, exist_ok=True)
+        _make_dirs(folder)
         tmp = f"{path}.{os.getpid()}.tmp"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -527,6 +527,13 @@ def main(
             rh.log_line(sub_cache(env), "-", None, 0, 0, 0, status)
         return 0
     return 0
+
+
+def _make_dirs(path: Any) -> None:
+    """Make a state folder, but never the data dir itself: after an uninstall
+    deleted it, a hook must not make it again (hook_config.make_dirs,
+    NOBLIVION-28). Raises OSError."""
+    _load_recall_hook()._sibling_module("hook_config").make_dirs(path)
 
 
 if __name__ == "__main__":

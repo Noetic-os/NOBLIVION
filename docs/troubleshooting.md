@@ -65,8 +65,9 @@ When the store cannot start, the session start shows one line:
 exits with code 1.
 
 1. Check that the venv exists: `<data dir>/venv/bin/noblivion`. If it does
-   not, run `install.sh`. See [install.md](install.md). At session start,
-   the plugin prints the exact command when the venv is missing.
+   not, type `/noblivion:setup` in the chat, or run `install.sh`. See
+   [install.md](install.md). At session start, the plugin prints both when
+   the venv is missing.
 2. Check that autostart is on. `NOBLIVION_STORE_AUTOSTART=0` stops every
    hook from starting the store.
 3. Run `noblivion ensure-running`. It waits up to 10 seconds for the
@@ -85,12 +86,18 @@ exits with code 1.
 | `another store runs; exiting` | A store already holds `store.lock`. | Nothing. The running store serves the hooks. |
 | `schema: ...` | The database is from a newer version, or is damaged. | Update the plugin, or move `noblivion.db` away and run `noblivion index` to build a new one. Trust history is in the old file. |
 | `store stopping: idle` | The store had no request for 30 minutes. | Nothing. The next prompt starts it again. |
+| `not installed: no database at ...` | There is no `noblivion.db`, and `install.sh` has not run for this data dir. The store makes no new database then (NOBLIVION-28). | Type `/noblivion:setup`, or run `install.sh`. |
+| `store stopping: data dir removed` | The data dir was deleted, for example by `claude plugin uninstall`. The store stopped and made nothing. | Nothing, or install again. |
 
-The store exits with code 2 when it cannot bind to the port, and with
-code 3 on a schema error.
+The store exits with code 2 when it cannot bind to the port, with code 3
+on a schema error, and with code 4 when the data dir is missing, or when
+the database is missing and `install.sh` has not run. `noblivion
+ensure-running` prints `noblivion: not installed: no data dir at ...` and
+exits 1 when the data dir is missing. Neither makes the data dir.
 
 To stop the store, send SIGTERM to the process id in
-`<data dir>/store.json`. The uninstall script does the same.
+`<data dir>/store.json`. The uninstall script does the same, and waits
+until the store has exited.
 
 ## Handshake failure
 

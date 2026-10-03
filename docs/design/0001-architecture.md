@@ -116,6 +116,17 @@ make the data dir with the user's umask before NOBLIVION runs, so
 `install.sh`, the SessionStart hook, the launcher and the store set an
 existing data dir to 0700 too (NOBLIVION-27).
 
+Only `install.sh` makes the data dir (NOBLIVION-28). The store, the
+launcher, the CLI tools and the hooks never make it: the store and the
+launcher stop with "not installed", the CLI tools exit with code 6, and a
+hook makes a folder inside the data dir only while the data dir exists
+(`hook_config.make_dirs`). A new `noblivion.db` needs the install stamp
+`venv/noblivion-install.json` (section 6.6). Reason: Claude Code keeps
+running sessions, and an orphaned plugin version, after `claude plugin
+uninstall` deleted the data dir. A store that stopped later opened a new
+connection for its WAL checkpoint, and `connect` made the folder and an
+empty `noblivion.db` again.
+
 ### 3.2 Start
 
 1. The `SessionStart` hook reads `store.json`. If the file is missing, go
@@ -140,7 +151,8 @@ existing data dir to 0700 too (NOBLIVION-27).
    the package imports from the installed plugin). It does not wait.
 5. The store takes `flock(LOCK_EX | LOCK_NB)` on `store.lock`. If the lock
    is held, another store runs. The new process exits with code 0.
-6. The store opens the database, runs migrations (section 6.6), and binds
+6. The store opens the database (a new one only after `install.sh` ran,
+   section 6.6), runs migrations (section 6.6), and binds
    `127.0.0.1:<port>`. It writes `store.json` (temp file plus `rename`).
 7. The store answers requests at once, from the rows already in the
    database. The first index scan (section 5.6) and the model load run in
@@ -184,7 +196,10 @@ Entry points (E3c):
   no executable there means no start. `NOBLIVION_STORE_AUTOSTART=0` turns
   every hook start off.
 - Exit codes of the store: 0 stopped, or another store holds the lock;
-  2 the bind failed; 3 a schema fault (section 6.6).
+  2 the bind failed; 3 a schema fault (section 6.6); 4 not installed (no
+  data dir, or no database and no install stamp). `ensure-running` prints
+  `not_installed` and exits 1 when the data dir is missing; it never makes
+  it.
 
 ### 3.3 Port
 
@@ -234,7 +249,10 @@ plan fixes it. Section 18 lists this as an open decision.
   its current batch before it exits.
 - On `SIGTERM` or `SIGINT` the store stops accepting requests, finishes
   open requests (5 s limit), runs `PRAGMA wal_checkpoint(TRUNCATE)`,
-  deletes `store.json` and releases the lock.
+  deletes `store.json` and releases the lock. The checkpoint opens the
+  existing database only: after the data dir was deleted it makes nothing.
+- The jobs thread checks every tick that the data dir exists. When it is
+  gone (an uninstall), the store stops with reason `data dir removed`.
 - On a crash the lock is released by the OS. `store.json` may stay. The
   next hook gets no answer from that port and starts a new store. The new
   store overwrites `store.json`.
@@ -851,6 +869,10 @@ PRAGMA trusted_schema = OFF;
   belong to the process, so closing any fd of the file drops the locks of
   every open connection; another process could then checkpoint and delete
   the WAL under them. `connect` creates a new file with `O_EXCL` only (E3d).
+- `connect` opens an existing database only (SQLite `mode=rw`), unless the
+  caller passes `create=True`. It never makes the folder then. The store
+  connections per request, the jobs and the stop checkpoint never create
+  (NOBLIVION-28).
 - The data dir must be on a local file system. WAL needs shared memory
   that network file systems do not give. `doctor` warns on NFS and SMB.
 
@@ -1038,10 +1060,15 @@ the database, WAL, SHM and token files, and mode 0700 on the data dir.
   opened for writes. The store exits with code 3 and logs "database is
   newer than this NOBLIVION". This protects against a downgrade.
 - Only the store runs migrations. A CLI tool that finds an old schema
-  refuses to run and asks the user to start the store once. A CLI tool
-  may create a new, empty database at the latest version, so the indexer
-  works before the store first runs. That is not a migration: no user
-  data exists yet.
+  refuses to run and asks the user to start the store once.
+- A new, empty database at the latest version is made only by the store
+  at start and by `noblivion index`, and only when the install stamp
+  `venv/noblivion-install.json` exists (`install.sh` writes it before its
+  first `noblivion index`), or for `index --db PATH`. So the indexer works
+  before the store first runs. That is not a migration: no user data exists
+  yet. Every other CLI tool (`mine`, `trust`, `dedup`, `consent`) opens an
+  existing database only and exits with code 6 without one. A run that a
+  hook starts after an uninstall therefore makes nothing (NOBLIVION-28).
 
 ## 7. Embedding backends
 
@@ -1701,6 +1728,7 @@ hooks/*.py                      stdlib hooks (hook_config.py: settings; corpus.p
 mcp/recall_mcp.py
 config/config.default.json      the config install.sh writes when none exists
 src/noblivion/                  store and CLI package (installed into the venv)
+skills/setup/SKILL.md           the slash command /noblivion:setup: runs install.sh (NOBLIVION-29)
 scripts/install.sh, scripts/uninstall.sh
 docs/
 ```
@@ -1746,7 +1774,7 @@ docs/
 
 ### 13.2 Install
 
-`install.sh [--data-dir DIR] [--no-embed] [--no-model] [--dry-run]`:
+`install.sh [--data-dir DIR] [--no-embed] [--no-model] [--no-start] [--dry-run]`:
 
 1. Check `python3` >= 3.9 for hooks and `uv` on `PATH`. Without `uv`, print
    the official install command and stop. The script never runs it.
@@ -1768,6 +1796,10 @@ docs/
 6. Write `venv/noblivion-install.json` (plugin version and root).
 7. Run `noblivion index` once and `noblivion migrate-from-legacy` as a dry
    run, so the user sees any old hooks to remove.
+8. Run `noblivion ensure-running` (section 3.2), unless `--no-start`. The
+   store then runs in the session that ran the script, and the next
+   prompt's hooks find it through `store.json`. A failed start prints the
+   reason and is not fatal.
 
 The data dir is `--data-dir`, else `NOBLIVION_DATA_DIR`, else
 `CLAUDE_PLUGIN_DATA`, else `${XDG_DATA_HOME:-~/.local/share}/noblivion`. A
@@ -1778,13 +1810,26 @@ command run from the venv finds its data dir and the plugin's `hooks/`
 folder (label rules for `index`, `memory_fields.py` for `dedup`) through
 the same stamp.
 
+The plugin ships the slash command `/noblivion:setup`
+(`skills/setup/SKILL.md`, `disable-model-invocation: true`). Claude Code
+fills in `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` in its body, so
+the command runs `bash "<plugin root>/scripts/install.sh" --data-dir "<data
+dir>"` from the chat, also in the VS Code chat where the user has no
+terminal (NOBLIVION-29). Its `allowed-tools` entry covers that one command.
+The `SessionStart` line names the slash command first and the terminal
+command second. From `claude plugin install` to working recall is then at
+most two sessions: the session (or terminal) of the plugin install, and
+the next session, where the user runs `/noblivion:setup`. An empty
+`--data-dir` (a Claude Code that does not fill in the variable) is refused.
+
 Plugin install through the Claude Code plugin system places the files.
 `install.sh` only builds the venv, the model cache, the config and the
-token. Run it again after a plugin update.
+token, and starts the store. Run it again after a plugin update.
 
 ### 13.3 Uninstall
 
-`uninstall.sh [--data-dir DIR] [--purge] [--dry-run]` stops the store and
+`uninstall.sh [--data-dir DIR] [--purge] [--dry-run]` stops the store,
+waits until it has exited (90 s, then `SIGKILL`; NOBLIVION-28), and
 removes the venv and the model cache. It keeps `noblivion.db`, the config
 and the token unless `--purge` is given. It refuses a folder that holds no
 venv, store file or database. It never touches memory files. Then the

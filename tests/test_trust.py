@@ -34,13 +34,13 @@ ROOT = "-proj-alpha"
 @pytest.fixture
 def db_path(tmp_path) -> Path:
     path = tmp_path / "data" / "noblivion.db"
-    db.open_db(path).close()
+    db.open_db(path, create=True).close()
     return path
 
 
 @pytest.fixture
 def conn(db_path):
-    c = db.connect(db_path)
+    c = db.connect(db_path, create=True)
     yield c
     c.close()
 
@@ -300,7 +300,7 @@ def test_defect1_an_ingest_during_a_recompute_is_counted(db_path, conn):
     seen: dict[str, object] = {}
 
     def ingest_other_session() -> None:
-        other = db.connect(db_path)
+        other = db.connect(db_path, create=True)
         try:
             seen["counts"] = ingest(other, "s-new", [{"kind": "use", "mv_id": a}])
         finally:

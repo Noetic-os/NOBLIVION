@@ -47,6 +47,7 @@ STATE_RUNNING = "running"  # a proven store with this version answers
 STATE_STARTING = "starting"  # another caller started one less than 30 s ago
 STATE_STARTED = "started"  # this call started one
 STATE_FAILED = "failed"  # the store did not come up; ``store.error`` says why
+STATE_NOT_INSTALLED = "not_installed"  # no data dir: install.sh has not run
 START_WAIT_S = 10.0  # ``ensure-running`` waits this long for a proven store
 POLL_S = 0.1
 
@@ -221,7 +222,7 @@ def wait_until_up(
 
 def spawn_store(data_dir: Path, *, lock_wait_s: float = 0.0) -> int:
     """Start ``python -m noblivion.store`` detached. Returns its pid. Does not wait."""
-    config.private_dir(data_dir)
+    config.private_dir(data_dir, create=False)
     log_path = data_dir / config.STORE_LOG_FILE
     log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     argv = [sys.executable, "-m", "noblivion.store"]
@@ -247,7 +248,8 @@ def spawn_store(data_dir: Path, *, lock_wait_s: float = 0.0) -> int:
 def ensure_running(
     env: Mapping[str, str] | None = None, *, clock=time.time, spawn=spawn_store
 ) -> str:
-    """Steps 1-5 of section 3.2. Returns ``running``, ``starting`` or ``started``."""
+    """Steps 1-5 of section 3.2. Returns ``running``, ``starting``, ``started``
+    or ``not_installed`` (no data dir; it is never made here, NOBLIVION-28)."""
     data_dir = config.data_dir(env)
     lock_wait = 0.0
     info = read_store_json(data_dir)
@@ -263,7 +265,11 @@ def ensure_running(
             except OSError:
                 pass
             lock_wait = RESTART_LOCK_WAIT_S
-    config.private_dir(data_dir)
+    # Never make the data dir: only install.sh does (NOBLIVION-28).
+    try:
+        config.private_dir(data_dir, create=False)
+    except config.DataDirMissing:
+        return STATE_NOT_INSTALLED
     if not claim_spawn(data_dir / config.SPAWN_STAMP_FILE, clock, force=bool(lock_wait)):
         return STATE_STARTING
     clear_start_error(data_dir)
@@ -341,9 +347,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"state": state, "reason": reason} if reason else {"state": state}))
     elif state == STATE_FAILED:
         print(f"noblivion: store failed: {reason}", file=sys.stderr)
+    elif state == STATE_NOT_INSTALLED:
+        print(f"noblivion: not installed: no data dir at {config.data_dir()}", file=sys.stderr)
     else:
         print(f"noblivion: store {state}")
-    return 1 if state == STATE_FAILED else 0
+    return 1 if state in (STATE_FAILED, STATE_NOT_INSTALLED) else 0
 
 
 if __name__ == "__main__":

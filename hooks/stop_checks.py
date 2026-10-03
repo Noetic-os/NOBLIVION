@@ -1088,7 +1088,7 @@ def clear_marker(session: str) -> None:
 def log(row: dict) -> None:
     try:
         path = log_path()
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _make_dirs(path.parent)
         if path.exists() and path.stat().st_size > LOG_MAX:
             os.replace(path, str(path) + ".1")
         with open(path, "a", encoding="utf-8") as fh:
@@ -1168,7 +1168,7 @@ def mark_hook(event: dict) -> None:
             log({"event": "prompt", "session": session[:8], "verdict": "marker-cleared"})
         return
     d = state_dir()
-    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _make_dirs(d)
     tmp = d / f".{_safe_id(session)}.tmp"
     # the matched phrase only: no prompt text stays on disk (nothing reads it)
     tmp.write_text(json.dumps({"ts": time.time(), "phrase": phrase}), encoding="utf-8")
@@ -1217,6 +1217,13 @@ def main(argv: List[str]) -> int:
             signal.setitimer(signal.ITIMER_REAL, 0)
         except BaseException:  # noqa: S110 - a hook fails open
             pass
+
+
+def _make_dirs(path: Any) -> None:
+    """Make a state folder, but never the data dir itself: after an uninstall
+    deleted it, a hook must not make it again (hook_config.make_dirs,
+    NOBLIVION-28). Raises OSError."""
+    _CFG.make_dirs(path)
 
 
 if __name__ == "__main__":

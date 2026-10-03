@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Callable, List, Mapping, Optional
+from typing import Any, Callable, List, Mapping, Optional
 
 MIN_INTERVAL_S = 600.0
 STAMP_NAME = "mine.stamp"
@@ -77,7 +77,7 @@ def _due(stamp: Path, now: float) -> bool:
 
 def _write_stamp(stamp: Path, now: float) -> bool:
     try:
-        stamp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _make_dirs(stamp.parent)
         tmp = stamp.with_name(stamp.name + ".tmp")
         tmp.write_text(f"{now:.3f}\n", encoding="utf-8")
         os.replace(tmp, stamp)
@@ -134,6 +134,13 @@ def main() -> int:
     except Exception:  # noqa: BLE001 - a hook never fails the session end
         pass
     return 0
+
+
+def _make_dirs(path: Any) -> None:
+    """Make a state folder, but never the data dir itself: after an uninstall
+    deleted it, a hook must not make it again (hook_config.make_dirs,
+    NOBLIVION-28). Raises OSError."""
+    _CFG.make_dirs(path)
 
 
 if __name__ == "__main__":

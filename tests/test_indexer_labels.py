@@ -13,6 +13,7 @@ import pytest
 
 from noblivion import __main__ as cli
 from noblivion import config, db, indexer, labels
+from store_helpers import mark_installed
 
 HOOKS = Path(__file__).resolve().parents[1] / "hooks"
 
@@ -40,7 +41,7 @@ def home(tmp_path, monkeypatch):
     ):
         monkeypatch.delenv(key, raising=False)
     data = tmp_path / "data"
-    data.mkdir()
+    mark_installed(data)  # install.sh has run
     monkeypatch.setenv("NOBLIVION_DATA_DIR", str(data))
     return tmp_path
 
@@ -58,7 +59,7 @@ def memory_folder(home: Path, files: dict[str, str]) -> Path:
 
 
 def stored_labels(home: Path) -> dict[str, list[str]]:
-    conn = db.open_db(home / "data" / "noblivion.db")
+    conn = db.open_db(home / "data" / "noblivion.db", create=True)
     try:
         cur = conn.execute("SELECT path, labels FROM memories")
         return {path: json.loads(raw) for path, raw in cur.fetchall()}
@@ -177,7 +178,7 @@ def test_labeller_for_scan(tmp_path):
     folder = tmp_path / "projects" / "demo-proj" / "memory"
     folder.mkdir(parents=True)
     (folder / "feedback_keys.md").write_text("Fix DEMO-5 with ruff.\n", encoding="utf-8")
-    conn = db.open_db(tmp_path / "data" / "noblivion.db")
+    conn = db.open_db(tmp_path / "data" / "noblivion.db", create=True)
     try:
         assert indexer.scan(conn, [folder], labeller=labeller).inserted == 1
         conn.row_factory = sqlite3.Row

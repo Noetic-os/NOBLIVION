@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from collections.abc import Sequence
+from pathlib import Path
 
 from noblivion import bm25, db
 
@@ -106,3 +108,14 @@ def soft_delete(conn: sqlite3.Connection, memory_id: int) -> None:
     with db.write_tx(conn):
         rev = db.bump_rev(conn, "content_rev")
         db.soft_delete(conn, memory_id, rev=rev, now=db.utc_now())
+
+
+def mark_installed(data_dir: Path) -> Path:
+    """Write the install stamp that ``install.sh`` writes, so the store and
+    ``noblivion index`` may make a new database there (NOBLIVION-28)."""
+    from noblivion import __version__, config
+
+    stamp = config.install_stamp(data_dir)
+    stamp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    stamp.write_text(json.dumps({"version": __version__}), encoding="utf-8")
+    return data_dir

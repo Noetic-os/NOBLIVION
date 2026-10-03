@@ -1009,7 +1009,7 @@ class State:
 
     def __init__(self, env: Mapping[str, str], session_id: object, agent: str):
         folder = state_dir(env)
-        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _make_dirs(folder)
         self.path = _state_file(env, session_id, agent)
         if not self.path.exists():
             prune(folder)
@@ -1041,7 +1041,7 @@ def log_line(env: Mapping[str, str], rec: Dict[str, object]) -> bool:
     rec.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     try:
         p = log_path(env)
-        p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _make_dirs(p.parent)
         fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -1257,6 +1257,13 @@ def main(
             except Exception:  # noqa: BLE001, S110 - a hook fails open
                 pass
     return 0
+
+
+def _make_dirs(path: Any) -> None:
+    """Make a state folder, but never the data dir itself: after an uninstall
+    deleted it, a hook must not make it again (hook_config.make_dirs,
+    NOBLIVION-28). Raises OSError."""
+    _CFG.make_dirs(path)
 
 
 if __name__ == "__main__":

@@ -259,6 +259,7 @@ refuses to run.
 | 3 | database schema error |
 | 4 | another process holds the index lock |
 | 5 | the latch blocks `apply` |
+| 6 | no database: run `/noblivion:setup` (or `install.sh`) first; dedup never makes one |
 
 ### The status line
 

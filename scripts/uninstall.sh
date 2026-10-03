@@ -10,7 +10,7 @@
 #                   other file in the data dir.
 #   --dry-run       print the steps, change nothing.
 #
-# It stops the store and removes the venv and the model cache. It keeps
+# It stops the store, waits for it to exit, and removes the venv and the model cache. It keeps
 # noblivion.db, config.json and the token unless --purge is given. It never
 # touches memory files. Then remove the plugin and keep the data with:
 #   claude plugin uninstall noblivion --keep-data
@@ -61,16 +61,43 @@ fi
 [ -e "$DATA_DIR/venv" ] || [ -e "$DATA_DIR/store.json" ] || [ -e "$DATA_DIR/noblivion.db" ] \
     || die "$DATA_DIR does not look like a NOBLIVION data dir; nothing removed"
 
-# Stop the store: SIGTERM to the pid in store.json, if that process is the store.
+# Stop the store and wait for it to exit (NOBLIVION-28): a store that still
+# stops after this script ends could write in the data dir after Claude Code
+# deleted it. SIGTERM to the pid in store.json, if that process is the store.
+# The store finishes its current job batch first (at most about 70 s).
+STOP_WAIT_S=90
+is_store() {
+    if [ -r "/proc/$1/cmdline" ]; then
+        tr '\0' ' ' <"/proc/$1/cmdline" | grep -q 'noblivion'
+    elif [ ! -d /proc ]; then
+        ps -p "$1" -o command= 2>/dev/null | grep -q 'noblivion'
+    else
+        return 1
+    fi
+}
 PID="$(python3 -c 'import json, sys
 try:
     print(int(json.load(open(sys.argv[1]))["pid"]))
 except Exception:
     pass' "$DATA_DIR/store.json" 2>/dev/null || true)"
-if [ -n "$PID" ] && [ -r "/proc/$PID/cmdline" ] && tr '\0' ' ' <"/proc/$PID/cmdline" | grep -q 'noblivion'; then
+if [ -n "$PID" ] && is_store "$PID"; then
     run kill -TERM "$PID"
-elif [ -n "$PID" ] && [ ! -d /proc ] && ps -p "$PID" -o command= 2>/dev/null | grep -q 'noblivion'; then
-    run kill -TERM "$PID"
+    if [ "$DRY_RUN" = 1 ]; then
+        printf 'would wait up to %s s for the store (pid %s) to exit\n' "$STOP_WAIT_S" "$PID"
+    else
+        printf 'noblivion uninstall: waiting for the store (pid %s) to exit\n' "$PID"
+        waited=0
+        while kill -0 "$PID" 2>/dev/null && is_store "$PID" && [ "$waited" -lt $((STOP_WAIT_S * 10)) ]; do
+            sleep 0.1
+            waited=$((waited + 1))
+        done
+        if kill -0 "$PID" 2>/dev/null && is_store "$PID"; then
+            printf 'noblivion uninstall: the store did not exit in %s s; sending SIGKILL\n' "$STOP_WAIT_S" >&2
+            kill -KILL "$PID" 2>/dev/null || true
+            while kill -0 "$PID" 2>/dev/null; do sleep 0.1; done
+        fi
+        printf 'noblivion uninstall: the store stopped\n'
+    fi
 fi
 
 if [ "$DRY_RUN" = 1 ]; then

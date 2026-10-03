@@ -5,9 +5,13 @@
 #
 # The Claude Code plugin system places the plugin files. This script only
 # makes what the store needs: the venv (numpy, fastembed), the embedding
-# model cache, the token, the default config file and a first index.
+# model cache, the token, the default config file and a first index. Then it
+# starts the store, so memory recall works in the session that ran it.
 #
-# Usage: install.sh [--data-dir DIR] [--no-embed] [--no-model] [--dry-run]
+# The slash command /noblivion:setup (skills/setup/SKILL.md) runs this script
+# from a Claude Code chat with the data dir filled in.
+#
+# Usage: install.sh [--data-dir DIR] [--no-embed] [--no-model] [--no-start] [--dry-run]
 #
 #   --data-dir DIR  the data dir. Default: NOBLIVION_DATA_DIR, else
 #                   CLAUDE_PLUGIN_DATA, else ${XDG_DATA_HOME:-~/.local/share}/noblivion.
@@ -15,6 +19,7 @@
 #                   hook prints the exact command when the venv is missing.
 #   --no-embed      no numpy and fastembed: keyword search only.
 #   --no-model      do not download the embedding model now.
+#   --no-start      do not start the store now: the next session starts it.
 #   --dry-run       print the steps, change nothing.
 #
 # Needs python3 3.9 or newer (the hooks) and uv (the venv). uv fetches a
@@ -25,6 +30,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_DIR=""
 EMBED=1
 MODEL=1
+START=1
 DRY_RUN=0
 
 die() {
@@ -49,15 +55,16 @@ run() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --data-dir)
-            [ $# -ge 2 ] || die "--data-dir needs a folder"
+            [ $# -ge 2 ] && [ -n "$2" ] || die "--data-dir needs a folder"
             DATA_DIR="$2"
             shift 2
             ;;
         --no-embed) EMBED=0; MODEL=0; shift ;;
         --no-model) MODEL=0; shift ;;
+        --no-start) START=0; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h | --help)
-            sed -n '4,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '4,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) die "unknown option $1 (see --help)" ;;
@@ -169,4 +176,15 @@ fi
 run env NOBLIVION_DATA_DIR="$DATA_DIR" CLAUDE_PLUGIN_ROOT="$ROOT" "$VENV/bin/noblivion" index
 run env NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/noblivion" migrate-from-legacy
 
-say "done. The store starts at the next Claude Code session."
+# 8. Start the store now (design doc section 3.2, ensure-running), so the
+#    session that ran this script has memory recall from its next prompt
+#    (NOBLIVION-29). The store runs detached; a failure is not fatal.
+if [ "$START" = 0 ]; then
+    say "done. The store starts at the next Claude Code session."
+elif [ "$DRY_RUN" = 1 ]; then
+    run env NOBLIVION_DATA_DIR="$DATA_DIR" CLAUDE_PLUGIN_ROOT="$ROOT" "$VENV/bin/noblivion" ensure-running
+elif env NOBLIVION_DATA_DIR="$DATA_DIR" CLAUDE_PLUGIN_ROOT="$ROOT" "$VENV/bin/noblivion" ensure-running; then
+    say "done. The store runs. Memory recall works from the next prompt in this session."
+else
+    say "done, but the store did not start (reason above). The next Claude Code session tries again."
+fi

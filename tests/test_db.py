@@ -47,7 +47,7 @@ def _add_memory(conn: sqlite3.Connection, path: str = "user_alice.md") -> int:
 
 
 def test_create_schema_version_1(tmp_path):
-    conn = db.open_db(tmp_path / "noblivion.db")
+    conn = db.open_db(tmp_path / "noblivion.db", create=True)
     assert db.user_version(conn) == 1
     assert _tables(conn) == TABLES
     assert db.get_meta(conn, "content_rev") == "0"
@@ -57,7 +57,7 @@ def test_create_schema_version_1(tmp_path):
 
 
 def test_connection_pragmas(tmp_path):
-    conn = db.open_db(tmp_path / "noblivion.db")
+    conn = db.open_db(tmp_path / "noblivion.db", create=True)
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
@@ -67,7 +67,7 @@ def test_connection_pragmas(tmp_path):
 
 def test_database_file_mode_0600(tmp_path):
     path = tmp_path / "data" / "noblivion.db"
-    conn = db.open_db(path)
+    conn = db.open_db(path, create=True)
     _add_memory(conn)
     for p in (path, path.with_name("noblivion.db-wal")):
         assert stat.S_IMODE(p.stat().st_mode) == 0o600
@@ -76,12 +76,12 @@ def test_database_file_mode_0600(tmp_path):
 
 def test_migrate_is_idempotent(tmp_path):
     path = tmp_path / "noblivion.db"
-    conn = db.open_db(path)
+    conn = db.open_db(path, create=True)
     db_id = db.get_meta(conn, "db_id")
     _add_memory(conn)
     conn.close()
     for _ in range(3):
-        conn = db.open_db(path)
+        conn = db.open_db(path, create=True)
         assert db.user_version(conn) == 1
         assert db.get_meta(conn, "db_id") == db_id
         assert conn.execute("SELECT count(*) FROM memories").fetchone()[0] == 1
@@ -90,7 +90,7 @@ def test_migrate_is_idempotent(tmp_path):
 
 
 def test_cli_mode_creates_a_new_database(tmp_path):
-    conn = db.open_db(tmp_path / "noblivion.db", allow_migrate=False)
+    conn = db.open_db(tmp_path / "noblivion.db", allow_migrate=False, create=True)
     assert db.user_version(conn) == 1
 
 
@@ -101,7 +101,7 @@ def test_cli_mode_refuses_an_old_schema(tmp_path):
     raw.commit()
     raw.close()
     with pytest.raises(db.SchemaTooOldError):
-        db.open_db(path, allow_migrate=False)
+        db.open_db(path, allow_migrate=False, create=True)
 
 
 def test_store_mode_migrates_an_old_schema_with_backup(tmp_path):
@@ -110,7 +110,7 @@ def test_store_mode_migrates_an_old_schema_with_backup(tmp_path):
     raw.execute("CREATE TABLE legacy (x INTEGER)")
     raw.commit()
     raw.close()
-    conn = db.open_db(path)
+    conn = db.open_db(path, create=True)
     assert db.user_version(conn) == 1
     backups = list((tmp_path / "backups").glob("noblivion-v0-*.db"))
     assert len(backups) == 1
@@ -119,12 +119,12 @@ def test_store_mode_migrates_an_old_schema_with_backup(tmp_path):
 
 def test_refuses_a_newer_schema(tmp_path):
     path = tmp_path / "noblivion.db"
-    db.open_db(path).close()
+    db.open_db(path, create=True).close()
     raw = sqlite3.connect(path)
     raw.execute("PRAGMA user_version = 99")
     raw.close()
     with pytest.raises(db.SchemaTooNewError, match="newer than this NOBLIVION"):
-        db.open_db(path)
+        db.open_db(path, create=True)
 
 
 def test_failed_migration_rolls_back(tmp_path, monkeypatch):
@@ -133,7 +133,7 @@ def test_failed_migration_rolls_back(tmp_path, monkeypatch):
     bad = [db.Migration(1, good[0].name, good[0].sql + "\nTHIS IS NOT SQL;")]
     monkeypatch.setattr(db, "load_migrations", lambda: bad)
     with pytest.raises(sqlite3.OperationalError):
-        db.open_db(path)
+        db.open_db(path, create=True)
     raw = sqlite3.connect(path)
     assert raw.execute("PRAGMA user_version").fetchone()[0] == 0
     assert raw.execute("SELECT count(*) FROM sqlite_schema").fetchone()[0] == 0
@@ -153,15 +153,15 @@ def test_prune_backups_keeps_three(tmp_path):
 
 
 def test_ids_start_at_a_random_base(tmp_path):
-    conn = db.connect(tmp_path / "a.db")
+    conn = db.connect(tmp_path / "a.db", create=True)
     db.migrate(conn, random_base=5_000_000)
     assert _add_memory(conn) == 5_000_001
-    conn2 = db.open_db(tmp_path / "b.db")
+    conn2 = db.open_db(tmp_path / "b.db", create=True)
     assert 1_000_000 < _add_memory(conn2) <= 1_000_000_001
 
 
 def test_strict_tables_and_checks(tmp_path):
-    conn = db.open_db(tmp_path / "noblivion.db")
+    conn = db.open_db(tmp_path / "noblivion.db", create=True)
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             "INSERT INTO memories (project, root, path, source_type, content, hash, rev, "
@@ -178,7 +178,7 @@ def test_strict_tables_and_checks(tmp_path):
 
 
 def test_bump_rev_counts_up(tmp_path):
-    conn = db.open_db(tmp_path / "noblivion.db")
+    conn = db.open_db(tmp_path / "noblivion.db", create=True)
     with db.write_tx(conn):
         assert db.bump_rev(conn) == 1
         assert db.bump_rev(conn) == 2
@@ -189,7 +189,7 @@ def test_bump_rev_counts_up(tmp_path):
 
 
 def test_write_tx_rolls_back_on_error(tmp_path):
-    conn = db.open_db(tmp_path / "noblivion.db")
+    conn = db.open_db(tmp_path / "noblivion.db", create=True)
     with pytest.raises(RuntimeError), db.write_tx(conn):
         db.bump_rev(conn)
         raise RuntimeError("boom")
@@ -223,7 +223,7 @@ def _child_counts(conn: sqlite3.Connection) -> tuple[int, int, int]:
 
 
 def test_delete_cascades_to_vectors_events_and_rollup(tmp_path):
-    conn = db.open_db(tmp_path / "noblivion.db")
+    conn = db.open_db(tmp_path / "noblivion.db", create=True)
     memory_id = _add_memory(conn)
     _attach_children(conn, memory_id)
     assert _child_counts(conn) == (1, 1, 1)
@@ -234,7 +234,7 @@ def test_delete_cascades_to_vectors_events_and_rollup(tmp_path):
 
 
 def test_soft_delete_keeps_children_until_purge(tmp_path):
-    conn = db.open_db(tmp_path / "noblivion.db")
+    conn = db.open_db(tmp_path / "noblivion.db", create=True)
     keep = _add_memory(conn, "user_keep.md")
     gone = _add_memory(conn, "user_gone.md")
     _attach_children(conn, gone)
@@ -252,7 +252,7 @@ def test_soft_delete_keeps_children_until_purge(tmp_path):
 
 
 def test_purge_runs_in_batches(tmp_path):
-    conn = db.open_db(tmp_path / "noblivion.db")
+    conn = db.open_db(tmp_path / "noblivion.db", create=True)
     old = db.format_ts(datetime.now(timezone.utc) - timedelta(days=30))
     with db.write_tx(conn):
         rev = db.bump_rev(conn)
@@ -276,7 +276,7 @@ def test_purge_runs_in_batches(tmp_path):
 
 
 def test_purge_archived_needs_a_done_dedup_action(tmp_path):
-    conn = db.open_db(tmp_path / "noblivion.db")
+    conn = db.open_db(tmp_path / "noblivion.db", create=True)
     a = _add_memory(conn, "user_a.md")
     b = _add_memory(conn, "user_b.md")
     old = db.format_ts(datetime.now(timezone.utc) - timedelta(days=100))
@@ -311,12 +311,12 @@ def test_read_then_write_transactions_do_not_lose_updates(tmp_path):
     import threading
 
     path = tmp_path / "noblivion.db"
-    db.open_db(path).close()
+    db.open_db(path, create=True).close()
     errors: list[BaseException] = []
     barrier = threading.Barrier(2)
 
     def run() -> None:
-        conn = db.connect(path)
+        conn = db.connect(path, create=True)
         try:
             barrier.wait()
             for _ in range(200):
@@ -334,5 +334,5 @@ def test_read_then_write_transactions_do_not_lose_updates(tmp_path):
     for t in threads:
         t.join()
     assert errors == []
-    conn = db.connect(path)
+    conn = db.connect(path, create=True)
     assert db.get_meta(conn, "demo_counter") == "400"

@@ -64,10 +64,32 @@ def data_dir(env: Mapping[str, str] | None = None) -> Path:
     return base / "noblivion"
 
 
-def private_dir(path: Path) -> Path:
+class DataDirMissing(FileNotFoundError):
+    """The data dir does not exist. Only ``install.sh`` makes it (NOBLIVION-28)."""
+
+
+def install_stamp(data_dir: Path) -> Path:
+    """``<data dir>/venv/noblivion-install.json``, written by ``install.sh``."""
+    return Path(data_dir) / "venv" / INSTALL_STAMP
+
+
+def is_installed(data_dir: Path) -> bool:
+    """True when ``install.sh`` has run for this data dir: its install stamp
+    exists. Only then may a process create a new database (NOBLIVION-28)."""
+    return install_stamp(data_dir).is_file()
+
+
+def private_dir(path: Path, *, create: bool = True) -> Path:
     """Make ``path`` (and its parents) and set it to mode 0700. ``mkdir -m``
     does not change a folder that exists, and Claude Code may make the data
-    dir before the store does, with the user's umask (NOBLIVION-27)."""
+    dir before the store does, with the user's umask (NOBLIVION-27).
+
+    ``create=False``: never make the folder; raise ``DataDirMissing`` when it
+    is missing. The store and the launcher use it for the data dir, so a
+    store that stops after an uninstall deleted the folder does not make it
+    again (NOBLIVION-28)."""
+    if not create and not path.is_dir():
+        raise DataDirMissing(f"the data dir {path} does not exist; run install.sh")
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         if path.stat().st_mode & 0o077:

@@ -172,7 +172,7 @@ def log_line(state: Path, event: str, **fields: Any) -> None:
     for key, value in fields.items():
         parts.append(f"{key}={_SAFE_NAME.sub('_', str(value))[:120]}")
     try:
-        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _make_dirs(state)
         with open(state / LOG_NAME, "a", encoding="utf-8") as fh:
             fh.write(" ".join(parts) + "\n")
     except OSError:
@@ -215,7 +215,7 @@ def _read_stamp(path: Path) -> int:
 
 def _write_stamp(path: Path, stamp: int) -> bool:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _make_dirs(path.parent)
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         tmp.write_text(str(int(stamp)), encoding="utf-8")
         os.replace(tmp, path)
@@ -419,7 +419,7 @@ def worker_lock(state: Path, wait_s: float, sleep: Callable[[float], None] = tim
     if _fcntl is None:  # pragma: no cover - POSIX only
         yield True
         return
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _make_dirs(state)
     fh = open(state / LOCK_NAME, "a+", encoding="utf-8")
     try:
         deadline = time.monotonic() + wait_s
@@ -509,6 +509,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     except Exception:  # noqa: BLE001, S110 - a hook fails open
         pass
     return 0
+
+
+def _make_dirs(path: Any) -> None:
+    """Make a state folder, but never the data dir itself: after an uninstall
+    deleted it, a hook must not make it again (hook_config.make_dirs,
+    NOBLIVION-28). Raises OSError."""
+    _CFG.make_dirs(path)
 
 
 if __name__ == "__main__":

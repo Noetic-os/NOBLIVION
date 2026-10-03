@@ -14,6 +14,7 @@ import pytest
 
 from noblivion import __main__ as cli
 from noblivion import config, db, indexer
+from store_helpers import mark_installed
 
 
 def make_folder(base: Path, root: str, n: int) -> Path:
@@ -37,6 +38,7 @@ def home(tmp_path, monkeypatch):
         "NOBLIVION_PROJECT",
     ):
         monkeypatch.delenv(key, raising=False)
+    mark_installed(tmp_path / ".local" / "share" / "noblivion")  # install.sh has run
     return tmp_path
 
 
@@ -54,7 +56,7 @@ def test_data_dir_order(home):
 
 def test_settings_from_file_and_env(home, monkeypatch):
     data = home / "data"
-    data.mkdir()
+    data.mkdir(exist_ok=True)
     (data / "config.json").write_text(
         json.dumps(
             {
@@ -80,7 +82,7 @@ def test_settings_from_file_and_env(home, monkeypatch):
 
 def test_bad_config_falls_back_to_defaults(home, monkeypatch):
     data = home / "data"
-    data.mkdir()
+    data.mkdir(exist_ok=True)
     (data / "config.json").write_text('{"index": {"delete_grace_days": "soon"}', encoding="utf-8")
     monkeypatch.setenv("NOBLIVION_DATA_DIR", str(data))
     s = config.load_settings()
@@ -104,7 +106,7 @@ def test_cli_index_default_folders(home, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["inserted"] == 5 and out["index_blocked"] is False
     db_path = home / ".local" / "share" / "noblivion" / "noblivion.db"
-    conn = db.open_db(db_path)
+    conn = db.open_db(db_path, create=True)
     roots = {r[0] for r in conn.execute("SELECT DISTINCT root FROM memories")}
     assert roots == {"proj-a", "proj-b"}
 
@@ -121,7 +123,7 @@ def test_cli_exit_code_when_the_shrink_guard_blocks(home, capsys):
 
 def test_cli_refuses_an_old_schema(home, capsys):
     data = home / ".local" / "share" / "noblivion"
-    data.mkdir(parents=True)
+    data.mkdir(parents=True, exist_ok=True)
     import sqlite3
 
     raw = sqlite3.connect(data / "noblivion.db")
@@ -175,7 +177,7 @@ def test_cli_explicit_memory_dir_and_db(home, tmp_path):
     db_path = tmp_path / "other" / "store.db"
     assert indexer.main(["--memory-dir", str(folder), "--db", str(db_path)]) == 0
     assert (tmp_path / "other" / "index.lock").exists()
-    conn = db.open_db(db_path)
+    conn = db.open_db(db_path, create=True)
     assert conn.execute("SELECT count(*) FROM memories").fetchone()[0] == 2
 
 
@@ -190,7 +192,7 @@ def test_cli_usage(capsys):
 
 
 def _assert_consistent(db_path: Path, expected: int) -> None:
-    conn = db.open_db(db_path)
+    conn = db.open_db(db_path, create=True)
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert db.foreign_key_problems(conn) == []
     total, distinct = conn.execute(
@@ -206,12 +208,12 @@ def _assert_consistent(db_path: Path, expected: int) -> None:
 def test_two_threads_scan_at_once_without_the_lock(tmp_path):
     folders = [make_folder(tmp_path, f"proj-{c}", 250) for c in "ab"]
     db_path = tmp_path / "data" / "noblivion.db"
-    db.open_db(db_path).close()
+    db.open_db(db_path, create=True).close()
     errors: list[BaseException] = []
     barrier = threading.Barrier(2)
 
     def run() -> None:
-        conn = db.open_db(db_path)
+        conn = db.open_db(db_path, create=True)
         try:
             barrier.wait()
             for _ in range(3):
@@ -236,6 +238,7 @@ def test_two_cli_processes_at_once(tmp_path):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("NOBLIVION_", "XDG_"))}
     env.pop("CLAUDE_PLUGIN_DATA", None)
     env["HOME"] = str(tmp_path)
+    mark_installed(tmp_path / ".local" / "share" / "noblivion")
     cmd = [sys.executable, "-m", "noblivion.indexer", "--json"]
     procs = [
         subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

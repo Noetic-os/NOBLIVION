@@ -85,17 +85,21 @@ You need Claude Code, `python3` 3.9 or newer, and
 
    In a session: `/plugin install noblivion@noblivion`.
 
-3. Start a new Claude Code session. The first session prints the command
-   that builds the store. Run that command in a terminal. It looks like
-   this:
+3. Start a new Claude Code session. Its first line says that the memory
+   store is not installed.
+4. In that session, type this slash command in the chat (in the VS Code
+   chat or in a terminal session):
 
-   ```sh
-   CLAUDE_PLUGIN_DATA="<data dir>" bash "<plugin dir>/scripts/install.sh"
+   ```text
+   /noblivion:setup
    ```
 
-4. Start a new session. The store starts by itself.
+   Allow the one `install.sh` command it runs. It builds the store and
+   starts it. Memory recall works from your next prompt. You do not need
+   another session.
 
-The full steps are in [docs/install.md](docs/install.md).
+The full steps, and the same step as a terminal command, are in
+[docs/install.md](docs/install.md).
 
 ## Documentation
 

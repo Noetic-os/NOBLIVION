@@ -75,6 +75,7 @@ INSTALL_STAMP = Path("venv") / "noblivion-install.json"  # written by install.sh
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_ROOT_ENV = "CLAUDE_PLUGIN_ROOT"
 PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA"
+SETUP_COMMAND = "/noblivion:setup"  # skills/setup/SKILL.md: runs install.sh, starts the store
 TOKEN_RE = re.compile(r"[0-9a-f]{64}")
 LOOPBACK = "127.0.0.1"
 
@@ -313,18 +314,22 @@ def install_notice(
     script = 'bash "%s"' % (base / "scripts" / "install.sh")
     if plugin_data:  # a terminal has no CLAUDE_PLUGIN_DATA: name the folder
         script = '%s="%s" %s' % (PLUGIN_DATA_ENV, plugin_data, script)
+    # One step in the chat (NOBLIVION-29): the slash command runs install.sh
+    # with this data dir and starts the store in the same session.
+    step = "Tell the user to type %s in this chat (in a terminal: %s)" % (SETUP_COMMAND, script)
     if started == "no_launcher":
-        return (
-            "NOBLIVION: the memory store is not installed, so memory recall is off. "
-            "Tell the user to run: %s" % script
-        )
+        return "NOBLIVION: the memory store is not installed, so memory recall is off. %s" % step
     if started == "off":
         return None
     want, have = plugin_version(base), installed_version(env)
     if want and have and want != have:
         return (
-            "NOBLIVION: the memory store was built for plugin version %s, the plugin is %s. "
-            "Tell the user to run: %s" % (have, want, script)
+            "NOBLIVION: the memory store was built for plugin version %s, the plugin is %s. %s"
+            % (
+                have,
+                want,
+                step,
+            )
         )
     return None
 

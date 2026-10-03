@@ -102,7 +102,7 @@ def test_ensure_running_json_reports_the_reason(tmp_path):
 def test_a_good_start_removes_an_old_store_error(tmp_path):
     env = store_env(tmp_path)
     data = Path(env["NOBLIVION_DATA_DIR"])
-    data.mkdir(parents=True)
+    data.mkdir(parents=True, exist_ok=True)
     launcher.write_start_error(data, "old failure")
     proc = subprocess.run(
         [sys.executable, "-m", "noblivion", "ensure-running", "--json"],
@@ -124,7 +124,7 @@ def test_a_good_start_removes_an_old_store_error(tmp_path):
 
 def test_wait_until_up_fails_on_a_child_exit_without_store_error(tmp_path):
     env = {"NOBLIVION_DATA_DIR": str(tmp_path / "data")}
-    (tmp_path / "data").mkdir()
+    (tmp_path / "data").mkdir(exist_ok=True)
     child = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
     state, reason = launcher.wait_until_up(env, since=0.0, wait_s=20, pid=child.pid)
     assert state == "failed" and "exited with code 3" in reason
@@ -133,7 +133,7 @@ def test_wait_until_up_fails_on_a_child_exit_without_store_error(tmp_path):
 
 def test_wait_until_up_times_out_with_a_reason(tmp_path):
     env = {"NOBLIVION_DATA_DIR": str(tmp_path / "data")}
-    (tmp_path / "data").mkdir()
+    (tmp_path / "data").mkdir(exist_ok=True)
     ticks = iter(range(100))
     state, reason = launcher.wait_until_up(
         env, since=0.0, wait_s=3, clock=lambda: next(ticks), sleep=lambda _s: None
@@ -152,7 +152,7 @@ class _Child:
 
 def test_session_start_hook_prints_one_line_when_the_store_cannot_start(tmp_path, capsys):
     data = tmp_path / "data"
-    data.mkdir()
+    data.mkdir(exist_ok=True)
     exe = tmp_path / "noblivion"
     exe.write_text("#!/bin/sh\nexit 1\n")
     exe.chmod(0o700)
@@ -171,7 +171,7 @@ def test_session_start_hook_prints_one_line_when_the_store_cannot_start(tmp_path
 
 def test_session_start_hook_ignores_an_old_store_error(tmp_path):
     data = tmp_path / "data"
-    data.mkdir()
+    data.mkdir(exist_ok=True)
     launcher.write_start_error(data, "old")
     os.utime(data / "store.error", (1, 1))
     assert sc.read_start_error(data, since=1000.0) is None

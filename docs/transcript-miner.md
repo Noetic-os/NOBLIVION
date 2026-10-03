@@ -82,7 +82,9 @@ database. So a run reads only new lines, and a note is never stored twice.
 | `--json` | Print the result as JSON. |
 
 Exit code 4 means another miner run holds the lock. Exit code 3 means a
-database schema error.
+database schema error. Exit code 6 means there is no database: the miner
+never makes one, so a run that the SessionEnd hook starts after an
+uninstall does not make the data dir again (NOBLIVION-28).
 
 ## Input
 

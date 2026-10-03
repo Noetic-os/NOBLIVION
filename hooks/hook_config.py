@@ -97,6 +97,31 @@ def private_dir(path: Path) -> Path:
     return path
 
 
+class DataDirMissing(FileNotFoundError):
+    """The data dir does not exist. Only ``install.sh`` makes it (NOBLIVION-28)."""
+
+
+def make_dirs(path: Any, env: Optional[Mapping[str, str]] = None) -> Path:
+    """Make the folder ``path`` (and its parents) with mode 0700, but never
+    the data dir itself (NOBLIVION-28).
+
+    A folder inside a data dir that does not exist raises ``DataDirMissing``
+    (an ``OSError``). After ``claude plugin uninstall`` deleted the data dir,
+    a hook of a session that still runs must not make it again. A folder
+    outside the data dir (an override) is made as before."""
+    folder = Path(path)
+    root = data_dir(env)
+    if not root.is_dir():
+        try:
+            Path(os.path.abspath(folder)).relative_to(os.path.abspath(root))
+        except ValueError:
+            pass
+        else:
+            raise DataDirMissing("the data dir %s does not exist" % root)
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return folder
+
+
 def cache_dir(env: Optional[Mapping[str, str]] = None) -> Path:
     """``<data dir>/cache``: the per-session recall cache and the trust spool."""
     return data_dir(env) / CACHE_SUBDIR

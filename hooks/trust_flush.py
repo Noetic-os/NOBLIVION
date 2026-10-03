@@ -127,7 +127,7 @@ def load_state(cache: str, sid: str) -> Dict[str, Any]:
 def save_state(cache: str, sid: str, state: Mapping[str, Any]) -> bool:
     path = _state_path(cache, sid)
     try:
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        _make_dirs(os.path.dirname(path))
         tmp = f"{path}.{os.getpid()}.tmp"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -147,7 +147,7 @@ def session_lock(cache: str, sid: str, wait_s: Optional[float] = None):
     fd = -1
     held = False
     try:
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        _make_dirs(os.path.dirname(path))
         fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
         deadline = time.monotonic() + max(0.0, wait_s)
         while True:
@@ -175,7 +175,7 @@ def session_lock(cache: str, sid: str, wait_s: Optional[float] = None):
 def log(cache: str, sid: str, status: str) -> None:
     ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     try:
-        os.makedirs(cache, mode=0o700, exist_ok=True)
+        _make_dirs(cache)
         with open(os.path.join(cache, LOG_NAME), "a", encoding="utf-8") as fh:
             fh.write(f"{ts} session={sid} {status}\n")
     except OSError:
@@ -574,7 +574,7 @@ def refresh_report(environ: Mapping[str, str], now: Optional[float] = None) -> s
         with contextlib.suppress(OSError):
             if t - os.path.getmtime(stamp) < REPORT_RETRY_S:
                 return "skip:recent_attempt"
-        os.makedirs(os.path.dirname(stamp), mode=0o700, exist_ok=True)
+        _make_dirs(os.path.dirname(stamp))
         with open(stamp, "w", encoding="utf-8"):
             pass
         report.refresh(environ)
@@ -705,6 +705,13 @@ def _cli(argv: Sequence[str]) -> int:
             pass
         return 0
     return main()
+
+
+def _make_dirs(path: Any) -> None:
+    """Make a state folder, but never the data dir itself: after an uninstall
+    deleted it, a hook must not make it again (hook_config.make_dirs,
+    NOBLIVION-28). Raises OSError."""
+    _load("hook_config").make_dirs(path)
 
 
 if __name__ == "__main__":

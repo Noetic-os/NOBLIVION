@@ -227,7 +227,7 @@ def test_sigkill_mid_write_then_the_next_start_recovers(tmp_path, monkeypatch):
     assert (data / f"{config.DB_FILE}-wal").exists()
 
     # The killed batch is rolled back whole: only full batches are committed.
-    with closing(db.connect(db_path)) as conn:
+    with closing(db.connect(db_path, create=True)) as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         content_rev = db.revisions(conn)[0]
         groups = conn.execute(
@@ -255,7 +255,7 @@ def test_sigkill_mid_write_then_the_next_start_recovers(tmp_path, monkeypatch):
             ),
             60,
         )
-        with closing(db.connect(db_path)) as conn:
+        with closing(db.connect(db_path, create=True)) as conn:
             paths = conn.execute(
                 "SELECT count(*), count(DISTINCT path) FROM memories "
                 "WHERE deleted_at IS NULL AND archived_at IS NULL"

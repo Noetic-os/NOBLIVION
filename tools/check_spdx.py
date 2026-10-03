@@ -7,6 +7,9 @@ header in its first 5 lines, written in the comment syntax of the file type:
     # SPDX-License-Identifier: AGPL-3.0-or-later        (py, sh, toml, yml, yaml)
     <!-- SPDX-License-Identifier: AGPL-3.0-or-later --> (md)
 
+A Markdown file that starts with YAML front matter (``---``, as a Claude Code
+skill must) may carry the ``#`` form inside the front matter instead.
+
 Usage:
     python tools/check_spdx.py            # check all tracked files
     python tools/check_spdx.py PATH ...   # check the given paths
@@ -54,11 +57,14 @@ def tracked_files(root: Path) -> list[Path]:
 
 def has_header(path: Path, rule: re.Pattern[str]) -> bool:
     with path.open(encoding="utf-8", errors="replace") as handle:
-        for _ in range(HEAD_LINES):
+        for index in range(HEAD_LINES):
             line = handle.readline()
             if not line:
                 break
-            if rule.match(line.rstrip("\r\n")):
+            text = line.rstrip("\r\n")
+            if index == 0 and rule is _HTML and text == "---":
+                rule = _HASH  # YAML front matter: a YAML comment
+            if rule.match(text):
                 return True
     return False
 

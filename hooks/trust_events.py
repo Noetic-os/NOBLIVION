@@ -363,7 +363,7 @@ def append_events(
         data = "".join(
             json.dumps(dict(ev), separators=(",", ":"), sort_keys=True) + "\n" for ev in events
         ).encode("utf-8")
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        _make_dirs(os.path.dirname(path))
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
             os.write(fd, data)
@@ -505,3 +505,10 @@ def iter_transcript_files(main_path: str) -> Iterator[str]:
         dirs.sort()
         found.extend(os.path.join(root, n) for n in names if is_agent_transcript(n))
     yield from sorted(found)
+
+
+def _make_dirs(path: Any) -> None:
+    """Make a state folder, but never the data dir itself: after an uninstall
+    deleted it, a hook must not make it again (hook_config.make_dirs,
+    NOBLIVION-28). Raises OSError."""
+    _hook_config().make_dirs(path)

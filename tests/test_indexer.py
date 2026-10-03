@@ -15,7 +15,7 @@ from noblivion import db, indexer, redaction
 
 @pytest.fixture
 def conn(tmp_path):
-    c = db.open_db(tmp_path / "data" / "noblivion.db")
+    c = db.open_db(tmp_path / "data" / "noblivion.db", create=True)
     yield c
     c.close()
 

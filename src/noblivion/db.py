@@ -20,6 +20,7 @@ import re
 import secrets
 import sqlite3
 import time
+import urllib.parse
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -57,6 +58,10 @@ class SchemaTooOldError(SchemaError):
     pass
 
 
+class DatabaseMissing(FileNotFoundError):
+    """The database file does not exist and the caller may not create it."""
+
+
 def utc_now() -> str:
     return format_ts(datetime.now(timezone.utc))
 
@@ -73,10 +78,22 @@ def parse_ts(text: str) -> datetime:
 # -- connection ---------------------------------------------------------------
 
 
-def connect(db_path: Path | str) -> sqlite3.Connection:
-    """Open a connection with the section 6.1 rules. Creates the file as 0600."""
+def connect(db_path: Path | str, *, create: bool = False) -> sqlite3.Connection:
+    """Open a connection with the section 6.1 rules.
+
+    ``create=False`` (the default) opens an existing database only: it never
+    makes the folder or the file, and raises ``DatabaseMissing`` when the file
+    is missing. SQLite opens it with ``mode=rw``, so a file deleted between the
+    check and the open is not made again either. Only a caller that knows
+    ``install.sh`` has run passes ``create=True`` (NOBLIVION-28): then the
+    folder is made as 0700 and the file as 0600.
+    """
     path = Path(db_path)
-    if str(path) != ":memory:":
+    if str(path) == ":memory:":
+        conn = sqlite3.connect(
+            ":memory:", timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None, check_same_thread=True
+        )
+    elif create:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         # Create the file before SQLite does, so it is 0600 from the start. The
         # WAL and SHM files take the mode of the database file.
@@ -93,9 +110,25 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
             pass
         else:
             os.close(fd)
-    conn = sqlite3.connect(
-        str(path), timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None, check_same_thread=True
-    )
+        conn = sqlite3.connect(
+            str(path), timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None, check_same_thread=True
+        )
+    else:
+        if not path.is_file():
+            raise DatabaseMissing(f"no database at {path}; run install.sh")
+        uri = "file:" + urllib.parse.quote(str(path.resolve())) + "?mode=rw"
+        try:
+            conn = sqlite3.connect(
+                uri,
+                uri=True,
+                timeout=BUSY_TIMEOUT_MS / 1000,
+                isolation_level=None,
+                check_same_thread=True,
+            )
+        except sqlite3.OperationalError as exc:
+            if not path.is_file():
+                raise DatabaseMissing(f"no database at {path}; run install.sh") from exc
+            raise
     conn.row_factory = sqlite3.Row
     for pragma in _CONNECTION_PRAGMAS:
         if pragma == WAL_PRAGMA:
@@ -287,10 +320,13 @@ def migrate(
     return user_version(conn)
 
 
-def open_db(db_path: Path | str, *, allow_migrate: bool = True) -> sqlite3.Connection:
-    """Connect and bring the schema up to date. Closes the connection on error."""
+def open_db(
+    db_path: Path | str, *, allow_migrate: bool = True, create: bool = False
+) -> sqlite3.Connection:
+    """Connect and bring the schema up to date. Closes the connection on error.
+    ``create`` as in ``connect``: by default a missing database is an error."""
     path = Path(db_path)
-    conn = connect(path)
+    conn = connect(path, create=create)
     try:
         migrate(conn, path, allow_migrate=allow_migrate)
     except BaseException:

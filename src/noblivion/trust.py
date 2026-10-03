@@ -755,6 +755,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except db.SchemaError as exc:
         print(f"noblivion trust: {exc}")
         return 3
+    except db.DatabaseMissing as exc:
+        print(f"noblivion trust: {exc}", file=sys.stderr)
+        return 6
     try:
         if args.action == "report":
             answer = report(conn, settings.namespace)

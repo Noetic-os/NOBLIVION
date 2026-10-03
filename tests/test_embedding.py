@@ -23,7 +23,7 @@ from store_helpers import FAKE_DIM, FakeEmbedder, add_memory, change_memory, fak
 
 @pytest.fixture
 def conn(tmp_path):
-    c = db.open_db(tmp_path / "data" / "noblivion.db")
+    c = db.open_db(tmp_path / "data" / "noblivion.db", create=True)
     yield c
     c.close()
 
@@ -281,17 +281,18 @@ def test_consent_cli(tmp_path, monkeypatch):
     monkeypatch.setenv("NOBLIVION_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("NOBLIVION_EMBED_BACKEND", "openrouter")
     monkeypatch.setenv("NOBLIVION_EMBED_MODEL", "vendor/embed-1")
+    db.open_db(tmp_path / "noblivion.db", create=True).close()  # install.sh made it
     out = io.StringIO()
     assert embedding.consent_main([], stdin=io.StringIO("no\n"), stdout=out) == 1
     assert "sent as written" in out.getvalue()
     assert embedding.consent_main([], stdin=io.StringIO("yes\n"), stdout=io.StringIO()) == 0
-    c = db.open_db(tmp_path / "noblivion.db")
+    c = db.open_db(tmp_path / "noblivion.db", create=True)
     try:
         assert embedding.has_consent(c, "openrouter", "vendor/embed-1")
     finally:
         c.close()
     assert embedding.consent_main(["--revoke"], stdout=io.StringIO()) == 0
-    c = db.open_db(tmp_path / "noblivion.db")
+    c = db.open_db(tmp_path / "noblivion.db", create=True)
     try:
         assert embedding.read_consent(c) is None
     finally:

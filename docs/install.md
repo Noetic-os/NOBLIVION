@@ -14,8 +14,9 @@ NOBLIVION has two parts:
   builds this venv.
 
 The plugin system places the files. It does not build the venv. You run
-`install.sh` once after the first install and once after each plugin
-update.
+the slash command `/noblivion:setup` once after the first install and once
+after each plugin update. It runs `install.sh` for you and starts the store
+in the same session.
 
 ## Requirements
 
@@ -38,9 +39,16 @@ these:
 3. `$XDG_DATA_HOME/noblivion`, else `~/.local/share/noblivion`.
 
 When the plugin is installed, the data dir is the folder that Claude Code
-gives the plugin in `CLAUDE_PLUGIN_DATA`. A terminal does not have this
-variable. For this reason the first session prints the full install
-command with the folder in it.
+gives the plugin in `CLAUDE_PLUGIN_DATA`. The slash command
+`/noblivion:setup` gets this folder from Claude Code. A terminal does not
+have this variable. For this reason the first session also prints the full
+terminal command with the folder in it.
+
+Only `install.sh` makes the data dir. The store, the command line tools and
+the hooks never make it. They also never make a new `noblivion.db`, except
+the store and `noblivion index` after `install.sh` has run (they check the
+install stamp in `venv/`). So after an uninstall deletes the data dir, a
+late process cannot make an empty data dir again (NOBLIVION-28).
 
 The data dir holds these files:
 
@@ -101,24 +109,41 @@ step as a terminal command. Use either one.
    `claude plugin list` shows the installed plugins.
 
 3. Start a new Claude Code session. The SessionStart hook sees that the
-   venv is missing. It prints one line with the exact command to run, for
-   example:
+   venv is missing. It prints one line, for example:
 
    ```text
-   NOBLIVION: the memory store is not installed, so memory recall is off.
-   Tell the user to run: CLAUDE_PLUGIN_DATA="<data dir>" bash "<plugin dir>/scripts/install.sh"
+   NOBLIVION: the memory store is not installed, so memory recall is off. Tell the user to type /noblivion:setup in this chat (in a terminal: CLAUDE_PLUGIN_DATA="<data dir>" bash "<plugin dir>/scripts/install.sh")
    ```
 
-4. Copy the command from that line. Run it in a terminal.
-5. Start a new Claude Code session. The SessionStart hook starts the
-   store in the background. When the store cannot start, the session
-   shows one line with the reason, for example:
+4. In the same session, type the slash command in the chat. This works in
+   the VS Code chat and in a terminal session:
+
+   ```text
+   /noblivion:setup
+   ```
+
+   The command runs `install.sh` with your data dir. Claude Code asks you
+   to allow that one command. The first run takes one to a few minutes: it
+   builds the venv and downloads the embedding model. At the end,
+   `install.sh` starts the store. Memory recall works from your next
+   prompt in this session. You do not need another session.
+
+   Without the slash command, run the terminal command from the line of
+   step 3 instead. It also starts the store. Your open session then has
+   memory recall from its next prompt.
+
+5. When the store cannot start, `install.sh` prints the reason, and the
+   next session shows one line with the reason, for example:
 
    ```text
    NOBLIVION: the memory store could not start, so memory recall is off: bind failed on port 8894: Address already in use. ...
    ```
 
    See [The store is not running](troubleshooting.md#the-store-is-not-running).
+
+So the plugin install needs at most two sessions: the one where you ran
+`claude plugin install` (or a terminal), and the next one, where you run
+`/noblivion:setup`.
 
 ## What install.sh does
 
@@ -143,6 +168,10 @@ step as a terminal command. Use either one.
 9. It checks for old hand-installed hooks. This is a dry run. It only
    prints what the migration would remove. See
    [Migrate from hand-installed hooks](#migrate-from-hand-installed-hooks).
+10. It starts the store with `noblivion ensure-running`, unless you give
+    `--no-start`. A store of an older version is stopped and replaced. When
+    the start fails, the script prints the reason and still exits 0; the
+    next session tries again.
 
 ### Options
 
@@ -151,6 +180,7 @@ step as a terminal command. Use either one.
 | `--data-dir DIR` | Use `DIR` as the data dir. |
 | `--no-embed` | Do not install `numpy` and `fastembed`. Recall uses keyword search only. No model is downloaded. |
 | `--no-model` | Install the packages, but do not download the model now. |
+| `--no-start` | Do not start the store now. The next session starts it. |
 | `--dry-run` | Print the steps. Change nothing. |
 | `--help` | Print the usage. |
 
@@ -166,9 +196,9 @@ To download the model later:
 1. Open `<data dir>/config.json`.
 2. If `embedding.backend` is `none`, set it to `fastembed`, or remove the
    key.
-3. Run `install.sh` again without `--no-model` and without `--no-embed`.
-4. Start a new Claude Code session. The store computes the vectors for
-   your notes in the background.
+3. Run `/noblivion:setup` again, or `install.sh` without `--no-model` and
+   without `--no-embed`. It restarts the store. The store computes the
+   vectors for your notes in the background.
 
 Other backends (a local Ollama server, or a hosted service) are in
 [configuration.md](configuration.md). A hosted backend sends note text off
@@ -178,9 +208,11 @@ the machine. Read [dedup-and-privacy.md](dedup-and-privacy.md) first.
 
 1. Update the plugin in Claude Code with the `/plugin` menu.
 2. Start a new session. When the venv was built for another plugin
-   version, the SessionStart hook prints one line with the install command.
-3. Run that command in a terminal. Your database, config and token stay.
-4. Start a new session.
+   version, the SessionStart hook prints one line that names
+   `/noblivion:setup`.
+3. Type `/noblivion:setup` in that session. It builds the venv again and
+   replaces the old store with the new one. Your database, config and
+   token stay.
 
 ## Uninstall
 
@@ -188,14 +220,17 @@ The steps below keep your database (the memory index and the trust
 history), `config.json` and `token`, so a later install starts where you
 stopped.
 
-1. Stop the store and remove the venv and the model cache:
+1. Stop the store, wait for it to exit, and remove the venv and the model
+   cache:
 
    ```sh
    CLAUDE_PLUGIN_DATA="<data dir>" bash "<plugin dir>/scripts/uninstall.sh"
    ```
 
-   This keeps `noblivion.db`, `config.json` and `token`. Add `--dry-run`
-   to see the steps first. The script refuses a folder that does not look
+   The script waits until the store has exited (at most 90 s; then it
+   sends `SIGKILL`), so no store process writes in the data dir after the
+   next step. This keeps `noblivion.db`, `config.json` and `token`. Add
+   `--dry-run` to see the steps first. The script refuses a folder that does not look
    like a NOBLIVION data dir.
 
 2. Remove the plugin and keep the data dir:

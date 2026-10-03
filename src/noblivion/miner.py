@@ -71,6 +71,7 @@ DEFAULT_MAX_RUN_S = 300.0
 EXIT_OK = 0
 EXIT_SCHEMA = 3
 EXIT_LOCKED = 4
+EXIT_NO_DB = 6  # no database: the miner never makes one (NOBLIVION-28)
 
 KIND_CORRECTION = "correction"
 KIND_REVIEW = "review_request_changes"
@@ -837,6 +838,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     db_path = args.db or settings.db_path
     pattern = args.transcripts or miner_settings.transcript_glob
     max_s = args.max_seconds if args.max_seconds is not None else miner_settings.max_run_s
+    # The SessionEnd hook starts this run. It opens an existing database
+    # only: after an uninstall deleted the data dir it must not make it again.
+    if not db_path.is_file():
+        print(f"noblivion mine: no database at {db_path}; run install.sh", file=sys.stderr)
+        return EXIT_NO_DB
     try:
         with indexer.index_lock(db_path.parent / MINE_LOCK_FILE, args.lock_timeout):
             conn = db.open_db(db_path, allow_migrate=False)
@@ -856,6 +862,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except indexer.LockTimeoutError:
         print("noblivion mine: another miner run holds mine.lock", file=sys.stderr)
         return EXIT_LOCKED
+    except FileNotFoundError:
+        print(f"noblivion mine: no database at {db_path}; run install.sh", file=sys.stderr)
+        return EXIT_NO_DB
     print(json.dumps(stats.to_dict()) if args.json else f"noblivion mine: {stats.summary()}")
     return EXIT_OK
 

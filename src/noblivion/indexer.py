@@ -68,6 +68,7 @@ EXIT_BLOCKED = 2
 EXIT_SCHEMA = 3
 EXIT_LOCKED = 4
 EXIT_DB_BUSY = 5  # SQLite stayed locked past busy_timeout, or another SQLite error
+EXIT_NO_DB = 6  # no database, and install.sh has not run for this data dir (NOBLIVION-28)
 
 Labeller = Callable[[str, str], Iterable[str]]  # (file text, file stem) -> labels
 StatCache = dict[str, tuple[int, int, "str | None"]]
@@ -576,8 +577,10 @@ class LockTimeoutError(RuntimeError):
 
 @contextmanager
 def index_lock(path: Path, timeout_s: float = 60.0) -> Iterator[None]:
-    """Hold ``flock`` on ``index.lock``: one scan at a time across processes."""
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    """Hold ``flock`` on ``index.lock``: one scan at a time across processes.
+
+    It never makes the folder (NOBLIVION-28): a missing data dir raises
+    ``FileNotFoundError``."""
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         deadline = time.monotonic() + timeout_s
@@ -632,9 +635,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     if labeller is None:
         msg = f"label rules {labels.RULES_FILE} not found or broken; rows get no labels"
         print(f"noblivion index: {msg}", file=sys.stderr)
+    # Only the first index of a new install makes the database: install.sh
+    # writes its stamp before it runs this command. A later run (the memory
+    # sync hook) never makes a data dir that an uninstall deleted
+    # (NOBLIVION-28). An explicit --db is the caller's own choice.
+    create = args.db is not None or config.is_installed(settings.data_dir)
+    if not create and not db_path.is_file():
+        print(f"noblivion index: no database at {db_path}; run install.sh", file=sys.stderr)
+        return EXIT_NO_DB
     try:
+        if create:
+            db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with index_lock(lock_path, args.lock_timeout):
-            conn = db.open_db(db_path, allow_migrate=False)
+            conn = db.open_db(db_path, allow_migrate=False, create=create)
             try:
                 result = scan(
                     conn,
@@ -653,6 +666,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except LockTimeoutError as exc:
         print(f"noblivion index: {exc}", file=sys.stderr)
         return EXIT_LOCKED
+    except FileNotFoundError:
+        print(f"noblivion index: no database at {db_path}; run install.sh", file=sys.stderr)
+        return EXIT_NO_DB
     except sqlite3.OperationalError as exc:
         # One line, no traceback: "database is locked" after busy_timeout.
         print(f"noblivion index: database error ({exc}); try again later", file=sys.stderr)

@@ -81,7 +81,7 @@ def test_fetch_text_and_title_are_masked(tmp_path: Path):
     (folder / "feedback_evil.md").write_text(
         f"---\nname: {EVIL}\ndescription: d\n---\n\n{EVIL}\n", encoding="utf-8"
     )
-    conn = db.open_db(tmp_path / "noblivion.db")
+    conn = db.open_db(tmp_path / "noblivion.db", create=True)
     try:
         indexer.scan(conn, [folder])
         (mid,) = conn.execute("SELECT id FROM memories").fetchone()

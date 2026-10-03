@@ -13,7 +13,7 @@ from store_helpers import FakeEmbedder, add_memory, change_memory, soft_delete
 
 @pytest.fixture
 def conn(tmp_path):
-    c = db.open_db(tmp_path / "data" / "noblivion.db")
+    c = db.open_db(tmp_path / "data" / "noblivion.db", create=True)
     yield c
     c.close()
 
@@ -161,7 +161,7 @@ def test_reload_on_revision_change_from_another_connection(conn, tmp_path):
     index = ranking.RankIndex()
     index.refresh(conn)
     assert index.refresh(conn) is False
-    other = db.open_db(tmp_path / "data" / "noblivion.db")
+    other = db.open_db(tmp_path / "data" / "noblivion.db", create=True)
     try:
         new_id = add_memory(other, "fresh", "zebra crossing rule")
         # Set an older clock on purpose: the reload must not depend on time.
