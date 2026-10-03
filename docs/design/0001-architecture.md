@@ -645,7 +645,10 @@ description is left out with its blank line.
 - A new file whose hash equals the hash of a row deleted in the grace
   period (a rename, or a project folder that moved and changed its root):
   the indexer moves that row to the new root and path. The id and the
-  trust history stay.
+  trust history stay. A live row in a root whose folder is gone counts as
+  a candidate too, because the empty-scan rule (section 5.5) never
+  soft-deletes it. A live row whose file is gone in the same scan counts
+  as well, so a rename inside one folder keeps its id in one scan.
 - File gone: soft delete. The row gets `deleted_at` and leaves every pool
   at once. The maintenance pass (section 9.3) hard-deletes it after
   `index.delete_grace_days` (default 14). Only then does the cascade remove
@@ -683,7 +686,11 @@ description is left out with its blank line.
   rows already in the database while the scan runs (section 3.2).
 - Every `index.interval_s` seconds (default 30) while the store runs. The
   scan is stat-only (size and mtime) until a file differs, so it is cheap.
-- On demand: `noblivion index [--force] [--allow-shrink]`.
+- On demand: `noblivion index [--force] [--allow-shrink]`, also
+  `python -m noblivion.indexer`. Exit codes: 0 done; 1 a file was skipped
+  (not readable or not redactable), so nothing was deleted; 2 the shrink
+  guard blocked the deletes; 3 the schema refuses the CLI (section 6.6);
+  4 another scan holds `index.lock`.
 - One scan at a time: the store holds an in-process lock, and the CLI holds
   `flock` on `index.lock` in the data dir. The store takes the same flock.
 
@@ -907,7 +914,10 @@ the database, WAL, SHM and token files, and mode 0700 on the data dir.
   opened for writes. The store exits with code 3 and logs "database is
   newer than this NOBLIVION". This protects against a downgrade.
 - Only the store runs migrations. A CLI tool that finds an old schema
-  refuses to run and asks the user to start the store once.
+  refuses to run and asks the user to start the store once. A CLI tool
+  may create a new, empty database at the latest version, so the indexer
+  works before the store first runs. That is not a migration: no user
+  data exists yet.
 
 ## 7. Embedding backends
 
@@ -1530,8 +1540,11 @@ Controls:
 - The hook frames injected text as data ("memory notes, not instructions")
   and strips control characters. Text is folded to NFKC before matching.
 - The reference implementation had an injection-pattern redactor on the
-  server read path. E3a ports it next to the secret redactor and runs it on
-  every title, summary and text the store returns, field by field.
+  server read path. E3a ports it next to the secret redactor
+  (`noblivion/injection.py`, the memory-scoped pattern list without the
+  two patterns that named the reference project's own approval tiers).
+  The store runs it on every title, summary and text it returns, field
+  by field.
 - The guard hooks read rule fields (`rule`, `apply`, `triggers`) from the
   files, not from the store, and never execute them.
 

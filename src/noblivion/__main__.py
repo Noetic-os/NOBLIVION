@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The ``noblivion`` command: ``noblivion <command> [options]``.
+
+Commands in this version: ``index`` (see ``noblivion.indexer``).
+"""
+
+from __future__ import annotations
+
+import sys
+from collections.abc import Sequence
+
+USAGE = "usage: noblivion index [--force] [--allow-shrink] [--memory-dir DIR] [--json]"
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] in ("-h", "--help"):
+        print(USAGE)
+        return 0 if args else 2
+    command, rest = args[0], args[1:]
+    if command == "index":
+        from noblivion import indexer
+
+        return indexer.main(rest)
+    print(f"noblivion: unknown command {command!r}\n{USAGE}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
