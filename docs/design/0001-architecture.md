@@ -1316,11 +1316,25 @@ the indexer never sees a half-done merge.
    minutes are skipped. Pairs in `dedup_vetoes` are skipped.
 2. For each pair the judge returns one verdict (section 10.3). The plan
    writes `dedup/plan-<run_id>.json` in the data dir with every pair, the
-   verdict and the reason. It changes nothing.
+   verdict and the reason. It changes nothing. At most `dedup.max_pairs`
+   (default 50) pairs, best cosine first, are judged per run. Before the
+   first call the CLI prints the number of calls and an estimate of the
+   tokens (and of the cost in USD when `dedup.price_in_per_mtok` and
+   `dedup.price_out_per_mtok` are set); after the run it prints the tokens
+   used and the cost OpenRouter reports. `plan --dry-run` prints the pairs
+   and verdicts and writes no plan file.
 3. The user reads the plan. `noblivion dedup apply <run_id>` applies only
    the `MERGE` pairs in that plan file, and only when both files still have
    the hash recorded in the plan.
 4. At most 30 merged-away files per run.
+
+Commands (E6, `src/noblivion/dedup.py`): `noblivion dedup pairs` (list the
+candidates; sends nothing, needs no consent), `plan [--dry-run]
+[--max-pairs N]`, `apply <run_id>`, `undo <run_id> [--pair A,B]`,
+`consent [--revoke]` and `clear-latch`. Only `plan` calls the judge, so
+only `plan` needs the model, the key and the consent. The candidate search
+uses the vectors of the configured embedding model and numpy (the store
+venv has both).
 
 There is no unattended apply mode in v0.1. The reference implementation
 gated unattended apply on a precision test against a private gold set. No
@@ -1328,15 +1342,24 @@ gold set ships with this plugin, so a human reads every plan.
 
 ### 10.2 Consent and what leaves the machine
 
-- `dedup.judge` is `openrouter`, `ollama` or `off` (default `off`).
-- For `openrouter`, the first `plan` run prints the consent text and needs
-  the user to type `yes`. The store writes
+- `dedup.judge` is `openrouter` (default) or `off`. Dedup is still off by
+  default: the plugin ships no model (section 19), and `plan` refuses and
+  sends nothing until `dedup.model`, `OPENROUTER_API_KEY` and the consent
+  are all set. `off` is a switch that refuses even then. An Ollama judge is
+  not in v0.1 (any other value counts as `off`). Example model, for the docs
+  only: `google/gemini-2.5-flash`.
+- The first `plan` run prints the consent text and needs
+  the user to type `yes` (or the user runs `noblivion dedup consent`
+  first). The CLI writes
   `meta.dedup_consent = {"version": 1, "provider": "openrouter",
   "model": "<model>", "at": "<utc>"}`. A change of provider, model or
   consent text version asks again.
-- Sent per pair: the frozen judge prompt and the two file texts, each cut
-  to 20,000 characters. File names are replaced by `A` and `B`. No trust
-  data and no other memory is sent.
+- Sent per pair: the frozen judge prompt, the kind of the pair
+  (`feedback`, `project`, `reference` or `user`) and the two file texts.
+  A text longer than 20,000 characters after the scrub is not cut and sent:
+  the pair is `UNSURE` and nothing is sent for it. A text the redactor
+  cannot settle is not sent either. File names are replaced by `A` and
+  `B`. No trust data and no other memory is sent.
 - Before sending, each text goes through the secret redactor and then an
   outbound scrub: the home folder path becomes `~`, the user name becomes
   `<user>`, IPv4 and IPv6 literals become `<ip>`, and email addresses are
@@ -1349,18 +1372,24 @@ gold set ships with this plugin, so a human reads every plan.
   keep or train on prompts.
 - The key comes only from the env var `OPENROUTER_API_KEY`. NOBLIVION never
   writes it to disk and never logs it.
-- `ollama` with a loopback URL needs no consent. A non-loopback Ollama URL
-  counts as a third party and needs the same consent.
 
 ### 10.3 Judge contract
 
 - Request: OpenRouter chat completions over `urllib`, Bearer key,
-  temperature 0, JSON output.
+  temperature 0, JSON output (`response_format: json_object`), at most 400
+  output tokens, `usage.include` so the answer carries the cost. Timeout
+  `dedup.timeout_s` (default 60). Rate limit: at least
+  `dedup.min_interval_s` (default 1.0) between calls; HTTP 429 waits for
+  `Retry-After` (at most 60 s) and retries twice.
+- The judge is an interface (`model` plus `judge(system, user) -> Verdict`);
+  the tests use a fake judge and never reach the network.
 - Answer schema:
   `{"verdict": "MERGE|RELATED|CONTRADICT|SUPERSEDE|UNSURE", "survivor": "A|B|none", "reason": "<text>"}`.
 - A pair whose input was cut, an answer that does not parse, a timeout or
   an HTTP error all count as `UNSURE`. Only `MERGE` merges.
-- The prompt is a versioned file in the package, checked by sha256 at load.
+- The prompt is a versioned file in the package
+  (`src/noblivion/dedup_prompt_v1.txt`, adapted from the reference prompt
+  v3), checked by sha256 at load.
 - The judge answer is data. It is parsed against the schema and never run
   or followed as an instruction.
 
@@ -1370,7 +1399,13 @@ gold set ships with this plugin, so a human reads every plan.
   <date>:", then the loser description, rule and apply lines as quotes,
   then the loser body. `triggers` become an ordered union. Links to the
   loser in other files point to the survivor. Index lines that point only
-  to the loser are removed.
+  to the loser are removed when the index already points to the survivor.
+- Survivor: the judge's `survivor`; for `none`, the file with more inbound
+  links, then the first name.
+- The merge refuses a pair (and skips it) when `scope`, `status` or
+  `project` differ, when both files hold different `violates` groups, when
+  the trigger union has more than 12 items, or when the merged file fails
+  the field check with a new problem. It uses `hooks/memory_fields.py`.
 - Before any write: a write-ahead log entry in
   `dedup/<run_id>/wal.jsonl` and a `tar.gz` backup of every file the step
   touches.
@@ -1383,8 +1418,11 @@ gold set ships with this plugin, so a human reads every plan.
   3. One transaction: set the action to `done`.
   If step 2 fails, the CLI restores the survivor from the backup, clears
   `archived_at`, and sets the action to `failed`. A `pending` action found
-  at the next run is finished or rolled back by the same rule, using the
-  write-ahead log. The indexer never deletes a row whose loser has a
+  at the next `apply` or `undo` is rolled back by the same rule, using the
+  write-ahead log and the backup.
+- `apply` also writes `dedup/<run_id>/undo.sh`, which runs
+  `noblivion dedup undo <run_id>`. The write-ahead log holds names and
+  hashes only, never file text or the judge reason. The indexer never deletes a row whose loser has a
   `pending` or `done` action; it only keeps it archived.
 - The row and its trust history stay while archived.
 - `noblivion dedup undo <run_id> [--pair A,B]` undoes newest step first. It
@@ -1525,9 +1563,13 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 | `embedding.ollama_url` | `NOBLIVION_OLLAMA_URL` | `http://127.0.0.1:11434` |
 | `embedding.allow_remote` | none | `false` |
 | `embedding.remote_include_mined` | none | `false` |
-| `dedup.judge` | `NOBLIVION_DEDUP_JUDGE` | `off` |
+| `dedup.judge` | `NOBLIVION_DEDUP_JUDGE` | `openrouter`; `off` refuses (section 10.2) |
 | `dedup.model` | `NOBLIVION_DEDUP_MODEL` | unset; `plan` refuses without it |
 | `dedup.min_cosine` | none | `0.82` |
+| `dedup.max_pairs` | none | `50` judge calls per `plan` |
+| `dedup.timeout_s` | none | `60` |
+| `dedup.min_interval_s` | none | `1.0` |
+| `dedup.price_in_per_mtok`, `dedup.price_out_per_mtok` | none | unset (no USD estimate) |
 | `dedup.archive_retention_days` | none | `90` |
 | `miner.enabled` | `NOBLIVION_MINER` | `true` |
 | `miner.transcript_glob` | none | `~/.claude/projects/*/*.jsonl` |
@@ -1685,7 +1727,7 @@ Outbound flows exist only when the user turns them on:
 
 | Flow | Sends | Gate |
 |---|---|---|
-| OpenRouter dedup judge | two redacted memory texts per pair | `dedup.judge = openrouter` plus typed consent |
+| OpenRouter dedup judge | two redacted memory texts per pair | `dedup.model` plus `OPENROUTER_API_KEY` plus typed consent |
 | OpenRouter embeddings | every redacted and scrubbed memory text and query; mined rows only on opt-in | `embedding.backend = openrouter` plus `noblivion consent embeddings` |
 | Remote Ollama | the same as above | non-loopback URL plus `allow_remote` plus consent |
 
