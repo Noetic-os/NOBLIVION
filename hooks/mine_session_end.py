@@ -32,7 +32,6 @@ CMD_ENV = "NOBLIVION_MINE_CMD"
 ENABLED_ENV = "NOBLIVION_MINER"
 ENABLED_KEY = "miner.enabled"
 MINER_ENTRY = Path("venv") / "bin" / "noblivion"  # under the data dir
-OFF_WORDS = ("0", "false", "off", "no")
 
 
 def _hook_config():
@@ -54,10 +53,7 @@ def _env(environ: Optional[Mapping[str, str]]) -> Mapping[str, str]:
 
 
 def is_enabled(environ: Optional[Mapping[str, str]] = None) -> bool:
-    value = _CFG.setting(ENABLED_ENV, ENABLED_KEY, True, _env(environ))
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() not in OFF_WORDS
+    return bool(_CFG.switch(ENABLED_ENV, True, _env(environ), ENABLED_KEY))
 
 
 def command(environ: Optional[Mapping[str, str]] = None) -> Optional[List[str]]:

@@ -174,6 +174,29 @@ def test_service_reports_reembedding_then_ready(conn):
     assert service.state == "ready"
 
 
+def test_a_failed_load_logs_its_reason_once_per_failure(conn, caplog):
+    now = [1000.0]
+
+    def factory(*_a):
+        raise embedding.EmbeddingError("model file missing at /m/x.onnx")
+
+    service = embedding.EmbeddingService(
+        embedding.EmbeddingSettings(), factory=factory, clock=lambda: now[0]
+    )
+    with caplog.at_level("WARNING", logger="noblivion.store"):
+        service.start(conn)
+        now[0] += 60
+        service.start(conn)  # inside the backoff: no attempt, no new line
+        lines = [r.getMessage() for r in caplog.records if "model load failed" in r.getMessage()]
+        assert len(lines) == 1
+        assert "EmbeddingError" in lines[0] and "model file missing at /m/x.onnx" in lines[0]
+        now[0] += 3600
+        service.start(conn)
+        lines = [r.getMessage() for r in caplog.records if "model load failed" in r.getMessage()]
+        assert len(lines) == 2
+    service.close()
+
+
 def test_service_retries_a_failed_load_at_most_once_per_hour(conn):
     now = [1000.0]
     attempts = []

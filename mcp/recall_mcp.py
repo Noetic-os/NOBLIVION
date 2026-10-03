@@ -201,7 +201,7 @@ def noblivion_recall(
     env = environ
     if include_mined:
         return _mined_index(hook, q, k, env)
-    md_only = bool((env.get("NOBLIVION_RECALL_MD_ONLY") or "").strip())
+    md_only = bool(hook.md_only_on(env))
     t0 = time.monotonic()
     try:
         # md_only is passed only when set, so the default call is unchanged.

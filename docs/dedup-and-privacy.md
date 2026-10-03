@@ -21,7 +21,7 @@ them on and type your consent.
 | Feature | What it sends | What you must do |
 | --- | --- | --- |
 | Remote embeddings | every memory file and every prompt | set a hosted backend and run `noblivion consent embeddings` |
-| Duplicate sweep | the two notes of each candidate pair | set `dedup.model` and `OPENROUTER_API_KEY`, and type `yes` |
+| Duplicate sweep | the two notes of each candidate pair, front matter included | set `dedup.model` and `OPENROUTER_API_KEY`, type `yes` to the consent, and type `yes` after each cost estimate |
 
 Before text leaves the machine, NOBLIVION does this to it:
 
@@ -121,15 +121,16 @@ run each step.
 The consent text is:
 
 ```text
-NOBLIVION dedup consent (version 1)
+NOBLIVION dedup consent (version 2)
 
 Judge: OpenRouter, model: <model>
 
 `noblivion dedup plan` sends text off this machine, once per candidate pair:
 - a fixed judge prompt;
 - the text of the two memory files of the pair, each at most 20,000
-  characters. The file names are replaced by A and B. No trust data and
-  no other memory is sent.
+  characters. The file names are replaced by A and B, but the text
+  includes the front matter, so its name and description fields are sent
+  as written. No trust data and no other memory is sent.
 
 Before sending, each text goes through the secret redactor and an outbound
 scrub: your home folder path becomes ~, your user name becomes <user>, and
@@ -144,7 +145,9 @@ Type yes to agree. Any other answer keeps dedup off.
 
 The text of a memory file includes its front matter. So the `name` and
 `description` fields are sent as written, even though the file names are
-replaced.
+replaced. The consent text says so since version 2. A consent that you
+gave to version 1 is not valid any more: `noblivion dedup consent` (or the
+next `plan`) asks again.
 
 To withdraw your consent, run `noblivion dedup consent --revoke`.
 
@@ -178,21 +181,28 @@ Run the steps in this order. All commands are
    of at least `dedup.min_cosine` (0.82). Files changed in the last 30
    minutes are skipped. A pair you undid before is skipped.
 
-2. **Judge the pairs.** This sends the best pairs (at most
+2. **Check the cost first (optional).** This prints the pairs that a
+   plan would judge and the cost estimate. It makes no network call, sends
+   nothing and needs no consent, model or API key.
+
+   ```sh
+   noblivion dedup plan --dry-run
+   ```
+
+3. **Judge the pairs.** This sends the best pairs (at most
    `dedup.max_pairs`, default 50) to the judge. It prints the cost
-   estimate and then starts at once.
+   estimate and asks you to type `yes`. Any other answer sends nothing.
+   Add `--yes` to skip the question, for example in a script.
 
    ```sh
    noblivion dedup plan
    ```
 
    It writes `<data dir>/dedup/plan-<run id>.json` and prints the run id.
-   `plan --dry-run` also calls the judge and is billed. It only skips the
-   plan file.
 
-3. **Read the plan.** Open the plan file. Check each pair with the
+4. **Read the plan.** Open the plan file. Check each pair with the
    verdict `MERGE`.
-4. **Apply the plan.**
+5. **Apply the plan.**
 
    ```sh
    noblivion dedup apply <run id>
@@ -244,10 +254,24 @@ refuses to run.
 | Code | Meaning |
 | --- | --- |
 | 0 | done |
-| 1 | refused, for example no consent, no model or no API key; nothing was sent |
+| 1 | refused, for example no consent, no model, no API key, or no `yes` after the cost estimate; nothing was sent |
 | 2 | usage error |
 | 3 | database schema error |
 | 4 | another process holds the index lock |
 | 5 | the latch blocks `apply` |
+
+### The status line
+
+Every `plan` (also `--dry-run`), `apply` and `undo` writes its result to
+`<data dir>/cache/dedup-last-run.json` (`NOBLIVION_DEDUP_STATUS_FILE`). At
+session start, a hook prints one line from it, for example:
+
+```text
+Memory dedup plan <run id> on 2026-10-03: 2 merge proposals. Read the plan, then run noblivion dedup apply <run id>
+```
+
+The line names the date of the run. It does not appear when the run has
+nothing to report, for example after an `undo`. After a failed `apply`,
+the line names the run to undo.
 
 To turn the sweep off for good, set `dedup.judge` to `off`.

@@ -346,6 +346,10 @@ def apply_index_trust(
     rows = list(lines)
     if md == MODE_OFF:
         return rows, ""
+    if md == MODE_ON and any(getattr(ln, "trust_ranking", "") == MODE_SHADOW for ln in rows):
+        # The store's trust.ranking is shadow: compute and log, never apply
+        # (design doc section 8.6).
+        md = MODE_SHADOW
     if not rows:
         return rows, ""
     if any(getattr(ln, "fused", None) is None for ln in rows):
@@ -353,7 +357,7 @@ def apply_index_trust(
         # memory folder failed). The daemon's order is not this hook's to scale.
         return rows, ":trust_off:no_rerank"
     snapshot: Optional[Snapshot] = None
-    source = "daemon"
+    source = "store"
     path = (environ.get(TRUST_FILE_ENV) or "").strip()
     if path:
         try:

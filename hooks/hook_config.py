@@ -63,6 +63,10 @@ EVIDENCE_STOP_DEFAULT: FrozenSet[str] = frozenset(
 
 _CACHE: Dict[str, Tuple[Optional[float], Dict[str, Any]]] = {}
 
+# The one rule for every on/off switch (docs/configuration.md, "Switches").
+SWITCH_ON: Tuple[str, ...] = ("1", "true", "yes", "on")
+SWITCH_OFF: Tuple[str, ...] = ("0", "false", "no", "off", "")
+
 
 def _env(env: Optional[Mapping[str, str]]) -> Mapping[str, str]:
     return os.environ if env is None else env
@@ -146,6 +150,43 @@ def setting(
     if raw:
         return raw
     return get(key, default, env)
+
+
+def parse_switch(value: Any, default: bool) -> bool:
+    """One switch value as a bool. ``1``, ``true``, ``yes``, ``on`` (any case,
+    JSON ``true``, a non-zero number) are on. ``0``, ``false``, ``no``,
+    ``off``, the empty text (JSON ``false``, ``0``) are off. ``None`` (not
+    set) and any other value give ``default``."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if not isinstance(value, str):
+        return default
+    raw = value.strip().lower()
+    if raw in SWITCH_ON:
+        return True
+    if raw in SWITCH_OFF:
+        return False
+    return default
+
+
+def switch(
+    env_name: str,
+    default: bool = False,
+    env: Optional[Mapping[str, str]] = None,
+    key: Optional[str] = None,
+) -> bool:
+    """The switch ``env_name``: the env var when it is set (an empty value is
+    off), else the config ``key`` when one is given, else ``default``."""
+    e = _env(env)
+    if env_name in e:
+        return parse_switch(e.get(env_name), default)
+    if key:
+        return parse_switch(get(key, None, env), default)
+    return default
 
 
 def generic_args(env: Optional[Mapping[str, str]] = None) -> FrozenSet[str]:

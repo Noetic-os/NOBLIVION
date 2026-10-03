@@ -155,11 +155,11 @@ def state_dir(environ: Optional[Mapping[str, str]] = None) -> Path:
 
 
 def is_off(environ: Optional[Mapping[str, str]] = None) -> bool:
-    return bool((_env(environ).get(OFF_ENV) or "").strip())
+    return bool(_CFG.switch(OFF_ENV, False, _env(environ)))
 
 
 def is_bash_off(environ: Optional[Mapping[str, str]] = None) -> bool:
-    return bool((_env(environ).get(BASH_OFF_ENV) or "").strip())
+    return bool(_CFG.switch(BASH_OFF_ENV, False, _env(environ)))
 
 
 # ── log ─────────────────────────────────────────────────────────────────────

@@ -104,7 +104,6 @@ PENDING_MAX = 200
 
 
 EVENTS_KEY = "trust.events"
-OFF_WORDS = ("0", "off", "false", "no")
 _HOOK_CONFIG: List[Any] = []
 
 
@@ -124,15 +123,13 @@ def _hook_config() -> Any:
 def enabled(environ: Optional[Mapping[str, str]] = None) -> bool:
     """On by default (design doc section 12.3: ``trust.events`` is ``1``).
     Off when ``NOBLIVION_TRUST_EVENTS``, else the config key ``trust.events``,
-    is ``0``, ``off``, ``false`` or ``no``. The events stay on this machine."""
+    is off (``hook_config.switch``: 0, false, no, off or empty). The events
+    stay on this machine."""
     env = os.environ if environ is None else environ
-    raw = (env.get(EVENTS_ENV) or "").strip()
-    if not raw:
-        try:
-            raw = str(_hook_config().get(EVENTS_KEY, "1", env))
-        except Exception:  # noqa: BLE001 - a broken install reads as the default
-            raw = "1"
-    return raw.strip().lower() not in OFF_WORDS
+    try:
+        return bool(_hook_config().switch(EVENTS_ENV, True, env, EVENTS_KEY))
+    except Exception:  # noqa: BLE001 - a broken install reads as the default
+        return True
 
 
 def _default_cache_dir(env: Mapping[str, str]) -> str:

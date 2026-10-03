@@ -297,7 +297,8 @@ def test_unknown_route_wrong_method_and_no_cors(running):
 def test_search_shape(running):
     status, body = running.get("/api/memories/search?q=pytest+venv&top_k=1")
     assert status == 200
-    assert set(body) == {"results", "namespace"}
+    assert set(body) == {"results", "scores", "namespace"}
+    assert len(body["scores"]) == 1
     assert body["namespace"] == "claude_code"
     assert len(body["results"]) == 1
     entries = body["results"][0].split(rest.ENTRY_SEPARATOR)
@@ -316,12 +317,12 @@ def test_search_joins_entries(running):
 @pytest.mark.parametrize("query", ["", "q=", "q=+++"])
 def test_search_empty_query(running, query):
     body = running.get(f"/api/memories/search?{query}")[1]
-    assert body == {"results": ["No memories available."], "namespace": "claude_code"}
+    assert body == {"results": ["No memories available."], "scores": [], "namespace": "claude_code"}
 
 
 def test_search_echoes_the_project_and_scopes_by_it(running):
     body = running.get("/api/memories/search?q=venv&project=other_space")[1]
-    assert body == {"results": ["No memories available."], "namespace": "other_space"}
+    assert body == {"results": ["No memories available."], "scores": [], "namespace": "other_space"}
 
 
 def test_search_root_scoping(running):

@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from noblivion import db, redaction, trust
+from noblivion import db, injection, redaction, trust
 from noblivion.launcher import NONCE_RE
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ ANSWER_CAP_BYTES = 512 * 1024  # section 4.2: every answer stays below 512 KB
 SOCKET_TIMEOUT_S = 10.0
 
 NO_MEMORIES = "No memories available."
-INTERNAL_REASON = "index or fetch failed; see the daemon log"  # section 4: fixed text
+INTERNAL_REASON = "index or fetch failed; see the store log"  # section 4: fixed text
 NOT_FOUND_REASON = "no memory with that id in this namespace"
 BAD_ID_REASON = "id is not a number"
 ENTRY_SEPARATOR = "\n---\n"
@@ -94,8 +94,17 @@ def root_of(params: Mapping[str, list[str]]) -> str | None:
     return root or None
 
 
+def safe_text(text: str) -> str:
+    """Section 15.4: the secret redactor, then the injection-pattern redactor.
+    Every text field the store returns goes through this, field by field."""
+    text = redaction.redact_at_rest(text)
+    if text == redaction.REDACTION_FAILED_TOKEN:
+        return text
+    return injection.redact_injection(text)[0]
+
+
 def _clean(text: str, limit: int) -> str:
-    text = " ".join(redaction.redact_at_rest(text).split())
+    text = " ".join(safe_text(text).split())
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
@@ -133,22 +142,27 @@ def _json_len(text: str) -> int:
 
 
 def search_answer(result: RankResult | None, namespace: str) -> dict:
-    """Section 4.2: one joined text, each entry redacted on its own, below 512 KB."""
+    """Section 4.2: one joined text, each entry redacted on its own, below 512 KB.
+    ``scores`` holds the score of each entry (section 4.3 rules; ``null`` in
+    keyword-only mode), in entry order, so the hook can apply
+    ``recall.min_score``."""
     entries: list[str] = []
-    budget = ANSWER_CAP_BYTES - 4096  # room for the keys and the namespace
+    scores: list[float | None] = []
+    budget = ANSWER_CAP_BYTES - 4096 - 16 * 50  # room for the keys, the scores, the namespace
     used = 0
     sep_len = _json_len(ENTRY_SEPARATOR)
     for hit in result.hits if result is not None else []:
-        text = redaction.redact_at_rest(hit.row.content)
+        text = safe_text(hit.row.content)
         if text == redaction.REDACTION_FAILED_TOKEN:
             continue
         size = _json_len(text) + (sep_len if entries else 0)
         if used + size > budget:
             break  # entries that do not fit are left out from the end
         entries.append(text)
+        scores.append(hit.score)
         used += size
     joined = ENTRY_SEPARATOR.join(entries) if entries else NO_MEMORIES
-    return {"results": [joined], "namespace": namespace}
+    return {"results": [joined], "scores": scores, "namespace": namespace}
 
 
 def index_row(hit: Hit, trust: Mapping[int, tuple[float, int]] | None, prior_mined: float) -> dict:
@@ -192,9 +206,14 @@ def index_answer(
     mode: str,
     trust: Mapping[int, tuple[float, int]] | None = None,
     prior_mined: float = 0.3,
+    trust_ranking: str = "off",
 ) -> dict:
-    """Section 4.3."""
+    """Section 4.3. With ``trust.ranking`` ``shadow`` or ``on`` the answer
+    names the mode in ``trust_ranking``: in ``shadow`` the hook computes and
+    logs the trust factor but never applies it (section 8.6)."""
     answer: dict[str, object] = {"namespace": namespace, "reason": None, "mode": mode}
+    if trust_ranking in ("shadow", "on"):
+        answer["trust_ranking"] = trust_ranking
     if result is None:
         answer.update(reason=INTERNAL_REASON, results=[])
         return answer
@@ -238,7 +257,7 @@ def fetch_answer(conn: sqlite3.Connection | None, raw_id: str, namespace: str) -
     if row is None:
         return missing
     content = str(row["content"])
-    text = redaction.redact_at_rest(content)
+    text = safe_text(content)
     title, _ = title_and_summary(content, memory_id)
     return {
         "namespace": namespace,
@@ -432,6 +451,7 @@ class Handler(BaseHTTPRequestHandler):
             mode=store.mode(),
             trust=trust,
             prior_mined=store.store_settings.prior_mined,
+            trust_ranking=store.store_settings.trust_ranking,
         )
 
     def _fetch(self, raw_id: str, params: Mapping[str, list[str]]) -> dict:

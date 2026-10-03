@@ -8,21 +8,20 @@ is two small JSON reads (well under 5 ms):
 
 - the trust report cache (contract C5; ``NOBLIVION_TRUST_REPORT_FILE``, default
   ``<data dir>/cache/trust-report.json``) ->
-  ``Memory trust: N to retire, M to promote, D to demote. Run noblivion trust``
+  ``Memory trust: N to retire, M to promote, D to demote. Run noblivion trust report``
 - the dedup status file (contract C4; ``NOBLIVION_DEDUP_STATUS_FILE``, default
-  ``<data dir>/cache/dedup-last-run.json``) ->
-  ``Memory dedup: N merged last night, M proposals``
+  ``<data dir>/cache/dedup-last-run.json``, written by every ``noblivion dedup``
+  plan, apply and undo) -> for example
+  ``Memory dedup: N merged on <date>, M proposals``
 
 A missing or unreadable file gives no line. A line whose counts are all zero is
 not printed either: it would ask for an action that has nothing to act on, and
-SessionStart text is re-sent on every later call of the session. A dedup run in
-dry-run mode says so; a run older than 36 hours names its date instead of "last
-night". A run the gate refused (C4 "outcome": "refused")
-gives ``Memory dedup REFUSED last night, nothing merged: <reason>``, except
-when the reason is "no gate configured" (``refused_code`` "no_gate"): the gate
-is empty by design until a prompt passes it, and a daily line for that state
-would be noise. Any other refusal means the nightly is broken. Source
-``compact`` prints nothing (the session already had the lines).
+SessionStart text is re-sent on every later call of the session. A dry run
+and a plan say so and name the next command; each line names the date of the
+run. A refused run (C4 "outcome": "refused") gives ``Memory dedup REFUSED on
+<date>, nothing merged: <reason>``, except for a ``refused_code`` in
+``QUIET_REFUSAL_CODES``. Source ``compact`` prints nothing (the session
+already had the lines).
 Exit 0 on every path.
 """
 
@@ -41,7 +40,6 @@ TRUST_FILE_ENV = "NOBLIVION_TRUST_REPORT_FILE"
 TRUST_FILE_NAME = "trust-report.json"  # in <data dir>/cache
 DEDUP_FILE_ENV = "NOBLIVION_DEDUP_STATUS_FILE"
 DEDUP_FILE_NAME = "dedup-last-run.json"  # in <data dir>/cache
-LAST_NIGHT_H = 36.0
 REASON_MAX_CHARS = 120
 QUIET_REFUSAL_CODES = frozenset({"no_gate"})
 MAX_FILE_BYTES = 4_000_000
@@ -89,8 +87,13 @@ def trust_line(doc: Any) -> str:
     if not any(n):
         return ""
     return (
-        f"Memory trust: {n[0]} to retire, {n[1]} to promote, {n[2]} to demote. Run noblivion trust"
+        f"Memory trust: {n[0]} to retire, {n[1]} to promote, {n[2]} to demote. "
+        "Run noblivion trust report"
     )
+
+
+def _safe(value: Any) -> str:
+    return "".join(ch for ch in str(value)[:64] if ch.isalnum() or ch in "-_ ()")
 
 
 def dedup_line(doc: Any, now: Optional[_dt.datetime] = None) -> str:
@@ -98,11 +101,12 @@ def dedup_line(doc: Any, now: Optional[_dt.datetime] = None) -> str:
         return ""
     failed = doc.get("failed")  # C4 additive key: an apply that failed and is not undone
     if isinstance(failed, str) and failed:
-        safe = "".join(ch for ch in failed[:64] if ch.isalnum() or ch in "-_ ()")
+        safe = _safe(failed)
         return (
             f"Memory dedup FAILED in run {safe}: run noblivion dedup undo {safe}. "
-            "Nightly applies are blocked until then"
+            "Apply is blocked until then"
         )
+    when = _when(doc)
     if doc.get("outcome") == "refused":
         if doc.get("refused_code") in QUIET_REFUSAL_CODES:
             return ""
@@ -112,30 +116,42 @@ def dedup_line(doc: Any, now: Optional[_dt.datetime] = None) -> str:
         )
         if len(reason) > REASON_MAX_CHARS:
             reason = reason[: REASON_MAX_CHARS - 3] + "..."
-        return f"Memory dedup REFUSED {_when(doc, now)}, nothing merged: {reason or 'no reason recorded'}"
+        return f"Memory dedup REFUSED {when}, nothing merged: {reason or 'no reason recorded'}"
+    if doc.get("mode") == "dry-run":
+        pairs = _count(doc.get("pairs"))
+        if not pairs:
+            return ""
+        return (
+            f"Memory dedup dry run {when}: {pairs} candidate pairs, nothing sent. "
+            "Run noblivion dedup plan to judge them"
+        )
     merged, proposals = _count(doc.get("merged")), _count(doc.get("proposals"))
+    if doc.get("mode") == "plan":
+        run = _safe(doc.get("run_id") or "")
+        if not proposals or not run:
+            return ""
+        return (
+            f"Memory dedup plan {run} {when}: {proposals} merge proposals. "
+            f"Read the plan, then run noblivion dedup apply {run}"
+        )
     if merged is None or proposals is None or not (merged or proposals):
         return ""
-    when = _when(doc, now)
-    if doc.get("mode") == "dry-run":
-        return f"Memory dedup dry run {when}: {merged} to merge, {proposals} proposals"
     return f"Memory dedup: {merged} merged {when}, {proposals} proposals"
 
 
-def _when(doc: Mapping[str, Any], now: Optional[_dt.datetime]) -> str:
-    when = "last night"
+def _when(doc: Mapping[str, Any]) -> str:
+    """``on <date>`` of the run, or ``in the last run`` when the file has no
+    readable ``finished_at``."""
     raw = doc.get("finished_at")
     if isinstance(raw, str):
         try:
             t = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            if t.tzinfo is None:
-                t = t.replace(tzinfo=_dt.timezone.utc)
-            ref = now if now is not None else _dt.datetime.now(_dt.timezone.utc)
-            if (ref - t).total_seconds() > LAST_NIGHT_H * 3600.0:
-                when = "on " + t.astimezone(_dt.timezone.utc).date().isoformat()
         except ValueError:
-            when = "in the last run"
-    return when
+            return "in the last run"
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=_dt.timezone.utc)
+        return "on " + t.astimezone(_dt.timezone.utc).date().isoformat()
+    return "in the last run"
 
 
 def lines(environ: Mapping[str, str], now: Optional[_dt.datetime] = None) -> List[str]:

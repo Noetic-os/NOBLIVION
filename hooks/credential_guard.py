@@ -53,9 +53,9 @@ import re
 import shlex
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
-ENV_SWITCH = "NOBLIVION_GUARD_CREDENTIAL"  # "0", "off", "false", "no": the guard is off
+ENV_SWITCH = "NOBLIVION_GUARD_CREDENTIAL"  # on unless off (hook_config.switch)
 PROBE_TIMEOUT_S = 0.6
 WALK_MAX_DIRS = (
     3000  # a recursive grep deeper or wider than this is a design limit (RESULT-V2-FU3 L6)
@@ -73,8 +73,28 @@ _TOKEN_PREFIX = re.compile(
 _TOKENISH = re.compile(r"(?=[^:]*\d)(?=[^:]*[A-Za-z])^[A-Za-z0-9_.~%+\-]{20,}$")
 
 
+_HOOK_CONFIG: Any = None
+
+
+def _hook_config() -> Any:
+    """``hook_config.py`` from this file's folder, loaded once."""
+    global _HOOK_CONFIG
+    if _HOOK_CONFIG is None:
+        import importlib.util
+
+        path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "hook_config.py")
+        spec = importlib.util.spec_from_file_location("hook_config", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _HOOK_CONFIG = mod
+    return _HOOK_CONFIG
+
+
 def guard_on(env: Mapping[str, str]) -> bool:
-    return str(env.get(ENV_SWITCH) or "").strip().lower() not in ("0", "off", "false", "no")
+    """On unless ``NOBLIVION_GUARD_CREDENTIAL`` is off (0, false, no, off or empty)."""
+    return bool(_hook_config().switch(ENV_SWITCH, True, env))
 
 
 def credential_url(text: object) -> bool:

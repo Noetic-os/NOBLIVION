@@ -24,13 +24,13 @@ SessionStart, source ``compact``
     does not depend on what the summary kept.
 
 SessionStart, source ``startup``, ``resume``, ``clear`` (and ``fork``)
-    Prints a briefing: one header line and at most 8 RULING, 5 OPEN and 2
-    TRAP rows (standing operator rulings, open work, live traps), within
+    Prints a briefing: one header line and at most 8 DECISION, 5 OPEN and 2
+    TRAP rows (standing decisions, open work, live traps), within
     ``BRIEF_MAX_CHARS`` characters (1,500; ``NOBLIVION_CONTINUITY_MAX_CHARS``
     sets it, 500 to 2,000). Once per session id. Each quota is
-    settable: ``NOBLIVION_CONTINUITY_QUOTA_RULING``, ``..._QUOTA_OPEN``,
+    settable: ``NOBLIVION_CONTINUITY_QUOTA_DECISION``, ``..._QUOTA_OPEN``,
     ``..._QUOTA_TRAP`` (0 to 20; 0 drops the section). The row limit is the
-    sum of the quotas. A row ends with ``[id N]`` (the daemon id) or, without
+    sum of the quotas. A row ends with ``[id N]`` (the store id) or, without
     one, with the whole file name less ``.md``. The name is never cut: the
     row text is cut instead, all rows to one length between 80 and 60
     characters, the longest that fits. Rows that still do not fit are left out.
@@ -42,26 +42,28 @@ or under ``metadata:``). A memory whose status is ``closed`` or ``parked`` is
 never a briefing row, in any section. An OPEN row comes from a project memory
 whose status is ``open``. A project memory with no valid ``status:`` line is
 still an OPEN row, as before the field existed, unless
-``NOBLIVION_CONTINUITY_REQUIRE_STATUS=1`` is set: then it is no row. A ruling
-with no status stays a RULING row in both cases. The ``project:`` field is not
+``NOBLIVION_CONTINUITY_REQUIRE_STATUS=1`` is set: then it is no row. A decision
+with no status stays a DECISION row in both cases. The ``project:`` field is not
 used: no filter, and it is not printed (the slug would cost row text).
 
 How the briefing is ranked. Each of the three sections asks the store's ranked
 index (``corpus.recall_index``, which calls the recall hook) one question that names the project
-(the last part of the cwd). The daemon rank and the recency of the local file
+(the last part of the cwd). The store rank and the recency of the local file
 are fused (reciprocal rank fusion), so a memory written minutes ago can enter
-before the mirror has carried it to the daemon. When the store does not answer,
+before the index has carried it to the store. When the store does not answer,
 or the recall hook is not installed next to this file, the ranking is recency
 alone, and the log says so (``recency_only``).
 
 The local corpus code (memory files, the shown-set, inert text) comes from the
 sibling ``corpus.py``, so this hook works without the recall hook.
 
-The curated order. Two index files in the memory folder are the first rank of
-two sections: the memories ``topic_operator_rulings.md`` links are the first
-RULING rows and the memories ``topic_live_work.md`` links are the first OPEN
-rows, each in file order. The fused rank fills what is left of the section's
-quota. A memory the rulings file links is a RULING row whatever its name says,
+The curated order. Index files in the memory folder are the first rank of two
+sections: the memories that the files of the config key
+``continuity.decision_files`` (default ``topic_decisions.md``) link are the
+first DECISION rows, and the memories that the files of
+``continuity.open_files`` (default ``topic_open_work.md``) link are the first
+OPEN rows, each in file order. The fused rank fills what is left of the
+section's quota. A memory a decision file links is a DECISION row whatever its name says,
 and no memory is a row twice. A linked memory that is closed or parked, that
 MEMORY.md links itself, or that has no file is skipped. A missing index file
 leaves its section on the fused rank alone. ``NOBLIVION_CONTINUITY_CURATED=0``
@@ -112,11 +114,12 @@ PRECOMPACT_PRINT_ENV = "NOBLIVION_CONTINUITY_PRECOMPACT_PRINT"
 BUDGET_ENV = "NOBLIVION_CONTINUITY_BUDGET_S"
 REQUIRE_STATUS_ENV = "NOBLIVION_CONTINUITY_REQUIRE_STATUS"  # default off
 CURATED_ENV = "NOBLIVION_CONTINUITY_CURATED"  # default on
-# The index files whose links are the first rows of a section, in file order.
-# RULING is first: a memory both files link is a RULING row.
-CURATED_FILES: Tuple[Tuple[str, str], ...] = (
-    ("RULING", "topic_operator_rulings.md"),
-    ("OPEN", "topic_live_work.md"),
+# The index files whose links are the first rows of a section, in file order:
+# (section, config key, default files). DECISION is first: a memory that files
+# of both sections link is a DECISION row.
+CURATED_FILES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
+    ("DECISION", "continuity.decision_files", ("topic_decisions.md",)),
+    ("OPEN", "continuity.open_files", ("topic_open_work.md",)),
 )
 
 STATE_SUBDIR = "continuity"
@@ -129,8 +132,8 @@ BRIEF_TEXT_MAX = 80  # the row text: the longest of 80, 75, ... 60 that fits
 BRIEF_TEXT_MIN = 60
 BRIEF_TEXT_STEP = 5
 BRIEF_REF_MAX = 255  # a file name is never cut; this only bounds it
-QUOTA: Tuple[Tuple[str, int], ...] = (("RULING", 8), ("OPEN", 5), ("TRAP", 2))
-QUOTA_ENV_PREFIX = "NOBLIVION_CONTINUITY_QUOTA_"  # + RULING, OPEN or TRAP
+QUOTA: Tuple[Tuple[str, int], ...] = (("DECISION", 8), ("OPEN", 5), ("TRAP", 2))
+QUOTA_ENV_PREFIX = "NOBLIVION_CONTINUITY_QUOTA_"  # + DECISION, OPEN or TRAP
 QUOTA_MAX = 20
 MAX_CHARS_ENV = "NOBLIVION_CONTINUITY_MAX_CHARS"
 MAX_CHARS_RANGE = (500, 2000)
@@ -141,13 +144,13 @@ BRIEF_HEADER = (
     "memory folder."
 )
 QUERIES: Mapping[str, str] = {
-    "RULING": "standing operator ruling decision approved for {project}",
+    "DECISION": "standing decision agreed approved rule for {project}",
     "OPEN": "open work next step in progress pending for {project}",
     "TRAP": "trap hazard rule never repeat this mistake in {project}",
 }
 INDEX_K = 60
 RRF_K = 60
-DEFAULT_BUDGET_S = 4.0  # all daemon calls of one briefing together
+DEFAULT_BUDGET_S = 4.0  # all store calls of one briefing together
 
 # The rules kept across a compaction.
 RULES_MAX_ROWS = 12
@@ -157,7 +160,7 @@ RULE_NAME_MAX = 40
 APPLIED_MAX_NAMES = 60  # the per-session file is bounded
 PRECOMPACT_HEADER = (
     "Keep the next lines in the summary, word for word, under the heading "
-    '"Memory rules applied in this session". They are the operator\'s '
+    '"Memory rules applied in this session". They are the user\'s '
     "memory rules that this session was given and must still follow:"
 )
 COMPACT_HEADER = (
@@ -165,7 +168,7 @@ COMPACT_HEADER = (
     "memory). They still apply:"
 )
 
-_RULING_RE = re.compile(r"ruling|approval|approved|operator[ _-](ruled|decision)", re.I)
+_DECISION_RE = re.compile(r"decision|ruling|approval|approved", re.I)
 _LINK_RE = re.compile(r"\]\(\s*([^)#\s]+\.md)\s*\)")
 _NAME_DATE_RE = re.compile(r"(20\d\d)[_-](\d\d)[_-](\d\d)")
 _SPACE_RE = re.compile(r"\s+")
@@ -200,10 +203,7 @@ def recall_module():
 
 
 def _flag(env: Mapping[str, str], name: str, default: bool) -> bool:
-    raw = (env.get(name) or "").strip().lower()
-    if not raw:
-        return default
-    return raw not in ("0", "false", "no", "off")
+    return bool(_CFG.switch(name, default, env))
 
 
 def is_on(env: Mapping[str, str]) -> bool:
@@ -414,19 +414,33 @@ def memory_md_links(folder: str) -> set:
     return set(linked_files(folder, "MEMORY.md"))
 
 
+def curated_files(key: str, defaults: Tuple[str, ...], env: Mapping[str, str]) -> Tuple[str, ...]:
+    """The index file names of one curated section: the config list ``key``,
+    else ``defaults``. A name with a folder part is ignored."""
+    value = _CFG.get(key, None, env)
+    if not isinstance(value, list):
+        return defaults
+    return tuple(
+        n.strip()
+        for n in value
+        if isinstance(n, str) and n.strip() and os.path.basename(n.strip()) == n.strip()
+    )
+
+
 def curated_order(folder: str, env: Mapping[str, str]) -> Dict[str, List[str]]:
     """``section -> file names``: the links of the section's index file, in
     file order. A file two index files link is in the first section only.
     Empty lists when ``NOBLIVION_CONTINUITY_CURATED`` is off."""
-    out: Dict[str, List[str]] = {label: [] for label, _ in CURATED_FILES}
+    out: Dict[str, List[str]] = {label: [] for label, _, _ in CURATED_FILES}
     if not _flag(env, CURATED_ENV, True):
         return out
     seen: set = set()
-    for label, base in CURATED_FILES:
-        for name in linked_files(folder, base):
-            if name not in seen:
-                seen.add(name)
-                out[label].append(name)
+    for label, key, defaults in CURATED_FILES:
+        for base in curated_files(key, defaults, env):
+            for name in linked_files(folder, base):
+                if name not in seen:
+                    seen.add(name)
+                    out[label].append(name)
     return out
 
 
@@ -471,15 +485,15 @@ def status_of(folder: str, md: Any) -> str:
 
 
 def section_of(md: Any, status: str = "", require_status: bool = False) -> Optional[str]:
-    """RULING, OPEN or TRAP, or None for a file the briefing does not use.
+    """DECISION, OPEN or TRAP, or None for a file the briefing does not use.
     ``status`` is the file's ``status:`` field, ``""`` for none."""
     if md.dropped or md.kind not in ("project", "feedback"):
         return None
     if status in STATUS_NOT_A_ROW:
         return None
     head = f"{md.rel_path} {md.name} {md.description[:160]}"
-    if _RULING_RE.search(head):
-        return "RULING"
+    if _DECISION_RE.search(head):
+        return "DECISION"
     if md.kind != "project":
         return "TRAP"
     if status != "open" and require_status:
@@ -489,7 +503,7 @@ def section_of(md: Any, status: str = "", require_status: bool = False) -> Optio
 
 def recency_key(folder: str, md: Any) -> float:
     """Seconds since the epoch: the date in the file name when it has one (a
-    ruling is named by its day), else the file's mtime."""
+    decision is named by its day), else the file's mtime."""
     m = _NAME_DATE_RE.search(md.rel_path)
     if m:
         try:
@@ -666,7 +680,7 @@ def briefing(
     if rows == 0:
         return "", 0, "no_rows"
     status = (
-        "ok" if used_daemon == asked else ("recency_only" if used_daemon == 0 else "daemon_partial")
+        "ok" if used_daemon == asked else ("recency_only" if used_daemon == 0 else "store_partial")
     )
     return "\n".join([BRIEF_HEADER] + lines), rows, status
 

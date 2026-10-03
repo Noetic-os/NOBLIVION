@@ -275,7 +275,7 @@ def test_a_call_and_its_result_pair_across_two_reads():
 
 
 # 2. + 3. the append -----------------------------------------------------
-@pytest.mark.parametrize("value", ["0", "off", "false", "no", " OFF "])
+@pytest.mark.parametrize("value", ["0", "off", "false", "no", " OFF ", ""])
 def test_append_is_off_when_the_variable_says_off(tmp_path, value):
     env = {"NOBLIVION_TRUST_EVENTS": value, "NOBLIVION_CONFIG": str(tmp_path / "none.json")}
     assert te.enabled(env) is False
@@ -285,7 +285,7 @@ def test_append_is_off_when_the_variable_says_off(tmp_path, value):
     assert not (tmp_path / "by-session").exists()
 
 
-@pytest.mark.parametrize("value", [None, "", "1", "true", "yes"])
+@pytest.mark.parametrize("value", [None, "1", "true", "yes", "on", "unknown"])
 def test_events_are_on_by_default_and_for_any_other_value(tmp_path, value):
     env = {"NOBLIVION_CONFIG": str(tmp_path / "none.json")}
     if value is not None:

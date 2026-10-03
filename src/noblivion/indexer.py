@@ -28,7 +28,8 @@ CLI: ``python -m noblivion.indexer [--force] [--allow-shrink]`` (also
 ``noblivion index``). Exit codes: 0 done; 1 some files were skipped (not
 readable or not redactable) so nothing was deleted; 2 the shrink guard blocked
 the deletes; 3 the database schema refuses this tool; 4 another scan holds the
-index lock.
+index lock; 5 SQLite stayed locked past its busy timeout, or another SQLite
+error (one line on stderr, no traceback).
 """
 
 from __future__ import annotations
@@ -66,6 +67,7 @@ EXIT_SKIPPED = 1
 EXIT_BLOCKED = 2
 EXIT_SCHEMA = 3
 EXIT_LOCKED = 4
+EXIT_DB_BUSY = 5  # SQLite stayed locked past busy_timeout, or another SQLite error
 
 Labeller = Callable[[str, str], Iterable[str]]  # (file text, file stem) -> labels
 StatCache = dict[str, tuple[int, int, "str | None"]]
@@ -651,6 +653,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except LockTimeoutError as exc:
         print(f"noblivion index: {exc}", file=sys.stderr)
         return EXIT_LOCKED
+    except sqlite3.OperationalError as exc:
+        # One line, no traceback: "database is locked" after busy_timeout.
+        print(f"noblivion index: database error ({exc}); try again later", file=sys.stderr)
+        return EXIT_DB_BUSY
 
     print(json.dumps(result.to_dict()) if args.json else f"noblivion index: {result.summary()}")
     for name in result.skipped:

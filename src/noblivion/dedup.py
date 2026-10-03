@@ -4,9 +4,12 @@
 ``noblivion dedup <command>``:
 
 - ``pairs``: list the candidate pairs from the local vectors. Sends nothing.
-- ``plan [--dry-run]``: ask the judge about each pair and write
-  ``dedup/plan-<run_id>.json`` in the data dir. ``--dry-run`` prints the
-  pairs and verdicts and writes no plan. A plan never changes a memory file.
+- ``plan [--dry-run] [--yes]``: ask the judge about each pair and write
+  ``dedup/plan-<run_id>.json`` in the data dir. Before the first judge call
+  it prints the cost estimate and asks the user to type ``yes``; ``--yes``
+  skips the question. ``--dry-run`` prints the pairs and the cost estimate
+  only: it makes no network call and writes no plan. A plan never changes a
+  memory file.
 - ``apply <run_id>``: merge the ``MERGE`` pairs of that plan. The memory
   files are the source of truth: the survivor file gets the loser text, the
   loser file moves to ``<memory folder>/.archive/dedup/<run_id>/``, and the
@@ -74,7 +77,8 @@ OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 KEY_ENV = embedding.OPENROUTER_KEY_ENV
 
 CONSENT_KEY = "dedup_consent"
-CONSENT_VERSION = 1
+# 2: the text says that the front matter (name, description) is sent as written.
+CONSENT_VERSION = 2
 
 PROMPT_FILE = Path(__file__).with_name("dedup_prompt_v1.txt")
 PROMPT_SHA256 = "04ae4615fef1b65353318c8f99c3566d532ce7d47c6693c44519af15beed42cc"
@@ -82,6 +86,8 @@ USER_MARKER = "=== USER TEMPLATE ==="
 
 DEDUP_DIR = "dedup"
 LATCH_FILE = "apply-failed.json"
+STATUS_FILE_ENV = "NOBLIVION_DEDUP_STATUS_FILE"
+STATUS_FILE = Path("cache") / "dedup-last-run.json"  # in the data dir
 WAL_FILE = "wal.jsonl"
 UNDO_SCRIPT = "undo.sh"
 ARCHIVE_DIR = Path(".archive") / "dedup"
@@ -174,8 +180,9 @@ Judge: OpenRouter, model: {model}
 `noblivion dedup plan` sends text off this machine, once per candidate pair:
 - a fixed judge prompt;
 - the text of the two memory files of the pair, each at most 20,000
-  characters. The file names are replaced by A and B. No trust data and
-  no other memory is sent.
+  characters. The file names are replaced by A and B, but the text
+  includes the front matter, so its name and description fields are sent
+  as written. No trust data and no other memory is sent.
 
 Before sending, each text goes through the secret redactor and an outbound
 scrub: your home folder path becomes ~, your user name becomes <user>, and
@@ -943,6 +950,32 @@ def _set_latch(settings: config.Settings, run_id: str, reason: str) -> None:
     write_atomic(latch_path(settings), json.dumps(data, sort_keys=True).encode("utf-8"))
 
 
+def status_path(settings: config.Settings, env: Mapping[str, str]) -> Path:
+    """``NOBLIVION_DEDUP_STATUS_FILE``, else ``<data dir>/cache/dedup-last-run.json``."""
+    raw = env.get(STATUS_FILE_ENV, "").strip()
+    return Path(os.path.expanduser(raw)) if raw else settings.data_dir / STATUS_FILE
+
+
+def write_status(settings: config.Settings, env: Mapping[str, str], **fields: object) -> None:
+    """The last-run status that the session start line reads (contract C4).
+    Written at the end of every ``plan``, ``apply`` and ``undo``. Never raises:
+    a status file is a convenience, not a step of the run."""
+    doc: dict[str, object] = {"version": 1, "finished_at": db.utc_now(), "outcome": "ok"}
+    doc.update(fields)
+    try:
+        latch = json.loads(latch_path(settings).read_text(encoding="utf-8"))
+        if isinstance(latch, dict) and isinstance(latch.get("run_id"), str):
+            doc["failed"] = latch["run_id"]
+    except (OSError, ValueError):
+        pass
+    try:
+        path = status_path(settings, env)
+        _private_dir(path.parent)
+        write_atomic(path, json.dumps(doc, sort_keys=True).encode("utf-8"))
+    except OSError:
+        return
+
+
 def _set_archived(conn: sqlite3.Connection, memory_id: int, archived_at: str | None) -> None:
     """Inside ``write_tx``: set or clear ``archived_at`` and stamp the row, so
     the store's RAM index drops or takes back the row (section 6.3)."""
@@ -1293,7 +1326,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("pairs", help="list candidate pairs; sends nothing")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("plan", help="judge the pairs and write a plan; changes no file")
-    p.add_argument("--dry-run", action="store_true", help="print verdicts, write no plan")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the pairs and the cost estimate; no network call, no plan",
+    )
+    p.add_argument(
+        "--yes", action="store_true", help="send without the question after the cost estimate"
+    )
     p.add_argument("--max-pairs", type=int, default=None, help="judge calls in this run")
     p = sub.add_parser("apply", help="merge the MERGE pairs of a plan")
     p.add_argument("run_id")
@@ -1314,6 +1354,21 @@ def _print_estimate(pairs, folders, prompt, ds, out) -> None:
         f"{t_out} output tokens{cost}",
         file=out,
     )
+
+
+def confirm_send(n_pairs: int, stdin, out) -> bool:
+    """The question after the cost estimate. Only ``yes`` sends."""
+    print(
+        f"noblivion dedup: type yes to send {n_pairs} pairs to the judge. Each call is "
+        "billed to your OpenRouter account. Any other answer sends nothing.",
+        file=out,
+    )
+    print("> ", end="", file=out, flush=True)
+    answer = (stdin.readline() or "").strip().lower()
+    if answer != "yes":
+        print("noblivion dedup: not confirmed; nothing was sent", file=out)
+        return False
+    return True
 
 
 def main(
@@ -1347,6 +1402,15 @@ def main(
         return _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_s)
     except DedupError as exc:
         print(f"noblivion dedup: {exc}", file=out)
+        if args.command in ("apply", "undo"):
+            write_status(
+                settings,
+                env,
+                mode=args.command,
+                run_id=args.run_id,
+                outcome="refused",
+                refused_reason=str(exc),
+            )
         return EXIT_LATCH if latch_path(settings).exists() else EXIT_REFUSED
     finally:
         conn.close()
@@ -1381,6 +1445,25 @@ def _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_
             print(f"noblivion dedup: {len(pairs)} candidate pairs", file=out)
         return EXIT_OK
 
+    if args.command == "plan" and args.dry_run:
+        # A dry run never builds a judge: no network call, nothing billed.
+        prompt = load_prompt()
+        pairs = candidates()
+        max_pairs = ds.max_pairs if args.max_pairs is None else max(0, args.max_pairs)
+        for c in pairs[:max_pairs]:
+            print(f"  {c.cosine:.3f} {c.root}: {c.path_a} <> {c.path_b}", file=out)
+        if len(pairs) > max_pairs:
+            print(
+                f"noblivion dedup: {len(pairs)} pairs; a plan judges the best {max_pairs} "
+                "(dedup.max_pairs)",
+                file=out,
+            )
+        pairs = pairs[:max_pairs]
+        _print_estimate(pairs, folders, prompt, ds, out)
+        print("noblivion dedup: dry run; nothing was sent, no plan written", file=out)
+        write_status(settings, env, mode="dry-run", pairs=len(pairs), merged=0, proposals=0)
+        return EXIT_OK
+
     if args.command == "plan":
         # Every check that keeps text on this machine comes before any judge.
         if ds.judge == "off":
@@ -1410,6 +1493,8 @@ def _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_
             )
         pairs = pairs[:max_pairs]
         _print_estimate(pairs, folders, prompt, ds, out)
+        if pairs and not args.yes and not confirm_send(len(pairs), stdin, out):
+            return EXIT_REFUSED
         judge = (judge_factory or openrouter_judge)(ds, api_key)
         run_id = new_run_id()
         plan = build_plan(pairs, folders, judge, prompt, run_id=run_id, out=out)
@@ -1425,9 +1510,6 @@ def _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_
             f"output tokens{cost}",
             file=out,
         )
-        if args.dry_run:
-            print("noblivion dedup: dry run; no plan written, no file changed", file=out)
-            return EXIT_OK
         path = plan_path(settings, run_id)
         _private_dir(path.parent)
         write_atomic(path, json.dumps(plan, indent=1, sort_keys=True).encode("utf-8"))
@@ -1435,6 +1517,9 @@ def _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_
             f"noblivion dedup: plan {run_id} written to {path}\n"
             f"  read it, then run: noblivion dedup apply {run_id}",
             file=out,
+        )
+        write_status(
+            settings, env, mode="plan", run_id=run_id, merged=0, proposals=counts.get("MERGE", 0)
         )
         return EXIT_OK
 
@@ -1444,6 +1529,7 @@ def _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_
             if args.command == "apply":
                 plan = load_plan(settings, args.run_id)
                 n = apply_plan(conn, settings, plan, folders=folders, out=out)
+                write_status(settings, env, mode="apply", run_id=args.run_id, merged=n, proposals=0)
                 print(f"noblivion dedup: {n} merged in run {args.run_id}", file=out)
                 if n:
                     print(f"  undo: noblivion dedup undo {args.run_id}", file=out)
@@ -1456,6 +1542,7 @@ def _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_
                     return EXIT_USAGE
                 pair = (parts[0], parts[1])
             n = undo_run(conn, settings, args.run_id, pair=pair, out=out)
+            write_status(settings, env, mode="undo", run_id=args.run_id, merged=0, proposals=0)
             print(f"noblivion dedup: {n} steps undone in run {args.run_id}", file=out)
             return EXIT_OK
     except indexer.LockTimeoutError:

@@ -13,7 +13,9 @@ table, `<data dir>/guard-table.json`.
 
 - **Source.** Every `*.md` file in one memory folder: `NOBLIVION_MEMORY_DIR`,
   else `~/.claude/projects/<slug of your home folder>/memory`. The files
-  `MEMORY.md`, `MEMORY_ARCHIVE.md` and `topic_*.md` are skipped.
+  `MEMORY.md`, `MEMORY_ARCHIVE.md` and `topic_*.md` are skipped. When you
+  set `NOBLIVION_MEMORY_DIR`, the store indexes that folder too, so recall
+  and the guards read the same notes.
 - **Entry.** A file becomes an entry when it has a `rule:` field, a
   `violates:` field or a valid trigger.
 - **Rebuild.** The table is rebuilt at session start and after Claude Code

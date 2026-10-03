@@ -65,6 +65,11 @@ The store updates the score:
 `noblivion trust recompute` is a repair command. It prints how many scores
 it computed again. Add `--json` for JSON output.
 
+`noblivion trust report` and `noblivion trust recompute` exit with code 3
+on a database schema error, and with code 5 when the database stays locked
+or another database error occurs. They then print one line and no
+traceback.
+
 ## Trust in ranking
 
 Trust does not change the order of recall by default. Two settings change
@@ -73,7 +78,12 @@ this:
 - `trust.ranking` (or `NOBLIVION_TRUST_RANKING`): with `shadow` or `on`,
   the store adds the trust score, the number of trials and the prior to
   each row of the ranked index. The store itself does not reorder rows.
-  In this version `shadow` and `on` do the same thing.
+  - `shadow`: the trust values are computed and reported, but never
+    applied. The prompt hook computes the factor and logs it to
+    `<data dir>/cache/trust-rank.jsonl`, but keeps the order, even when
+    `NOBLIVION_RECALL_INDEX_TRUST` is on.
+  - `on`: the prompt hook applies the factor when
+    `NOBLIVION_RECALL_INDEX_TRUST` is on.
 - `NOBLIVION_RECALL_INDEX_TRUST`: with `1`, `on`, `true` or `yes`, the
   prompt hook multiplies each row's score by a trust factor. With
   `shadow`, the hook computes the factor and logs it to
@@ -102,11 +112,16 @@ changes your files based on the report. You decide.
 To print the report, run:
 
 ```sh
-python3 "<plugin dir>/hooks/trust_report.py"
+<data dir>/venv/bin/noblivion trust report
 ```
 
-Add `--json` for JSON. Add `--cache-only` to print the cached report
-without a call to the store. The report is cached in
+It reads the database directly, so the store does not need to run. Add
+`--json` for JSON. Add `--limit N` to show at most N notes per list
+(default 50).
+
+The hook script `python3 "<plugin dir>/hooks/trust_report.py"` prints the
+same report through the store. Its `--cache-only` option prints the cached
+report without a call to the store. The report is cached in
 `<data dir>/cache/trust-report.json`. The trust flush refreshes the cache
 about once a day.
 
@@ -116,9 +131,8 @@ At session start, a hook prints one line when the cached report has
 entries:
 
 ```text
-Memory trust: 2 to retire, 1 to promote, 0 to demote. Run noblivion trust
+Memory trust: 2 to retire, 1 to promote, 0 to demote. Run noblivion trust report
 ```
 
 The line does not appear when all counts are 0, or after a context
-compaction. The command it names does not print the report in this
-version. Use `trust_report.py`, as shown above.
+compaction.

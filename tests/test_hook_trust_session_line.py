@@ -84,8 +84,8 @@ DEDUP = {
     "proposals": 2,
     "refused": 1,
 }
-TRUST_LINE = "Memory trust: 2 to retire, 1 to promote, 0 to demote. Run noblivion trust"
-DEDUP_LINE = "Memory dedup: 4 merged last night, 2 proposals"
+TRUST_LINE = "Memory trust: 2 to retire, 1 to promote, 0 to demote. Run noblivion trust report"
+DEDUP_LINE = "Memory dedup: 4 merged on 2026-10-02, 2 proposals"
 
 
 @pytest.fixture
@@ -130,11 +130,23 @@ def test_counts_come_from_the_lists_when_the_counts_are_absent_and_zero_is_silen
     assert sl.dedup_line(zero, NOW) == ""
 
 
-def test_a_dry_run_says_so_and_an_old_run_names_its_date():
+def test_a_dry_run_and_a_plan_say_so_and_every_line_names_its_date():
     old = {"mode": "apply", "merged": 3, "proposals": 0, "finished_at": "2026-09-28T03:00:00Z"}
     assert sl.dedup_line(old, NOW) == "Memory dedup: 3 merged on 2026-09-28, 0 proposals"
-    dry = {"mode": "dry-run", "merged": 5, "proposals": 1, "finished_at": "2026-10-02T03:00:00Z"}
-    assert sl.dedup_line(dry, NOW) == "Memory dedup dry run last night: 5 to merge, 1 proposals"
+    dry = {"mode": "dry-run", "pairs": 5, "finished_at": "2026-10-02T03:00:00Z"}
+    assert sl.dedup_line(dry, NOW) == (
+        "Memory dedup dry run on 2026-10-02: 5 candidate pairs, nothing sent. "
+        "Run noblivion dedup plan to judge them"
+    )
+    assert sl.dedup_line(dict(dry, pairs=0), NOW) == ""
+    plan = {"mode": "plan", "run_id": "R1", "merged": 0, "proposals": 2}
+    assert sl.dedup_line(plan, NOW) == (
+        "Memory dedup plan R1 in the last run: 2 merge proposals. "
+        "Read the plan, then run noblivion dedup apply R1"
+    )
+    assert sl.dedup_line(dict(plan, proposals=0), NOW) == ""
+    undo = {"mode": "undo", "run_id": "R1", "merged": 0, "proposals": 0}
+    assert sl.dedup_line(undo, NOW) == ""
 
 
 def test_compact_prints_nothing_and_startup_prints_the_lines(files):
@@ -199,7 +211,7 @@ def test_a_refusal_for_no_gate_configured_prints_nothing():
 def test_any_other_refusal_prints_one_short_line(code):
     line = sl.dedup_line(_refused(code), NOW)
     assert line == (
-        "Memory dedup REFUSED last night, nothing merged: "
+        "Memory dedup REFUSED on 2026-10-02, nothing merged: "
         "the gate result /g.json names no chosen judge"
     )
     old = sl.dedup_line(_refused(code, at="2026-09-28T04:20:05Z"), NOW)

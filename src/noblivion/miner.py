@@ -165,20 +165,6 @@ class MinerSettings:
     max_run_s: float = DEFAULT_MAX_RUN_S
 
 
-def _flag(value: object, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in ("1", "true", "yes", "on"):
-            return True
-        if text in ("0", "false", "no", "off"):
-            return False
-    return default
-
-
 def _positive_float(value: object, default: float) -> float:
     if isinstance(value, bool):
         return default
@@ -193,8 +179,7 @@ def load_miner_settings(env: Mapping[str, str] | None = None) -> MinerSettings:
     """``miner.*`` keys (section 12.3). ``NOBLIVION_MINER`` wins over the file."""
     env = os.environ if env is None else env
     cfg = config.load_file(env)
-    raw_env = env.get("NOBLIVION_MINER", "").strip()
-    enabled = _flag(raw_env if raw_env else config.lookup(cfg, "miner.enabled"), True)
+    enabled = config.switch(env, "NOBLIVION_MINER", cfg, "miner.enabled", True)
     pattern = config.lookup(cfg, "miner.transcript_glob")
     return MinerSettings(
         enabled=enabled,

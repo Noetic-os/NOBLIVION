@@ -846,7 +846,7 @@ CORR_ANY_RE = re.compile(
     r"\bi\s+(?:have\s+|'ve\s+)?(?:already\s+)?(?:told|asked)\s+you\b|\bhow\s+many\s+times\b|"
     r"\bdid(?:n'?t|\s+not)\s+i\s+(?:give|tell|ask|say)\b|"
     r"\bstop\s+(?:doing|asking|guessing|ignoring|inventing|claiming|making\s+up|stalling|evad\w*|"
-    r"cancel+ing|pausing|stopping|waiting)\b|\bwe\s+stop\s+for\s+nothing\b|"
+    r"cancel+ing|pausing|stopping|waiting)\b|"
     r"\bwhy\s+(?:are|did|do)\s+you\s+(?:keep\s+)?(?:stop|ask|paus|wait|ignor|guess)\w*|"
     r"\b(?:you\s+(?:did|do|are\s+doing|made)|doing|did)\s+(?:it|this|that|the\s+same\s+\w+)\s+again\b|"
     r"\bnot\s+again\b|\bagain[?!]|"
@@ -865,7 +865,7 @@ CORR_SCAN = 400
 
 
 def is_correction(prompt: str) -> Optional[str]:
-    """The matched phrase when ``prompt`` is an operator correction, else None."""
+    """The matched phrase when ``prompt`` is a user correction, else None."""
     p = (prompt or "").strip()
     if not p or p.startswith(("<", "Stop hook feedback", "[Request interrupted", "Caveat:")):
         return None
@@ -990,10 +990,10 @@ def check_lesson(turn: Turn, ctx: Ctx) -> Optional[str]:
     snippet = str(ctx.marker.get("phrase") or "")[:60]
     ctx.notes["lesson"] = snippet
     return (
-        f'The operator corrected you this turn ("{snippet}"). Save the lesson before you stop: '
+        f'The user corrected you this turn ("{snippet}"). Save the lesson before you stop: '
         f"write or update a feedback memory in {ctx.memory_dir} with rule:, apply:, scope: and "
-        "triggers: fields, and put its pointer in the matching topic_*.md file. If the correction "
-        "holds no reusable lesson, say that in one line."
+        "triggers: fields, and link it from the memory index. If the correction holds no "
+        "reusable lesson, say that in one line."
     )
 
 

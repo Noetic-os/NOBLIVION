@@ -27,6 +27,7 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import logging
 import math
 import os
 import re
@@ -47,6 +48,8 @@ from typing import Protocol
 
 from noblivion import config, db, redaction
 
+log = logging.getLogger("noblivion.store")
+REASON_LOG_CHARS = 300
 BACKENDS = ("fastembed", "ollama", "openrouter", "none")
 DEFAULT_BACKEND = "fastembed"
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
@@ -94,16 +97,6 @@ class ConsentRequiredError(EmbeddingError):
 # -- settings -----------------------------------------------------------------
 
 
-def _bool(value: object, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str) and value.strip().lower() in ("1", "true", "yes", "on"):
-        return True
-    if isinstance(value, str) and value.strip().lower() in ("0", "false", "no", "off"):
-        return False
-    return default
-
-
 @dataclass(frozen=True)
 class EmbeddingSettings:
     backend: str = DEFAULT_BACKEND
@@ -137,9 +130,11 @@ def load_embedding_settings(env: Mapping[str, str] | None = None) -> EmbeddingSe
         backend=backend,
         model=pick("NOBLIVION_EMBED_MODEL", "embedding.model", DEFAULT_MODEL),
         ollama_url=pick("NOBLIVION_OLLAMA_URL", "embedding.ollama_url", DEFAULT_OLLAMA_URL),
-        allow_remote=_bool(config.lookup(cfg, "embedding.allow_remote"), False),
-        remote_include_mined=_bool(config.lookup(cfg, "embedding.remote_include_mined"), False),
-        allow_download=_bool(config.lookup(cfg, "embedding.allow_download"), False),
+        allow_remote=config.parse_switch(config.lookup(cfg, "embedding.allow_remote"), False),
+        remote_include_mined=config.parse_switch(
+            config.lookup(cfg, "embedding.remote_include_mined"), False
+        ),
+        allow_download=config.parse_switch(config.lookup(cfg, "embedding.allow_download"), False),
         models_dir=config.data_dir(env) / "models",
     )
 
@@ -665,6 +660,14 @@ def backfill(
 # -- the service the store holds -------------------------------------------------
 
 
+def _log_reason(exc: BaseException) -> str:
+    """The failure text for the log: secrets redacted, one line, cut."""
+    text = " ".join(redaction.redact_at_rest(str(exc) or "-").split())
+    if len(text) > REASON_LOG_CHARS:
+        text = text[: REASON_LOG_CHARS - 1] + "…"
+    return text
+
+
 class EmbeddingService:
     """The backend, its state and the query embed with a time limit.
 
@@ -728,6 +731,14 @@ class EmbeddingService:
                 self.state = STATE_FAILED
                 self.error = str(exc)
                 self._failed_at = self._clock()
+                # Once per failed attempt: the retry gate above returns early
+                # without a new attempt, so it logs nothing.
+                log.warning(
+                    "model load failed (%s): %s; keyword search only, next try in %d s",
+                    type(exc).__name__,
+                    _log_reason(exc),
+                    int(RETRY_AFTER_S),
+                )
                 return self.state
             self.embedder = embedder
             self.error = None

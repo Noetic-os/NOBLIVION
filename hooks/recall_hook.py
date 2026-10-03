@@ -43,8 +43,9 @@ Store call (design doc sections 3.3 and 4)
   ["<blob>"], "namespace": ...}``. An empty pool returns the sentinel
   ``"No memories available."``. ``root`` is the memory folder key of the
   session (section 5.1): the parent folder name of the memory folder.
-  ``NOBLIVION_RECALL_MIN_SCORE`` applies only to a hit that carries a numeric
-  ``score``. A body can hold ``---`` lines of its own: only a separator
+  The answer also carries ``scores``: one score per entry, in entry order
+  (design doc section 4.2). ``NOBLIVION_RECALL_MIN_SCORE`` applies only to a
+  hit that carries a numeric ``score``. A body can hold ``---`` lines of its own: only a separator
   followed by a ``[claude_code_md: ...]`` marker starts a new entry.
 
 Source filter (hook only)
@@ -506,8 +507,8 @@ _MARKER_START_RE = re.compile(r"^\[claude_code_md:", re.M)
 # this, a mined row was glued onto the entry before it: one memory then hashed
 # to a different key per query, and the per-session dedupe showed it again.
 _MINED_START_RE = re.compile(
-    r"\A\s*(?:Operator correction|Tool error|Independent review) on "
-    r"\d{4}-\d{2}-\d{2} in Claude Code session \S+"
+    r"\A\s*(?:User correction|Operator correction|Tool error|Independent review) on "
+    r"\d{4}-\d{2}-\d{2} in (?:Claude Code )?session \S+"
 )
 
 
@@ -534,6 +535,23 @@ def _sibling_module(name: str) -> Any:
         spec.loader.exec_module(mod)
         _SIBLING_MODULES[name] = mod
     return mod
+
+
+def switch_on(env: Mapping[str, str], name: str, default: bool = False) -> bool:
+    """The switch ``name`` by the one rule of ``hook_config.switch``: 1, true,
+    yes or on is on; 0, false, no, off or empty is off; unset gives
+    ``default``."""
+    return bool(_sibling_module("hook_config").switch(name, default, env))
+
+
+def recall_disabled(env: Mapping[str, str]) -> bool:
+    """``NOBLIVION_RECALL_DISABLE``: off unless on."""
+    return switch_on(env, "NOBLIVION_RECALL_DISABLE")
+
+
+def md_only_on(env: Mapping[str, str]) -> bool:
+    """``NOBLIVION_RECALL_MD_ONLY`` (the MCP tool): off unless on."""
+    return switch_on(env, "NOBLIVION_RECALL_MD_ONLY")
 
 
 # The pure memory-folder helpers live in ``corpus.py`` (shared with the
@@ -1021,6 +1039,7 @@ class IndexLine:
         "trials",
         "trust_prior",
         "keyword",
+        "trust_ranking",
     )
 
     def __init__(
@@ -1037,6 +1056,7 @@ class IndexLine:
         trials: Optional[int] = None,
         trust_prior: Optional[float] = None,
         keyword: bool = False,
+        trust_ranking: str = "",
     ):
         self.rank = rank
         self.mid = mid
@@ -1054,6 +1074,10 @@ class IndexLine:
         # True when the store answered in keyword-only mode (design doc
         # section 8.4): ``score`` is None and the store order is the ranking.
         self.keyword = keyword
+        # The store's ``trust.ranking`` (``shadow`` or ``on``; ``""`` when the
+        # answer names none). In ``shadow`` the trust factor is computed and
+        # logged, never applied (design doc section 8.6).
+        self.trust_ranking = trust_ranking
         # W6 (F1) and W7 (F2). The two W5 fields of the LOCAL file this row
         # names, filled by ``annotate_index`` before rendering. Both are "" for
         # a row whose title names no local file and for the un-annotated corpus
@@ -1373,10 +1397,21 @@ def parse_hits(payload: Any) -> List[Hit]:
     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
         raise RecallError("bad_shape")
     hits: List[Hit] = []
+    # ``scores`` (design doc section 4.2): one score per entry of the joined
+    # string, in entry order. Used only when it lines up with the entries.
+    raw_scores = payload.get("scores")
     for item in payload["results"]:
         if isinstance(item, str):
-            for part in split_entries(item):
-                h = hit_from_text(part)
+            parts = split_entries(item)
+            scores: List[Optional[float]] = [None] * len(parts)
+            if (
+                isinstance(raw_scores, list)
+                and len(payload["results"]) == 1
+                and len(raw_scores) == len(parts)
+            ):
+                scores = [_real_of(v) for v in raw_scores]
+            for part, score in zip(parts, scores):
+                h = hit_from_text(part, score=score)
                 if h:
                     hits.append(h)
         elif isinstance(item, dict):
@@ -1409,6 +1444,8 @@ def parse_index(payload: Any) -> List[IndexLine]:
         raise RecallError("bad_shape")
     lines: List[IndexLine] = []
     keyword = payload.get("mode") == "keyword"
+    ranking = payload.get("trust_ranking")
+    trust_ranking = ranking if ranking in ("shadow", "on") else ""
     for position, item in enumerate(payload["results"], start=1):
         if not isinstance(item, dict):
             continue
@@ -1442,6 +1479,7 @@ def parse_index(payload: Any) -> List[IndexLine]:
                 trials=trials if isinstance(trials, int) and not isinstance(trials, bool) else None,
                 trust_prior=_real_of(item.get("trust_prior")),
                 keyword=keyword,
+                trust_ranking=trust_ranking,
             )
         )
     return lines
@@ -1799,7 +1837,7 @@ def shown_set_on(environ: Optional[Mapping[str, str]] = None) -> bool:
     """DP-6. True when the index, the fetch and the trigger leg share the
     session's shown-set. Off unless the variable is set."""
     env = os.environ if environ is None else environ
-    return bool((env.get(SHOWN_SET_ENV) or "").strip())
+    return switch_on(env, SHOWN_SET_ENV)
 
 
 def shown_set_file(cache: str, session_id: Any = None) -> str:
@@ -2038,7 +2076,7 @@ def recall(
 def index_mode(environ: Optional[Mapping[str, str]] = None) -> bool:
     """True when this hook should serve a ranked index instead of hits."""
     env = os.environ if environ is None else environ
-    return bool((env.get(INDEX_ENV) or "").strip())
+    return switch_on(env, INDEX_ENV)
 
 
 def index_k(environ: Optional[Mapping[str, str]] = None) -> int:
@@ -2090,34 +2128,34 @@ def index_query_chars(environ: Optional[Mapping[str, str]] = None) -> int:
 def index_hygiene(environ: Optional[Mapping[str, str]] = None) -> bool:
     """P3. True when the index overfetches and then drops index and closed rows."""
     env = os.environ if environ is None else environ
-    return bool((env.get(INDEX_HYGIENE_ENV) or "").strip())
+    return switch_on(env, INDEX_HYGIENE_ENV)
 
 
 def index_rerank(environ: Optional[Mapping[str, str]] = None) -> bool:
     """P1h. True when the store's candidates are re-ranked locally."""
     env = os.environ if environ is None else environ
-    return bool((env.get(INDEX_RERANK_ENV) or "").strip())
+    return switch_on(env, INDEX_RERANK_ENV)
 
 
 def index_rule_rows(environ: Optional[Mapping[str, str]] = None) -> bool:
     """F1 with F3. True when the row leads with the memory's rule and a fetch
     also accepts a rank. Off unless the variable is set."""
     env = os.environ if environ is None else environ
-    return bool((env.get(INDEX_RULE_ROWS_ENV) or "").strip())
+    return switch_on(env, INDEX_RULE_ROWS_ENV)
 
 
 def index_apply(environ: Optional[Mapping[str, str]] = None) -> bool:
     """F2. True when the top rows carry their apply text (APPLY_TIERS). Off
     unless the variable is set; honoured only together with F1."""
     env = os.environ if environ is None else environ
-    return bool((env.get(INDEX_APPLY_ENV) or "").strip())
+    return switch_on(env, INDEX_APPLY_ENV)
 
 
 def index_row_dedupe(environ: Optional[Mapping[str, str]] = None) -> bool:
     """WI-17. True when a later index of a session leaves out the rows the
     session was already shown. Off unless the variable is set."""
     env = os.environ if environ is None else environ
-    return bool((env.get(INDEX_ROW_DEDUPE_ENV) or "").strip())
+    return switch_on(env, INDEX_ROW_DEDUPE_ENV)
 
 
 def index_min_score(environ: Optional[Mapping[str, str]] = None) -> Optional[float]:
@@ -2145,14 +2183,14 @@ def index_check_line(environ: Optional[Mapping[str, str]] = None) -> bool:
     """WI-6. True when the rule header carries the verbalised check line. Off
     unless the variable is set; honoured only together with F1."""
     env = os.environ if environ is None else environ
-    return bool((env.get(INDEX_CHECK_LINE_ENV) or "").strip())
+    return switch_on(env, INDEX_CHECK_LINE_ENV)
 
 
 def index_drop_no_rule(environ: Optional[Mapping[str, str]] = None) -> bool:
     """WI-18. True when a row with no rule text and no summary is left out of
     the index. Off unless the variable is set; honoured only together with F1."""
     env = os.environ if environ is None else environ
-    return bool((env.get(INDEX_DROP_NO_RULE_ENV) or "").strip())
+    return switch_on(env, INDEX_DROP_NO_RULE_ENV)
 
 
 def drop_no_rule_index(lines: Sequence[IndexLine]) -> Tuple[List[IndexLine], int]:
@@ -2903,7 +2941,7 @@ def run(stdin_text: str, stdout, environ: Dict[str, str]) -> None:
     event = str(payload.get("hook_event_name") or "-")
     sid = payload.get("session_id")
     environ = session_env(environ, payload)
-    if environ.get("NOBLIVION_RECALL_DISABLE"):
+    if recall_disabled(environ):
         log_line(cache, event, sid, 0, 0, 0, "skip:disabled")
         return
     # P2. The index path may take more of the prompt than the hit path. The hit
@@ -2953,13 +2991,7 @@ def label_rows(stdin_text: str, stdout, environ: Dict[str, str]) -> None:
     this hook's own output. Off unless ``NOBLIVION_RECALL_LABELS`` is set, so a
     run without it prints what it printed before. Local only, no store call.
     Fails open: a missing module or any error adds nothing."""
-    if (environ.get("NOBLIVION_RECALL_LABELS") or "").strip().lower() in (
-        "",
-        "0",
-        "off",
-        "false",
-        "no",
-    ):
+    if not switch_on(environ, "NOBLIVION_RECALL_LABELS"):
         return
     try:
         _sibling_module("label_rows").prompt_leg(stdin_text, stdout, environ)

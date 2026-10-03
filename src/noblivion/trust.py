@@ -697,19 +697,56 @@ def report(
     return build_report(load_report_inputs(conn, project), now=now)
 
 
-# -- CLI: noblivion trust recompute ------------------------------------------------
+# -- CLI: noblivion trust report | recompute ----------------------------------------
+
+REPORT_HEADINGS = (
+    ("retire", "Retire (consider deleting or merging)"),
+    ("promote", "Promote (consider a link from MEMORY.md)"),
+    ("demote", "Demote (consider removing the MEMORY.md link)"),
+)
+
+
+def render_report(answer: Mapping[str, object], limit: int = 50) -> str:
+    """The report as text: one heading per list, one line per note."""
+    lines = [
+        f"Memory trust report: generated {answer.get('generated_at') or '-'}, "
+        f"prior {answer.get('trust_prior')}."
+    ]
+    for name, heading in REPORT_HEADINGS:
+        rows = answer.get(name)
+        rows = rows if isinstance(rows, list) else []
+        lines.append("")
+        lines.append(f"{heading}: {len(rows)}")
+        for r in rows[:limit]:
+            where = f"{r['root']}/{r['path']}" if r.get("root") else r["path"]
+            lines.append(
+                f"- {where} (id {r['mv_id']}): trust {r['trust']:.2f}, trials {r['trials']}, "
+                f"shown in {r['shown_sessions']} sessions, used in {r['use_sessions']}. "
+                f"{r.get('reason') or ''}".rstrip()
+            )
+        if len(rows) > limit:
+            lines.append(f"- ... {len(rows) - limit} more (use --limit)")
+    if answer.get("truncated"):
+        lines.append("")
+        lines.append(f"A list was cut at {REPORT_LIST_CAP} rows.")
+    lines.append("")
+    lines.append("NOBLIVION changes no file based on this report. You decide.")
+    return "\n".join(lines)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """``noblivion trust recompute``: the repair pass, same as at store start."""
+    """``noblivion trust report``: print the trust report (section 9.5).
+    ``noblivion trust recompute``: the repair pass, same as at store start."""
     import argparse
     import json
+    import sys
 
     from noblivion import config
 
     parser = argparse.ArgumentParser(prog="noblivion trust")
-    parser.add_argument("action", choices=("recompute",))
+    parser.add_argument("action", choices=("report", "recompute"))
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
+    parser.add_argument("--limit", type=int, default=50, help="report: rows per list (default 50)")
     args = parser.parse_args(argv)
     settings = config.load_settings()
     store_settings = config.load_store_settings()
@@ -719,9 +756,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"noblivion trust: {exc}")
         return 3
     try:
-        repaired = repair(conn, prior_mined=store_settings.prior_mined)
+        if args.action == "report":
+            answer = report(conn, settings.namespace)
+        else:
+            repaired = repair(conn, prior_mined=store_settings.prior_mined)
+    except sqlite3.OperationalError as exc:
+        print(f"noblivion trust: database error ({exc}); try again later", file=sys.stderr)
+        return 5
     finally:
         conn.close()
+    if args.action == "report":
+        if args.json:
+            print(json.dumps(answer, indent=1))
+        else:
+            print(render_report(answer, max(1, args.limit)))
+        return 0
     if args.json:
         print(json.dumps({"repaired": repaired}))
     else:

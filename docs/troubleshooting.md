@@ -117,7 +117,12 @@ that lasts longer gives the error `database is locked`.
 3. Commands that hold the index lock (`index`, `dedup apply`,
    `dedup undo`) exit with code 4 when another process holds it. Run them
    again later.
-4. If the lock stays, stop the store (SIGTERM to the process id in
+4. `noblivion index`, `noblivion trust report` and
+   `noblivion trust recompute` exit with code 5 when the database stays
+   locked past the 5 seconds, or on another SQLite error. They print one
+   line, for example
+   `noblivion index: database error (database is locked); try again later`.
+5. If the lock stays, stop the store (SIGTERM to the process id in
    `store.json`). Then run the command again.
 
 Do not delete `noblivion.db-wal` or `noblivion.db-shm` while a store or a
@@ -131,7 +136,10 @@ uses keyword search only.
 
 Signs that the store runs without a model:
 
-- `store.log` shows `model load failed` or `embedding state: failed`.
+- `store.log` shows `model load failed (<error type>): <reason>; keyword
+  search only, next try in 3600 s`, or `embedding state: failed`. The store
+  writes this line once for each failed load. The reason says what went
+  wrong, for example a missing model file.
 - The health answer has `"status": "degraded"`.
 
 To fix it:

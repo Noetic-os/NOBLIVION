@@ -36,14 +36,15 @@ Code. The store reads the same variables when the hooks start it.
 
 ### Switches
 
-Most switches follow one of two rules. The table says which rule a switch
-uses.
+Every on/off switch reads its value the same way. The Default column says
+"on (switch)" or "off (switch)".
 
-- **on unless off**: the feature is on. `0`, `off`, `false` or `no` turns
-  it off.
-- **any value**: the feature is off. Any non-empty value turns it on. Note
-  that `0` is a non-empty value, so `0` also turns it on. To turn the
-  feature off again, remove the variable.
+- `1`, `true`, `yes` or `on` turns the switch on.
+- `0`, `false`, `no`, `off` or an empty value turns the switch off.
+- Case and spaces around the value do not matter.
+- Any other value keeps the default. A switch that is not set keeps the
+  default too.
+- In the config file, JSON `true` and `false` also work.
 
 ## The data dir
 
@@ -66,9 +67,9 @@ from the install stamp in that venv.
 | none | `index.delete_grace_days` | `14` | Days a deleted note stays in the database before the store removes it. |
 | `NOBLIVION_LOG_LEVEL` | `log_level` | `info` | `debug`, `info`, `warning` or `error`. Only `debug` writes query text to the log. |
 | `NOBLIVION_PROJECT` | `namespace` | `claude_code` | The namespace of the notes. Lower-case letters, digits and `_`. |
-| `NOBLIVION_MEMORY_DIRS` | `memory_dirs` | every `~/.claude/projects/*/memory` folder | The folders the store indexes. The env var separates folders with `:`. The config key is a JSON list. |
+| `NOBLIVION_MEMORY_DIRS` | `memory_dirs` | every `~/.claude/projects/*/memory` folder | The folders the store indexes. The env var separates folders with `:`. The config key is a JSON list. The store also indexes `NOBLIVION_MEMORY_DIR` (see Guards) when it is set, so the hooks and the store always use the same folder. |
 | `NOBLIVION_BIN` | `store.bin` | `<data dir>/venv/bin/noblivion` | The `noblivion` command the hooks run to start the store. |
-| `NOBLIVION_STORE_AUTOSTART` | none | on unless off | When off, no hook starts the store. |
+| `NOBLIVION_STORE_AUTOSTART` | none | on (switch) | When off, no hook starts the store. |
 
 ## Embeddings
 
@@ -90,9 +91,9 @@ run `noblivion consent embeddings`. The `openrouter` backend also needs
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_RECALL_DISABLE` | none | off; any value | Turns the recall hook off. It also turns off the label rows at prompt time and the subagent rules hook. |
+| `NOBLIVION_RECALL_DISABLE` | none | off (switch) | Turns the recall hook off. It also turns off the label rows at prompt time and the subagent rules hook. |
 | `NOBLIVION_RECALL_TIMEOUT_S` | `recall.timeout_s` | `2.0` | The time budget of one recall, in seconds. |
-| `NOBLIVION_RECALL_MIN_SCORE` | `recall.min_score` | `0.3` | The lowest score a hit needs. A hit with no score always passes. |
+| `NOBLIVION_RECALL_MIN_SCORE` | `recall.min_score` | `0.3` | The lowest score a hit needs. The store sends a cosine score with each hit. A hit with no score (keyword-only mode) always passes. |
 | `NOBLIVION_RECALL_PROJECT` | `namespace` | `claude_code` | The namespace to search. `NOBLIVION_PROJECT` is read when this is not set. |
 | `NOBLIVION_RECALL_MEMORY_DIR` | none | the memory folder of the session's working directory | The memory folder of the session. It sets the root (see below) and the folder for local re-ranking and rule rows. `NOBLIVION_MEMORY_DIR` is read when this is not set. |
 | `NOBLIVION_RECALL_ROOT` | none | the name of the project folder that holds the memory folder | The root. Recall searches only the notes of this root, plus the shared roots. |
@@ -100,32 +101,31 @@ run `noblivion consent embeddings`. The `openrouter` backend also needs
 | `NOBLIVION_RECALL_CACHE_DIR` | none | `<data dir>/cache` | Hook state: session files, logs and the trust event spool. |
 | `NOBLIVION_RECALL_SESSION_KEEP_DAYS` | none | `7` | Days a session file stays in the cache. |
 | `NOBLIVION_RECALL_SESSION_KEEP_MAX` | none | `200` | The most session files the cache keeps. |
-| `NOBLIVION_RECALL_LABELS` | none | off; any value except `0`, `off`, `false` or `no` turns it on | Adds label rows (notes that name a file, a tool, a ticket or a service in the prompt). |
-| `NOBLIVION_RECALL_MD_ONLY` | none | off; any value | Makes the MCP tool return memory files only. |
+| `NOBLIVION_RECALL_LABELS` | none | off (switch) | Adds label rows (notes that name a file, a tool, a ticket or a service in the prompt). |
+| `NOBLIVION_RECALL_MD_ONLY` | none | off (switch) | Makes the MCP tool return memory files only. |
 
 ### Ranked index
 
 With `NOBLIVION_RECALL_INDEX` set, the hook shows a ranked list of note
 titles instead of note text. Claude Code then opens the notes it needs
 with the MCP tool. The other settings in this table work only with the
-ranked index. All of them are off by default, and each one turns on with
-any value.
+ranked index. All of them are off by default.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_RECALL_INDEX` | none | off; any value | Shows the ranked index. |
+| `NOBLIVION_RECALL_INDEX` | none | off (switch) | Shows the ranked index. |
 | `NOBLIVION_RECALL_INDEX_K` | `recall.index_k` | `35` | How many candidates the hook asks for, 1 to 100. |
 | `NOBLIVION_RECALL_INDEX_MAX_CHARS` | none | `7600` | The most characters the index adds to the prompt. |
 | `NOBLIVION_RECALL_INDEX_QUERY_CHARS` | none | `300` | The most characters of the prompt sent as the query, up to 8000. |
 | `NOBLIVION_RECALL_INDEX_MIN_SCORE` | none | none | A cosine floor from -1 to 1. A row below it is not shown. Not used in keyword-only mode. |
-| `NOBLIVION_RECALL_INDEX_HYGIENE` | none | off | Asks for more candidates. Drops index files, topic files and notes with a closed status. |
-| `NOBLIVION_RECALL_INDEX_RERANK` | none | off | Re-ranks the rows: a local keyword score over the memory files, fused with the store's vector order. |
-| `NOBLIVION_RECALL_INDEX_RULE_ROWS` | none | off | Shows each row as its id, the `rule:` line of the file and its name. |
-| `NOBLIVION_RECALL_INDEX_APPLY` | none | off | Adds the `apply:` text under the top rule rows. Needs `NOBLIVION_RECALL_INDEX_RULE_ROWS`. |
-| `NOBLIVION_RECALL_SHOWN_SET` | none | off | With apply lines: a note that the session already opened, or already saw with its apply text, keeps its row but loses the apply text. |
-| `NOBLIVION_RECALL_INDEX_ROW_DEDUPE` | none | off | Leaves out the rows that an earlier prompt of the same session already showed. |
-| `NOBLIVION_RECALL_INDEX_CHECK_LINE` | none | off | Adds one more header line to the rule rows. |
-| `NOBLIVION_RECALL_INDEX_DROP_NO_RULE` | none | off | Leaves out a row with no rule and no summary. |
+| `NOBLIVION_RECALL_INDEX_HYGIENE` | none | off (switch) | Asks for more candidates. Drops index files, topic files and notes with a closed status. |
+| `NOBLIVION_RECALL_INDEX_RERANK` | none | off (switch) | Re-ranks the rows: a local keyword score over the memory files, fused with the store's vector order. |
+| `NOBLIVION_RECALL_INDEX_RULE_ROWS` | none | off (switch) | Shows each row as its id, the `rule:` line of the file and its name. |
+| `NOBLIVION_RECALL_INDEX_APPLY` | none | off (switch) | Adds the `apply:` text under the top rule rows. Needs `NOBLIVION_RECALL_INDEX_RULE_ROWS`. |
+| `NOBLIVION_RECALL_SHOWN_SET` | none | off (switch) | With apply lines: a note that the session already opened, or already saw with its apply text, keeps its row but loses the apply text. |
+| `NOBLIVION_RECALL_INDEX_ROW_DEDUPE` | none | off (switch) | Leaves out the rows that an earlier prompt of the same session already showed. |
+| `NOBLIVION_RECALL_INDEX_CHECK_LINE` | none | off (switch) | Adds one more header line to the rule rows. |
+| `NOBLIVION_RECALL_INDEX_DROP_NO_RULE` | none | off (switch) | Leaves out a row with no rule and no summary. |
 | `NOBLIVION_RECALL_INDEX_TRUST` | none | off | `1`, `on`, `true` or `yes` multiplies each score by the trust factor. `shadow` computes the factor and logs it, but keeps the order. See [trust.md](trust.md). |
 | `NOBLIVION_RECALL_TRUST_FILE` | none | unset | A fixed trust snapshot file to use instead of the store's trust values. For tests. |
 | `NOBLIVION_RECALL_TRUST_MODE` | none | unset | `a`, `b` or `c`: other ways to compute the trust factor, for evaluation. Unset uses the normal factor. |
@@ -172,7 +172,7 @@ that is set in the environment wins over `recall.env`.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_SUBAGENT_RULES_OFF` | none | off; any value | Turns the hook off. |
+| `NOBLIVION_SUBAGENT_RULES_OFF` | none | off (switch) | Turns the hook off. |
 | `NOBLIVION_SUBAGENT_RULES_K` | none | `8` | The most rows for one subagent, up to 30. |
 | `NOBLIVION_SUBAGENT_RULES_MAX_CHARS` | none | `2500` | The most characters for one subagent. |
 | `NOBLIVION_SUBAGENT_RULES_QUERY_CHARS` | none | `2000` | The most characters of the task text sent as the query. |
@@ -190,16 +190,18 @@ prints a short briefing at session start. It is off by default.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_CONTINUITY` | none | off; any value | Turns the hook on. |
-| `NOBLIVION_CONTINUITY_BRIEFING` | none | on unless off | The briefing at session start. |
-| `NOBLIVION_CONTINUITY_PRECOMPACT_PRINT` | none | on unless off | Before a compaction, print the saved rules as well as save them. |
+| `NOBLIVION_CONTINUITY` | none | off (switch) | Turns the hook on. |
+| `NOBLIVION_CONTINUITY_BRIEFING` | none | on (switch) | The briefing at session start. |
+| `NOBLIVION_CONTINUITY_PRECOMPACT_PRINT` | none | on (switch) | Before a compaction, print the saved rules as well as save them. |
 | `NOBLIVION_CONTINUITY_BUDGET_S` | none | `4.0` | The time budget, in seconds. |
 | `NOBLIVION_CONTINUITY_MAX_CHARS` | none | `1500` | The most characters of the briefing, 500 to 2000. |
-| `NOBLIVION_CONTINUITY_QUOTA_RULING` | none | `8` | The most rows in the rulings section. |
+| `NOBLIVION_CONTINUITY_QUOTA_DECISION` | none | `8` | The most rows in the decisions section. |
 | `NOBLIVION_CONTINUITY_QUOTA_OPEN` | none | `5` | The most rows in the open items section. |
 | `NOBLIVION_CONTINUITY_QUOTA_TRAP` | none | `2` | The most rows in the traps section. |
-| `NOBLIVION_CONTINUITY_REQUIRE_STATUS` | none | off; `1` turns it on | A note needs a `status:` field to count as an open item. |
-| `NOBLIVION_CONTINUITY_CURATED` | none | on unless off | The notes that `topic_operator_rulings.md` and `topic_live_work.md` link come first in their sections. Off uses the ranked order only. |
+| `NOBLIVION_CONTINUITY_REQUIRE_STATUS` | none | off (switch) | A note needs a `status:` field to count as an open item. |
+| `NOBLIVION_CONTINUITY_CURATED` | none | on (switch) | The notes that the curated index files link come first in their sections. Off uses the ranked order only. |
+| none | `continuity.decision_files` | `["topic_decisions.md"]` | Index files in the memory folder. The notes they link are the first rows of the decisions section, in file order. |
+| none | `continuity.open_files` | `["topic_open_work.md"]` | Index files in the memory folder. The notes they link are the first rows of the open items section, in file order. |
 
 ## Guards
 
@@ -207,17 +209,17 @@ See [guards.md](guards.md) for what each guard does.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_MEMORY_DIR` | none | `~/.claude/projects/<slug of your home folder>/memory` | The memory folder of the guard table, the memory fields hook, the memory sync hook and the stop checks. |
+| `NOBLIVION_MEMORY_DIR` | none | `~/.claude/projects/<slug of your home folder>/memory` | The memory folder of the guard table, the memory fields hook, the memory sync hook and the stop checks. When it is set, the store indexes this folder too, in addition to `NOBLIVION_MEMORY_DIRS`. |
 | `NOBLIVION_GUARD_TABLE` | none | `<data dir>/guard-table.json` | The guard table file. |
 | `NOBLIVION_GUARD_LOG` | none | `<data dir>/guard-log.jsonl` | The guard log. |
 | `NOBLIVION_GUARD_STATE_DIR` | none | `<data dir>/guard-state` | State per agent and session. |
 | `NOBLIVION_GUARD_ROWS_SESSION_CHARS` | none | `6000` | The most characters of guard rows per agent in one session. |
 | `NOBLIVION_GUARD_ROWS_FULL_SESSION_CHARS` | none | `12000` | After this many characters, a row shows only its rule and apply text. |
 | `NOBLIVION_GUARD_WEAK_SHARE` | none | `4` | A trigger that this many notes share is weak. `0` turns the weak-trigger check off. |
-| `NOBLIVION_GUARD_CREDENTIAL` | none | on unless off | The credential guard. |
-| `NOBLIVION_GUARD_LABELS` | none | on unless off | Label rows at tool time. |
+| `NOBLIVION_GUARD_CREDENTIAL` | none | on (switch) | The credential guard. |
+| `NOBLIVION_GUARD_LABELS` | none | on (switch) | Label rows at tool time. |
 | `NOBLIVION_GUARD_LABEL_SESSION_CHARS` | none | `4000` | The most characters of label rows in one session. |
-| `NOBLIVION_GUARD_LABELS_FILE_TOOLS` | none | off; any value | Label rows for Read, Grep and Glob, and for the text of an edit. |
+| `NOBLIVION_GUARD_LABELS_FILE_TOOLS` | none | off (switch) | Label rows for Read, Grep and Glob, and for the text of an edit. |
 | none | `guard.generic_args_extra` | `[]` | More words that do not make a trigger specific. They add to the built-in list. |
 | none | `guard.evidence_stop_extra` | `[]` | More words that do not count as evidence. They add to the built-in list. |
 | none | `labels.ticket_prefixes` | `[]` | Ticket key prefixes, for example `PROJ`. With none, no ticket labels are made. |
@@ -228,8 +230,8 @@ See [guards.md](guards.md) for what each guard does.
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
 | `NOBLIVION_MEMORY_SYNC_CMD` | `sync.index_command` | `<data dir>/venv/bin/noblivion index` when it exists | The command that re-indexes the notes after a write. |
-| `NOBLIVION_MEMORY_SYNC_OFF` | none | off; any value | Turns the hook off. |
-| `NOBLIVION_MEMORY_SYNC_BASH_OFF` | none | off; any value | Turns off only the check after shell commands. |
+| `NOBLIVION_MEMORY_SYNC_OFF` | none | off (switch) | Turns the hook off. |
+| `NOBLIVION_MEMORY_SYNC_BASH_OFF` | none | off (switch) | Turns off only the check after shell commands. |
 | `NOBLIVION_MEMORY_SYNC_STATE_DIR` | none | `<data dir>/cache` | Stamps and the log of the hook. |
 | `NOBLIVION_MEMORY_SYNC_DEBOUNCE_S` | none | `3.0` | Seconds the folder must be quiet before a run. |
 | `NOBLIVION_MEMORY_SYNC_TIMEOUT_S` | none | `120.0` | The time limit of one index run. |
@@ -253,11 +255,11 @@ See [guards.md](guards.md) for what each guard does.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_TRUST_EVENTS` | `trust.events` | on unless off | Records which notes were shown and used. Off stops the spool and the flush. |
-| `NOBLIVION_TRUST_RANKING` | `trust.ranking` | `off` | `off`, `shadow` or `on`. With `shadow` or `on`, the store adds trust values to each index row. The store itself never reorders rows. |
+| `NOBLIVION_TRUST_EVENTS` | `trust.events` | on (switch) | Records which notes were shown and used. Off stops the spool and the flush. |
+| `NOBLIVION_TRUST_RANKING` | `trust.ranking` | `off` | `off`, `shadow` or `on`. With `shadow` or `on`, the store adds trust values to each index row. The store itself never reorders rows. With `shadow`, the prompt hook computes and logs the trust factor but never applies it. With `on`, the hook applies it when `NOBLIVION_RECALL_INDEX_TRUST` is on. |
 | none | `trust.prior_mined` | `0.3` | The starting trust of a transcript-mined note, more than 0 and at most 1. A memory file starts at `0.5`. |
 | `NOBLIVION_TRUST_REPORT_FILE` | none | `<data dir>/cache/trust-report.json` | The cached trust report. |
-| `NOBLIVION_DEDUP_STATUS_FILE` | none | `<data dir>/cache/dedup-last-run.json` | The duplicate sweep status that the session start line reads. |
+| `NOBLIVION_DEDUP_STATUS_FILE` | none | `<data dir>/cache/dedup-last-run.json` | The duplicate sweep status. Every `noblivion dedup plan`, `apply` and `undo` writes it. The session start line reads it. |
 
 ## Duplicate sweep
 
@@ -280,7 +282,7 @@ environment, never from the config file.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_MINER` | `miner.enabled` | on unless off | The miner, at session end and from the command line. |
+| `NOBLIVION_MINER` | `miner.enabled` | on (switch) | The miner, at session end and from the command line. |
 | `NOBLIVION_MINE_CMD` | none | `<data dir>/venv/bin/noblivion mine` | The command the session end hook runs. |
 | none | `miner.transcript_glob` | `~/.claude/projects/*/*.jsonl` | The transcripts to read. |
 | none | `miner.max_run_s` | `300` | The time budget of one run, in seconds. The next run goes on from where this one stopped. |

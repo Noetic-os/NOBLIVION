@@ -245,7 +245,7 @@ def test_consent_is_per_model(garden):
 
 def test_yes_records_consent_and_plans(garden):
     judge = FakeJudge()
-    code, out = run(garden, ["plan"], judge=judge, stdin="yes\n")
+    code, out = run(garden, ["plan"], judge=judge, stdin="yes\nyes\n")
     assert code == 0, out
     assert dedup.has_consent(garden["conn"], FakeJudge.model)
     assert len(judge.calls) == 1 and len(plan_files(garden)) == 1
@@ -262,15 +262,74 @@ def test_consent_command_and_revoke(garden):
 # -- plan and dry run -----------------------------------------------------------
 
 
-def test_dry_run_changes_nothing(garden):
-    grant(garden)
+def test_dry_run_makes_no_network_call_and_changes_nothing(garden, no_network):
+    """A dry run builds no judge: the pairs and the cost estimate only. The
+    network is patched to raise, and no consent, model or key is needed."""
     before = snapshot(garden["folder"])
-    judge = FakeJudge()
-    code, out = run(garden, ["plan", "--dry-run"], judge=judge)
+    del garden["env"][dedup.KEY_ENV]
+
+    def factory(_ds, _key):
+        raise AssertionError("a dry run must not build a judge")
+
+    code, out = run(garden, ["plan", "--dry-run"], factory=factory)
     assert code == 0, out
-    assert "MERGE" in out and "reference_fern_time.md" in out and "dry run" in out
+    assert "reference_fern_time.md" in out and "1 judge calls" in out
+    assert "dry run; nothing was sent" in out and "MERGE" not in out
+    assert no_network == []
     assert plan_files(garden) == []
     assert snapshot(garden["folder"]) == before
+    assert dedup.read_consent(garden["conn"]) is None
+    status = json.loads((garden["data"] / "cache" / "dedup-last-run.json").read_text())
+    assert status["mode"] == "dry-run" and status["pairs"] == 1
+
+
+@pytest.mark.parametrize("answer", ["", "no\n", "y\n"])
+def test_plan_asks_after_the_estimate_and_sends_nothing_without_yes(garden, answer):
+    grant(garden)
+    judge = FakeJudge()
+    code, out = run(garden, ["plan"], judge=judge, stdin=answer)
+    assert code == dedup.EXIT_REFUSED
+    assert "1 judge calls" in out and "type yes to send 1 pairs" in out
+    assert "not confirmed; nothing was sent" in out
+    assert judge.calls == [] and plan_files(garden) == []
+
+
+def test_plan_sends_after_yes_and_writes_the_status(garden):
+    grant(garden)
+    judge = FakeJudge()
+    code, out = run(garden, ["plan"], judge=judge, stdin="yes\n")
+    assert code == 0, out
+    assert len(judge.calls) == 1 and len(plan_files(garden)) == 1
+    status = json.loads((garden["data"] / "cache" / "dedup-last-run.json").read_text())
+    assert status["mode"] == "plan" and status["proposals"] == 1
+    assert status["run_id"] == run_id_of(garden) and status["outcome"] == "ok"
+
+
+def test_the_status_file_follows_apply_and_undo(garden, tmp_path):
+    status = tmp_path / "status.json"
+    garden["env"][dedup.STATUS_FILE_ENV] = str(status)
+    run_id, _ = _plan_and_apply(garden)
+    doc = json.loads(status.read_text())
+    assert doc["mode"] == "apply" and doc["merged"] == 1 and doc["run_id"] == run_id
+    assert "failed" not in doc
+    assert run(garden, ["undo", run_id])[0] == 0
+    doc = json.loads(status.read_text())
+    assert doc["mode"] == "undo" and doc["merged"] == 0
+
+
+def test_consent_text_says_the_front_matter_is_sent():
+    text = dedup.consent_text("m/x")
+    assert "(version 2)" in text
+    assert "name and description fields are sent" in " ".join(text.split())
+
+
+def test_a_consent_of_the_old_text_version_asks_again(garden):
+    dedup.grant_consent(garden["conn"], FakeJudge.model)
+    record = dedup.read_consent(garden["conn"])
+    record["version"] = 1
+    with db.write_tx(garden["conn"]):
+        db.set_meta(garden["conn"], dedup.CONSENT_KEY, json.dumps(record))
+    assert not dedup.has_consent(garden["conn"], FakeJudge.model)
 
 
 def test_plan_sends_names_as_a_and_b_and_scrubbed_text(garden):
@@ -279,7 +338,7 @@ def test_plan_sends_names_as_a_and_b_and_scrubbed_text(garden):
     loser.write_text(LOSER + f"Notes in {Path.home()}/garden, host 10.1.2.3\n")
     os.utime(loser, (time.time() - 3600,) * 2)
     judge = FakeJudge()
-    assert run(garden, ["plan"], judge=judge)[0] == 0
+    assert run(garden, ["plan", "--yes"], judge=judge)[0] == 0
     system, user = judge.calls[0]
     assert system.startswith("You are a judge")
     assert "File A (kind: reference)" in user and "File B (kind: reference)" in user
@@ -294,7 +353,7 @@ def test_too_long_file_is_unsure_and_not_sent(garden):
     loser.write_text(LOSER + "x" * (dedup.MAX_FILE_CHARS + 1))
     os.utime(loser, (time.time() - 3600,) * 2)
     judge = FakeJudge()
-    assert run(garden, ["plan"], judge=judge)[0] == 0
+    assert run(garden, ["plan", "--yes"], judge=judge)[0] == 0
     assert judge.calls == []
     (pair,) = json.loads(plan_files(garden)[0].read_text())["pairs"]
     assert pair["verdict"] == "UNSURE" and pair["sent"] is False
@@ -320,7 +379,7 @@ def test_max_pairs_caps_judge_calls(garden):
 def test_judge_error_leaves_files_untouched(garden, judge):
     grant(garden)
     before = snapshot(garden["folder"])
-    assert run(garden, ["plan"], judge=judge)[0] == 0
+    assert run(garden, ["plan", "--yes"], judge=judge)[0] == 0
     (pair,) = json.loads(plan_files(garden)[0].read_text())["pairs"]
     assert pair["verdict"] == "UNSURE"
     code, out = run(garden, ["apply", run_id_of(garden)])
@@ -338,7 +397,7 @@ def test_openrouter_judge_network_error_is_unsure(garden):
     def factory(ds, key):
         return dedup.OpenRouterJudge(ds.model, key, opener=opener, min_interval_s=0)
 
-    assert run(garden, ["plan"], factory=factory)[0] == 0
+    assert run(garden, ["plan", "--yes"], factory=factory)[0] == 0
     (pair,) = json.loads(plan_files(garden)[0].read_text())["pairs"]
     assert pair["verdict"] == "UNSURE" and pair["error"] == "URLError"
     assert snapshot(garden["folder"]) == before
@@ -424,7 +483,7 @@ def test_prompt_is_checked_by_sha256(tmp_path):
 
 def _plan_and_apply(g, answer=None):
     grant(g)
-    assert run(g, ["plan"], judge=FakeJudge(answer))[0] == 0
+    assert run(g, ["plan", "--yes"], judge=FakeJudge(answer))[0] == 0
     run_id = run_id_of(g)
     code, out = run(g, ["apply", run_id])
     assert code == 0, out
@@ -494,7 +553,7 @@ def test_survivor_b_and_merge_cap(garden):
 
 def test_apply_skips_a_file_changed_since_the_plan(garden):
     grant(garden)
-    assert run(garden, ["plan"], judge=FakeJudge())[0] == 0
+    assert run(garden, ["plan", "--yes"], judge=FakeJudge())[0] == 0
     (garden["folder"] / "reference_fern_time.md").write_text(LOSER + "edit\n")
     before = snapshot(garden["folder"])
     code, out = run(garden, ["apply", run_id_of(garden)])
@@ -522,7 +581,7 @@ def test_failed_step_rolls_back_and_sets_the_latch(garden, monkeypatch):
     folder, conn = garden["folder"], garden["conn"]
     before = snapshot(folder)
     grant(garden)
-    assert run(garden, ["plan"], judge=FakeJudge())[0] == 0
+    assert run(garden, ["plan", "--yes"], judge=FakeJudge())[0] == 0
     run_id = run_id_of(garden)
     real_replace = os.replace
 
@@ -536,6 +595,8 @@ def test_failed_step_rolls_back_and_sets_the_latch(garden, monkeypatch):
     monkeypatch.setattr(dedup.os, "replace", real_replace)
     assert code == dedup.EXIT_LATCH and "step 1 failed" in out
     assert snapshot(folder) == before
+    status = json.loads((garden["data"] / "cache" / "dedup-last-run.json").read_text())
+    assert status["failed"] == run_id and status["outcome"] == "refused"
     assert conn.execute("SELECT status FROM dedup_actions").fetchone()[0] == "failed"
     assert (
         conn.execute("SELECT count(*) FROM memories WHERE archived_at IS NOT NULL").fetchone()[0]
@@ -552,7 +613,7 @@ def test_pending_action_from_a_crash_is_rolled_back(garden, monkeypatch):
     folder, conn = garden["folder"], garden["conn"]
     before = snapshot(folder)
     grant(garden)
-    assert run(garden, ["plan"], judge=FakeJudge())[0] == 0
+    assert run(garden, ["plan", "--yes"], judge=FakeJudge())[0] == 0
     run_id = run_id_of(garden)
 
     class Crash(BaseException):

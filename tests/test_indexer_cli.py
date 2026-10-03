@@ -33,6 +33,7 @@ def home(tmp_path, monkeypatch):
         "XDG_DATA_HOME",
         "NOBLIVION_CONFIG",
         "NOBLIVION_MEMORY_DIRS",
+        "NOBLIVION_MEMORY_DIR",
         "NOBLIVION_PROJECT",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -138,6 +139,35 @@ def test_cli_waits_for_the_index_lock(home, capsys):
         assert indexer.main(["--lock-timeout", "0.2"]) == indexer.EXIT_LOCKED
     assert "another scan" in capsys.readouterr().err
     assert indexer.main(["--lock-timeout", "0.2"]) == indexer.EXIT_OK
+
+
+def test_cli_database_locked_is_one_line_and_exit_5(home, capsys, monkeypatch):
+    """A SQLite lock past busy_timeout: exit 5, one line, no traceback."""
+    import sqlite3
+
+    make_folder(home, "proj-a", 1)
+
+    def locked(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(indexer, "scan", locked)
+    assert indexer.main([]) == indexer.EXIT_DB_BUSY == 5
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and "database is locked" in err and "Traceback" not in err
+
+
+def test_the_hook_memory_dir_is_always_indexed(home, monkeypatch, tmp_path):
+    """NOBLIVION_MEMORY_DIR (the hooks' folder) joins NOBLIVION_MEMORY_DIRS, once."""
+    hook_dir = make_folder(tmp_path / "elsewhere", "proj-h", 1)
+    other = make_folder(tmp_path / "x", "proj-x", 1)
+    monkeypatch.setenv("NOBLIVION_MEMORY_DIRS", str(other))
+    assert config.load_settings().resolved_memory_dirs() == [other]
+    monkeypatch.setenv("NOBLIVION_MEMORY_DIR", str(hook_dir))
+    assert config.load_settings().resolved_memory_dirs() == [other, hook_dir]
+    monkeypatch.setenv("NOBLIVION_MEMORY_DIRS", f"{other}:{hook_dir}")
+    assert config.load_settings().resolved_memory_dirs() == [other, hook_dir]
+    monkeypatch.delenv("NOBLIVION_MEMORY_DIRS")
+    assert hook_dir in config.load_settings().resolved_memory_dirs()
 
 
 def test_cli_explicit_memory_dir_and_db(home, tmp_path):

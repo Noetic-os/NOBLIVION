@@ -36,6 +36,11 @@ DEFAULT_PRIOR_MINED = 0.3
 TRUST_RANKING_MODES = ("off", "shadow", "on")
 LOG_LEVELS = ("debug", "info", "warning", "error")
 
+# The one rule for every on/off switch (docs/configuration.md, "Switches").
+# ``hooks/hook_config.py`` holds the same rule for the stdlib hooks.
+SWITCH_ON = ("1", "true", "yes", "on")
+SWITCH_OFF = ("0", "false", "no", "off", "")
+
 
 INSTALL_STAMP = "noblivion-install.json"  # in the store venv, written by install.sh
 
@@ -91,6 +96,39 @@ def string_list(cfg: Mapping, dotted: str) -> tuple[str, ...]:
     return tuple(s.strip() for s in value if isinstance(s, str) and s.strip())
 
 
+def parse_switch(value: object, default: bool) -> bool:
+    """One switch value as a bool. ``1``, ``true``, ``yes``, ``on`` (any case,
+    JSON ``true``, a non-zero number) are on. ``0``, ``false``, ``no``,
+    ``off``, the empty text (JSON ``false``, ``0``) are off. ``None`` (not
+    set) and any other value give ``default``."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if not isinstance(value, str):
+        return default
+    raw = value.strip().lower()
+    if raw in SWITCH_ON:
+        return True
+    if raw in SWITCH_OFF:
+        return False
+    return default
+
+
+def switch(
+    env: Mapping[str, str], env_name: str, cfg: Mapping, key: str | None, default: bool
+) -> bool:
+    """The switch ``env_name``: the env var when it is set (an empty value is
+    off), else the config ``key`` when one is given, else ``default``."""
+    if env_name in env:
+        return parse_switch(env.get(env_name), default)
+    if key:
+        return parse_switch(lookup(cfg, key), default)
+    return default
+
+
 def default_memory_dirs() -> list[Path]:
     """Every folder that matches ``~/.claude/projects/*/memory``."""
     projects = Path.home() / ".claude" / "projects"
@@ -110,6 +148,14 @@ def _non_negative_int(value: object, default: int) -> int:
     return number if number >= 0 else default
 
 
+def _same(path: Path) -> str:
+    """A path key that ignores ``~``, ``..`` and symlinks."""
+    try:
+        return str(path.expanduser().resolve())
+    except OSError:
+        return str(path)
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -119,6 +165,9 @@ class Settings:
     archive_retention_days: int
     ticket_prefixes: tuple[str, ...] = ()  # labels.ticket_prefixes
     service_prefixes: tuple[str, ...] = ()  # labels.service_prefixes
+    # NOBLIVION_MEMORY_DIR: the one folder the hooks guard and sync. The store
+    # always indexes it too, so the hooks and the store agree on the folders.
+    hook_memory_dir: Path | None = None
 
     @property
     def db_path(self) -> Path:
@@ -129,9 +178,15 @@ class Settings:
         return self.data_dir / INDEX_LOCK_FILE
 
     def resolved_memory_dirs(self) -> list[Path]:
-        if self.memory_dirs is None:
-            return default_memory_dirs()
-        return list(self.memory_dirs)
+        """``memory_dirs`` (or the default glob), plus ``NOBLIVION_MEMORY_DIR``
+        when it is set and not in the list yet."""
+        dirs = default_memory_dirs() if self.memory_dirs is None else list(self.memory_dirs)
+        extra = self.hook_memory_dir
+        if extra is not None and extra.is_dir():
+            known = {_same(p) for p in dirs}
+            if _same(extra) not in known:
+                dirs.append(extra)
+        return dirs
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -153,6 +208,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         if isinstance(value, list) and all(isinstance(p, str) for p in value):
             dirs = tuple(Path(os.path.expanduser(p)) for p in value if p.strip())
 
+    raw_hook_dir = env.get("NOBLIVION_MEMORY_DIR", "").strip()
     return Settings(
         data_dir=data_dir(env),
         namespace=namespace,
@@ -165,6 +221,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         ),
         ticket_prefixes=string_list(cfg, "labels.ticket_prefixes"),
         service_prefixes=string_list(cfg, "labels.service_prefixes"),
+        hook_memory_dir=Path(os.path.expanduser(raw_hook_dir)) if raw_hook_dir else None,
     )
 
 

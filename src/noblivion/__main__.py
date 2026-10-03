@@ -6,8 +6,9 @@ Commands in this version: ``index`` (see ``noblivion.indexer``),
 opt-in duplicate sweep, see ``noblivion.dedup``), ``serve`` (the store
 in the foreground, see ``noblivion.store``), ``ensure-running`` (start
 the store in the background unless it runs, see ``noblivion.launcher``),
-``mine`` (the transcript miner, see ``noblivion.miner``) and ``trust
-recompute`` (the trust repair, see ``noblivion.trust``).
+``mine`` (the transcript miner, see ``noblivion.miner``), ``trust
+report`` (print the trust report) and ``trust recompute`` (the trust repair),
+see ``noblivion.trust``.
 """
 
 from __future__ import annotations
@@ -18,7 +19,9 @@ from collections.abc import Sequence
 USAGE = (
     "usage: noblivion index [--force] [--allow-shrink] [--memory-dir DIR] [--json]\n"
     "       noblivion consent embeddings [--revoke]\n"
-    "       noblivion dedup pairs|plan [--dry-run]|apply RUN_ID|undo RUN_ID|consent|clear-latch\n"
+    "       noblivion dedup pairs|plan [--dry-run] [--yes]|apply RUN_ID|undo RUN_ID\n"
+    "       noblivion dedup consent [--revoke]|clear-latch\n"
+    "       noblivion trust report [--json] [--limit N]\n"
     "       noblivion trust recompute [--json]\n"
     "       noblivion serve [--port PORT] [--lock-wait SECONDS]\n"
     "       noblivion ensure-running [--json]\n"

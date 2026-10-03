@@ -151,6 +151,11 @@ def _int_env(env: Mapping[str, str], name: str, default: int, low: int, high: in
     return default if value < low else min(value, high)
 
 
+def is_off(env: Mapping[str, str]) -> bool:
+    """``NOBLIVION_SUBAGENT_RULES_OFF`` or ``NOBLIVION_RECALL_DISABLE`` is on."""
+    return rh.switch_on(env, OFF_ENV) or rh.recall_disabled(env)
+
+
 def sub_cache(env: Mapping[str, str]) -> str:
     """The hook's own state folder, inside the recall cache folder."""
     return os.path.join(rh.cache_dir(env), SUBDIR)
@@ -415,7 +420,7 @@ def run(stdin_text: str, stdout, env: Dict[str, str]) -> None:
     event = str(payload.get("hook_event_name") or "-")
     session = rh._valid_sid(payload.get("session_id"))
     env = rh.session_env(env, payload)
-    if (env.get(OFF_ENV) or "").strip() or env.get("NOBLIVION_RECALL_DISABLE"):
+    if is_off(env):
         rh.log_line(cache, event, session, 0, 0, 0, "skip:disabled")
         return
     if event == "PreToolUse":

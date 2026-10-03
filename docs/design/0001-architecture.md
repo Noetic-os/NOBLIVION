@@ -344,8 +344,9 @@ General rules for every route:
   folder was in the reference implementation.
 - Read routes that fail inside the ranker answer 200 with an empty result
   and a `reason` string, as the reference implementation does. The fixed
-  error reason is `"index or fetch failed; see the daemon log"`. The store
-  keeps this exact text because clients may compare it.
+  error reason is `"index or fetch failed; see the store log"`. The store
+  keeps this exact text because clients may compare it. (The reference
+  implementation said "daemon log"; no NOBLIVION hook compares it.)
 
 ### 4.1 Auth and request checks
 
@@ -395,13 +396,13 @@ are joined with `"\n---\n"`. Each entry is redacted on its own before the
 join.
 
 ```json
-{"results": ["<entry 1>\n---\n<entry 2>\n---\n<entry 3>"], "namespace": "claude_code"}
+{"results": ["<entry 1>\n---\n<entry 2>\n---\n<entry 3>"], "scores": [0.71, 0.66, null], "namespace": "claude_code"}
 ```
 
 No hit, empty query, or empty pool:
 
 ```json
-{"results": ["No memories available."], "namespace": "claude_code"}
+{"results": ["No memories available."], "scores": [], "namespace": "claude_code"}
 ```
 
 Notes:
@@ -410,6 +411,12 @@ Notes:
   `"\n---\n"`. They treat an entry as a memory file entry only when it
   holds the source marker `[claude_code_md: <path>]` (section 5.3). So the
   store must keep the content format of section 5.3 byte for byte.
+- `scores` (NOBLIVION-22): one score per entry, in entry order, with the
+  `score` rules of section 4.3 (`null` in keyword-only mode). The hook
+  pairs the scores with the entries only when the counts match, and drops
+  a hit below `recall.min_score`. A hit with no score passes.
+- Each entry goes through the secret redactor and then the
+  injection-pattern redactor (section 15.4).
 - The hooks treat these strings as "no hits": `No memories available.`,
   `No valid embeddings for search.`, `No valid vectors for search.`,
   `Embedding generation failed.` The store uses only the first one.
@@ -420,7 +427,7 @@ Notes:
 - The answer stays below 512 KB. Entries that do not fit are left out from
   the end.
 - A fault inside the ranker gives the "no hits" answer plus
-  `"reason": "index or fetch failed; see the daemon log"` (section 4).
+  `"reason": "index or fetch failed; see the store log"` (section 4).
 
 ### 4.3 `GET /api/memories/index`
 
@@ -473,6 +480,9 @@ Field rules:
   It compares rows inside one answer only. No hook reads it today.
 - `source_type` (new): `claude_code_md` or `transcript_mined`.
 - `mode` (new): `hybrid` or `keyword` (section 8.4).
+- `trust_ranking` (top level, NOBLIVION-22): `shadow` or `on`, present
+  only when the config key `trust.ranking` has that value. The hook reads
+  it to keep the order in `shadow` (section 8.6).
 - `trust`, `trials`, `trust_prior`: present only when the config key
   `trust.ranking` is `shadow` or `on`. `trust_prior` is the row's own
   prior: 0.5 for `claude_code_md`, 0.3 for `transcript_mined` (section
@@ -1088,6 +1098,8 @@ For a backend that leaves the machine, two more rules hold:
 
 - Model load fails: `embedding.state = failed`, `status = degraded`,
   keyword-only ranking. The store retries the load at most once per hour.
+  Each failed load writes one log line with the error type and the reason
+  (secrets redacted, cut to 300 characters).
 - A single embed call fails: that row stays without a vector and is
   retried by the next backfill pass.
 - Query embed fails or takes more than 1 s: this answer is keyword-only
@@ -1186,11 +1198,14 @@ Module `noblivion.ranking`, built in E3b:
 ### 8.6 Trust in ranking
 
 Config `trust.ranking`: `off` (default in v0.1), `shadow`, `on`. In
-`shadow` and `on` the store adds the trust fields to `/index` rows. The
-hook decides what to do with them. Today it multiplies its own fused score
-by `clamp(trust / trust_prior, 0.8, 1.25)`, and uses factor 1.0 below 5
-trials. In `shadow` it computes the factor and logs it but does not
-reorder. The store itself never reorders by trust in v0.1.
+`shadow` and `on` the store adds the trust fields to `/index` rows and
+names the mode in the answer (`trust_ranking`). The hook decides what to
+do with them. With `NOBLIVION_RECALL_INDEX_TRUST` on, it multiplies its own
+fused score by `clamp(trust / trust_prior, 0.8, 1.25)`, and uses factor 1.0
+below 5 trials. In `shadow` (the store's mode, or the hook switch set to
+`shadow`) it computes the factor and logs it but does not reorder: the
+trust values are computed and reported, never applied. The store itself
+never reorders by trust in v0.1.
 
 ## 9. Trust
 
@@ -1328,15 +1343,20 @@ the indexer never sees a half-done merge.
    first call the CLI prints the number of calls and an estimate of the
    tokens (and of the cost in USD when `dedup.price_in_per_mtok` and
    `dedup.price_out_per_mtok` are set); after the run it prints the tokens
-   used and the cost OpenRouter reports. `plan --dry-run` prints the pairs
-   and verdicts and writes no plan file.
+   used and the cost OpenRouter reports. After the estimate the CLI asks the
+   user to type `yes` before the first billed call; `plan --yes` skips the
+   question. `plan --dry-run` (NOBLIVION-22) prints the pairs and the
+   estimate only: it builds no judge, makes no network call, needs no
+   consent and writes no plan file.
+   Every `plan`, `apply` and `undo` writes `cache/dedup-last-run.json` in
+   the data dir (`NOBLIVION_DEDUP_STATUS_FILE`) for the session start line.
 3. The user reads the plan. `noblivion dedup apply <run_id>` applies only
    the `MERGE` pairs in that plan file, and only when both files still have
    the hash recorded in the plan.
 4. At most 30 merged-away files per run.
 
 Commands (E6, `src/noblivion/dedup.py`): `noblivion dedup pairs` (list the
-candidates; sends nothing, needs no consent), `plan [--dry-run]
+candidates; sends nothing, needs no consent), `plan [--dry-run] [--yes]
 [--max-pairs N]`, `apply <run_id>`, `undo <run_id> [--pair A,B]`,
 `consent [--revoke]` and `clear-latch`. Only `plan` calls the judge, so
 only `plan` needs the model, the key and the consent. The candidate search
@@ -1358,7 +1378,7 @@ gold set ships with this plugin, so a human reads every plan.
 - The first `plan` run prints the consent text and needs
   the user to type `yes` (or the user runs `noblivion dedup consent`
   first). The CLI writes
-  `meta.dedup_consent = {"version": 1, "provider": "openrouter",
+  `meta.dedup_consent = {"version": 2, "provider": "openrouter",
   "model": "<model>", "at": "<utc>"}`. A change of provider, model or
   consent text version asks again.
 - Sent per pair: the frozen judge prompt, the kind of the pair
@@ -1366,7 +1386,9 @@ gold set ships with this plugin, so a human reads every plan.
   A text longer than 20,000 characters after the scrub is not cut and sent:
   the pair is `UNSURE` and nothing is sent for it. A text the redactor
   cannot settle is not sent either. File names are replaced by `A` and
-  `B`. No trust data and no other memory is sent.
+  `B`, but the file text includes its front matter, so `name` and
+  `description` are sent as written; consent text version 2 says so. No
+  trust data and no other memory is sent.
 - Before sending, each text goes through the secret redactor and then an
   outbound scrub: the home folder path becomes `~`, the user name becomes
   `<user>`, IPv4 and IPv6 literals become `<ip>`, and email addresses are
@@ -1555,7 +1577,7 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 | `port` | `NOBLIVION_PORT` | `8894` |
 | `idle_exit_s` | `NOBLIVION_IDLE_EXIT_S` | `1800` |
 | `namespace` | `NOBLIVION_PROJECT` | `claude_code` |
-| `memory_dirs` | `NOBLIVION_MEMORY_DIRS` (`:`-separated) | all `~/.claude/projects/*/memory` |
+| `memory_dirs` | `NOBLIVION_MEMORY_DIRS` (`:`-separated) | all `~/.claude/projects/*/memory`; plus the hooks' folder `NOBLIVION_MEMORY_DIR` when it is set |
 | `index.interval_s` | `NOBLIVION_INDEX_INTERVAL_S` | `30` |
 | `index.delete_grace_days` | none | `14` |
 | `recall.shared_roots` | none | `[]` |
@@ -1598,6 +1620,15 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 | none | `NOBLIVION_RECALL_ROOT` | derived from the memory folder or `cwd` (section 4.0) |
 
 `OPENROUTER_API_KEY` keeps its common name. It is never in the config file.
+
+Every on/off switch, in the hooks and in the store, parses its value with
+one rule (`hooks/hook_config.py` `switch`, `noblivion.config.switch`):
+`1`, `true`, `yes`, `on` are on; `0`, `false`, `no`, `off` and the empty
+value are off; not set or any other value keeps the default.
+
+The continuity briefing takes its curated index files from
+`continuity.decision_files` (default `["topic_decisions.md"]`) and
+`continuity.open_files` (default `["topic_open_work.md"]`).
 
 ### 12.4 Guard word lists
 

@@ -239,7 +239,7 @@ def test_briefing_has_the_three_sections_and_skips_memory_md_rows(world):
     lines = text.splitlines()
     assert lines[0] == ch.BRIEF_HEADER
     body = "\n".join(lines[1:])
-    assert "- RULING: Ruling 09-29: paid runs are allowed" in body
+    assert "- DECISION: Ruling 09-29: paid runs are allowed" in body
     assert "- OPEN: The reingest is the next step" in body
     assert "- TRAP: Work in a git worktree" in body
     # MEMORY.md links feedback_in_index.md and reference_tracker_access.md.
@@ -276,7 +276,7 @@ def test_briefing_limits_hold_on_a_large_folder(world):
     lines = text.splitlines()
     assert len(lines) <= ch.BRIEF_MAX_LINES == 16
     assert len(text) <= ch.BRIEF_MAX_CHARS == 1500
-    assert ch.QUOTA == (("RULING", 8), ("OPEN", 5), ("TRAP", 2))
+    assert ch.QUOTA == (("DECISION", 8), ("OPEN", 5), ("TRAP", 2))
     for label, quota in ch.QUOTA:
         assert sum(ln.startswith(f"- {label}: ") for ln in lines) <= quota
     assert all("\n" not in ln and len(ln) < 160 for ln in lines[1:])
@@ -572,7 +572,7 @@ def test_open_rows_come_from_status_open_and_closed_or_parked_are_never_rows(wor
     assert "- OPEN: Item B is the next step" in text  # status under metadata:
     for gone in ("Item C", "Item D", "Item E", "Item H", "Item I", "Item J"):
         assert gone not in text, gone
-    assert "- RULING: Ruling 09-28: item G is approved" in text
+    assert "- DECISION: Ruling 09-28: item G is approved" in text
     # a ruling is never an OPEN row, also with status open
     assert "- OPEN: Ruling" not in text
 
@@ -598,9 +598,9 @@ def test_require_status_drops_a_project_memory_without_status(world):
     text = _brief(dict(env, NOBLIVION_CONTINUITY_REQUIRE_STATUS="1"))
     open_rows = [ln for ln in text.splitlines() if ln.startswith("- OPEN: ")]
     assert sorted(ln[8:14] for ln in open_rows) == ["Item A", "Item B"]
-    # a ruling with no status stays a RULING row; a trap needs no status
-    assert "- RULING: Ruling 09-29: paid runs are allowed" in text
-    assert "- RULING: Ruling 09-28: item G is approved" in text
+    # a ruling with no status stays a DECISION row; a trap needs no status
+    assert "- DECISION: Ruling 09-29: paid runs are allowed" in text
+    assert "- DECISION: Ruling 09-28: item G is approved" in text
     assert "- TRAP: Work in a git worktree" in text
     assert "Item H" not in text and "Item I" not in text and "Item J" not in text
 
@@ -634,8 +634,8 @@ def test_section_of_and_status_of(world, monkeypatch):
         None,
     ]
     assert [ch.section_of(ruling, s, True) for s in ("open", "", "closed", "parked")] == [
-        "RULING",
-        "RULING",
+        "DECISION",
+        "DECISION",
         None,
         None,
     ]
@@ -651,7 +651,7 @@ def test_section_of_and_status_of(world, monkeypatch):
     assert ch.status_of(str(mem), item) == ""
 
 
-# ── the curated order: topic_operator_rulings.md and topic_live_work.md ─────
+# ── the curated order: topic_decisions.md and topic_open_work.md ─────
 
 
 def _links(*bases: str) -> str:
@@ -704,7 +704,7 @@ def _curated_world(mem: Path) -> None:
     _memory(
         mem, "project_live_done.md", "live-done", "Item R was in work.", "project", status="closed"
     )
-    (mem / "topic_operator_rulings.md").write_text(
+    (mem / "topic_decisions.md").write_text(
         _links(
             "project_no_push_12.md",
             "project_absent.md",
@@ -718,7 +718,7 @@ def _curated_world(mem: Path) -> None:
         ),
         encoding="utf-8",
     )
-    (mem / "topic_live_work.md").write_text(
+    (mem / "topic_open_work.md").write_text(
         _links(
             "project_live_done.md",
             "project_live_a.md",
@@ -729,16 +729,35 @@ def _curated_world(mem: Path) -> None:
         encoding="utf-8",
     )
     with (mem / "MEMORY.md").open("a", encoding="utf-8") as fh:
-        fh.write("- [rulings](topic_operator_rulings.md)\n- [live](topic_live_work.md)\n")
+        fh.write("- [rulings](topic_decisions.md)\n- [live](topic_open_work.md)\n")
+
+
+def test_the_curated_files_come_from_the_config(world, tmp_path):
+    """continuity.decision_files and continuity.open_files name the index files;
+    the neutral defaults are topic_decisions.md and topic_open_work.md."""
+    mem, cache, env = world
+    _curated_world(mem)
+    (mem / "topic_decisions.md").rename(mem / "my_choices.md")
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"continuity": {"decision_files": ["my_choices.md", "../x.md"]}}))
+    default = _brief(dict(env, NOBLIVION_RECALL_CACHE_DIR=str(cache / "d")))
+    assert not _rows(default, "DECISION")[0].startswith("- DECISION: Item K")
+    configured = _brief(
+        dict(env, NOBLIVION_CONFIG=str(cfg), NOBLIVION_RECALL_CACHE_DIR=str(cache / "c"))
+    )
+    assert _rows(configured, "DECISION")[0].startswith("- DECISION: Item K")
+    assert ch.curated_files("continuity.open_files", ("topic_open_work.md",), env) == (
+        "topic_open_work.md",
+    )
 
 
 def test_curated_rows_come_first_in_file_order(world):
     mem, cache, env = world
     _curated_world(mem)
     text = _brief(env)
-    rulings, opens = _rows(text, "RULING"), _rows(text, "OPEN")
+    rulings, opens = _rows(text, "DECISION"), _rows(text, "OPEN")
     # the linked memories first, in file order; then the fused rank (newest first)
-    assert [r[10:16] for r in rulings] == ["Item K", "Item L", "Ruling", "Ruling"]
+    assert [r[12:18] for r in rulings] == ["Item K", "Item L", "Ruling", "Ruling"]
     assert "09-29" in rulings[2] and "09-20" in rulings[3]
     assert [r[8:14] for r in opens[:2]] == ["Item P", "Item Q"]
     assert len(opens) == 4 and {r[8:11] for r in opens[2:]} == {"The", "Six"}
@@ -746,7 +765,7 @@ def test_curated_rows_come_first_in_file_order(world):
     # ... and a note whose description opens with RESOLVED
     for gone in ("Item M", "Item N", "Item R", "already in MEMORY.md", "Pointers", "old rule"):
         assert gone not in text, gone
-    # no memory is a row twice: K is a RULING row only, L and Q are no TRAP rows
+    # no memory is a row twice: K is a DECISION row only, L and Q are no TRAP rows
     for once in ("Item K", "Item L", "Item P", "Item Q"):
         assert text.count(once) == 1, once
     assert "- TRAP: Item" not in text and "- TRAP: Work in a git worktree" in text
@@ -761,7 +780,7 @@ def test_the_row_text_is_the_rule_field_also_under_metadata(world):
     )
     text = _brief(env)
     assert "- OPEN: Item P has a nested rule" in text and "Item P is in work" not in text
-    assert "- RULING: Item K: never push" in text and "Commit locally for item K" not in text
+    assert "- DECISION: Item K: never push" in text and "Commit locally for item K" not in text
 
 
 def test_curated_rows_keep_the_quota_and_the_limits(world):
@@ -771,9 +790,9 @@ def test_curated_rows_keep_the_quota_and_the_limits(world):
     for i in range(9):
         names.append(f"project_order_{i}.md")
         _memory(mem, names[-1], f"order-{i}", f"Order {i} stands.", "project", status="open")
-    (mem / "topic_operator_rulings.md").write_text(_links(*names), encoding="utf-8")
+    (mem / "topic_decisions.md").write_text(_links(*names), encoding="utf-8")
     text = _brief(env)
-    assert [r[10:17] for r in _rows(text, "RULING")] == [f"Order {i}" for i in range(8)]
+    assert [r[12:19] for r in _rows(text, "DECISION")] == [f"Order {i}" for i in range(8)]
     assert "Order 8" not in text  # over the quota: not moved to OPEN either
     assert len(text.splitlines()) <= ch.BRIEF_MAX_LINES and len(text) <= ch.BRIEF_MAX_CHARS
     assert len(_rows(text, "OPEN")) == 5 and len(_rows(text, "TRAP")) == 2
@@ -787,27 +806,31 @@ def test_curated_order_can_be_turned_off(world):
     _curated_world(mem)
     assert ch.CURATED_ENV == "NOBLIVION_CONTINUITY_CURATED"
     off = _brief(dict(env, NOBLIVION_CONTINUITY_CURATED="0"))
-    rulings = _rows(off, "RULING")
+    rulings = _rows(off, "DECISION")
     assert len(rulings) == 2 and all("Ruling 09-2" in r for r in rulings)
     assert "- OPEN: Item K: never push" in off and "- TRAP: Item" in off
-    for value in ("", "1", "on"):
+    empty = _brief(
+        dict(env, NOBLIVION_CONTINUITY_CURATED="", NOBLIVION_RECALL_CACHE_DIR=str(cache / "ce"))
+    )
+    assert _rows(empty, "DECISION") == rulings  # an empty value is off
+    for value in ("1", "on"):
         e = dict(
             env,
             NOBLIVION_CONTINUITY_CURATED=value,
             NOBLIVION_RECALL_CACHE_DIR=str(cache / f"c{value}"),
         )
-        assert _rows(_brief(e), "RULING")[0].startswith("- RULING: Item K"), value
+        assert _rows(_brief(e), "DECISION")[0].startswith("- DECISION: Item K"), value
 
 
 def test_a_missing_index_file_leaves_its_section_on_the_rank(world):
     mem, cache, env = world
     before = _brief(dict(env, NOBLIVION_RECALL_CACHE_DIR=str(cache / "a")))
     _curated_world(mem)
-    (mem / "topic_operator_rulings.md").unlink()
+    (mem / "topic_decisions.md").unlink()
     text = _brief(dict(env, NOBLIVION_RECALL_CACHE_DIR=str(cache / "b")))
-    assert all("Ruling 09-2" in r for r in _rows(text, "RULING"))
+    assert all("Ruling 09-2" in r for r in _rows(text, "DECISION"))
     assert [r[8:14] for r in _rows(text, "OPEN")[:3]] == ["Item P", "Item K", "Item Q"]
-    (mem / "topic_live_work.md").unlink()
+    (mem / "topic_open_work.md").unlink()
     for base in (
         "project_no_push_12.md",
         "feedback_spend_cap.md",
@@ -829,20 +852,18 @@ def test_linked_files_and_curated_order(world):
     mem, cache, env = world
     _curated_world(mem)
     assert ch.linked_files(str(mem), "absent.md") == []
-    assert ch.linked_files(str(mem), "topic_operator_rulings.md")[:3] == [
+    assert ch.linked_files(str(mem), "topic_decisions.md")[:3] == [
         "project_no_push_12.md",
         "project_absent.md",
         "project_old_order.md",
     ]
-    assert (
-        ch.linked_files(str(mem), "topic_operator_rulings.md").count("project_no_push_12.md") == 1
-    )
+    assert ch.linked_files(str(mem), "topic_decisions.md").count("project_no_push_12.md") == 1
     order = ch.curated_order(str(mem), env)
-    assert order["RULING"].count("project_no_push_12.md") == 1
+    assert order["DECISION"].count("project_no_push_12.md") == 1
     assert "project_no_push_12.md" not in order["OPEN"]
     assert order["OPEN"][:2] == ["project_live_done.md", "project_live_a.md"]
     assert ch.curated_order(str(mem), dict(env, NOBLIVION_CONTINUITY_CURATED="0")) == {
-        "RULING": [],
+        "DECISION": [],
         "OPEN": [],
     }
 
@@ -877,7 +898,7 @@ def _big_world(mem: Path, name_pad: str = "") -> None:
 
 
 def _counts(text: str):
-    return tuple(len(_rows(text, label)) for label in ("RULING", "OPEN", "TRAP"))
+    return tuple(len(_rows(text, label)) for label in ("DECISION", "OPEN", "TRAP"))
 
 
 def _text_lengths(text: str):
@@ -889,27 +910,27 @@ def test_the_default_quotas_are_8_5_2_and_the_row_limit_is_their_sum(world):
     _big_world(mem)
     text = _brief(dict(env, NOBLIVION_CONTINUITY_MAX_CHARS="2000"))
     assert _counts(text) == (8, 5, 2) and len(text.splitlines()) == 16 == ch.BRIEF_MAX_LINES
-    assert ch.quotas({}) == ch.QUOTA == (("RULING", 8), ("OPEN", 5), ("TRAP", 2))
+    assert ch.quotas({}) == ch.QUOTA == (("DECISION", 8), ("OPEN", 5), ("TRAP", 2))
     assert dict(
         ch.quotas(
             {"NOBLIVION_CONTINUITY_QUOTA_TRAP": "20", "NOBLIVION_CONTINUITY_QUOTA_OPEN": " 0 "}
         )
-    ) == {"RULING": 8, "OPEN": 0, "TRAP": 20}
+    ) == {"DECISION": 8, "OPEN": 0, "TRAP": 20}
 
 
 @pytest.mark.parametrize(
     "over,want",
     [
-        ({"NOBLIVION_CONTINUITY_QUOTA_RULING": "3"}, (3, 5, 2)),
+        ({"NOBLIVION_CONTINUITY_QUOTA_DECISION": "3"}, (3, 5, 2)),
         ({"NOBLIVION_CONTINUITY_QUOTA_OPEN": "7"}, (8, 7, 2)),
         ({"NOBLIVION_CONTINUITY_QUOTA_TRAP": "4"}, (8, 5, 4)),
         (
-            {"NOBLIVION_CONTINUITY_QUOTA_RULING": "0", "NOBLIVION_CONTINUITY_QUOTA_TRAP": "0"},
+            {"NOBLIVION_CONTINUITY_QUOTA_DECISION": "0", "NOBLIVION_CONTINUITY_QUOTA_TRAP": "0"},
             (0, 5, 0),
         ),
         (
             {
-                "NOBLIVION_CONTINUITY_QUOTA_RULING": "10",
+                "NOBLIVION_CONTINUITY_QUOTA_DECISION": "10",
                 "NOBLIVION_CONTINUITY_QUOTA_OPEN": "6",
                 "NOBLIVION_CONTINUITY_QUOTA_TRAP": "3",
             },
@@ -917,7 +938,7 @@ def test_the_default_quotas_are_8_5_2_and_the_row_limit_is_their_sum(world):
         ),
         (
             {
-                "NOBLIVION_CONTINUITY_QUOTA_RULING": "many",
+                "NOBLIVION_CONTINUITY_QUOTA_DECISION": "many",
                 "NOBLIVION_CONTINUITY_QUOTA_OPEN": "-1",
                 "NOBLIVION_CONTINUITY_QUOTA_TRAP": "21",
             },
@@ -991,14 +1012,14 @@ def test_the_text_is_as_long_as_fits_up_to_80(world):
 
 def test_fit_rows_drops_the_rows_that_do_not_fit_at_the_shortest_text():
     picked = (
-        [("RULING", "r" * 200, "id 1")] * 3
+        [("DECISION", "r" * 200, "id 1")] * 3
         + [("OPEN", "o" * 200, "n" * 120)] * 2
         + [("TRAP", "t" * 200, "id 2")]
     )
     room = len(ch.BRIEF_HEADER) + 3 * (1 + 10 + 60 + 7) + (1 + 8 + 60 + 7)
     lines = ch.fit_rows(picked, room + 20)
     # the OPEN rows with the long name do not fit; the TRAP row after them still does
-    assert [ln.split(":")[0] for ln in lines] == ["- RULING"] * 3 + ["- TRAP"]
+    assert [ln.split(":")[0] for ln in lines] == ["- DECISION"] * 3 + ["- TRAP"]
     assert all(len(ln.split(": ", 1)[1].rsplit(" [", 1)[0]) == 60 for ln in lines)
     assert len(ch.BRIEF_HEADER) + sum(1 + len(ln) for ln in lines) <= room + 20
 

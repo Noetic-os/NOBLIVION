@@ -695,7 +695,7 @@ def test_deploy_needs_a_merge_command_this_turn(sc_deploy):
         "you did it again",
         "stop doing that",
         "stop asking me and fix it",
-        "why are you stopping? we stop for nothing!!!",
+        "why are you stopping? keep going!!!",
         "you are using the wrong key - try again",
         "that is not what I asked",
         "You are not communicating in the way I asked.",

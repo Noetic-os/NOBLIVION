@@ -133,7 +133,7 @@ def test_daemon_fields_reorder_and_the_note_counts_the_moved_rows(tmp_path):
     assert [r.mid for r in out] == [2, 1, 3] and note == ":trust1of3"
     line = json.loads((tmp_path / "trust-rank.jsonl").read_text())
     assert line["rows"] == [[2, 0.9, 9, 1.25, 2, 1]] and line["mode"] == "on"
-    assert line["source"] == "daemon" and line["session"] == SID
+    assert line["source"] == "store" and line["session"] == SID
 
 
 # 4. the snapshot --------------------------------------------------------
@@ -204,6 +204,24 @@ def test_shadow_serves_the_old_order_and_logs_the_would_be_order(tmp_path):
     assert out == rows and note == ":trust_shadow1of2"
     line = json.loads((tmp_path / "trust-rank.jsonl").read_text())
     assert line["base"] == [1, 2] and line["trust"] == [2, 1] and line["mode"] == "shadow"
+
+
+@pytest.mark.parametrize(("store_mode", "applied"), [("shadow", False), ("on", True), ("", True)])
+def test_the_store_shadow_mode_is_computed_and_logged_but_never_applied(
+    tmp_path, store_mode, applied
+):
+    """trust.ranking shadow (design doc section 8.6): the hook switch is on,
+    but the store says shadow, so the order stays and the log has the factor."""
+    rows = [Row(1, 0.0328), Row(2, 0.0320, trust=0.9, trials=9, prior=0.5)]
+    for r in rows:
+        r.trust_ranking = store_mode
+    out, note = tr.apply_index_trust(rows, TRUST_ON, {}, str(tmp_path))
+    line = json.loads((tmp_path / "trust-rank.jsonl").read_text())
+    assert line["trust"] == [2, 1]
+    if applied:
+        assert [r.mid for r in out] == [2, 1] and note == ":trust1of2" and line["mode"] == "on"
+    else:
+        assert out == rows and note == ":trust_shadow1of2" and line["mode"] == "shadow"
 
 
 def test_debug_file_rolls_over_once(tmp_path, monkeypatch):

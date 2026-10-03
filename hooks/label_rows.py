@@ -104,26 +104,23 @@ def _lab():
     return _load("memory_labels")
 
 
-OFF_VALUES = ("0", "off", "false", "no")
-
-
 def enabled(env: Mapping[str, str]) -> bool:
-    """The tool-time leg: off only when ``NOBLIVION_GUARD_LABELS`` is 0, off,
-    false or no."""
-    return str(env.get(SWITCH_ENV) or "").strip().lower() not in OFF_VALUES
+    """The tool-time leg: on unless ``NOBLIVION_GUARD_LABELS`` is off
+    (``hook_config.switch``: 0, false, no, off or empty)."""
+    return bool(_load("hook_config").switch(SWITCH_ENV, True, env))
 
 
 def prompt_enabled(env: Mapping[str, str]) -> bool:
-    """The prompt leg: on only when ``NOBLIVION_RECALL_LABELS`` is set and is
-    not 0, off, false or no."""
-    return str(env.get(PROMPT_ENV) or "").strip().lower() not in ("",) + OFF_VALUES
+    """The prompt leg: on only when ``NOBLIVION_RECALL_LABELS`` is on
+    (1, true, yes or on)."""
+    return bool(_load("hook_config").switch(PROMPT_ENV, False, env))
 
 
 def file_tools_enabled(env: Mapping[str, str]) -> bool:
     """The file-tool leg (Read, Grep and Glob inputs; Edit, Write and
-    MultiEdit content): on only when ``NOBLIVION_GUARD_LABELS_FILE_TOOLS`` is set
-    and is not 0, off, false or no, and the tool-time leg is on."""
-    on = str(env.get(FILE_TOOLS_ENV) or "").strip().lower() not in ("",) + OFF_VALUES
+    MultiEdit content): on only when ``NOBLIVION_GUARD_LABELS_FILE_TOOLS`` is
+    on and the tool-time leg is on."""
+    on = bool(_load("hook_config").switch(FILE_TOOLS_ENV, False, env))
     return on and enabled(env)
 
 
@@ -440,7 +437,9 @@ def prompt_leg(stdin_text: str, stdout: Any, env: Mapping[str, str]) -> int:
     hook's own output. Returns the characters written. Never raises."""
     t0 = time.perf_counter()
     try:
-        if env.get("NOBLIVION_RECALL_DISABLE") or not prompt_enabled(env):
+        if _load("hook_config").switch(
+            "NOBLIVION_RECALL_DISABLE", False, env
+        ) or not prompt_enabled(env):
             return 0
         payload = json.loads(stdin_text)
         if not isinstance(payload, dict) or payload.get("hook_event_name") != "UserPromptSubmit":

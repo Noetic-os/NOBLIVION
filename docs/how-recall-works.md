@@ -93,6 +93,11 @@ The store ranks the notes of the session's root and of the shared roots.
    prompt and the vector of each note.
 3. **Fusion.** Reciprocal rank fusion joins the two ranked lists into one.
 
+Before the store returns a note, it removes secrets and masks text that
+tries to give the model new instructions, for example "ignore all previous
+instructions". This applies to every text field it returns: the note
+text, the title and the summary.
+
 Without an embedding model, the store uses the keyword score only. This
 is keyword-only mode. Recall still works, but it finds fewer notes that
 use other words than the prompt.
@@ -122,7 +127,9 @@ The hook has two output shapes.
 
 ### Note text (default without a config file)
 
-The hook asks for the 5 best hits. It prints their text under a header
+The hook asks for the 5 best hits. It drops a hit whose vector score is
+below `recall.min_score` (default 0.3). In keyword-only mode a hit has no
+vector score and always passes. It prints their text under a header
 that starts with `GROUNDED MEMORY`. The output is at most 4000
 characters. A note shown earlier in the same session is not shown again.
 

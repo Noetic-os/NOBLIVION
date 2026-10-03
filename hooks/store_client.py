@@ -209,8 +209,10 @@ def forget(env: Optional[Mapping[str, str]] = None) -> None:
         _PROVEN.pop(key, None)
 
 
-def _off(value: Any) -> bool:
-    return str(value or "").strip().lower() in ("0", "off", "false", "no")
+def autostart_on(env: Optional[Mapping[str, str]] = None) -> bool:
+    """``NOBLIVION_STORE_AUTOSTART``: on unless off (``hook_config.switch``)."""
+    e = os.environ if env is None else env
+    return bool(_hook_config().switch(AUTOSTART_ENV, True, e))
 
 
 def launcher_bin(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
@@ -238,7 +240,7 @@ def request_start(
     """
     try:
         e = os.environ if env is None else env
-        if _off(e.get(AUTOSTART_ENV)):
+        if not autostart_on(e):
             return "off"
         if check_stamp:
             stamp = data_dir(env) / SPAWN_STAMP_FILE
