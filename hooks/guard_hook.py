@@ -203,13 +203,40 @@ def _load_config_module():
     return mod
 
 
+class _NoConfig:
+    """Stand-in when ``hook_config.py`` cannot load (a lone copy of this
+    file). The hook must still import, so ``main`` can fail open and log the
+    error. Same data dir order as ``hook_config.data_dir``; no extra words."""
+
+    @staticmethod
+    def data_dir() -> Path:
+        for name in ("NOBLIVION_DATA_DIR", "CLAUDE_PLUGIN_DATA"):
+            raw = (os.environ.get(name) or "").strip()
+            if raw:
+                return Path(os.path.expanduser(raw))
+        xdg = (os.environ.get("XDG_DATA_HOME") or "").strip()
+        base = Path(os.path.expanduser(xdg)) if xdg else Path.home() / ".local" / "share"
+        return base / "noblivion"
+
+    @staticmethod
+    def evidence_stop() -> frozenset:
+        return frozenset()
+
+    @staticmethod
+    def generic_args() -> frozenset:
+        return frozenset()
+
+
 _CFG = None
 
 
 def _cfg():
     global _CFG
     if _CFG is None:
-        _CFG = _load_config_module()
+        try:
+            _CFG = _load_config_module()
+        except Exception:  # noqa: BLE001 - a missing sibling must not stop the import
+            _CFG = _NoConfig()
     return _CFG
 
 

@@ -299,13 +299,21 @@ def factors(
     return out
 
 
+def _zip_same(a: Sequence[Any], b: Sequence[Any]) -> List[Tuple[Any, Any]]:
+    """``zip(a, b, strict=True)`` for python 3.9: the hooks run on 3.9, where
+    ``zip`` takes no ``strict`` argument."""
+    if len(a) != len(b):
+        raise ValueError("zip() arguments differ in length")
+    return list(zip(a, b))
+
+
 def reorder(lines: Sequence[Any], fs: Sequence[float]) -> List[Any]:
     """The rows by ``fused * f``, highest first; a tie goes to the lower id, the
     tie rule of the hook's own fusion. Rounded to six decimals like the fusion,
     so every factor 1.0 gives the input order back exactly."""
     keyed = [
         (-round(float(ln.fused) * f, 6), int(ln.mid), i)
-        for i, (ln, f) in enumerate(zip(lines, fs, strict=True))
+        for i, (ln, f) in enumerate(_zip_same(lines, fs))
     ]
     return [lines[i] for _, _, i in sorted(keyed)]
 
@@ -355,9 +363,7 @@ def apply_index_trust(
         source = "file"
     fs = factors(rows, by_name, snapshot, environ=environ)
     trusted = reorder(rows, [f for f, _, _ in fs])
-    changed = [
-        (ln, f, trust, trials) for ln, (f, trust, trials) in zip(rows, fs, strict=True) if f != 1.0
-    ]
+    changed = [(ln, f, trust, trials) for ln, (f, trust, trials) in _zip_same(rows, fs) if f != 1.0]
     tag = "trust" if md == MODE_ON else "trust_shadow"
     note = f":{tag}{len(changed)}of{len(rows)}"
     if cache:
