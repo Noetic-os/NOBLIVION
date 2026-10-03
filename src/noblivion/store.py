@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from noblivion import __version__, config, db, embedding, indexer, ranking
+from noblivion import __version__, config, db, embedding, indexer, ranking, trust
 from noblivion.launcher import TOKEN_RE, health_proof
 from noblivion.rest import Handler, read_trust
 
@@ -302,6 +302,48 @@ class Store:
             log.error("trust read failed: %s", type(exc).__name__)
             return {}
 
+    def ingest_feedback(self, batch: trust.Batch) -> dict[str, int] | None:
+        """Section 9.2: one transaction per batch. None on a store failure."""
+        try:
+            with self.connection() as conn:
+                counts = trust.store_batch(
+                    conn,
+                    batch,
+                    project=self.namespace,
+                    prior_mined=self.store_settings.prior_mined,
+                )
+        except (sqlite3.Error, OSError) as exc:
+            log.error("feedback store failed: %s", type(exc).__name__)
+            return None
+        if counts["inserted"] or counts["unknown"] or counts["rejected"]:
+            log.info("feedback batch: %s", " ".join(f"{k}={v}" for k, v in counts.items()))
+        return counts
+
+    def trust_report(self) -> dict | None:
+        """Section 4.6, in one read transaction. None on a store failure."""
+        try:
+            with self.connection() as conn:
+                return trust.report(conn, self.namespace)
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            log.error("trust report failed: %s", type(exc).__name__)
+            return None
+
+    def maintenance_once(self, conn: sqlite3.Connection) -> trust.MaintenanceResult | None:
+        """Section 9.3: the pass at start and every 24 hours."""
+        try:
+            result = trust.maintenance_pass(
+                conn,
+                delete_grace_days=self.settings.delete_grace_days,
+                archive_retention_days=self.settings.archive_retention_days,
+                prior_mined=self.store_settings.prior_mined,
+                backups_dir=self.data_dir / "backups",
+            )
+        except Exception as exc:  # noqa: BLE001 - the next pass retries
+            log.error("maintenance failed: %s", type(exc).__name__)
+            return None
+        log.info("maintenance: %s", result.summary())
+        return result
+
     def mode(self) -> str:
         if self.embedding.model_id is not None and ranking.np is not None:
             return ranking.MODE_HYBRID
@@ -426,11 +468,16 @@ class Store:
         interval = self.store_settings.index_interval_s
         try:
             with self.connection() as conn:
+                self.maintenance_once(conn)
+                next_maintenance = self.clock() + trust.MAINTENANCE_INTERVAL_S
                 self.scan_once(conn)
                 next_scan = self.clock() + interval
                 backfilled_state = None
                 while not self._jobs_stop.wait(JOB_TICK_S):
                     state = self.embedding.state
+                    if self.clock() >= next_maintenance:
+                        self.maintenance_once(conn)
+                        next_maintenance = self.clock() + trust.MAINTENANCE_INTERVAL_S
                     due_scan = interval > 0 and self.clock() >= next_scan
                     if due_scan:
                         self.scan_once(conn)

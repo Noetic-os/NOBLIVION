@@ -10,8 +10,9 @@ What these tests hold:
    keyed by the id the RESULT names, so a fetch by rank counts the memory it
    read; an error result, a search answer, a fetch-looking text from another
    tool and a call without a result -> nothing.
-2. OFF BY DEFAULT. With NOBLIVION_TRUST_EVENTS unset or "0" no file is
-   written: not by the module and not by the guard hook.
+2. ON BY DEFAULT (design doc section 12.3). With NOBLIVION_TRUST_EVENTS (or
+   the config key ``trust.events``) ``0``, ``off``, ``false`` or ``no`` no file
+   is written: not by the module and not by the guard hook.
 3. THE APPEND. One JSON line per event in one write, under 1 ms; an unwritable
    folder fails open. The default folder is ``<data dir>/cache``.
 4. THE GUARD HOOK. ``rows`` and ``deny`` append ``use`` events; an override
@@ -274,20 +275,39 @@ def test_a_call_and_its_result_pair_across_two_reads():
 
 
 # 2. + 3. the append -----------------------------------------------------
-@pytest.mark.parametrize("value", [None, "", "0", "true", "yes", " 2"])
-def test_append_is_off_unless_the_variable_is_exactly_1(tmp_path, value):
-    env = {} if value is None else {"NOBLIVION_TRUST_EVENTS": value}
+@pytest.mark.parametrize("value", ["0", "off", "false", "no", " OFF "])
+def test_append_is_off_when_the_variable_says_off(tmp_path, value):
+    env = {"NOBLIVION_TRUST_EVENTS": value, "NOBLIVION_CONFIG": str(tmp_path / "none.json")}
+    assert te.enabled(env) is False
     assert te.append_events(str(tmp_path), SID, te.index_events([1], TS), env) is False
     guard_env = dict(env, NOBLIVION_RECALL_CACHE_DIR=str(tmp_path))
     assert te.record_guard(guard_env, SID, "deny", ["a"]) is False
     assert not (tmp_path / "by-session").exists()
 
 
-def test_events_are_off_by_default_in_the_process_environment(tmp_path):
-    """The default stays off until the default is changed on purpose."""
-    assert te.enabled() is False
-    assert te.record_index(str(tmp_path), SID, "UserPromptSubmit", [1]) is False
-    assert not (tmp_path / "by-session").exists()
+@pytest.mark.parametrize("value", [None, "", "1", "true", "yes"])
+def test_events_are_on_by_default_and_for_any_other_value(tmp_path, value):
+    env = {"NOBLIVION_CONFIG": str(tmp_path / "none.json")}
+    if value is not None:
+        env["NOBLIVION_TRUST_EVENTS"] = value
+    assert te.enabled(env) is True
+    assert te.append_events(str(tmp_path), SID, te.index_events([1], TS), env) is True
+
+
+@pytest.mark.parametrize(("config", "on"), [(0, False), (False, False), ("off", False), (1, True)])
+def test_the_config_key_switches_the_events(tmp_path, config, on):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"trust": {"events": config}}), encoding="utf-8")
+    assert te.enabled({"NOBLIVION_CONFIG": str(path)}) is on
+    # The env var wins over the config file.
+    assert te.enabled({"NOBLIVION_CONFIG": str(path), "NOBLIVION_TRUST_EVENTS": "1"}) is True
+
+
+def test_events_are_on_by_default_in_the_process_environment(tmp_path, monkeypatch):
+    """Design doc section 12.3: ``trust.events`` defaults to ``1``."""
+    monkeypatch.delenv("NOBLIVION_TRUST_EVENTS", raising=False)
+    monkeypatch.setenv("NOBLIVION_CONFIG", str(tmp_path / "none.json"))
+    assert te.enabled() is True
 
 
 def test_append_writes_one_json_line_per_event(tmp_path):
@@ -411,7 +431,8 @@ def test_guard_override_appends_nothing(tmp_path, guard_env):
 
 
 def test_guard_with_events_off_prints_the_same_and_writes_nothing(tmp_path, guard_env):
-    off = _guard(guard_env, "git push --force origin x", str(tmp_path))
+    off_env = dict(guard_env, NOBLIVION_TRUST_EVENTS="0")
+    off = _guard(off_env, "git push --force origin x", str(tmp_path))
     on_env = dict(guard_env, NOBLIVION_GUARD_STATE_DIR=str(tmp_path / "state2"), **ON)
     on = _guard(on_env, "git push --force origin x", str(tmp_path))
     assert off == on
@@ -460,6 +481,10 @@ def test_the_guard_alarm_still_reaches_the_guard_through_the_trust_call(
     real = gh._load
 
     class Slow:
+        @staticmethod
+        def enabled(*a, **k):
+            return True
+
         @staticmethod
         def record_guard(*a, **k):
             raise gh._TimeUp()

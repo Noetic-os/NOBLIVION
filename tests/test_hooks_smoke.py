@@ -33,6 +33,7 @@ ENTRY_POINTS = [
     ("error_recall_hook.py", []),
     ("subagent_rules_hook.py", []),
     ("store_client.py", []),
+    ("trust_flush.py", []),
 ]
 
 
@@ -87,7 +88,9 @@ def test_every_moved_module_is_present() -> None:
         "store_client",
         "subagent_rules_hook",
         "trust_events",
+        "trust_flush",
         "trust_rank",
+        "trust_report",
         "trust_session_line",
     }
     expected.add("mine_session_end")  # SessionEnd trigger of the transcript miner (E10)

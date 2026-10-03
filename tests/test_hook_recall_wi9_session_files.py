@@ -152,6 +152,13 @@ def test_each_session_has_its_own_two_files(tmp_path, env):
     _serve(env, B)
     folder = tmp_path / "cache" / hook.SESSION_DIR_NAME
     names = sorted(p.name for p in folder.iterdir() if not p.name.endswith(".lock"))
+    # The trust event spool (on by default, design doc section 12.3) is a
+    # third per-session file; this test is about the two index files.
+    assert {n for n in names if n.endswith(".trust-events.jsonl")} <= {
+        f"{A}.trust-events.jsonl",
+        f"{B}.trust-events.jsonl",
+    }
+    names = [n for n in names if not n.endswith(".trust-events.jsonl")]
     assert names == [
         f"{A}.last_index.json",
         f"{A}.shown_set.json",

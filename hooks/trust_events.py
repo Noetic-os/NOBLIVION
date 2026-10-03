@@ -23,8 +23,9 @@ small ``fetch_id`` as a RANK of the last index and answers with the real id.
 
 The local append. One JSON line per event, appended to
 ``<cache>/by-session/<session>.trust-events.jsonl`` with one ``write`` call
-(O_APPEND), under 1 ms. It runs only when ``NOBLIVION_TRUST_EVENTS=1`` (contract
-C6: default OFF, every bench arm runs with it off). It never raises and never
+(O_APPEND), under 1 ms. It runs unless ``NOBLIVION_TRUST_EVENTS`` (or the config
+key ``trust.events``) is ``0``, ``off``, ``false`` or ``no``; the default is on
+(design doc section 12.3). It never raises and never
 prints. ``<cache>`` is ``NOBLIVION_RECALL_CACHE_DIR`` (default
 ``<data dir>/cache``), the recall hook's own folder.
 
@@ -97,22 +98,41 @@ PENDING_MAX = 200
 # ── switches and paths ──────────────────────────────────────────────────────
 
 
+EVENTS_KEY = "trust.events"
+OFF_WORDS = ("0", "off", "false", "no")
+_HOOK_CONFIG: List[Any] = []
+
+
+def _hook_config() -> Any:
+    """``hook_config.py`` from this file's folder, loaded once."""
+    if not _HOOK_CONFIG:
+        path = Path(__file__).resolve().parent / "hook_config.py"
+        spec = importlib.util.spec_from_file_location("hook_config", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(str(path))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _HOOK_CONFIG.append(mod)
+    return _HOOK_CONFIG[0]
+
+
 def enabled(environ: Optional[Mapping[str, str]] = None) -> bool:
-    """True only for ``NOBLIVION_TRUST_EVENTS=1``. Unset, "0" or anything else is
-    off (C6)."""
+    """On by default (design doc section 12.3: ``trust.events`` is ``1``).
+    Off when ``NOBLIVION_TRUST_EVENTS``, else the config key ``trust.events``,
+    is ``0``, ``off``, ``false`` or ``no``. The events stay on this machine."""
     env = os.environ if environ is None else environ
-    return (env.get(EVENTS_ENV) or "").strip() == "1"
+    raw = (env.get(EVENTS_ENV) or "").strip()
+    if not raw:
+        try:
+            raw = str(_hook_config().get(EVENTS_KEY, "1", env))
+        except Exception:  # noqa: BLE001 - a broken install reads as the default
+            raw = "1"
+    return raw.strip().lower() not in OFF_WORDS
 
 
 def _default_cache_dir(env: Mapping[str, str]) -> str:
     """``<data dir>/cache`` from ``hook_config.py`` in this file's folder."""
-    path = Path(__file__).resolve().parent / "hook_config.py"
-    spec = importlib.util.spec_from_file_location("hook_config", path)
-    if spec is None or spec.loader is None:
-        raise ImportError(str(path))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return str(mod.cache_dir(env))
+    return str(_hook_config().cache_dir(env))
 
 
 def cache_dir(environ: Optional[Mapping[str, str]] = None) -> str:
@@ -329,7 +349,7 @@ def append_events(
     environ: Optional[Mapping[str, str]] = None,
 ) -> bool:
     """Append ``events`` to the session's file, one JSON line each, in ONE write.
-    Off unless NOBLIVION_TRUST_EVENTS=1. Returns True when the lines were written.
+    Off when ``enabled`` is False. Returns True when the lines were written.
     Never raises: a hook must not fail because a cache file could not be written.
     """
     if not events or not enabled(environ):

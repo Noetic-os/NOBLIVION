@@ -560,10 +560,11 @@ Answer 200:
   batch or already stored.
 - Errors: 400, 403, 413 with `{"detail": ...}`. A store failure: 503
   `{"detail": "memory feedback store failed"}`. Nothing is half written.
-- Until E5 (trust in the store) lands, the store runs the request checks
-  of section 4.1, parses the body, and then answers this 503 to every
-  batch. It stores no event. The Stop hook keeps its send offset on a
-  non-200 answer (section 3.5), so the spool is sent again after E5.
+- `sources` (optional, on an event): the hooks send the local source of an
+  event (`index`, `fetch`, `guard_rows`, `guard_deny`). v0.1 stores no
+  sources, so the store ignores the key and never rejects an event for it.
+- E5 implements this route in `noblivion/trust.py` (`parse_batch`,
+  `store_batch`).
 
 ### 4.6 `GET /api/memory/trust/report`
 
@@ -577,7 +578,7 @@ Query: `persona` (default `claude_code`). Any other value: 400
   "trust_prior": 0.5,
   "retire":  [{"mv_id": 1048653, "root": "-work-proj-demo", "path": "old_note.md",
                "trust": 0.5, "trials": 0, "shown_sessions": 20, "use_sessions": 0,
-               "reason": "shown in 20 sessions, used in none; first mirrored 41 days ago"}],
+               "reason": "shown in 20 sessions, used in none; first indexed 41 days ago"}],
   "promote": [],
   "demote":  [],
   "truncated": false
@@ -612,7 +613,7 @@ Rules (unchanged from the reference implementation):
   and trust never falls below trust_0. Retire and demote rest on the
   session counts, not on trust.
 - Store failure: 503 `{"detail": "trust report unavailable"}`.
-- Until E5 lands, the store checks `persona` and then answers this 503.
+- `generated_at` is UTC with whole seconds and a `Z`.
 
 ### 4.7 `GET /health` (also `/api/health`)
 
@@ -1245,7 +1246,8 @@ called:
 - by the store maintenance pass, for every row where an event with
   `id > folded_event_id` exists (repair after a crash or a CLI import),
   in batches of 200, each batch in one `BEGIN IMMEDIATE` transaction;
-- by `noblivion trust recompute`, same as at start.
+- by `noblivion trust recompute`, same as at start (E5: the CLI runs the
+  repair only; the store runs the full maintenance pass).
 
 There is no nightly trust job in v0.1. Ingest keeps the rollup current,
 and the start pass repairs anything left.
@@ -1260,6 +1262,11 @@ under `BEGIN IMMEDIATE`:
   ago, when their `dedup_actions` row is `done` and not undone;
 - `PRAGMA foreign_key_check` (section 9.4);
 - pruning of `backups/` to the last 3 copies.
+
+E5 runs the pass in the store's background job thread: once at start,
+before the first index scan, then every 24 hours of store uptime. A failed
+step is logged and the next step still runs. The pass ends by writing
+`meta.last_maintenance_at`.
 
 ### 9.4 The two defects of the reference implementation, designed out
 
@@ -1555,7 +1562,7 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 | `recall.timeout_s` | `NOBLIVION_RECALL_TIMEOUT_S` | `2.0` |
 | `recall.min_score` | `NOBLIVION_RECALL_MIN_SCORE` | `0.3` |
 | `recall.index_k` | `NOBLIVION_RECALL_INDEX_K` | `35` |
-| `trust.events` | `NOBLIVION_TRUST_EVENTS` | `1` |
+| `trust.events` | `NOBLIVION_TRUST_EVENTS` | `1` (on; `0`, `off`, `false` or `no` turns it off) |
 | `trust.ranking` | `NOBLIVION_TRUST_RANKING` | `off` |
 | `trust.prior_mined` | none | `0.3` |
 | `embedding.backend` | `NOBLIVION_EMBED_BACKEND` | `fastembed` |

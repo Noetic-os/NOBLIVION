@@ -5,8 +5,9 @@ Commands in this version: ``index`` (see ``noblivion.indexer``),
 ``consent embeddings`` (see ``noblivion.embedding``), ``dedup`` (the
 opt-in duplicate sweep, see ``noblivion.dedup``), ``serve`` (the store
 in the foreground, see ``noblivion.store``), ``ensure-running`` (start
-the store in the background unless it runs, see ``noblivion.launcher``) and
-``mine`` (the transcript miner, see ``noblivion.miner``).
+the store in the background unless it runs, see ``noblivion.launcher``),
+``mine`` (the transcript miner, see ``noblivion.miner``) and ``trust
+recompute`` (the trust repair, see ``noblivion.trust``).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ USAGE = (
     "usage: noblivion index [--force] [--allow-shrink] [--memory-dir DIR] [--json]\n"
     "       noblivion consent embeddings [--revoke]\n"
     "       noblivion dedup pairs|plan [--dry-run]|apply RUN_ID|undo RUN_ID|consent|clear-latch\n"
+    "       noblivion trust recompute [--json]\n"
     "       noblivion serve [--port PORT] [--lock-wait SECONDS]\n"
     "       noblivion ensure-running [--json]\n"
     "       noblivion mine [--since YYYY-MM-DD] [--max-seconds S] [--json]"
@@ -50,6 +52,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from noblivion import miner
 
         return miner.main(rest)
+    if command == "trust":
+        from noblivion import trust
+
+        return trust.main(rest)
     if command == "consent" and rest[:1] == ["embeddings"]:
         from noblivion import embedding
 

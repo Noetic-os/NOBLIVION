@@ -2586,12 +2586,13 @@ def _record_shown_events(
     cache: str, sid: Any, event: str, shown: Sequence[IndexLine], environ: Mapping[str, str]
 ) -> str:
     """(E): the rows just shown, as ``recall`` events (exposure).
-    Only with NOBLIVION_TRUST_EVENTS=1, after the emit, and never raises. Returns
-    a log note when events were asked for and not written."""
-    if (environ.get("NOBLIVION_TRUST_EVENTS") or "").strip() != "1":
-        return ""
+    Only when ``trust_events.enabled`` (on by default, design doc section
+    12.3), after the emit, and never raises. Returns a log note when events
+    were asked for and not written."""
     try:
         mod = _sibling_module("trust_events")
+        if not mod.enabled(environ):
+            return ""
         if mod.record_index(cache, sid, event, [ln.mid for ln in shown], environ):
             return ""
         return ":trust_events_unwritable" if event in mod.RECALL_EVENTS and _valid_sid(sid) else ""

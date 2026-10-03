@@ -1611,12 +1611,14 @@ def _log_text(event: object) -> str:
 
 def _trust_use(env: Mapping[str, str], sid: object, decision: str, ids: List[str]) -> None:
     """Trust events: guard rows or a deny on rule R are a ``use`` of R
-    (trust_events). Only with NOBLIVION_TRUST_EVENTS=1; prints
-    nothing. An ordinary error is dropped; the time limit still applies."""
-    if (env.get("NOBLIVION_TRUST_EVENTS") or "").strip() != "1" or decision not in ("rows", "deny"):
+    (trust_events). Only when ``trust_events.enabled`` (on by default);
+    prints nothing. An ordinary error is dropped; the time limit still applies."""
+    if decision not in ("rows", "deny"):
         return
     try:
-        _load("trust_events").record_guard(env, sid, decision, ids)
+        te = _load("trust_events")
+        if te.enabled(env):
+            te.record_guard(env, sid, decision, ids)
     except Exception:  # noqa: BLE001, S110 - trust events fail open; never the decision
         pass
 

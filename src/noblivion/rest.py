@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from noblivion import db, redaction
+from noblivion import db, redaction, trust
 from noblivion.launcher import NONCE_RE
 
 if TYPE_CHECKING:
@@ -42,7 +42,7 @@ BAD_ID_REASON = "id is not a number"
 ENTRY_SEPARATOR = "\n---\n"
 TITLE_CHARS = 120
 SUMMARY_CHARS = 180
-TRUST_PRIOR_MD = 0.5
+TRUST_PRIOR_MD = trust.TRUST_PRIOR_MD
 
 SEARCH_PATH = "/api/memories/search"
 INDEX_PATH = "/api/memories/index"
@@ -173,7 +173,7 @@ def index_row(hit: Hit, trust: Mapping[int, tuple[float, int]] | None, prior_min
 
 
 def read_trust(conn: sqlite3.Connection, ids: Sequence[int]) -> dict[int, tuple[float, int]]:
-    """The rollup rows of ``ids``. Read only; E5 owns how they are written."""
+    """The rollup rows of ``ids``. Read only; ``noblivion.trust`` writes them."""
     if not ids:
         return {}
     marks = ",".join("?" * len(ids))
@@ -445,16 +445,22 @@ class Handler(BaseHTTPRequestHandler):
             return fetch_answer(None, raw_id, namespace)
 
     def _feedback(self, body: dict) -> tuple[int, dict]:
-        # TODO(E5, NOBLIVION-12): validate and ingest the events (section 4.5).
-        # Until then the store keeps no events. The documented store failure
-        # answer makes the Stop hook keep its send offset, so no event is lost:
-        # the spool is sent again once E5 lands (section 3.5).
-        del body
-        return 503, {"detail": "memory feedback store failed"}
+        """Section 4.5. ``persona`` and ``project`` in the body or query are ignored."""
+        try:
+            batch = trust.parse_batch(body)
+        except trust.BatchRefused as exc:
+            return exc.status, {"detail": exc.detail}
+        counts = self.store.ingest_feedback(batch)
+        if counts is None:
+            return 503, {"detail": "memory feedback store failed"}
+        return 200, counts
 
     def _trust_report(self, params: Mapping[str, list[str]]) -> tuple[int, dict]:
+        """Section 4.6."""
         persona = first(params, "persona", "claude_code").strip() or "claude_code"
-        if persona != "claude_code":
+        if persona != trust.PERSONA:
             return 400, {"detail": "the trust report serves persona claude_code only"}
-        # TODO(E5, NOBLIVION-12): build the report of section 4.6.
-        return 503, {"detail": "trust report unavailable"}
+        answer = self.store.trust_report()
+        if answer is None:
+            return 503, {"detail": "trust report unavailable"}
+        return 200, answer

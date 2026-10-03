@@ -477,23 +477,6 @@ def test_fetch_other_namespace_and_archived(running):
     assert running.get(f"/api/memories/fetch/{top['id']}")[1]["reason"].startswith("no memory")
 
 
-# -- trust routes: E5 (sections 4.5, 4.6) ------------------------------------------
-
-
-def test_feedback_batch_answers_the_documented_store_failure(running):
-    body = {"session_id": "s-1", "events": [{"kind": "recall", "mv_id": 1}]}
-    status, answer, _ = running.request("POST", "/api/memory/feedback/batch", body=body)
-    assert (status, answer) == (503, {"detail": "memory feedback store failed"})
-
-
-def test_trust_report_answers_unavailable(running):
-    assert running.get("/api/memory/trust/report") == (503, {"detail": "trust report unavailable"})
-    assert running.get("/api/memory/trust/report?persona=other") == (
-        400,
-        {"detail": "the trust report serves persona claude_code only"},
-    )
-
-
 # -- answer helpers -----------------------------------------------------------------
 
 
