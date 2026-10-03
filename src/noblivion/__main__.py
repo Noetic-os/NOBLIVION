@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The ``noblivion`` command: ``noblivion <command> [options]``.
 
-Commands in this version: ``index`` (see ``noblivion.indexer``).
+Commands in this version: ``index`` (see ``noblivion.indexer``) and
+``consent embeddings`` (see ``noblivion.embedding``).
 """
 
 from __future__ import annotations
@@ -9,7 +10,10 @@ from __future__ import annotations
 import sys
 from collections.abc import Sequence
 
-USAGE = "usage: noblivion index [--force] [--allow-shrink] [--memory-dir DIR] [--json]"
+USAGE = (
+    "usage: noblivion index [--force] [--allow-shrink] [--memory-dir DIR] [--json]\n"
+    "       noblivion consent embeddings [--revoke]"
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -22,6 +26,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from noblivion import indexer
 
         return indexer.main(rest)
+    if command == "consent" and rest[:1] == ["embeddings"]:
+        from noblivion import embedding
+
+        return embedding.consent_main(rest[1:])
     print(f"noblivion: unknown command {command!r}\n{USAGE}", file=sys.stderr)
     return 2
 

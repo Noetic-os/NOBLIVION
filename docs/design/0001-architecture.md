@@ -978,10 +978,18 @@ For a backend that leaves the machine, two more rules hold:
   with the new model in batches of 64 and writes `vectors` rows with the
   new `model` value. Rows keep their old vectors until the job ends.
 - While re-embedding, the cosine leg uses only rows that have a vector for
-  the new model. The other rows rank on BM25 only. The answer `mode` is
-  `hybrid` once the query itself is embedded.
-- At the end, one transaction deletes vectors of other models and writes
-  the new model to `meta`.
+  the new model. The other rows rank on BM25 only, with `score: null`. The
+  answer `mode` is `hybrid` once the query itself is embedded and at least
+  one pool row has a vector of the new model; with no such row the answer
+  is keyword-only (section 8.4), because a cosine leg with no rows has
+  nothing to fuse.
+- At the end of a backfill pass, one transaction deletes vectors of other
+  models and writes the new model to `meta`. A row that failed in the pass
+  has no vector of either model and is retried by the next pass; its old
+  vector is in another vector space and cannot be used anyway.
+- `vectors.model` holds the model id `<backend>:<model>`, for example
+  `fastembed:BAAI/bge-small-en-v1.5`, so two backends that use one model
+  name never share vectors.
 - A row whose `vectors.content_hash` differs from the hash of its current
   text is re-embedded by the same backfill job. The backfill also fills
   rows that a CLI tool inserted without a vector.
@@ -994,6 +1002,18 @@ For a backend that leaves the machine, two more rules hold:
   retried by the next backfill pass.
 - Query embed fails or takes more than 1 s: this answer is keyword-only
   (`mode: keyword`).
+
+### 7.5 Packaging of the backends (E3b)
+
+- numpy and fastembed are the optional extra `noblivion[embed]`. The store
+  venv installs it. Without numpy, or without a usable model, every answer
+  is keyword-only. BM25 and the backfill job need only the stdlib.
+- The consent in `meta.embed_consent` is
+  `{"version": 1, "provider": "<openrouter|ollama>", "model": "<model>",
+  "at": "<utc>"}`. A change of provider, model or consent text version
+  needs a new consent, as in section 10.2. `noblivion consent embeddings`
+  prints the text and writes the record only on the answer `yes`;
+  `--revoke` removes it.
 
 ## 8. Ranking
 
@@ -1011,6 +1031,11 @@ row cannot change the ranks of the others.
   the redacted content: BM25 Okapi with `k1 = 1.5`, `b = 0.75`,
   `epsilon = 0.25` (a negative idf becomes `epsilon` times the mean idf).
   Built in RAM at load; rebuilt on a `content_rev` change (section 6.3).
+  One BM25 index per pool, so the document frequencies are those of the
+  pool. The tokenizer is the reference store tokenizer: lower case, split
+  on every character outside `a-z 0-9 _ . - /`, keep tokens of 2 or more
+  characters. The sub-token split of the reference hook re-rank stays in
+  the hook (E4).
 - Cosine: the query vector times the L2-normalised matrix of the pool
   (numpy, float32), times the row `weight`, quantized to 4 places.
 
@@ -1040,7 +1065,9 @@ score (or the cosine in the empty fallback).
 Used when the backend is `none`, the model is not loaded yet, the model
 failed, or the query embed failed.
 
-- Rank by BM25 only. Drop rows with a BM25 score of 0.
+- Rank by BM25 only. Drop rows with a BM25 score of 0 (rows that match no
+  query term). In a pool of one or two rows a matched term can have a
+  negative idf, so the rule is "not 0", not "above 0".
 - `score` is `null`, because no cosine exists. A `0.0` would read as "no
   match" to a hook floor and drop every row. `fusion_score` is
   `1 / (60 + rank)`.
@@ -1049,7 +1076,24 @@ failed, or the query embed failed.
   score floors and keep the rank order. The error recall hook uses its own
   local BM25 instead, as it does when the store is down.
 
-### 8.5 Trust in ranking
+### 8.5 Interface for the REST service (E3c)
+
+Module `noblivion.ranking`, built in E3b:
+
+- `Ranker(embedding_service).search(conn, query, *, project, top_k,
+  root=None, shared_roots=(), include_mined=False) -> RankResult`. It
+  refreshes the RAM index by the counters, embeds the query (limit 1 s)
+  and ranks.
+- `RankResult.mode` is `hybrid` or `keyword`. `RankResult.hits` is a list
+  of `Hit(rank, row, score, fusion_score, bm25)`; `row` is a `PoolRow` with
+  `id, project, root, path, source_type, content, weight`. `score` is
+  `None` when the row has no cosine.
+- `noblivion.embedding.EmbeddingService(load_embedding_settings())`: the
+  store calls `start(conn)` at start and again for the hourly retry,
+  `backfill(conn)` from its background job, and reads `state` and `error`
+  for `/health`.
+
+### 8.6 Trust in ranking
 
 Config `trust.ranking`: `off` (default in v0.1), `shadow`, `on`. In
 `shadow` and `on` the store adds the trust fields to `/index` rows. The

@@ -9,11 +9,20 @@ license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = []
 
+[project.optional-dependencies]
+# The store venv (design doc 0001, sections 2 and 7): the vector leg and the
+# default embedding backend. Without them the store ranks keyword-only.
+embed = [
+    "numpy>=1.24",
+    "fastembed>=0.4",
+]
+
 [project.scripts]
 noblivion = "noblivion.__main__:main"
 
 [dependency-groups]
 dev = [
+    "numpy>=1.24",
     "pytest>=8",
     "ruff>=0.6",
 ]
