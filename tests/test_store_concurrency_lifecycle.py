@@ -102,7 +102,9 @@ def test_concurrent_ensure_running_starts_exactly_one_store(tmp_path):
             assert report["ok"], report
         states = sorted(r["state"] for r in reports)
         assert states.count(launcher.STATE_STARTED) == 1, states
-        assert set(states) <= {launcher.STATE_STARTED, launcher.STATE_STARTING}
+        # A caller that boots late finds the proven store: running starts nothing.
+        allowed = {launcher.STATE_STARTED, launcher.STATE_STARTING, launcher.STATE_RUNNING}
+        assert set(states) <= allowed, states
         assert wait_for(lambda: proven(data) is not None)
         # Give a second store, had one been spawned, the time to start.
         time.sleep(1.0)

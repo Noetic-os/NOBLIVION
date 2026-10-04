@@ -15,10 +15,14 @@ All notable changes to NOBLIVION. The format follows
   `~/.claude` also when another profile was in use, so `--apply` could
   change the settings and hooks of a profile without the plugin. With
   another profile, `~/.mcp.json` is left alone. New option `--config-dir`.
-- The embed backfill no longer writes a vector of an older text. A pass that
-  read a row before it changed could overwrite the vector of the new text, so
-  recall ranked the row by its old text until the next pass. The write now
-  checks the current text of the row in the same transaction.
+- The embed backfill no longer writes a vector of an older text
+  (NOBLIVION-41). A pass that read a row before it changed could overwrite
+  the vector of the new text, so recall ranked the row by its old text until
+  the next pass. The write now checks the current text of the row in the
+  same transaction.
+- The `ensure-running` concurrency test accepts `running` from a caller that
+  starts late and finds the store already up. It still asserts one `started`
+  and one store process.
 
 ## 0.1.4 - 2026-10-04
 
