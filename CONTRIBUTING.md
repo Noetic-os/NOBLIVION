@@ -52,7 +52,7 @@ machine first.
 | Forbidden names, tracked files | `python3 tools/check_forbidden_names.py` |
 | Forbidden names, full history | `python3 tools/check_forbidden_names.py --history` |
 | License headers | `python3 tools/check_spdx.py` |
-| CHANGELOG entry, no `<owner>` | `python3 tools/check_changelog.py --base origin/main` |
+| CHANGELOG entry, no owner placeholder | `python3 tools/check_changelog.py --base origin/main` |
 
 A pull request merges only when all gates pass.
 
