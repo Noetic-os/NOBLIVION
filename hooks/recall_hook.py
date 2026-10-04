@@ -108,7 +108,8 @@ Environment (config file keys in design doc section 12.3)
   NOBLIVION_RECALL_INDEX_ROW_DEDUPE  with the rule shape: a later index of one
                                 session leaves out the rows it was already shown
   NOBLIVION_RECALL_INDEX_MIN_SCORE  a cosine, -1..1: an index row under it is
-                                not shown. Skipped in keyword mode.
+                                not shown. Default 0.68; ``off`` is no floor.
+                                Skipped in keyword mode.
   NOBLIVION_RECALL_INDEX_CHECK_LINE  with the rule shape: one more header line
   NOBLIVION_RECALL_INDEX_DROP_NO_RULE  with the rule shape: a row with no rule
                                 and no summary is not shown
@@ -123,7 +124,8 @@ Ranked index (opt in with NOBLIVION_RECALL_INDEX)
   each. The model reads the one it wants by calling the ``noblivion_recall``
   MCP tool with ``fetch_id=<n>`` (``GET /api/memories/fetch/{id}``). The index
   is NOT deduped against the session (a menu is re-ranked every turn) and no
-  ``NOBLIVION_RECALL_MIN_SCORE`` floor is applied. Optional steps, each behind
+  ``NOBLIVION_RECALL_MIN_SCORE`` floor is applied: the index has its own floor,
+  ``NOBLIVION_RECALL_INDEX_MIN_SCORE``. Optional steps, each behind
   its own variable: P3 hygiene (drop index, topic and closed rows), P1h local
   re-rank (BM25 over the memory folder fused with the store's cosine order),
   F1 rule rows, F2 APPLY blocks, the shown-set and the trust factor.
@@ -180,6 +182,9 @@ DEFAULT_TIMEOUT_S = 2.0
 # string does not: a new model needs a new measurement.
 DEFAULT_MIN_SCORE = 0.68
 THRESHOLD_MODEL = "BAAI/bge-small-en-v1.5"
+# The floor of the ranked index, measured the same way on the path that the
+# shipped config file runs (NOBLIVION-48). See INDEX_MIN_SCORE_ENV.
+DEFAULT_INDEX_MIN_SCORE = 0.68
 DEFAULT_CACHE_DIR = ""  # "": <data dir>/cache (hook_config)
 QUERY_MAX_CHARS = 300
 BODY_MAX_CHARS = 200
@@ -385,8 +390,12 @@ SESSION_KEEP_DAYS_DEFAULT = 7.0
 SESSION_KEEP_MAX_DEFAULT = 200
 
 # ── WI-6: index shrink (a relevance floor, a check line) ───────
-# Two variables, each off unless set, so a run without them renders byte for
-# byte what it rendered before. The third part of the shrink, fewer rows, is
+# Two variables. The check line is off unless set. The floor was off unless set
+# until NOBLIVION-48: the shipped config file turns the index on, and with no
+# floor every prompt got a full index (measured on the eval set: 30 rows for
+# each of the 20 prompts that no memory answers). Now an unset floor is
+# DEFAULT_INDEX_MIN_SCORE, and INDEX_MIN_SCORE_OFF gives the old shape back,
+# byte for byte. The third part of the shrink, fewer rows, is
 # NOBLIVION_RECALL_INDEX_K, which already exists.
 #
 # WHY: measured 2026-09-30 on the live install, the index is about 6,600
@@ -415,6 +424,7 @@ SESSION_KEEP_MAX_DEFAULT = 200
 # mode. The log note ``:floorNofM`` counts the N rows at or above the floor of
 # the M ranked, and ``:unscoredU`` the rows kept without a score.
 INDEX_MIN_SCORE_ENV = "NOBLIVION_RECALL_INDEX_MIN_SCORE"
+INDEX_MIN_SCORE_OFF = "off"  # this value of the variable: no floor
 # The verbalised check (LEVERS.md lever 5, PLAN-LEVERS.md WI-6). One line after
 # the rule header, in the plan's own wording. Rule shape only: the arm D header
 # names titles, not rules. Set without F1 it is ignored and the log says so.
@@ -2183,21 +2193,22 @@ def index_row_dedupe(environ: Optional[Mapping[str, str]] = None) -> bool:
 def index_min_score(environ: Optional[Mapping[str, str]] = None) -> Optional[float]:
     """WI-6. The relevance floor of the index, or None for no floor.
 
-    ``NOBLIVION_RECALL_INDEX_MIN_SCORE`` is a cosine, so a value outside -1..1, a
-    value that is not a finite number and an empty value are all "no floor":
-    this hook never fails a prompt, or empties an index, over a malformed
-    setting.
+    ``NOBLIVION_RECALL_INDEX_MIN_SCORE`` is a cosine. Unset or empty, the floor
+    is DEFAULT_INDEX_MIN_SCORE. ``off`` is no floor. A value outside -1..1 and
+    a value that is not a finite number are the default too: this hook never
+    fails a prompt over a malformed setting, and a malformed setting must not
+    turn the floor off.
     """
     env = os.environ if environ is None else environ
     raw = (env.get(INDEX_MIN_SCORE_ENV) or "").strip()
-    if not raw:
+    if raw.lower() == INDEX_MIN_SCORE_OFF:
         return None
     try:
         value = float(raw)
     except ValueError:
-        return None
+        return DEFAULT_INDEX_MIN_SCORE
     if not -1.0 <= value <= 1.0:  # False for nan too
-        return None
+        return DEFAULT_INDEX_MIN_SCORE
     return value
 
 
@@ -2520,7 +2531,8 @@ def recall_index(
 
     Unlike ``recall()`` this applies NO ``NOBLIVION_RECALL_MIN_SCORE`` floor. The
     index exists to offer breadth, and the store already ranks the pool. A
-    second floor here would silently cut the candidates.
+    second floor here would silently cut the candidates. The prompt hook cuts
+    its own list later, with the index floor (``_serve_index``).
     ``root`` defaults to ``session_root(environ)``. Each returned line carries
     the answer's ``mode`` (``hybrid`` or ``keyword``, design doc section 8.4).
     Raises RecallError with a short reason, like every other call on this path.
@@ -2764,7 +2776,8 @@ def _serve_index(
       candidate this turn. Suppressing it would leave the model choosing from a
       list with silent holes. The cost of that choice is exactly what the pilot
       measures: this list is re-read by every later API call in the session.
-    - **No min-score floor** (see ``recall_index``).
+    - **No ``NOBLIVION_RECALL_MIN_SCORE`` floor** (see ``recall_index``). The
+      index has its own floor, WI-6 below.
 
     Everything else is the hit path's: fail open on any error, exit 0, one log
     line, and the same neutral rendering. The log's ``hits`` field counts the
@@ -2809,17 +2822,19 @@ def _serve_index(
     added to the shown-set's ``row`` list after the emit. It needs a valid
     session id: without one the set on disk could be any session's.
 
-    WI-6 adds two more, each behind its own variable:
+    WI-6 adds two more:
 
-    - the relevance floor (``NOBLIVION_RECALL_INDEX_MIN_SCORE``): a row whose
+    - the relevance floor (``NOBLIVION_RECALL_INDEX_MIN_SCORE``, on by default
+      at DEFAULT_INDEX_MIN_SCORE, ``off`` for none): a row whose
       store cosine is under the floor is left out before the cut to k, so the
       index can have fewer than k rows or none. With none the hook prints
       nothing and the last index file is not rewritten. It needs no memory
       folder, so it also runs in the arm D shape, and it asks the store for
       INDEX_CANDIDATE_TOP_K candidates like P3 and P1h. Log note
       ``:floorNofM``;
-    - the check line (``NOBLIVION_RECALL_INDEX_CHECK_LINE``), only with F1: the
-      rule header gets INDEX_CHECK_LINE as a second line.
+    - the check line (``NOBLIVION_RECALL_INDEX_CHECK_LINE``), behind its own
+      variable and only with F1: the rule header gets INDEX_CHECK_LINE as a
+      second line.
 
     WI-18 adds one more (``NOBLIVION_RECALL_INDEX_DROP_NO_RULE``), only with F1:
     a row that would render INDEX_ROW_NO_RULE (no ``rule:`` and no usable
@@ -2848,8 +2863,9 @@ def _serve_index(
     # P3. Ask for more than will be shown, so that a dropped row costs the list
     # nothing: INDEX_CANDIDATE_TOP_K rows, not the shown k, and the route bounds
     # it again.
-    # F1 alone does NOT overfetch: it changes the text of a row and never its
-    # place, so a rule-rows-only run must stay comparable to arm D's ranking.
+    # F1 alone, with the floor off, does NOT overfetch: it changes the text of a
+    # row and never its place, so a rule-rows-only run must stay comparable to
+    # arm D's ranking.
     # WI-6: the floor overfetches too. Without the deeper list a row under the
     # floor would have no row to give its place to, and k would not be a cap.
     # WI-18: the no-rule drop overfetches for the same reason.

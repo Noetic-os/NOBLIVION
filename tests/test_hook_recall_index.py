@@ -36,7 +36,7 @@ import pytest
 
 import recall_helpers
 from hookload import load_hook
-from recall_helpers import FakeStore, hook_env
+from recall_helpers import INDEX_FLOOR_OFF, FakeStore, hook_env
 
 isolated_home = recall_helpers.isolated_home  # a fixture
 
@@ -118,7 +118,9 @@ def daemon(tmp_path):
 
 @pytest.fixture
 def env(daemon, tmp_path, isolated_home) -> dict[str, str]:
-    return hook_env(tmp_path, NOBLIVION_RECALL_TIMEOUT_S="2.0", CLAUDE_PROJECT_DIR=CWD)
+    return hook_env(
+        tmp_path, NOBLIVION_RECALL_TIMEOUT_S="2.0", CLAUDE_PROJECT_DIR=CWD, **INDEX_FLOOR_OFF
+    )
 
 
 def _row(rank: int, mid: int, title: str, summary: str, score: float = 0.8) -> dict[str, Any]:
@@ -263,14 +265,34 @@ def test_the_hit_shape_still_dedupes_in_the_same_session(daemon, env):
     assert second == ""
 
 
-def test_no_min_score_floor_cuts_a_candidate(daemon, env):
-    # The hook's default floor is 0.68 and it applies to the hit shape. The index
-    # must not apply it: the store has its own floor.
+def test_the_hit_floor_does_not_cut_an_index_candidate(daemon, env):
+    # NOBLIVION_RECALL_MIN_SCORE (default 0.68) applies to the hit shape. The
+    # index must not apply it: it has its own floor, which is off in this env.
     daemon.index_rows = [_row(1, 101, "low", "a weak but real candidate", score=0.05)]
     env["NOBLIVION_RECALL_INDEX"] = "1"
+    assert env["NOBLIVION_RECALL_INDEX_MIN_SCORE"] == "off"
     _code, out = run_hook(_prompt("anything"), env)
     assert "id 101" in out
     assert hook.DEFAULT_MIN_SCORE == 0.68  # the floor that was NOT applied
+
+
+def test_the_index_floor_is_on_by_default(daemon, env):
+    # NOBLIVION-48. With the variable unset the index drops a row under
+    # DEFAULT_INDEX_MIN_SCORE, and asks for the candidate depth so that the
+    # next row that passes can take its place.
+    daemon.index_rows = [
+        _row(1, 101, "low", "a weak candidate", score=0.67),
+        _row(2, 102, "high", "a strong candidate", score=0.68),
+    ]
+    env["NOBLIVION_RECALL_INDEX"] = "1"
+    del env["NOBLIVION_RECALL_INDEX_MIN_SCORE"]
+    _code, out = run_hook(_prompt("anything"), env)
+    assert "id 102" in out and "id 101" not in out
+    assert daemon.requests[-1]["qs"]["top_k"] == str(hook.INDEX_CANDIDATE_TOP_K)
+    assert hook.DEFAULT_INDEX_MIN_SCORE == 0.68
+    # No row passes: the hook prints nothing.
+    daemon.index_rows = [_row(1, 101, "low", "a weak candidate", score=0.5)]
+    assert run_hook(_prompt("anything"), env)[1] == ""
 
 
 # -- k, the cap, and the env that sets them -------------------------------------------

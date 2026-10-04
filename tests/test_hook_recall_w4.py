@@ -43,7 +43,7 @@ import pytest
 from hookload import load_hook
 from noblivion import bm25 as store_bm25
 from noblivion import indexer
-from recall_helpers import FakeStore, hook_env
+from recall_helpers import INDEX_FLOOR_OFF, FakeStore, hook_env
 
 hook = load_hook("recall_hook", "hooktest_recall_w4")
 
@@ -82,7 +82,9 @@ def daemon(tmp_path):
 
 @pytest.fixture
 def env(daemon, tmp_path) -> dict[str, str]:
-    return hook_env(tmp_path, NOBLIVION_RECALL_TIMEOUT_S="5.0", NOBLIVION_RECALL_INDEX="1")
+    return hook_env(
+        tmp_path, NOBLIVION_RECALL_TIMEOUT_S="5.0", NOBLIVION_RECALL_INDEX="1", **INDEX_FLOOR_OFF
+    )
 
 
 def _row(rank: int, mid: int, title: str, summary: str, score: float) -> dict[str, Any]:
@@ -136,7 +138,8 @@ def _write(
 
 
 def test_with_no_variable_set_the_hook_asks_what_the_default_index_asks(daemon, env):
-    """The default request and the default rows, unchanged."""
+    """The default request and the default rows, unchanged. The index floor is
+    off in this env (``INDEX_FLOOR_OFF``); with it the hook asks for more rows."""
     daemon.index_rows = [
         _row(i, 100 + i, f"feedback_row_{i}", "a summary", 0.9 - i / 100) for i in range(1, 6)
     ]

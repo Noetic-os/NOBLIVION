@@ -50,7 +50,9 @@ def test_shipped_values_are_on_the_eval_grid(ev):
     erh = load_hook("error_recall_hook", "hooktest_threshold_model_grid_erh")
     current = ev.shipped(rh, erh)
     assert current["recall"] in ev.RECALL_GRID
+    assert current["index"] in ev.RECALL_GRID
     assert current["error_recall"] in ev.RECALL_GRID
+    assert current["error_local"] in ev.LOCAL_GRID
     assert current["dedup"] in ev.DEDUP_GRID
 
 
@@ -67,7 +69,7 @@ def test_eval_set_is_well_formed(ev):
             assert set(item["expect"]) <= recall_ids, item
     for a, b in data["dedup"]["duplicates"]:
         assert {a, b} <= dedup_ids and a != b
-    for name in ("recall", "error_recall", "dedup"):
+    for name in ("recall", "index", "error_recall", "error_local", "dedup"):
         floor = data["gate"][name]
         assert 0 < floor["precision"] <= 1 and 0 < floor["recall"] <= 1
 
@@ -112,3 +114,41 @@ def test_check_reports_a_value_under_its_floor(ev):
     failures = ev.check(results, {"recall": 0.5}, gate)
     assert len(failures) == 1 and "recall: recall 0.750" in failures[0]
     assert ev.check(results, {"recall": 0.5}, {"recall": {"precision": 0.7, "recall": 0.7}}) == []
+
+
+def test_check_shipped_config_reports_a_floor_that_does_not_reach_the_path(ev):
+    curve = [ev.Point(0.5, 9, 30, 0, 4), ev.Point(0.6, 7, 2, 2, 1)]
+    assert ev.check_shipped_config(curve, 0.6, ev.Point(0.6, 7, 2, 2, 1)) == []
+    # The path ran with no floor: more rows than the shipped floor lets through.
+    failures = ev.check_shipped_config(curve, 0.6, ev.Point(0.6, 9, 60, 0, 5))
+    assert len(failures) == 1 and "(9, 60, 0, 5), not (7, 2, 2, 1)" in failures[0]
+
+
+def test_index_status_is_the_log_status_of_one_session(ev, tmp_path):
+    assert ev.index_status(tmp_path, "eval-1") == ""  # no log: the call left no line
+    (tmp_path / "recall.log").write_text(
+        "2026-01-01T00:00:00+00:00 event=UserPromptSubmit session=eval-1 hits=2 chars=90 ms=7"
+        " ok:joined36of36:floor2of36\n"
+        "2026-01-01T00:00:01+00:00 event=UserPromptSubmit session=eval-2 hits=0 chars=0 ms=9"
+        " fail:timeout\n",
+        encoding="utf-8",
+    )
+    assert ev.index_status(tmp_path, "eval-1") == "ok:joined36of36:floor2of36"
+    assert ev.index_status(tmp_path, "eval-2") == "fail:timeout"
+    assert ev.index_status(tmp_path, "eval-3") == ""
+
+
+def test_the_local_error_floor_meets_its_gate_on_the_eval_set(ev, tmp_path):
+    # NOBLIVION-48. The default error recall mode is ``local``. Its floor needs
+    # no model, so every test run measures it on the eval set.
+    erh = load_hook("error_recall_hook", "hooktest_threshold_model_local")
+    assert erh.DEFAULT_MODE == "local"
+    data = json.loads(ev.DATA.read_text(encoding="utf-8"))
+    ev.write_memories(tmp_path, data["recall"]["memories"])
+    points = ev.measure_error_local(tmp_path, erh, data["recall"]["error_queries"])
+    assert [p.threshold for p in points] == ev.LOCAL_GRID
+    current = {"error_local": float(erh.LOCAL_MIN_SCORE)}
+    assert ev.check({"error_local": points}, current, data["gate"]) == []
+    # The decision rule of the other thresholds: the best F1, the middle of
+    # the grid values that share it.
+    assert ev.best(points).threshold == erh.LOCAL_MIN_SCORE

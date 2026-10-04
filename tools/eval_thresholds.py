@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Measure the three score thresholds with the shipped embedding model (NOBLIVION-33).
+"""Measure the score thresholds with the shipped embedding model (NOBLIVION-33, NOBLIVION-48).
 
 The eval set is ``tools/eval/thresholds.json``: made-up developer memories,
-labelled queries, near-miss negatives and duplicate pairs.
+labelled queries, near-miss negatives and duplicate pairs. It is small, and it
+has no held-out split: each threshold is chosen and scored on the same items.
 
 The script starts a real store in this process (``noblivion.store.Store``),
 with the fastembed backend and ``embedding.DEFAULT_MODEL``. The store indexes
@@ -14,12 +15,29 @@ path that compares it with its threshold:
   to each grid value and the hook's prompt ``k``. The score is the store's
   ``scores`` entry: the cosine of the query and the memory, times the row
   weight (1.0 by default), at 4 places (``ranking.rank_pool``). It is not the
-  fused rank score.
+  fused rank score. This is the path of a hook with NO config file.
+- ranked index floor (``hooks/recall_hook.py`` ``DEFAULT_INDEX_MIN_SCORE``):
+  the hook's own ``run()`` for a ``UserPromptSubmit`` event, with the shipped
+  config file ``config/config.default.json`` (the ranked index with its
+  re-rank, rule rows and the other shipped steps) and
+  ``NOBLIVION_RECALL_INDEX_MIN_SCORE`` set to each grid value. Each prompt is
+  the first prompt of its own session. The rows counted are the rows in the
+  hook output. The score is the ``score`` field of ``/api/memories/index``,
+  the same weighted cosine. The path is measured two more times: with the
+  floor off, and with the variable unset, which is what a user with the
+  shipped config file gets. The label rows (``NOBLIVION_RECALL_LABELS``) are
+  not part of this path and are not measured.
 - error recall store floor (``hooks/error_recall_hook.py``
   ``STORE_MIN_SCORE``): the hook's own ``search()`` in ``store`` mode, with
   ``NOBLIVION_ERROR_RECALL_MIN_SCORE`` set to each grid value. The score is
   the ``score`` field of ``/api/memories/index``, the same weighted cosine.
   The hook's quote check comes after this gate and is not measured here.
+- error recall local floor (``hooks/error_recall_hook.py``
+  ``LOCAL_MIN_SCORE``): the hook's own ``search()`` in ``local`` mode, the
+  default mode, with ``NOBLIVION_ERROR_RECALL_LOCAL_MIN_SCORE`` set to each
+  grid value. The score is the share of the query terms that the memory holds,
+  weighted by idf (``LocalIndex.search``). It needs no store and no model. The
+  quote check is not measured here either.
 - dedup cosine (``noblivion.dedup.DEFAULT_MIN_COSINE``): ``dedup.select_pairs``
   over ``dedup.load_vectors``, the plain cosine of two stored memory vectors.
 
@@ -40,8 +58,11 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
 import json
 import os
+import re
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -58,6 +79,7 @@ from noblivion import __version__, config, db, dedup, embedding, store
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 DATA = HERE / "eval" / "thresholds.json"
+SHIPPED_CONFIG = REPO / "config" / "config.default.json"
 NAMESPACE = "claude_code"
 RECALL_ROOT = "-eval-recall"
 DEDUP_ROOT = "-eval-dedup"
@@ -70,7 +92,9 @@ def grid(lo: float, hi: float, step: float = 0.01) -> list[float]:
 
 
 RECALL_GRID = grid(0.30, 0.90)
+LOCAL_GRID = grid(0.30, 1.00)  # a share of the query terms: 1.0 is a full match
 DEDUP_GRID = grid(0.60, 0.98)
+INDEX_FLOOR_OFF = "off"  # the value of NOBLIVION_RECALL_INDEX_MIN_SCORE for no floor
 
 
 # -- metrics ----------------------------------------------------------------------
@@ -244,6 +268,12 @@ class EvalStore:
     def connect(self) -> sqlite3.Connection:
         return db.connect(self.settings.db_path, create=False)
 
+    def memory_ids(self, root: str) -> dict[int, str]:
+        """Store id -> eval id of the memories of one root."""
+        with closing(self.connect()) as conn:
+            rows = conn.execute("SELECT id, path FROM memories WHERE root = ?", (root,)).fetchall()
+        return {int(r[0]): mem_id(str(r[1])) for r in rows}
+
     def _vectors(self) -> int:
         with closing(self.connect()) as conn:
             row = conn.execute(
@@ -281,7 +311,7 @@ class EvalStore:
         return env
 
 
-# -- the three measurements -------------------------------------------------------
+# -- the measurements -------------------------------------------------------------
 
 
 def measure_recall(es: EvalStore, rh: ModuleType, queries: Sequence[Mapping]) -> list[Point]:
@@ -294,6 +324,64 @@ def measure_recall(es: EvalStore, rh: ModuleType, queries: Sequence[Mapping]) ->
         )
 
     return [at_threshold(t) for t in RECALL_GRID]
+
+
+_INDEX_ROW_RE = re.compile(r"^- \[id (\d+)\] ", re.MULTILINE)  # a rule row of the index
+
+
+def index_status(cache: Path, sid: str) -> str:
+    """The status field of the hook's log line for one session."""
+    try:
+        lines = (cache / "recall.log").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        fields = line.split()
+        if f"session={sid}" in fields:
+            return fields[-1]
+    return ""
+
+
+def measure_index(
+    es: EvalStore, rh: ModuleType, queries: Sequence[Mapping]
+) -> tuple[list[Point], Point, Point]:
+    """The prompt hook path of the shipped config file: ``run()`` serves the
+    ranked index. Returns the curve, the point with the floor off, and the
+    point with the variable unset (the floor of the shipped defaults).
+
+    The hook fails open, so a failed call prints nothing and would count as "no
+    rows". The log line of each call must say ``ok``, and no shipped step may
+    be off (a keyword-mode answer skips the floor, a failed local read skips
+    the re-rank)."""
+    ids = es.memory_ids(RECALL_ROOT)
+
+    def at_floor(t: float, value: str | None, tag: str) -> Point:
+        cache = es.tmp / f"cache-index-{tag}"
+        extra = {"NOBLIVION_CONFIG": str(SHIPPED_CONFIG), "NOBLIVION_RECALL_CACHE_DIR": str(cache)}
+        if value is not None:
+            extra["NOBLIVION_RECALL_INDEX_MIN_SCORE"] = value
+        env = es.hook_env(RECALL_ROOT, **extra)
+        calls = iter(range(len(queries)))
+
+        def returned(q: str) -> list[str]:
+            # One session per prompt: the shipped row dedupe leaves out the
+            # rows that an earlier prompt of the same session showed.
+            sid = f"eval-{next(calls)}"
+            event = {"hook_event_name": "UserPromptSubmit", "session_id": sid, "prompt": q}
+            out = io.StringIO()
+            rh.run(json.dumps(event), out, env)
+            status = index_status(cache, sid)
+            if not status.startswith("ok") or "_off:" in status:
+                raise SystemExit(f"the index path did not run in full: {status or 'no log line'}")
+            return [ids[int(n)] for n in _INDEX_ROW_RE.findall(out.getvalue())]
+
+        point = score_queries(t, queries, returned)
+        shutil.rmtree(cache, ignore_errors=True)
+        return point
+
+    curve = [at_floor(t, str(t), f"{t:.2f}") for t in RECALL_GRID]
+    floor = float(rh.DEFAULT_INDEX_MIN_SCORE)
+    return curve, at_floor(-1.0, INDEX_FLOOR_OFF, "off"), at_floor(floor, None, "unset")
 
 
 def measure_error_recall(es: EvalStore, erh: ModuleType, queries: Sequence[Mapping]) -> list[Point]:
@@ -316,6 +404,25 @@ def measure_error_recall(es: EvalStore, erh: ModuleType, queries: Sequence[Mappi
         return score_queries(t, queries, returned)
 
     return [at_threshold(t) for t in RECALL_GRID]
+
+
+def measure_error_local(folder: Path, erh: ModuleType, queries: Sequence[Mapping]) -> list[Point]:
+    """The error hook path in its default mode: ``search()`` in local mode over
+    the memory files of ``folder``, every row that passes the gate. It uses no
+    store and no model."""
+
+    def at_threshold(t: float) -> Point:
+        env = {"NOBLIVION_ERROR_RECALL_LOCAL_MIN_SCORE": str(t)}
+
+        def returned(q: str) -> list[str]:
+            source, hits, _error = erh.search(q, env, folder)
+            if source != "local":
+                raise SystemExit(f"error recall ran in {source} mode, not in its default mode")
+            return [mem_id(str(m["id"])) for _, m in hits]
+
+        return score_queries(t, queries, returned)
+
+    return [at_threshold(t) for t in LOCAL_GRID]
 
 
 def dedup_cosines(es: EvalStore) -> dict[tuple[str, str], float]:
@@ -345,15 +452,24 @@ def measure_dedup(cosines: Mapping, duplicates: Iterable[Sequence[str]]) -> list
 def shipped(rh: ModuleType, erh: ModuleType) -> dict[str, float]:
     return {
         "recall": float(rh.DEFAULT_MIN_SCORE),
+        "index": float(rh.DEFAULT_INDEX_MIN_SCORE),
         "error_recall": float(erh.STORE_MIN_SCORE),
+        "error_local": float(erh.LOCAL_MIN_SCORE),
         "dedup": float(dedup.DEFAULT_MIN_COSINE),
     }
+
+
+def point_row(label: str, p: Point, mark: str = "") -> str:
+    return (
+        f"  {label:>9}  {p.precision:9.3f}  {p.recall:6.3f}  {p.f1:5.3f}"
+        f"  {p.tp:3d} {p.fp:4d} {p.fn:3d}  {p.negatives_hit:3d}{mark}"
+    )
 
 
 def print_curve(title: str, points: Sequence[Point], current: float, step: int = 5) -> None:
     pick = best(points)
     print(f"\n{title}")
-    print("  threshold  precision  recall   f1     tp  fp  fn  neg_hit")
+    print("  threshold  precision  recall   f1     tp   fp  fn  neg_hit")
     for i, p in enumerate(points):
         mark = ""
         if p is pick:
@@ -362,10 +478,7 @@ def print_curve(title: str, points: Sequence[Point], current: float, step: int =
             mark += "  shipped"
         if i % step and not mark:
             continue
-        print(
-            f"  {p.threshold:9.2f}  {p.precision:9.3f}  {p.recall:6.3f}  {p.f1:5.3f}"
-            f"  {p.tp:3d} {p.fp:3d} {p.fn:3d}  {p.negatives_hit:3d}{mark}"
-        )
+        print(point_row(f"{p.threshold:.2f}", p, mark))
 
 
 def check(
@@ -385,7 +498,24 @@ def check(
     return failures
 
 
-def run(data: Mapping) -> tuple[dict[str, list[Point]], dict[str, float], dict]:
+def check_shipped_config(points: Sequence[Point], current: float, unset: Point) -> list[str]:
+    """The index path with ``NOBLIVION_RECALL_INDEX_MIN_SCORE`` unset must give
+    the counts of the shipped floor: a user with the shipped config file, and
+    no setting of their own, then gets the floor that was measured."""
+    p = at(points, current)
+    want = (p.tp, p.fp, p.fn, p.negatives_hit)
+    got = (unset.tp, unset.fp, unset.fn, unset.negatives_hit)
+    if got == want:
+        return []
+    return [
+        f"index: the shipped config with the floor variable unset gives tp, fp, fn, neg_hit"
+        f" {got}, not {want} of the shipped floor {current:.2f}"
+    ]
+
+
+def run(data: Mapping) -> tuple[dict[str, list[Point]], dict[str, float], dict, dict[str, Point]]:
+    """Every curve, the shipped values, extra numbers for ``--json``, and the
+    two more points of the index path (``off`` and ``unset``)."""
     rh = load_hook("recall_hook")
     erh = load_hook("error_recall_hook")
     with (
@@ -393,7 +523,11 @@ def run(data: Mapping) -> tuple[dict[str, list[Point]], dict[str, float], dict]:
         EvalStore(Path(tmp), data) as es,
     ):
         recall_points = measure_recall(es, rh, data["recall"]["queries"])
+        index_points, index_off, index_unset = measure_index(es, rh, data["recall"]["queries"])
         error_points = measure_error_recall(es, erh, data["recall"]["error_queries"])
+        local_points = measure_error_local(
+            es.folders[RECALL_ROOT], erh, data["recall"]["error_queries"]
+        )
         cosines = dedup_cosines(es)
         dedup_points = measure_dedup(cosines, data["dedup"]["duplicates"])
     extra = {
@@ -401,8 +535,14 @@ def run(data: Mapping) -> tuple[dict[str, list[Point]], dict[str, float], dict]:
             f"{a} {b}": round(c, 4) for (a, b), c in sorted(cosines.items(), key=lambda kv: -kv[1])
         },
     }
-    results = {"recall": recall_points, "error_recall": error_points, "dedup": dedup_points}
-    return results, shipped(rh, erh), extra
+    results = {
+        "recall": recall_points,
+        "index": index_points,
+        "error_recall": error_points,
+        "error_local": local_points,
+        "dedup": dedup_points,
+    }
+    return results, shipped(rh, erh), extra, {"off": index_off, "unset": index_unset}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -415,18 +555,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     data = json.loads(args.data.read_text(encoding="utf-8"))
     t0 = time.monotonic()
-    results, current, extra = run(data)
+    results, current, extra, index_paths = run(data)
     print(
         f"model {embedding.DEFAULT_MODEL}, eval set {args.data.name}, {time.monotonic() - t0:.0f} s"
     )
     titles = {
-        "recall": "prompt recall floor (recall_hook DEFAULT_MIN_SCORE), store 'scores' value",
-        "error_recall": "error recall store floor (error_recall_hook STORE_MIN_SCORE), "
-        "index 'score'",
+        "recall": "prompt recall floor, note text, no config file (recall_hook DEFAULT_MIN_SCORE),"
+        " store 'scores' value",
+        "index": "ranked index floor, shipped config file (recall_hook DEFAULT_INDEX_MIN_SCORE),"
+        " index 'score'",
+        "error_recall": "error recall store floor, store mode (error_recall_hook STORE_MIN_SCORE),"
+        " index 'score'",
+        "error_local": "error recall local floor, local mode, the default"
+        " (error_recall_hook LOCAL_MIN_SCORE), share of the query terms",
         "dedup": "dedup cosine (dedup.DEFAULT_MIN_COSINE), pair cosine",
     }
     for name, points in results.items():
         print_curve(titles[name], points, current[name])
+        if name == "index":
+            print(point_row("off", index_paths["off"], "  no floor"))
+            print(point_row("unset", index_paths["unset"], "  the shipped config file as it is"))
     if args.json:
         args.json.write_text(
             json.dumps(
@@ -435,6 +583,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "shipped": current,
                     "best": {k: best(v).as_dict() for k, v in results.items()},
                     "curves": {k: [p.as_dict() for p in v] for k, v in results.items()},
+                    "index_paths": {
+                        "off": {**index_paths["off"].as_dict(), "threshold": None},
+                        "unset": index_paths["unset"].as_dict(),
+                    },
                     **extra,
                 },
                 indent=1,
@@ -443,6 +595,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.check:
         failures = check(results, current, data["gate"])
+        failures += check_shipped_config(results["index"], current["index"], index_paths["unset"])
         for line in failures:
             print(f"FAIL {line}")
         if failures:

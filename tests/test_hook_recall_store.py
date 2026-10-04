@@ -22,6 +22,7 @@ import recall_helpers
 from hookload import load_hook
 from noblivion import db, embedding, launcher, store
 from recall_helpers import (
+    INDEX_FLOOR_OFF,
     FakeStore,
     hook_env,
     index_answer,
@@ -301,8 +302,9 @@ def real_store(tmp_path):
 
 def _store_env(tmp_path: Path, folder: Path, **extra: str) -> dict:
     # The fake embedder's cosines are not on the scale of the real model, so
-    # the default floor (measured for the real model) does not fit them.
+    # the default floors (measured for the real model) do not fit them.
     extra.setdefault("NOBLIVION_RECALL_MIN_SCORE", "0")
+    extra = {**INDEX_FLOOR_OFF, **extra}
     return hook_env(tmp_path, NOBLIVION_RECALL_MEMORY_DIR=str(folder), **extra)
 
 

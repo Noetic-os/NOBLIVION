@@ -8,6 +8,32 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+### Changed
+
+- Behaviour change for the ranked index, which the shipped config file
+  turns on: the index now has a relevance floor by default (NOBLIVION-48).
+  A row whose vector score is below 0.68 is not shown, so the index can be
+  short, and a prompt that no note fits gets no index. Before, the index
+  had no floor unless `NOBLIVION_RECALL_INDEX_MIN_SCORE` was set: on the
+  eval set every prompt got 30 rows, also the 20 prompts that fit no note
+  (precision 0.023, recall 1.000). With the floor 1 of these 20 prompts
+  gets rows (precision 0.857, recall 0.750). The floor is a default of the
+  hook, so a config file of an older release gets it too. Set the variable
+  to `off` for the index with no floor. A value that is not a number from
+  -1 to 1 now gives the default, not "no floor".
+- Behaviour change for error recall in its default `local` mode: the floor
+  `NOBLIVION_ERROR_RECALL_LOCAL_MIN_SCORE` is now 0.39, not 0.75
+  (NOBLIVION-48). The old value was not measured. On the eval set it let 1
+  of 14 expected notes pass (recall 0.071). At 0.39, 9 of 14 pass (recall
+  0.643) and no wrong note passes (precision 1.000). The quote check still
+  runs after this floor.
+- `tools/eval_thresholds.py` now also measures the two paths of a default
+  install: the ranked index with the shipped config file, and error recall
+  in `local` mode. CI gates both. The docs name the path that each
+  published number describes. The eval set is small and has no held-out
+  split, so the numbers are too good as a forecast for real notes
+  (NOBLIVION-48).
+
 ### Fixed
 
 - The citation trust signal (`NOBLIVION_TRUST_CITATION_USE`) no longer

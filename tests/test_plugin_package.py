@@ -357,6 +357,29 @@ def test_without_config_the_index_stays_off(tmp_path):
     assert "NOBLIVION_RECALL_INDEX" not in env
 
 
+def test_the_index_floor_default_reaches_the_shipped_config_and_no_config(tmp_path):
+    # NOBLIVION-48. The floor is a default of the code, next to the model it
+    # was measured for. The shipped file does not set it, so a config file of
+    # an older release gets it too, and a new measurement reaches every user.
+    hook = _recall_hook()
+    assert "NOBLIVION_RECALL_INDEX_MIN_SCORE" not in _load(DEFAULT_CONFIG)["recall"]["env"]
+    data = tmp_path / "data"
+    data.mkdir()
+    base = {"NOBLIVION_DATA_DIR": str(data), "HOME": str(tmp_path)}
+    assert hook.index_min_score(hook.session_env(base, {})) == hook.DEFAULT_INDEX_MIN_SCORE
+    shutil.copy(DEFAULT_CONFIG, data / "config.json")
+    env = hook.session_env(base, {})
+    assert env["NOBLIVION_RECALL_INDEX"] == "1"
+    assert hook.index_min_score(env) == hook.DEFAULT_INDEX_MIN_SCORE
+    # A config file or the environment can set another floor, or none.
+    doc = _load(DEFAULT_CONFIG)
+    doc["recall"]["env"]["NOBLIVION_RECALL_INDEX_MIN_SCORE"] = "off"
+    (data / "config.json").write_text(json.dumps(doc))
+    assert hook.index_min_score(hook.session_env(base, {})) is None
+    env = hook.session_env({**base, "NOBLIVION_RECALL_INDEX_MIN_SCORE": "0.6"}, {})
+    assert hook.index_min_score(env) == 0.6
+
+
 def test_hook_commands_parse_as_shell_words():
     for event, groups in _load(HOOKS_JSON)["hooks"].items():
         for group in groups:

@@ -45,8 +45,10 @@ jobs:
       - run: uv run pytest -q
 
   # The shipped embedding model (noblivion[embed], fastembed) and the threshold
-  # eval (NOBLIVION-33). The eval fails when precision or recall at a shipped
-  # threshold drops under its floor in tools/eval/thresholds.json.
+  # eval (NOBLIVION-33, NOBLIVION-48). The eval fails when precision or recall
+  # at a shipped threshold drops under its floor in tools/eval/thresholds.json.
+  # It measures the note text path, the ranked index of the shipped config
+  # file, error recall in store and local mode, and the dedup cosine.
   real-model:
     runs-on: ubuntu-latest
     timeout-minutes: 20

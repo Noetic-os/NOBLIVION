@@ -140,12 +140,39 @@ characters. A note shown earlier in the same session is not shown again.
 
 ### Ranked index (shipped default config)
 
-With `NOBLIVION_RECALL_INDEX` set, the hook asks for up to 35 rows. It
+With `NOBLIVION_RECALL_INDEX` set, the hook shows up to 35 rows (30 with
+the shipped config file). It
 prints one short line per note: its id, its rule or its title, and a
 summary. The output is at most 7600 characters. Claude Code opens the
 notes it needs with the MCP tool. The shipped config file turns this
 shape on, with rule rows, apply lines and a local re-rank. See
 [configuration.md](configuration.md#ranked-index).
+
+The hook drops a row whose vector score is below
+`NOBLIVION_RECALL_INDEX_MIN_SCORE` (default 0.68). So the index can be
+short, and a prompt that no note fits gets no index.
+In keyword-only mode a row has no vector score and always passes. Set the
+variable to `off` to get every row.
+
+### Measured floors
+
+Each floor is measured on a made-up set of 36 notes, 57 prompts (20 of
+them fit no note) and 24 error lines (10 of them fit no note). The vector
+score floors are measured with the default embedding model. The `local`
+error recall floor uses no model. Each number describes one path only.
+
+| Path | Floor | Precision | Recall | Prompts or error lines that fit no note and still get rows |
+| --- | --- | --- | --- | --- |
+| Note text (no config file) | 0.68 | 0.857 | 0.750 | 1 of 20 |
+| Ranked index (shipped config file), no floor | none | 0.023 | 1.000 | 20 of 20 |
+| Ranked index (shipped config file) | 0.68 | 0.857 | 0.750 | 1 of 20 |
+| Error recall, `local` mode (default) | 0.39 | 1.000 | 0.643 | 0 of 10 |
+| Error recall, `store` mode | 0.70 | 1.000 | 0.857 | 0 of 10 |
+
+The set is small. It has no held-out part: each floor is chosen and
+scored on the same prompts. So these numbers are too good as a forecast
+for your notes. The error recall numbers are before the quote check (see
+"Other recall hooks"). The design document, section 18, has the method.
 
 ### Safety of injected text
 
@@ -177,8 +204,10 @@ note was used.
 
 - **Error recall.** When a shell command fails, the hook searches the
   memory files for the error. By default it searches the files directly,
-  with no store. It shows a note only when the note quotes three words in
-  a row from the error message. It shows at most 2 notes.
+  with no store. A note must hold enough of the words of the error: a
+  share of at least 0.39, where a rare word counts more. Then the hook
+  shows the note only when it quotes three words in a row from the error
+  message. It shows at most 2 notes.
 - **Subagent rules.** When Claude Code starts a subagent, the hook sends
   the task text to the store and adds up to 8 matching rules to the
   subagent's context.

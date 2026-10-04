@@ -55,6 +55,10 @@ When the store answers but finds nothing:
   its own finds nothing. List shared roots in `recall.shared_roots` so that
   every session can find them.
 - Run `noblivion index --json` and read the counts and the `skipped` list.
+- The hook drops a note whose vector score is below the floor: 0.68 for
+  note text and for the ranked index. For the ranked index the log status
+  holds `:floorNofM`: N rows passed the floor, of M ranked rows. To see
+  the index with no floor, set `NOBLIVION_RECALL_INDEX_MIN_SCORE` to `off`.
 
 ## The store is not running
 

@@ -1,18 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The recall hook's index shrink: a relevance floor and a check line.
 
-Two variables, each off unless set:
+Two variables:
 
 - ``NOBLIVION_RECALL_INDEX_MIN_SCORE``: an index row whose store cosine is
   under the floor is not shown. The floor runs before the cut to K, so K is a
-  cap.
-- ``NOBLIVION_RECALL_INDEX_CHECK_LINE`` (rule shape only): the rule header gets
-  the verbalised check as a second line.
+  cap. Unset, the floor is ``DEFAULT_INDEX_MIN_SCORE`` (NOBLIVION-48); ``off``
+  is no floor.
+- ``NOBLIVION_RECALL_INDEX_CHECK_LINE`` (rule shape only, off unless set): the
+  rule header gets the verbalised check as a second line.
 
 What these tests hold:
 
-1. OFF UNLESS ASKED FOR. Unset, or set to a value that is not a cosine, the
-   text and the log status are what the release before the floor wrote.
+1. THE DEFAULT FLOOR. Unset, or set to a value that is not a cosine, the floor
+   is the measured default. Set to ``off``, the text and the log status are
+   what the release before the floor wrote.
 2. A ROW UNDER THE FLOOR IS NOT SHOWN, the rows that stay keep their order, and
    the log counts them.
 3. K IS A CAP: the next row that passes takes the place of a row that does not,
@@ -36,7 +38,7 @@ from pathlib import Path
 import pytest
 
 from hookload import load_hook
-from recall_helpers import hook_env
+from recall_helpers import INDEX_FLOOR_OFF, hook_env
 
 TEST_CLASSIFICATION = "coherent"
 TEST_CLASSIFICATION_REASON = (
@@ -120,6 +122,7 @@ def _base_env(tmp_path, **extra: str) -> dict[str, str]:
         tmp_path,
         NOBLIVION_GUARD_TABLE=str(tmp_path / "guard_table.json"),
         NOBLIVION_RECALL_INDEX="1",
+        **INDEX_FLOOR_OFF,  # a test of the floor sets the variable, or removes it
     )
     env.update(extra)
     return env
@@ -185,22 +188,37 @@ def _before_floor(n: int = 12) -> str:
     return "\n".join([hook.INDEX_RULE_HEADER.format(tiers="")] + [r.render(True) for r in rows])
 
 
-# ── off unless asked for ────────────────────────────────────────────────────
+# ── the default floor, and off ──────────────────────────────────────────────
 
 
-def test_without_the_variables_the_text_and_the_log_are_unchanged(tmp_path, corpus, daemon):
-    text = _serve(_env(tmp_path, corpus))
+def test_without_the_variable_the_default_floor_applies(tmp_path, corpus, daemon):
+    # NOBLIVION-48. The fake cosines are 0.69, 0.68, 0.67, ...: two rows are
+    # at or above the default floor.
+    assert hook.DEFAULT_INDEX_MIN_SCORE == 0.68
+    env = _env(tmp_path, corpus)
+    env.pop(FLOOR, None)
+    assert hook.index_min_score(env) == hook.DEFAULT_INDEX_MIN_SCORE
+    text = _serve(env)
+    assert text == _before_floor(2)
+    assert _status(tmp_path) == "ok:floor2of12:ruled2of2"
+
+
+@pytest.mark.parametrize("raw", ["off", "OFF", " Off "])
+def test_off_is_no_floor_and_the_text_and_the_log_are_unchanged(tmp_path, corpus, daemon, raw):
+    assert hook.index_min_score({FLOOR: raw}) is None
+    text = _serve(_env(tmp_path, corpus, **{FLOOR: raw}))
     assert text == _before_floor()
     assert _status(tmp_path) == "ok:ruled12of12"
     assert hook.INDEX_CHECK_LINE not in text
 
 
 @pytest.mark.parametrize("raw", ["", "   ", "abc", "nan", "inf", "1.5", "-2", "0,5"])
-def test_a_value_that_is_not_a_cosine_is_no_floor(tmp_path, corpus, daemon, raw):
-    assert hook.index_min_score({FLOOR: raw}) is None
+def test_a_value_that_is_not_a_cosine_is_the_default_floor(tmp_path, corpus, daemon, raw):
+    # A malformed setting must not turn the floor off.
+    assert hook.index_min_score({FLOOR: raw}) == hook.DEFAULT_INDEX_MIN_SCORE
     text = _serve(_env(tmp_path, corpus, **{FLOOR: raw}))
-    assert text == _before_floor()
-    assert _status(tmp_path) == "ok:ruled12of12"
+    assert text == _before_floor(2)
+    assert _status(tmp_path) == "ok:floor2of12:ruled2of2"
 
 
 @pytest.mark.parametrize(

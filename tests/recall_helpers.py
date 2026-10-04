@@ -177,6 +177,13 @@ def hook_env(tmp_path: Path, **extra: str) -> dict[str, str]:
     return env
 
 
+# The prompt hook's index floor, off. The cosines of the fake stores and of the
+# fake embedder are not on the scale of the real model, so the default floor
+# (measured for the real model) does not fit them. A test of the index shape
+# puts this in its env; a test of the default floor leaves it out.
+INDEX_FLOOR_OFF = {"NOBLIVION_RECALL_INDEX_MIN_SCORE": "off"}
+
+
 @pytest.fixture
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """``HOME`` (and so ``~/.claude/projects``) inside the test's tmp dir."""

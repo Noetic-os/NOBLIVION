@@ -1825,6 +1825,8 @@ docs/
    drop rows with no rule, the label leg and the shown set) and
    `recall.index_k = 30`. It does not ship the reference index score floor
    (0.52), because that number was measured with another embedding model.
+   It sets no floor at all: the hook default `DEFAULT_INDEX_MIN_SCORE`
+   (0.68, measured for the default model, section 18) applies.
    Trust flags stay with E5.
 4. Download the embedding model to `<data dir>/models/` (`--no-model`
    skips it). On failure, set `embedding.backend = none` in the config and
@@ -2056,33 +2058,64 @@ later goal, not a v0.1 gate.
   recall worse. Users can switch to a multilingual model through Ollama.
 - Thresholds. The old values (search floor 0.3, error recall floor 0.60,
   dedup cosine 0.82) were tuned for the old 1024-dim model. NOBLIVION-33
-  measured all three for `BAAI/bge-small-en-v1.5` with
+  measured three of them for `BAAI/bge-small-en-v1.5` with
   `tools/eval_thresholds.py` on the made-up eval set
   `tools/eval/thresholds.json`: 36 memories, 57 prompts (37 with an
   expected memory, 20 without), 24 error lines (14 with, 10 without), and
   24 dedup memories with 8 duplicate pairs among 276 pairs. The script runs
   a real store and measures each score on the code path that compares it.
-  The search and error scores are the store's weighted cosine (weight 1.0
-  by default), not the fused rank score. Each value is the grid point
-  (step 0.01) with the best F1, the middle one when several share it.
+  The search, index and store error scores are the store's weighted cosine
+  (weight 1.0 by default), not the fused rank score. Each value is the grid
+  point (step 0.01) with the best F1, the middle one when several share it.
 
-  | Threshold | Old | New | Precision old / new | Recall old / new |
-  |---|---|---|---|---|
-  | search floor `recall.min_score` (hook, k = 5) | 0.3 | 0.68 | 0.137 / 0.857 | 0.975 / 0.750 |
-  | error recall store floor `STORE_MIN_SCORE` | 0.60 | 0.70 | 0.255 / 1.000 | 0.929 / 0.857 |
-  | dedup cosine `dedup.min_cosine` | 0.82 | 0.75 | 1.000 / 1.000 | 0.875 / 1.000 |
+  NOBLIVION-48 added the two paths that a default install runs and that
+  NOBLIVION-33 did not measure: the ranked index of the shipped config file,
+  and error recall in `local` mode. All numbers below are from the ranking
+  of NOBLIVION-49 (section 8.3). That ranking changed one number of
+  NOBLIVION-33: the store error precision at the old floor 0.60 was 0.255.
+
+  | Threshold | Path it describes | Old | New | Precision old / new | Recall old / new | Prompts or error lines without a memory that still get rows, old / new |
+  |---|---|---|---|---|---|---|
+  | note text floor `recall.min_score` | prompt hook with no config file: `recall()`, k = 5 | 0.3 | 0.68 | 0.137 / 0.857 | 0.975 / 0.750 | 20 of 20 / 1 of 20 |
+  | index floor `NOBLIVION_RECALL_INDEX_MIN_SCORE` | prompt hook with the shipped config file: the ranked index (`_serve_index`), 30 rows, with re-rank and rule rows | none | 0.68 | 0.023 / 0.857 | 1.000 / 0.750 | 20 of 20 / 1 of 20 |
+  | error recall local floor `LOCAL_MIN_SCORE` | error hook in `local` mode (the default): `search()` over the memory files | 0.75 | 0.39 | 1.000 / 1.000 | 0.071 / 0.643 | 0 of 10 / 0 of 10 |
+  | error recall store floor `STORE_MIN_SCORE` | error hook in `store` mode (off by default): `search()` over the store index | 0.60 | 0.70 | 0.283 / 1.000 | 0.929 / 0.857 | 3 of 10 / 0 of 10 |
+  | dedup cosine `dedup.min_cosine` | `noblivion dedup`: pairs of stored vectors | 0.82 | 0.75 | 1.000 / 1.000 | 0.875 / 1.000 | not applicable |
 
   This model packs cosines into a narrow band: an unrelated prompt still
-  scores about 0.5 to 0.6. At 0.3 the search floor cut nothing, and all 20
-  prompts without a memory got hits. At 0.68 one of them does. The error
-  recall precision is before the quote check, which removes more wrong
-  hits. The dedup duplicates scored 0.776 to 0.899, the best non-duplicate
-  0.726. The eval set is small and written by hand, so each number can move
-  by several points on real memories. CI job `real-model` runs the eval and
-  fails when precision or recall at a shipped value falls under its floor
-  in the eval file. Each threshold sits next to `THRESHOLD_MODEL`; a test
-  fails when `embedding.DEFAULT_MODEL` changes, so a new model needs a new
-  measurement.
+  scores about 0.5 to 0.6. At 0.3 the note text floor cut nothing, and all
+  20 prompts without a memory got hits. At 0.68 one of them does.
+
+  The ranked index had no floor. With the shipped config file each of the
+  57 prompts got 30 rows: 40 right rows and 1670 wrong rows. The floor
+  is now a default of the hook (`DEFAULT_INDEX_MIN_SCORE`), so a config
+  file of an older release gets it too; the value `off` gives the index
+  with no floor back. At 0.68 the index shows 30 right rows and 5 wrong
+  rows, and 10 of the 40 expected rows are no longer shown. The eval runs
+  the path a third time with the variable unset and fails when the counts
+  differ from the counts of the shipped floor. The label rows
+  (`NOBLIVION_RECALL_LABELS`) are a separate output and are not measured.
+
+  The local error score is not a cosine. It is the share of the error's
+  words that the memory holds, weighted by idf, so it needs no model. At
+  0.75 only 1 of the 14 expected memories passed the gate. The grid values
+  0.37 to 0.42 share the best F1; under 0.37 the first wrong rows pass (the
+  best wrong row has a share of 0.36). Both error recall numbers are before
+  the quote check, which comes after the gate and removes more wrong hits.
+  The dedup duplicates scored 0.776 to 0.899, the best non-duplicate 0.726.
+
+  Limits of these numbers. The eval set is small and written by hand. It
+  has no held-out split: each threshold is chosen and scored on the same
+  items, so the precision and recall above are too good as a forecast for
+  other memories, and each number can move by several points on real
+  memories. The recall of the local floor moves by 0.071 for each error
+  line. NOBLIVION-64 tracks a larger set with a held-out split.
+
+  CI job `real-model` runs the eval and fails when precision or recall at a
+  shipped value falls under its floor in the eval file. A test in the
+  normal suite does the same for the local error floor. Each threshold sits
+  next to `THRESHOLD_MODEL`; a test fails when `embedding.DEFAULT_MODEL`
+  changes, so a new model needs a new measurement.
 - First-run cost: about 130 MB model download and a numpy plus
   onnxruntime venv. Offline machines get keyword-only search.
 - The `localhost` name is refused by the hook transport guard. A user who

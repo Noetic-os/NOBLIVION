@@ -38,7 +38,7 @@ from typing import Any
 import pytest
 
 from hookload import load_hook
-from recall_helpers import FakeStore, hook_env
+from recall_helpers import INDEX_FLOOR_OFF, FakeStore, hook_env
 
 hook = load_hook("recall_hook", "hooktest_recall_w6_w7")
 
@@ -124,6 +124,7 @@ def _env(daemon, tmp_path, corpus, **extra: str) -> dict[str, str]:
         NOBLIVION_RECALL_TIMEOUT_S="5.0",
         NOBLIVION_RECALL_INDEX="1",
         **{hook.MEMORY_DIR_ENV: str(corpus)},
+        **INDEX_FLOOR_OFF,
     )
     env.update(extra)
     return env

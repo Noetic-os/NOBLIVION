@@ -57,7 +57,7 @@ Search (env ``NOBLIVION_ERROR_RECALL_MODE``, see ``search``)
   local (default)  BM25 over the memory files (name, description, ``rule:``,
                    ``apply:``, body), about 0.1 s, no network. Ranked by BM25;
                    the gate score is the idf-weighted share of the query terms
-                   the memory holds (``LOCAL_MIN_SCORE`` 0.75, env
+                   the memory holds (``LOCAL_MIN_SCORE`` 0.39, env
                    ``NOBLIVION_ERROR_RECALL_LOCAL_MIN_SCORE``).
   store            the local store's ranked index, ``GET /api/memories/index``
                    (rows with ``score`` and ``source``, the memory file name);
@@ -154,10 +154,11 @@ STORE_TOP_K = 10
 TIME_LIMIT_S = 1.5
 # Measured for THRESHOLD_MODEL by tools/eval_thresholds.py (design doc 0001,
 # section 18). A test fails when embedding.DEFAULT_MODEL changes and this
-# string does not. LOCAL_MIN_SCORE is a BM25 share and needs no model.
+# string does not. LOCAL_MIN_SCORE is a share of the query terms and needs no
+# model. The same script measures it on the same eval set (NOBLIVION-48).
 STORE_MIN_SCORE = 0.70
 THRESHOLD_MODEL = "BAAI/bge-small-en-v1.5"
-LOCAL_MIN_SCORE = 0.75
+LOCAL_MIN_SCORE = 0.39
 RULE_CHARS = 160
 CONTEXT_WEIGHT = 0.5
 APPLY_CHARS = 220

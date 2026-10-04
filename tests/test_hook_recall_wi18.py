@@ -33,7 +33,7 @@ from pathlib import Path
 import pytest
 
 from hookload import load_hook
-from recall_helpers import hook_env
+from recall_helpers import INDEX_FLOOR_OFF, hook_env
 
 TEST_CLASSIFICATION = "coherent"
 TEST_CLASSIFICATION_REASON = (
@@ -152,6 +152,7 @@ def _base_env(tmp_path, **extra: str) -> dict[str, str]:
         tmp_path,
         NOBLIVION_GUARD_TABLE=str(tmp_path / "guard_table.json"),
         NOBLIVION_RECALL_INDEX="1",
+        **INDEX_FLOOR_OFF,
     )
     env.update(extra)
     return env
