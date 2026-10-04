@@ -489,6 +489,7 @@ class Store:
                 self.scan_once(conn)
                 next_scan = self.clock() + interval
                 backfilled_state = None
+                backfilled_rev = -1
                 while not self._jobs_stop.wait(JOB_TICK_S):
                     state = self.embedding.state
                     if self.clock() >= next_maintenance:
@@ -499,9 +500,15 @@ class Store:
                         self.scan_once(conn)
                         next_scan = self.clock() + interval
                     usable = state in (embedding.STATE_READY, embedding.STATE_REEMBEDDING)
-                    if usable and (due_scan or backfilled_state != state):
+                    # A content change by `noblivion index` also needs a pass,
+                    # with periodic scans off too (NOBLIVION-42).
+                    content_rev = db.revisions(conn)[0] if usable else 0
+                    if usable and (
+                        due_scan or backfilled_state != state or content_rev > backfilled_rev
+                    ):
                         self.backfill_once(conn)
                         backfilled_state = self.embedding.state
+                        backfilled_rev = content_rev
                     if state == embedding.STATE_FAILED and not self._model_alive():
                         # The service itself keeps the retry to once per hour.
                         self._model_thread = self._spawn(self._load_model, "noblivion-model")

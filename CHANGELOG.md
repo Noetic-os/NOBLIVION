@@ -23,6 +23,10 @@ All notable changes to NOBLIVION. The format follows
 - The `ensure-running` concurrency test accepts `running` from a caller that
   starts late and finds the store already up. It still asserts one `started`
   and one store process.
+- With periodic indexing off (`NOBLIVION_INDEX_INTERVAL_S=0`), the store
+  now runs an embed backfill pass when `content_rev` moves. Before, rows
+  that `noblivion index` added or changed kept an old vector, or had none,
+  until the store restarted (NOBLIVION-42).
 
 ## 0.1.4 - 2026-10-04
 

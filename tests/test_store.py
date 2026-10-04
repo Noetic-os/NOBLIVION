@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from noblivion import __version__, config, db, embedding, launcher, rest, store
+from noblivion import __version__, config, db, embedding, indexer, launcher, rest, store
 from store_helpers import FakeEmbedder, add_memory, mark_installed
 
 TOKEN_KEYS = {"status", "service", "version"}
@@ -632,6 +632,40 @@ def test_background_scan_and_backfill_feed_search(tmp_path):
         assert wait_for(lambda: len(run.get("/api/memories/index?q=lantern")[1]["results"]) == 1)
         assert wait_for(lambda: run.get("/health")[1]["embedding"]["missing_vectors"] == 0)
         assert embedder.calls  # the backfill embedded the new row
+    finally:
+        run.stop()
+
+
+def test_index_command_changes_get_vectors_with_periodic_scans_off(tmp_path):
+    """With ``index_interval_s=0`` a row that ``noblivion index`` changes or
+    adds gets the vector of its new text, without a store restart (NOBLIVION-42)."""
+    folder = tmp_path / "projects" / "-work-proj-demo" / "memory"
+    write_memory(folder, "lantern rule", "Light the lantern first.", "Lantern before dusk.")
+    embedder = FakeEmbedder()
+    run = Running(make_store(tmp_path, embedding_service=fake_service(embedder)))
+    db_path = run.store.settings.db_path
+
+    def stale_rows() -> list[str]:
+        with closing(db.connect(db_path, create=False)) as conn:
+            rows = conn.execute(
+                "SELECT m.content, v.content_hash FROM memories m "
+                "LEFT JOIN vectors v ON v.memory_id = m.id AND v.model = ? "
+                "WHERE m.deleted_at IS NULL",
+                (embedder.model_id,),
+            ).fetchall()
+        return [c for c, h in rows if h != embedding.text_hash(embedding.embed_text(c))]
+
+    try:
+        assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
+        assert wait_for(lambda: run.get("/health")[1]["embedding"]["missing_vectors"] == 0)
+        assert stale_rows() == []
+        write_memory(folder, "lantern rule", "Light the lantern first.", "Lantern after dawn.")
+        write_memory(folder, "kettle rule", "Fill the kettle.", "Kettle before tea.")
+        assert indexer.main(["--memory-dir", str(folder), "--db", str(db_path)]) == 0
+        assert wait_for(lambda: stale_rows() == [])
+        embedded = [text for call in embedder.calls for text in call]
+        assert any("Lantern after dawn." in text for text in embedded)
+        assert any("Kettle before tea." in text for text in embedded)
     finally:
         run.stop()
 
