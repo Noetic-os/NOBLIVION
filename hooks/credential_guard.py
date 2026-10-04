@@ -1377,7 +1377,11 @@ def _git_stage(
     return None
 
 
-_CFG_IN_WORD = re.compile(r"((?:[^\s'\"()=,;]*/)?\.git/config(?:\.worktree)?)(?![\w.\-])")
+# The folder part starts only where a path can start (the ``(?<!...)``). So a long word is read once,
+# not once from each of its characters. The matches are the same.
+_CFG_IN_WORD = re.compile(
+    r"((?:(?<![^\s'\"()=,;])[^\s'\"()=,;]*/)?\.git/config(?:\.worktree)?)(?![\w.\-])"
+)
 _CFG_NAMES = (
     "config",
     "config.worktree",

@@ -1072,8 +1072,7 @@ def test_open_path_reason_and_global_config(work, home_store, monkeypatch):
     assert not bash_deny('cat ".git/$name"', free)  # the config of this clone holds no credential
 
 
-#: 100 KB commands made of short words. (One 100 KB word is slow in ``_CFG_IN_WORD``,
-#: which is older code.)
+#: 100 KB commands made of short words. ``ONE_WORD`` has the commands made of one 100 KB word.
 HOSTILE = {
     "variables": "cat " + "$a " * 34_000,
     "variables in braces": "cat " + "${a} " * 20_000,
@@ -1145,3 +1144,76 @@ def test_hook_hint_regex_is_linear(gh, unit):
     t0 = time.perf_counter()
     assert gh._CRED_BASH_HINT.search(unit * 50_000 + "x") is None
     assert time.perf_counter() - t0 < 1.0
+
+
+#: One 100 KB word for ``_CFG_IN_WORD``, which reads every word of a file command.
+CFG_WORDS = {
+    "letters": "a" * 100_000,
+    "slashes": "/" * 100_000,
+    "folders": "a/" * 50_000,
+    "config names": ".git/config" * 9_100,
+    "config folders": "/.git/config" * 8_400,
+    "cut config names": ".git/confi" * 10_000,
+    "wrong end": "a" * 100_000 + "/.git/configx",
+}
+
+
+@pytest.mark.parametrize("name", sorted(CFG_WORDS))
+def test_config_in_word_scan_is_linear(name):
+    word = CFG_WORDS[name]
+    assert len(word) >= 100_000
+    t0 = time.perf_counter()
+    found = [m.group(1) for m in cg._CFG_IN_WORD.finditer(word)]
+    assert time.perf_counter() - t0 < 1.0
+    assert found == {"config names": [".git/config"], "config folders": [word]}.get(name, [])
+
+
+#: One 100 KB word in each place of a command that reaches ``_CFG_IN_WORD``.
+ONE_WORD = {
+    "argument": "cat git {w}",
+    "standard input": "cat < {w} git",
+    "after a glob on a hidden name": "cat .g*{w}",
+    "after a variable": "x=1; cat git ${{x}}{w}",
+    "after a brace list": "cat git {{a,b}}{w}",
+    "option value": "grep git --file={w}",
+}
+
+
+@pytest.mark.parametrize("name", sorted(ONE_WORD))
+@pytest.mark.parametrize("unit", ["a", "/", "a/"])
+def test_one_100kb_word_is_decided_fast(gh, work, name, unit):
+    cmd = ONE_WORD[name].format(w=unit * (100_000 // len(unit)))
+    assert len(cmd) >= 100_000 and gh._CRED_BASH_HINT.search(cmd)
+    t0 = time.perf_counter()
+    assert cg.decide("Bash", {"command": cmd}, str(work)) is None
+    assert time.perf_counter() - t0 < 1.0
+
+
+def test_a_100kb_word_does_not_hide_a_config_read(work):
+    """The hook allows a call that it cannot decide in time: a slow scan is a way past the guard."""
+    for cmd in ("cat .git/config {w}", "cat {w} .git/config", "cat < .git/config {w}"):
+        t0 = time.perf_counter()
+        assert bash_deny(cmd.format(w="a" * 100_000), work)
+        assert time.perf_counter() - t0 < 1.0
+
+
+@pytest.mark.parametrize(
+    "word, found",
+    [
+        (".git/config", [".git/config"]),
+        ("a/.git/config", ["a/.git/config"]),
+        ("a/.git/config.worktree", ["a/.git/config.worktree"]),
+        ("x.git/config", [".git/config"]),
+        ("--file=a/.git/config", ["a/.git/config"]),
+        ("a/.git/config,b/.git/config", ["a/.git/config", "b/.git/config"]),
+        ("a/.git/config/b/.git/config", ["a/.git/config/b/.git/config"]),
+        ("a/.git/config/x.git/config", ["a/.git/config", ".git/config"]),
+        ("x.git/config/.git/config", ["x.git/config/.git/config"]),
+        ("a/.git/config.bak", []),
+        ("a/.git/config.worktree.bak", []),
+        ("a/.git/configs", []),
+        ("a/.git/config-old", []),
+    ],
+)
+def test_config_in_word_finds_the_same_paths(word, found):
+    assert [m.group(1) for m in cg._CFG_IN_WORD.finditer(word)] == found
