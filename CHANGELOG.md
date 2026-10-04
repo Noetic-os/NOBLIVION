@@ -6,6 +6,16 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- `noblivion migrate-from-legacy` and the migration check in the setup
+  script follow `CLAUDE_CONFIG_DIR` (NOBLIVION-40). Before, they read
+  `~/.claude` also when another profile was in use, so `--apply` could
+  change the settings and hooks of a profile without the plugin. With
+  another profile, `~/.mcp.json` is left alone. New option `--config-dir`.
+
 ## 0.1.4 - 2026-10-04
 
 Adds the time-split test for trust ranking and two optional trust signals.

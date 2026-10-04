@@ -11,6 +11,7 @@ old entries and writes backups; ``--undo`` restores the files byte for byte.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -230,3 +231,42 @@ def test_runs_legacy_needs_a_known_file_name(tmp_path):
     assert not legacy.runs_legacy("python3 /x/claude_code_stop_checks.py.bak", tmp_path)
     assert not legacy.runs_legacy("python3 /x/claude_code_custom.py", tmp_path)
     assert not legacy.runs_legacy(None, tmp_path)
+
+
+def test_another_profile_leaves_the_default_profile_alone(home, tmp_path, monkeypatch, capsys):
+    """NOBLIVION-40: with CLAUDE_CONFIG_DIR set, the default profile's
+    settings, hooks and ``~/.mcp.json`` are not listed and not changed."""
+    before = _snapshot(home)
+    profile = tmp_path / "profile"
+    (profile / "hooks").mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(profile))
+    assert cli_main(["migrate-from-legacy", "--json"]) == 0
+    plan = json.loads(capsys.readouterr().out)["plan"]
+    assert plan["claude_dir"] == str(profile)
+    assert plan["mcp_file"] is None
+    assert plan["files"] == [] and plan["settings_entries"] == [] and plan["mcp_servers"] == []
+    assert cli_main(["migrate-from-legacy", "--home", str(home), "--apply"]) == 0
+    assert "Nothing to do." in capsys.readouterr().out
+    assert _snapshot(home) == before
+    assert not (tmp_path / "data" / "migrated").exists()
+
+
+def test_another_profile_with_old_hooks_is_migrated(home, tmp_path, monkeypatch, capsys):
+    """The profile that CLAUDE_CONFIG_DIR names is the one --apply changes."""
+    before = _snapshot(home)
+    profile = tmp_path / "profile"
+    shutil.copytree(home / ".claude", profile, symlinks=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(profile))
+    assert cli_main(["migrate-from-legacy", "--apply", "--json"]) == 0
+    applied = json.loads(capsys.readouterr().out)["applied"]
+    assert {Path(b["file"]) for b in applied["backups"]} == {profile / "settings.json"}
+    assert all(Path(m["from"]).parent == profile / "hooks" for m in applied["moved"])
+    assert _snapshot(home) == before
+
+
+def test_config_dir_option_wins_over_the_env(home, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "elsewhere"))
+    args = ["migrate-from-legacy", "--home", str(home), "--json"]
+    assert cli_main([*args, "--config-dir", str(home / ".claude")]) == 0
+    plan = json.loads(capsys.readouterr().out)["plan"]
+    assert plan["mcp_file"] == str(home / ".mcp.json") and plan["settings_entries"]

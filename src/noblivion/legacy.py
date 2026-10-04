@@ -23,6 +23,11 @@ The command:
    ``manifest.json``.
 
 It never changes a hook entry whose command does not run an old hook file.
+
+The settings and hooks are those of the Claude Code config folder:
+``--config-dir``, else ``CLAUDE_CONFIG_DIR``, else ``<home>/.claude``. With
+another folder than ``<home>/.claude`` (a second profile), ``<home>/.mcp.json``
+is not read and not changed, because the default profile reads it too.
 """
 
 from __future__ import annotations
@@ -84,7 +89,7 @@ USAGE_EPILOG = "Without --apply nothing changes: the command prints the plan."
 @dataclass
 class Plan:
     claude_dir: Path
-    mcp_file: Path
+    mcp_file: Path | None  # None: another profile, ``<home>/.mcp.json`` is left alone
     files: list[Path] = field(default_factory=list)  # old hook files and links to them
     unknown: list[Path] = field(default_factory=list)  # claude_code_*.py we do not know
     settings_entries: list[dict[str, Any]] = field(default_factory=list)
@@ -101,6 +106,8 @@ class Plan:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "claude_dir": str(self.claude_dir),
+            "mcp_file": str(self.mcp_file) if self.mcp_file else None,
             "files": [str(p) for p in self.files],
             "unknown_files": [str(p) for p in self.unknown],
             "settings_entries": self.settings_entries,
@@ -237,13 +244,23 @@ def _env_vars(texts: Sequence[str], names: Sequence[str]) -> dict[str, str | Non
     return dict(sorted(found.items()))
 
 
-def build_plan(home: Path) -> Plan:
-    claude_dir = home / ".claude"
-    plan = Plan(claude_dir=claude_dir, mcp_file=home / ".mcp.json")
+def resolve_claude_dir(home: Path, config_dir: Path | None = None) -> Path:
+    """``config_dir``, else ``CLAUDE_CONFIG_DIR``, else ``<home>/.claude``."""
+    if config_dir is not None:
+        return config_dir
+    if os.environ.get("CLAUDE_CONFIG_DIR"):
+        return config.claude_config_dir()
+    return home / ".claude"
+
+
+def build_plan(home: Path, claude_dir: Path | None = None) -> Plan:
+    claude_dir = home / ".claude" if claude_dir is None else claude_dir
+    default_profile = claude_dir == home / ".claude"
+    plan = Plan(claude_dir=claude_dir, mcp_file=home / ".mcp.json" if default_profile else None)
     plan.files, plan.unknown = _hook_files(claude_dir / "hooks")
     settings = _read_json(plan.settings_file) or {}
     plan.settings_entries = _legacy_handlers(settings, home)
-    mcp = _read_json(plan.mcp_file) or {}
+    mcp = (_read_json(plan.mcp_file) if plan.mcp_file else None) or {}
     plan.mcp_servers = _legacy_servers(mcp, home)
     texts = [str(e["command"]) for e in plan.settings_entries]
     names: list[str] = []
@@ -332,7 +349,7 @@ def apply(plan: Plan, home: Path, data_dir: Path) -> dict[str, Any]:
         manifest["backups"].append({"file": str(plan.settings_file), "backup": str(backup)})
         settings = _read_json(plan.settings_file) or {}
         _write_json(plan.settings_file, strip_settings(settings, home))
-    if plan.mcp_servers:
+    if plan.mcp_servers and plan.mcp_file is not None:
         backup = plan.mcp_file.with_name(plan.mcp_file.name + BACKUP_SUFFIX + stamp)
         shutil.copy2(plan.mcp_file, backup)
         manifest["backups"].append({"file": str(plan.mcp_file), "backup": str(backup)})
@@ -401,6 +418,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     mode.add_argument("--apply", action="store_true", help="back up, then remove the entries")
     mode.add_argument("--undo", action="store_true", help="restore the last --apply")
     parser.add_argument("--home", type=Path, default=None, help="home folder (default: yours)")
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=None,
+        help="Claude Code config folder (default: CLAUDE_CONFIG_DIR, else <home>/.claude)",
+    )
     parser.add_argument("--json", action="store_true", help="print JSON")
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     home = (args.home or Path.home()).expanduser().resolve()
@@ -412,7 +435,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print("Nothing to undo." if manifest is None else f"Restored run {manifest['stamp']}.")
         return 0
-    plan = build_plan(home)
+    config_dir = args.config_dir.expanduser().resolve() if args.config_dir else None
+    plan = build_plan(home, resolve_claude_dir(home, config_dir))
     manifest = apply(plan, home, data_dir) if args.apply and not plan.empty else None
     if args.json:
         print(json.dumps({"plan": plan.as_dict(), "applied": manifest}))

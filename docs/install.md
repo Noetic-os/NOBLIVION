@@ -264,6 +264,12 @@ entries in `~/.claude/settings.json` that run them, and an MCP server entry
 in `~/.mcp.json`. With the plugin installed as well, each hook runs twice.
 The command `noblivion migrate-from-legacy` removes the old setup.
 
+The command works on one Claude Code profile: the folder that
+`CLAUDE_CONFIG_DIR` names, else `~/.claude`. Give another folder with
+`--config-dir <folder>`. When the profile is not `~/.claude`, the command
+does not read or change `~/.mcp.json`, because the default profile reads
+that file too.
+
 Use the `noblivion` command from the venv:
 `<data dir>/venv/bin/noblivion`.
 
