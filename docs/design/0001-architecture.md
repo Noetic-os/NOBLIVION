@@ -1767,8 +1767,8 @@ docs/
   prefix of its answer stays, because the trust flush reads it. Under the
   plugin its full name is `mcp__plugin_noblivion_noblivion__noblivion_recall`.
 - Users add the repo with
-  `claude plugin marketplace add https://github.com/<owner>/NOBLIVION.git`
-  (the short form `<owner>/NOBLIVION` can clone over SSH) and install with
+  `claude plugin marketplace add https://github.com/Noetic-os/NOBLIVION.git`
+  (the short form `Noetic-os/NOBLIVION` can clone over SSH) and install with
   `claude plugin install noblivion@noblivion` (or the `/plugin` slash
   commands).
 

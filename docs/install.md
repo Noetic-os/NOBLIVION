@@ -83,20 +83,18 @@ SessionStart hook and the store set it to 0700 also when it exists.
 Each step shows the slash command in a Claude Code session and the same
 step as a terminal command. Use either one.
 
-1. Add this repository as a marketplace. Replace `<owner>` with the GitHub
-   account that hosts this repository. Use the HTTPS URL:
+1. Add this repository as a marketplace. Use the HTTPS URL:
 
    ```text
-   /plugin marketplace add https://github.com/<owner>/NOBLIVION.git
+   /plugin marketplace add https://github.com/Noetic-os/NOBLIVION.git
    ```
 
    ```sh
-   claude plugin marketplace add https://github.com/<owner>/NOBLIVION.git
+   claude plugin marketplace add https://github.com/Noetic-os/NOBLIVION.git
    ```
 
-   The HTTPS URL uses your git HTTPS credentials (for example a token in a
-   git credential helper). The short form `<owner>/NOBLIVION` can clone
-   over SSH. On a machine with no GitHub SSH key it then fails with
+   The repository is public, so the HTTPS URL needs no credentials. The
+   short form `Noetic-os/NOBLIVION` can clone over SSH. On a machine with no GitHub SSH key it then fails with
    `Permission denied (publickey)`.
 
    To install from a local clone, give the path of the clone instead:

@@ -65,11 +65,10 @@ name in plain prose. See [docs/dedup-and-privacy.md](docs/dedup-and-privacy.md).
 You need Claude Code, `python3` 3.9 or newer, and
 [uv](https://docs.astral.sh/uv/).
 
-1. Add the marketplace. Replace `<owner>` with the GitHub account that
-   hosts this repository. Use the HTTPS URL:
+1. Add the marketplace. Use the HTTPS URL:
 
    ```sh
-   claude plugin marketplace add https://github.com/<owner>/NOBLIVION.git
+   claude plugin marketplace add https://github.com/Noetic-os/NOBLIVION.git
    ```
 
    In a Claude Code session, `/plugin marketplace add <same URL>` does the
