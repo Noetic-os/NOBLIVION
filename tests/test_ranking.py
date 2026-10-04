@@ -286,8 +286,10 @@ def test_reembed_uses_new_vectors_only_and_bm25_for_the_rest(conn):
     new = FakeEmbedder("new-model")
     service2 = make_service(new, conn)
     assert service2.state == "reembedding"
+    content = conn.execute("SELECT content FROM memories WHERE id = ?", (ids["deploy"],))
+    digest = embedding.text_hash(embedding.embed_text(content.fetchone()[0]))
     embedding._write_vectors(
-        conn, new.model_id, [(ids["deploy"], "x", new.embed_documents(["deploy backup"])[0])]
+        conn, new.model_id, [(ids["deploy"], digest, new.embed_documents(["deploy backup"])[0])]
     )
     result = ranking.Ranker(service2).search(
         conn, "pytest venv deploy", project="claude_code", top_k=5

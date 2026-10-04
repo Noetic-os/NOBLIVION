@@ -128,6 +128,28 @@ def test_backfill_reembeds_a_changed_row_only(conn):
     assert len(embedder.calls) == 1 and "epsilon" in embedder.calls[0][0]
 
 
+def test_a_slow_backfill_never_writes_a_vector_of_an_older_text(conn):
+    a = add_memory(conn, "a", "alpha beta")
+    fast = FakeEmbedder()
+    embedding.backfill(conn, fast)
+
+    class Slow(FakeEmbedder):
+        def embed_documents(self, texts):
+            # Between the read and the write: the row changes and a second
+            # backfill writes the vector of the new text.
+            change_memory(conn, a, "alpha epsilon")
+            embedding.backfill(conn, fast)
+            return super().embed_documents(texts)
+
+    change_memory(conn, a, "alpha gamma")
+    result = embedding.backfill(conn, Slow())
+    current = conn.execute("SELECT content FROM memories WHERE id = ?", (a,)).fetchone()[0]
+    want = embedding.text_hash(embedding.embed_text(current))
+    assert vectors(conn)[(a, "fake:fake-model")]["content_hash"] == want
+    assert result.embedded == 0
+    assert embedding.backfill(conn, fast).embedded == 0
+
+
 def test_backfill_batches_and_isolates_a_failing_row(conn):
     ids = [add_memory(conn, f"m{i}", f"row number {i}") for i in range(5)]
     bad = add_memory(conn, "poison", "this row breaks the model")

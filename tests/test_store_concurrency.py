@@ -154,6 +154,22 @@ def error_lines(log_text: str) -> list[str]:
     return [line for line in log_text.splitlines() if " ERROR " in line]
 
 
+def stale_vectors(db_path: Path, model: str) -> int:
+    """Live rows without a vector of their current text. ``missing_vectors``
+    counts only rows with no vector at all: a changed row keeps its old vector
+    until the next backfill pass."""
+    with closing(db.connect(db_path, create=True)) as conn, db.read_tx(conn):
+        have = dict(
+            conn.execute("SELECT memory_id, content_hash FROM vectors WHERE model = ?", (model,))
+        )
+        rows = conn.execute(
+            "SELECT id, content FROM memories WHERE archived_at IS NULL AND deleted_at IS NULL"
+        ).fetchall()
+    return sum(
+        have.get(i) != embedding.text_hash(embedding.embed_text(content)) for i, content in rows
+    )
+
+
 @pytest.fixture
 def fake_ollama():
     server = start_fake_ollama()
@@ -274,6 +290,8 @@ def test_live_store_under_multi_process_load(tmp_path, fake_ollama):
         final = run_index_cli(env)
         assert final.returncode == 0, final.stderr
         assert wait_for(lambda: live.health()["embedding"]["missing_vectors"] == 0, 30)
+        model = f"ollama:{FAKE_MODEL}"
+        assert wait_for(lambda: stale_vectors(settings.db_path, model) == 0, 30)
         health = live.health()
         for report in search_reports:
             content_seen, vector_seen = report["last_revs"]
@@ -306,7 +324,6 @@ def test_live_store_under_multi_process_load(tmp_path, fake_ollama):
             assert content_rev == health["content_rev"]
             assert conn.execute("SELECT max(rev) FROM memories").fetchone()[0] <= content_rev
             assert conn.execute("SELECT max(rev) FROM vectors").fetchone()[0] <= vector_rev
-            model = f"ollama:{FAKE_MODEL}"
             vectors = {
                 r[0]: r[1]
                 for r in conn.execute(

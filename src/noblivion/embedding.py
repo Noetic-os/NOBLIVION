@@ -599,17 +599,20 @@ def _write_vectors(
     with db.write_tx(conn):
         rev = db.bump_rev(conn, "vector_rev")
         for memory_id, digest, size, blob in packed:
-            # The row may be gone since the read: write only while it exists.
-            cur = conn.execute(
+            # The row may be gone or changed since the read: write only the
+            # vector of its current text, so a slow pass never overwrites a newer one.
+            row = conn.execute("SELECT content FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            if row is None or text_hash(embed_text(row[0])) != digest:
+                continue
+            conn.execute(
                 "INSERT INTO vectors (memory_id, model, dim, content_hash, blob, rev) "
-                "SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM memories WHERE id = ?) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (memory_id, model) DO UPDATE SET dim = excluded.dim, "
                 "content_hash = excluded.content_hash, blob = excluded.blob, rev = excluded.rev",
-                (memory_id, model_id, size, digest, blob, rev, memory_id),
+                (memory_id, model_id, size, digest, blob, rev),
             )
-            if cur.rowcount:
-                written += 1
-                dim = size
+            written += 1
+            dim = size
     return written, failed, dim
 
 
