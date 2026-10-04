@@ -613,23 +613,25 @@ def test_a_timeout_inside_a_fail_open_handler_still_ends_the_call(env, tmp_path,
             time.sleep(2)
             return {}
 
-    monkeypatch.setattr(gh, "_mt", lambda: Slow())
     out = io.StringIO()
-    t0 = time.monotonic()
-    assert (
-        gh.main(
-            stdin=io.StringIO(json.dumps(bash("make deploy-all now"))),
-            stdout=out,
-            environ=env,
-            time_limit=0.2,
+    # a scoped patch: monkeypatch.undo() would also undo the autouse
+    # hook_env, and the next call would write to the real data dir
+    with monkeypatch.context() as m:
+        m.setattr(gh, "_mt", lambda: Slow())
+        t0 = time.monotonic()
+        assert (
+            gh.main(
+                stdin=io.StringIO(json.dumps(bash("make deploy-all now"))),
+                stdout=out,
+                environ=env,
+                time_limit=0.2,
+            )
+            == 0
         )
-        == 0
-    )
-    assert time.monotonic() - t0 < 1.5
+        assert time.monotonic() - t0 < 1.5
     assert out.getvalue() == ""
     assert log(env)[-1]["error"] == "timeout"
     # nothing was charged, and the state lock is free for the next call
-    monkeypatch.undo()
     assert "Text: A body." in call(env, bash("make deploy-all now"))["additionalContext"]
     assert issubclass(gh._TimeUp, BaseException) and not issubclass(gh._TimeUp, Exception)
 
