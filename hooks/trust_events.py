@@ -6,16 +6,25 @@ Part E of the adaptive memory trust work.
 ONE mapping, used by every producer, so the live hooks and the transcript
 replay can never count the same thing two ways:
 
-| What happened                       | Producer                      | Key            | kind   |
-|-------------------------------------|-------------------------------|----------------|--------|
-| an index row was shown              | recall hook, at the emit      | mv_id (row id) | recall |
-| ``noblivion_recall`` fetched a memory | Stop flush, from the transcript | mv_id      | use    |
-| guard rows or a deny on rule R      | guard hook                    | path (R + .md) | use    |
-| a guard override, a stop check pass, an error recall | none (dropped in V2) |    |        |
+| What happened                       | Producer                      | Key            | kind       |
+|-------------------------------------|-------------------------------|----------------|------------|
+| an index row was shown              | recall hook, at the emit      | mv_id (row id) | recall     |
+| ``noblivion_recall`` fetched a memory | Stop flush, from the transcript | mv_id      | use        |
+| a guard deny on rule R              | guard hook                    | path (R + .md) | use        |
+| a guard override of rule R          | guard hook                    | path (R + .md) | contradict |
+| guard rows (display only), labels, an error, a stop check pass | none |          |            |
 
-``recall`` is exposure only: the server stores it as NOT citation capable, so a
-row that is shown and not used does not lose trust (REVIEW-4453 B2). ``use`` is
-the evidence that a rule met real work or was opened.
+``recall`` is exposure only: the store keeps it as NOT citation capable, so a
+row that is shown and not used does not lose trust. ``use`` is the evidence
+that a rule met real work or was opened. Guard ``rows`` only SHOW a rule next
+to a command, so they are not a use (NOBLIVION-34).
+
+A deny is a use only when the model does not override it. The hook cannot
+know that at deny time: the override comes later, as a retry of the command
+with the ``# guard-ok: <reason>`` marker. So the deny is recorded as ``use``
+and the override as ``contradict``. In one session that nets below the prior:
+the score counts a ``contradict`` session as a trial and takes 2 uses off for
+it (``noblivion.trust.trust_score``).
 
 The fetched id is read from the tool RESULT (``GROUNDED MEMORY <id>: ...``),
 never from the tool input alone: with the rule index on, the MCP server reads a
@@ -33,7 +42,7 @@ A line holds the contract fields of POST /api/memory/feedback/batch (contract
 C1: ``mv_id`` or ``path``, ``kind``, ``ts``) and a local ``src`` (and, for a
 fetch, ``tool_use_id`` and the file ``name`` the result named). The flush sends
 the contract fields only, and the ``src`` as the optional C1 field ``sources``
-so the daemon can tell a guard-rows use from a fetch.
+so the store can tell a guard deny from a fetch.
 
 This module is imported by hooks, so it stays small and imports nothing heavy.
 """
@@ -57,23 +66,27 @@ EVENTS_NAME = "trust-events.jsonl"
 
 KIND_RECALL = "recall"
 KIND_USE = "use"
-KINDS = (KIND_RECALL, KIND_USE)
+KIND_CONTRADICT = "contradict"
+KINDS = (KIND_RECALL, KIND_USE, KIND_CONTRADICT)
 
 SRC_INDEX = "index"
 SRC_FETCH = "fetch"
-SRC_GUARD_ROWS = "guard_rows"
+SRC_GUARD_ROWS = "guard_rows"  # written by older hooks only; never a use now
 SRC_GUARD_DENY = "guard_deny"
+SRC_GUARD_OVERRIDE = "guard_override"
 SRC_HITS = "hits"  # the replay's pre-index hit rows (exposure)
-GUARD_USE_DECISIONS = {"rows": SRC_GUARD_ROWS, "deny": SRC_GUARD_DENY}
-# The guard decision "labels" (labels branch) is NOT in GUARD_USE_DECISIONS on
-# purpose: a label row beside a trigger row is not a use, in any mode.
+# guard decision -> (kind, src). The decisions "rows" and "labels" are NOT
+# here on purpose: they only show a rule, so they are not a use, in any mode.
+GUARD_EVENTS = {
+    "deny": (KIND_USE, SRC_GUARD_DENY),
+    "override": (KIND_CONTRADICT, SRC_GUARD_OVERRIDE),
+}
 
-# One setting for the three trust modes.
-# "a" = guard ``rows`` are not a use (read here); "b" and "c" act in
-# trust_rank. Unset or any other value = the behaviour before.
+# One setting for the three trust modes. "b" and "c" act in trust_rank. "a"
+# meant "guard rows are not a use"; that is now the default, so "a" changes
+# nothing here. Unset or any other value = the default.
 TRUST_MODE_ENV = "NOBLIVION_RECALL_TRUST_MODE"
 TRUST_MODES = ("a", "b", "c")
-MODE_NO_GUARD_ROWS = "a"
 
 # The recall hook's own events. The subagent hook runs the same index code with
 # its own labels ("SubagentStart:<via>", "AgentRewrite"), its own cache folder
@@ -240,15 +253,15 @@ def trust_mode(environ: Optional[Mapping[str, str]] = None) -> str:
 def guard_events(
     decision: str, ids: Iterable[Any], ts: str, environ: Optional[Mapping[str, str]] = None
 ) -> List[Dict[str, Any]]:
-    """Guard rows or a deny on rule R -> one ``use`` event per R, keyed by path.
-    Every other guard decision (override, error, apply-failed, labels) -> none.
-    In trust mode ``a`` guard rows -> none too: they fire on the command (git,
-    pytest), not on the prompt (CRIT-trust-tools.md M1)."""
-    src = GUARD_USE_DECISIONS.get(decision)
-    if src is None:
+    """A guard decision on rule R -> one event per R, keyed by path: a deny
+    -> ``use``, an override -> ``contradict``. Every other decision (rows,
+    labels, error, apply-failed) -> none: guard rows only show a rule, so
+    they are not a use (NOBLIVION-34). ``environ`` is kept for callers; no
+    mode changes the mapping."""
+    kind_src = GUARD_EVENTS.get(decision)
+    if kind_src is None:
         return []
-    if src == SRC_GUARD_ROWS and trust_mode(environ) == MODE_NO_GUARD_ROWS:
-        return []
+    kind, src = kind_src
     out: List[Dict[str, Any]] = []
     seen: Set[str] = set()
     for stem in ids:
@@ -256,7 +269,7 @@ def guard_events(
         if path is None or path in seen:
             continue
         seen.add(path)
-        out.append({"path": path, "kind": KIND_USE, "ts": ts, "src": src})
+        out.append({"path": path, "kind": kind, "ts": ts, "src": src})
     return out
 
 
@@ -289,10 +302,13 @@ def contract_event(ev: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
     ``"sources": [src]`` when the line has a valid ``src``, or None for a line
     that is not a valid event. ``mv_id`` wins when a line has both. A bad
     ``src`` is dropped, not the event: the server rejects an event whole for a
-    bad source name."""
+    bad source name. A ``use`` line from guard rows (an older hook wrote it
+    before NOBLIVION-34) is not a valid event: a shown rule is not a use."""
     kind = ev.get("kind")
     ts = norm_ts(ev.get("ts"))
     if kind not in KINDS or ts is None:
+        return None
+    if kind == KIND_USE and ev.get("src") == SRC_GUARD_ROWS:
         return None
     out: Dict[str, Any]
     mid = _mid(ev.get("mv_id")) if ev.get("mv_id") is not None else None
@@ -391,9 +407,9 @@ def record_index(
 def record_guard(
     environ: Mapping[str, str], session_id: Any, decision: str, ids: Iterable[Any]
 ) -> bool:
-    """The guard hook's call: a ``rows`` or ``deny`` decision on these memory
-    ids (file stems). The file goes to the recall cache folder, where the Stop
-    flush reads it."""
+    """The guard hook's call: a ``deny`` or ``override`` decision on these
+    memory ids (file stems); any other decision writes nothing. The file goes
+    to the recall cache folder, where the Stop flush reads it."""
     if not enabled(environ):
         return False
     return append_events(

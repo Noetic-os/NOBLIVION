@@ -2,7 +2,7 @@
 [project]
 name = "noblivion"
 version = "0.1.2"
-description = "A Claude Code plugin for local memory recall, guards and trust scoring."
+description = "A Claude Code plugin for local memory recall, guards and a memory usage report."
 readme = "README.md"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]

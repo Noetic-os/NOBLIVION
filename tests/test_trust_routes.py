@@ -31,21 +31,28 @@ def test_feedback_batch_stores_and_is_idempotent(running):  # noqa: F811
         "project": "ignored",
         "events": [
             {"kind": "recall", "mv_id": ids["feedback_tests_use_venv.md"]},
-            {"kind": "use", "path": "feedback_tests_use_venv.md", "sources": ["guard_rows"]},
+            {"kind": "use", "path": "feedback_tests_use_venv.md", "sources": ["guard_deny"]},
+            {
+                "kind": "contradict",
+                "path": "feedback_tests_use_venv.md",
+                "sources": ["guard_override"],
+            },
             {"kind": "use", "mv_id": 2_000_000_001},
             {"kind": "maybe", "mv_id": 1},
         ],
     }
     status, answer, _ = running.request("POST", FEEDBACK, body=body)
-    assert (status, answer) == (200, {"inserted": 2, "duplicate": 0, "unknown": 1, "rejected": 1})
+    assert (status, answer) == (200, {"inserted": 3, "duplicate": 0, "unknown": 1, "rejected": 1})
     status, answer, _ = running.request("POST", FEEDBACK, body=body)
-    assert (status, answer) == (200, {"inserted": 0, "duplicate": 2, "unknown": 1, "rejected": 1})
+    assert (status, answer) == (200, {"inserted": 0, "duplicate": 3, "unknown": 1, "rejected": 1})
     with running.store.connection() as conn:
         row = conn.execute(
-            "SELECT trials, use_pos FROM feedback WHERE memory_id = ?",
+            "SELECT trials, use_pos, contradiction_count, trust_score FROM feedback "
+            "WHERE memory_id = ?",
             (ids["feedback_tests_use_venv.md"],),
         ).fetchone()
-    assert tuple(row) == (1, 1.0)
+    assert tuple(row[:3]) == (1, 1.0, 1)
+    assert row[3] < 0.5  # a deny and its override: below the prior
 
 
 @pytest.mark.parametrize(

@@ -160,3 +160,15 @@ def test_end_to_end_a_live_store_report_reaches_the_session_line(tmp_path, env):
         assert line.startswith("Memory trust: 1 to retire, 0 to promote, 0 to demote.")
     finally:
         run.stop()
+
+
+def test_render_names_contradictions_and_says_trust_is_usage_evidence():
+    """NOBLIVION-34. An older store sends no ``contradict_sessions``: the row
+    then reads as before."""
+    doc = rep.validate(
+        dict(REPORT, retire=[row(1, "feedback_a.md", contradict_sessions=3), row(2, "b.md")])
+    )
+    text = rep.render(doc)
+    assert "feedback_a.md (id 1): " in text and "used in 0, contradicted in 3." in text
+    assert text.count("contradicted in") == 1  # b.md has no field
+    assert "usage evidence" in text and "does not say whether a note is correct" in text

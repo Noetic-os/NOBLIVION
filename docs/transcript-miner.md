@@ -28,7 +28,7 @@ messages, are not counted as your prompts.
 - Its source type is `transcript_mined`. A memory file has the source type
   `claude_code_md`.
 - Its root is the project folder of the transcript.
-- It starts with a lower trust score: `trust.prior_mined`, default `0.3`.
+- It starts with a lower trust value: `trust.prior_mined`, default `0.3`.
   A memory file starts at `0.5`.
 - It has no file. It lives only in the database.
 

@@ -25,14 +25,16 @@ Status: in development. There is no release yet.
 - **Stop checks.** When Claude Code wants to end a turn, a hook can ask it
   to finish open work first. By default the checks only log what they would
   ask (shadow mode); `noblivion stop report` shows the counts.
-- **Trust.** The store records when a note is shown and when it is used. It
-  computes a trust score for each note. A report lists notes to promote,
-  to demote or to retire.
+- **Usage report.** The store records when a note is shown, used or
+  contradicted (a guard deny that was overridden). From this usage
+  evidence, a report lists notes to retire, to promote or to demote. The
+  trust value in the report does not say whether a note is correct, and it
+  does not change the order of recall by default.
 - **Duplicate sweep.** An optional command finds notes that say the same
   thing. A hosted model judges each pair. This is off until you turn it
   on.
 - **Transcript miner.** At the end of a session, a hook turns the session
-  transcript into notes with low trust. The prompt hook never adds these
+  transcript into notes with a low starting trust value. The prompt hook never adds these
   notes. Claude Code sees them only when it asks the MCP tool for them.
 
 ## What it does not do

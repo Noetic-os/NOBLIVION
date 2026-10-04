@@ -56,8 +56,8 @@ See [configuration.md](configuration.md) for these settings.
 2. The NOBLIVION indexer adds or updates one row in the SQLite database.
 3. A new Claude Code or Codex prompt can find that row through recall.
 4. Either client can fetch the full note by its memory ID.
-5. Feedback from either client can update the note's trust history in the
-   same database.
+5. Usage events from either client can update the note's trust history
+   (its usage evidence) in the same database.
 
 The Markdown file is the source of truth. The database is a local index and
 history store. If a client writes outside the indexed folders, the other
@@ -83,8 +83,8 @@ tasks.
 When you use both clients, a lesson saved during Claude Code work can help
 a later Codex task. A lesson saved during Codex work can help a later Claude
 Code task. Both clients can use the same rule files and search results.
-You can fix an outdated lesson in one Markdown file. The shared trust
-history can show which notes help across clients.
+You can fix an outdated lesson in one Markdown file. The shared usage
+history shows which notes are used across clients.
 
 These are expected gains, not measured Codex results. NOBLIVION may add
 text to a prompt and may take time to search or index a note. It does not

@@ -20,8 +20,11 @@ The lists:
   days, not in MEMORY.md (a candidate for the always-on index);
 - demote: a MEMORY.md line whose file was not used in 30 days.
 
-"Used" means a fetch by ``noblivion_recall`` or a guard row or deny on the
-rule. No event measures compliance or harm averted.
+Trust here is usage evidence for these three lists. "Used" means a fetch by
+``noblivion_recall`` or a guard deny on the rule. A guard row only shows a
+rule, so it is not a use (NOBLIVION-34). "Contradicted" means a guard
+override of the rule; it lowers the trust value. No event measures whether a
+rule is correct, compliance or harm averted.
 
 The store is found, proved and (when down) started through the recall hook's
 ``store_get`` (``store_client``: ``store.json``, the HMAC listener proof, the
@@ -58,7 +61,11 @@ CACHE_FILE_NAME = "trust-report.json"  # in <data dir>/cache
 LISTS = ("retire", "promote", "demote")
 TIMEOUT_S = 10.0  # design doc section 3.5
 FORMAT = "noblivion-trust-report-cache/1"
-ROW_INT = ("trials", "shown_sessions", "use_sessions")
+USAGE_NOTE = (
+    "Trust is usage evidence (shown, used and contradicted sessions). "
+    "It does not say whether a note is correct."
+)
+ROW_INT = ("trials", "shown_sessions", "use_sessions", "contradict_sessions")
 
 _MODS: Dict[str, Any] = {}
 
@@ -189,6 +196,13 @@ def _fmt(value: Any, spec: str = "") -> str:
     return "-" if value is None else format(value, spec)
 
 
+def _contradicted(row: Mapping[str, Any]) -> str:
+    """``, contradicted in N`` when N > 0; a cache from an older store has
+    no ``contradict_sessions`` and gets nothing."""
+    n = row.get("contradict_sessions")
+    return f", contradicted in {n}" if isinstance(n, int) and n > 0 else ""
+
+
 def render(report: Mapping[str, Any], limit: int = 50) -> str:
     lines = [
         f"Memory trust report for persona {PERSONA}: generated "
@@ -204,7 +218,8 @@ def render(report: Mapping[str, Any], limit: int = 50) -> str:
             lines.append(
                 f"- {where} (id {r['mv_id']}): trust {_fmt(r.get('trust'), '.2f')}, "
                 f"trials {_fmt(r.get('trials'))}, shown in {_fmt(r.get('shown_sessions'))} "
-                f"sessions, used in {_fmt(r.get('use_sessions'))}. {r.get('reason') or ''}".rstrip()
+                f"sessions, used in {_fmt(r.get('use_sessions'))}"
+                f"{_contradicted(r)}. {r.get('reason') or ''}".rstrip()
             )
         if len(rows) > limit:
             lines.append(f"- ... {len(rows) - limit} more (use --limit)")
@@ -216,6 +231,7 @@ def render(report: Mapping[str, Any], limit: int = 50) -> str:
         "To retire a file: move it to the memory folder's .archive/ and remove its index lines. "
         "To promote or demote: edit MEMORY.md. These are agent actions; this tool changes nothing."
     )
+    lines.append(USAGE_NOTE)
     return "\n".join(lines)
 
 

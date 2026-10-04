@@ -78,6 +78,20 @@ def test_trust_is_bounded_and_monotone_in_uses():
     assert trust.trust_score(1.0, 0, 50, 0) == 1.0
 
 
+def test_a_contradiction_lowers_the_score_also_below_the_prior():
+    """NOBLIVION-34: a contradiction session is a trial and takes 2 uses off.
+
+    MUTANT: do not count the contradiction as a trial, or drop its weight."""
+    assert trust.trust_score(0.5, 1, 0, 1) < 0.5
+    assert trust.trust_score(0.5, 1, 1, 1) < 0.5  # a deny, then its override
+    for uses in range(6):
+        before = trust.trust_score(0.5, uses, uses, 0)
+        after = trust.trust_score(0.5, uses + 1, uses, 1)
+        assert after < before
+    scores = [trust.trust_score(0.5, c, 0, c) for c in range(10)]
+    assert scores == sorted(scores, reverse=True) and scores[-1] < 0.5
+
+
 # 2. the batch checks ------------------------------------------------------------
 
 
@@ -163,6 +177,19 @@ def test_good_event_forms():
     ]
 
 
+def test_contradict_is_accepted_and_stored_as_contradiction(conn):
+    a = add_memory(conn, "feedback_a", "Run the tests first.")
+    batch = trust.parse_batch(
+        {"session_id": "s1", "events": [{"kind": "contradict", "mv_id": a, "ts": TS}]}, now=NOW
+    )
+    assert batch.rejected == 0 and batch.events[0].kind == "contradiction"
+    trust.store_batch(conn, batch, now=NOW)
+    row = conn.execute(
+        "SELECT kind, citation_capable FROM feedback_events WHERE memory_id = ?", (a,)
+    ).fetchone()
+    assert tuple(row) == ("contradiction", 1)
+
+
 # 3. ingest ------------------------------------------------------------------------
 
 
@@ -196,6 +223,28 @@ def test_ingest_counts_and_is_idempotent(conn):
     }
     assert [rollup(conn, a), rollup(conn, b)] == before
     assert count(conn, "feedback_events") == 2
+
+
+def test_ingested_contradict_events_lower_the_score_below_the_prior(conn):
+    """MUTANT: store a contradiction as not citation capable (no trial)."""
+    a = add_memory(conn, "feedback_a", "Run the tests first.")
+    ingest(conn, "s1", [{"kind": "use", "mv_id": a, "ts": TS}])
+    used = rollup(conn, a)["trust_score"]
+    assert used > 0.5
+    # s2: a guard deny (use) and then its override (contradict)
+    ingest(
+        conn,
+        "s2",
+        [{"kind": "use", "mv_id": a, "ts": TS}, {"kind": "contradict", "mv_id": a, "ts": TS}],
+    )
+    r = rollup(conn, a)
+    assert (r["trials"], r["use_pos"], r["contradiction_count"]) == (2, 2.0, 1)
+    assert r["trust_score"] < used
+    ingest(conn, "s3", [{"kind": "contradict", "mv_id": a, "ts": TS}])
+    r = rollup(conn, a)
+    assert (r["trials"], r["contradiction_count"]) == (3, 2)
+    assert r["trust_score"] == pytest.approx(trust.trust_score(0.5, 3, 2, 2))
+    assert r["trust_score"] < 0.5
 
 
 def test_ingest_recomputes_the_rollup_in_the_same_transaction(conn):
@@ -510,9 +559,29 @@ def test_report_shape():
         "trials",
         "shown_sessions",
         "use_sessions",
+        "contradict_sessions",
         "reason",
     }
     assert row["root"] == ROOT and row["reason"].startswith("shown in 20 sessions, used in none")
+
+
+def test_report_rows_count_contradictions_and_the_text_names_them():
+    agg = trust.EventAgg(
+        first_ts=NOW - timedelta(days=40),
+        shown_sessions=20,
+        use_sessions=0,
+        trials=2,
+        contradictions=2,
+        last_use=None,
+    )
+    report = trust.build_report(_inputs([_file(1, "a.md")], {1: agg}), now=NOW)
+    row = report["retire"][0]
+    assert row["contradict_sessions"] == 2 and row["trust"] < 0.5
+    text = trust.render_report(report)
+    assert "used in 0, contradicted in 2." in text
+    assert "usage evidence" in text and "does not say whether a note is correct" in text
+    old = dict(report, retire=[{k: v for k, v in row.items() if k != "contradict_sessions"}])
+    assert "contradicted" not in trust.render_report(old).split("usage evidence")[0]
 
 
 def test_retire_thresholds():

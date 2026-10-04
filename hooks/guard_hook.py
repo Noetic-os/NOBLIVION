@@ -1627,10 +1627,12 @@ def _log_text(event: object) -> str:
 
 
 def _trust_use(env: Mapping[str, str], sid: object, decision: str, ids: List[str]) -> None:
-    """Trust events: guard rows or a deny on rule R are a ``use`` of R
-    (trust_events). Only when ``trust_events.enabled`` (on by default);
-    prints nothing. An ordinary error is dropped; the time limit still applies."""
-    if decision not in ("rows", "deny"):
+    """Trust events (trust_events): a deny on rule R is a ``use`` of R, an
+    override of R is a ``contradict`` of R. Rows only show a rule, so they
+    are not a use (NOBLIVION-34). Only when ``trust_events.enabled`` (on by
+    default); prints nothing. An ordinary error is dropped; the time limit
+    still applies."""
+    if decision not in ("deny", "override"):
         return
     try:
         te = _load("trust_events")

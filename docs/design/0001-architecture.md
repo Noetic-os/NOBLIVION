@@ -28,8 +28,9 @@ Words used in this document:
 - Keep the hooks of the reference implementation and the REST paths and
   JSON shapes they use. The hooks need a short list of changes (section
   4.0), but no change to how they parse answers.
-- Keep the trust loop: record when a memory is shown and when it is used,
-  compute a trust score, and report memories to retire, promote or demote.
+- Keep the trust loop: record when a memory is shown, used or contradicted,
+  and use this usage evidence to report memories to retire, promote or
+  demote. Trust does not measure whether a memory is correct.
 - Keep the guards (tool-call guards that need no store) working with no
   store at all.
 - Add an opt-in duplicate sweep with a hosted judge model.
@@ -605,7 +606,7 @@ Answer 200:
 - Errors: 400, 403, 413 with `{"detail": ...}`. A store failure: 503
   `{"detail": "memory feedback store failed"}`. Nothing is half written.
 - `sources` (optional, on an event): the hooks send the local source of an
-  event (`index`, `fetch`, `guard_rows`, `guard_deny`). v0.1 stores no
+  event (`index`, `fetch`, `guard_deny`, `guard_override`). v0.1 stores no
   sources, so the store ignores the key and never rejects an event for it.
 - E5 implements this route in `noblivion/trust.py` (`parse_batch`,
   `store_batch`).
@@ -652,10 +653,10 @@ Rules (unchanged from the reference implementation):
   root.
 - Each list holds at most 500 rows. `truncated` (new) is true when a list
   was cut. This keeps the answer far below the 1 MiB client cap.
-- A `recall` event is not a trial (it is not citation-capable), and no v0.1
-  client sends `contradiction`. So in v0.1 `trials` equals `use_sessions`
-  and trust never falls below trust_0. Retire and demote rest on the
-  session counts, not on trust.
+- A `recall` event is not a trial (it is not citation-capable). A
+  `contradict` event is a trial and lowers trust, also below trust_0
+  (NOBLIVION-34). Retire and demote rest on the session counts, not on
+  trust. Each row also carries `contradict_sessions`.
 - Store failure: 503 `{"detail": "trust report unavailable"}`.
 - `generated_at` is UTC with whole seconds and a `Z`.
 
@@ -1250,16 +1251,30 @@ below 5 trials. In `shadow` (the store's mode, or the hook switch set to
 trust values are computed and reported, never applied. The store itself
 never reorders by trust in v0.1.
 
+Trust ranking stays off by default. Trust is usage evidence for the
+report, not a measure of relevance. It turns on by default only after a
+time-split test (fit on older events, test on newer events) shows a
+ranking gain. That test does not exist yet.
+
 ## 9. Trust
 
 ### 9.1 Events
 
 - `recall`: the memory was shown to the model (injected or listed).
   `citation_capable = 0`.
-- `use`: the model used the memory. `citation_capable = 1`.
-- `load_bearing` and `contradiction` exist in the schema and the formula
-  but no v0.1 client sends them. The REST route accepts only `recall` and
-  `use`.
+- `use`: the model opened the memory with the MCP tool, or the guard
+  denied a command by the memory's rule. `citation_capable = 1`. A guard
+  that only shows a rule (rows, labels) sends no event (NOBLIVION-34).
+- `contradict`: the model overrode a guard deny of the memory's rule with
+  the `# guard-ok:` marker. The store keeps it as kind `contradiction`.
+  `citation_capable = 1`, so it is a trial. The guard cannot know at deny
+  time whether a deny will be overridden, so it sends the deny as `use`
+  and the override as `contradict`.
+- A user correction on the topic of a recalled memory is not a
+  `contradict` event in v0.1: the correction detector does not know which
+  memory a correction is about.
+- `load_bearing` exists in the schema and the formula but no v0.1 client
+  sends it. The REST route accepts `recall`, `use` and `contradict`.
 - The event id is the session id. One session counts at most once per
   memory and kind.
 
@@ -1292,7 +1307,9 @@ u_eff    = max(0, use_pos - 2 * contra)
 trust    = clamp((10 * trust_0 + u_eff) / (10 + trials), 0, 1)
 ```
 
-With no events, trust equals trust_0. The ranking multiplier a hook may use
+With no events, trust equals trust_0. A contradiction session is a trial
+and takes 2 off `u_eff`, so it lowers trust, also below trust_0. The
+ranking multiplier a hook may use
 is `0.5 + 0.5 * trust`.
 
 Recompute is one function, `recompute(conn, memory_ids)`. It reads the
@@ -2092,7 +2109,7 @@ marked "fix now", and 4 notes. Every finding is handled in this version.
 | M7 | "No path, user name, host name is sent" was false | Fixed: outbound scrub for home path, user name and IPs; claim corrected; consent text states the residue (10.2) |
 | m1 | Error recall listed twice with conflicting rows; its default mode is local | Fixed (3.5) |
 | m2 | "Answers at once" vs "index before answering" | Fixed: first scan runs in the background, `index_state` in health (3.2, 5.6) |
-| m3 | Report example impossible: recall is not a trial | Fixed example; doc states trust never falls below trust_0 in v0.1 (4.6) |
+| m3 | Report example impossible: recall is not a trial | Fixed example; doc stated trust never falls below trust_0 in v0.1 (4.6). NOBLIVION-34 added `contradict`, which lowers it |
 | m4 | `trust_prior` 0.5 for every row, but mined prior is 0.3 | Fixed: the row's own prior (4.3) |
 | m5 | Cascade on `dedup_actions` erased undo records; no veto table | Fixed: no foreign keys on `dedup_actions`, new `dedup_vetoes` (6.2) |
 | m6 | No job ran retention; merge step order undefined; "the store" vs the CLI | Fixed: maintenance pass (9.3), three-step merge order with `pending` status, CLI named as the one writer (10.1, 10.4) |

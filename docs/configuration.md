@@ -224,9 +224,9 @@ ranked index. All of them are off by default.
 | `NOBLIVION_RECALL_INDEX_ROW_DEDUPE` | none | off (switch) | Leaves out the rows that an earlier prompt of the same session already showed. |
 | `NOBLIVION_RECALL_INDEX_CHECK_LINE` | none | off (switch) | Adds one more header line to the rule rows. |
 | `NOBLIVION_RECALL_INDEX_DROP_NO_RULE` | none | off (switch) | Leaves out a row with no rule and no summary. |
-| `NOBLIVION_RECALL_INDEX_TRUST` | none | off | `1`, `on`, `true` or `yes` multiplies each score by the trust factor. `shadow` computes the factor and logs it, but keeps the order. See [trust.md](trust.md). |
+| `NOBLIVION_RECALL_INDEX_TRUST` | none | off | Stays off by default until a time-split test shows a ranking gain. `1`, `on`, `true` or `yes` multiplies each score by the trust factor. `shadow` computes the factor and logs it, but keeps the order. See [trust.md](trust.md). |
 | `NOBLIVION_RECALL_TRUST_FILE` | none | unset | A fixed trust snapshot file to use instead of the store's trust values. For tests. |
-| `NOBLIVION_RECALL_TRUST_MODE` | none | unset | `a`, `b` or `c`: other ways to compute the trust factor, for evaluation. Unset uses the normal factor. |
+| `NOBLIVION_RECALL_TRUST_MODE` | none | unset | `b` or `c`: other ways to compute the trust factor, for evaluation. `a` has no effect now: guard rows are never a use. Unset uses the normal factor. |
 | `NOBLIVION_RECALL_TRUST_MIN_SCORE` | none | `0.58` | The score a row needs in trust mode `c`. |
 
 ### The shipped config file
@@ -364,8 +364,8 @@ mode) and logged only (the check is not in the blocking list).
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_TRUST_EVENTS` | `trust.events` | on (switch) | Records which notes were shown and used. Off stops the spool and the flush. |
-| `NOBLIVION_TRUST_RANKING` | `trust.ranking` | `off` | `off`, `shadow` or `on`. With `shadow` or `on`, the store adds trust values to each index row. The store itself never reorders rows. With `shadow`, the prompt hook computes and logs the trust factor but never applies it. With `on`, the hook applies it when `NOBLIVION_RECALL_INDEX_TRUST` is on. |
+| `NOBLIVION_TRUST_EVENTS` | `trust.events` | on (switch) | Records which notes were shown, used and contradicted. This is the usage evidence for the retire, promote and demote report. Off stops the spool and the flush. |
+| `NOBLIVION_TRUST_RANKING` | `trust.ranking` | `off` | Stays `off` by default until a time-split test (fit on older events, test on newer events) shows a ranking gain. `off`, `shadow` or `on`. With `shadow` or `on`, the store adds trust values to each index row. The store itself never reorders rows. With `shadow`, the prompt hook computes and logs the trust factor but never applies it. With `on`, the hook applies it when `NOBLIVION_RECALL_INDEX_TRUST` is on. |
 | none | `trust.prior_mined` | `0.3` | The starting trust of a transcript-mined note, more than 0 and at most 1. A memory file starts at `0.5`. |
 | `NOBLIVION_TRUST_REPORT_FILE` | none | `<data dir>/cache/trust-report.json` | The cached trust report. |
 | `NOBLIVION_DEDUP_STATUS_FILE` | none | `<data dir>/cache/dedup-last-run.json` | The duplicate sweep status. Every `noblivion dedup plan`, `apply` and `undo` writes it. The session start line reads it. |

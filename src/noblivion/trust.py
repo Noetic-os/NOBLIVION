@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Trust in the store (design doc 0001, sections 4.5, 4.6 and 9).
 
+Trust is usage evidence for the retire, promote and demote report. It counts
+the sessions in which a note was shown, used or contradicted. It does not
+measure whether a note is correct, and recall does not rank by it unless the
+user turns trust ranking on.
+
 - ``parse_batch`` checks a ``POST /api/memory/feedback/batch`` body.
 - ``store_batch`` writes one batch in ONE ``BEGIN IMMEDIATE`` transaction:
   resolve, insert the new events, recompute the rollup rows they touch,
@@ -36,8 +41,12 @@ from noblivion import db
 log = logging.getLogger("noblivion.store")
 
 PERSONA = "claude_code"
-KINDS = ("recall", "use")  # the kinds the REST route accepts (section 9.1)
-CITATION_CAPABLE = {"recall": 0, "use": 1}
+KINDS = ("recall", "use", "contradict")  # the kinds the REST route accepts (section 9.1)
+# The REST kind -> the stored kind. The schema has held ``contradiction`` since
+# 0001, so ``contradict`` needs no migration (NOBLIVION-34).
+STORED_KIND = {"recall": "recall", "use": "use", "contradict": "contradiction"}
+# A contradiction is a trial: it lowers the score, also below the prior.
+CITATION_CAPABLE = {"recall": 0, "use": 1, "contradiction": 1}
 MAX_EVENTS = 500
 MAX_PATH_CHARS = 512
 MAX_MV_ID = 2_147_483_647
@@ -88,7 +97,7 @@ class BatchRefused(Exception):
 
 @dataclass(frozen=True)
 class Event:
-    kind: str
+    kind: str  # the stored kind (STORED_KIND)
     ts: str  # db.format_ts
     mv_id: int | None = None
     path: str | None = None
@@ -106,7 +115,10 @@ class Batch:
 
 
 def trust_score(trust_0: float, trials: int, use_pos: float, contradictions: int) -> float:
-    """``clamp((10 * trust_0 + u_eff) / (10 + trials), 0, 1)`` (section 9.3)."""
+    """``clamp((10 * trust_0 + u_eff) / (10 + trials), 0, 1)`` (section 9.3),
+    with ``u_eff = max(0, use_pos - 2 * contradictions)``. A contradiction
+    session is also a trial, so each one lowers the score, also below
+    ``trust_0``."""
     u_eff = max(0.0, max(0.0, use_pos) - 2.0 * max(0, contradictions))
     raw = (PRIOR_STRENGTH * trust_0 + u_eff) / (PRIOR_STRENGTH + max(0, trials))
     return max(0.0, min(1.0, raw))
@@ -188,7 +200,7 @@ def _parse_event(item: object, now: datetime) -> Event | None:
     ts = parse_ts(item.get("ts"), now)
     if ts is None:
         return None
-    return Event(kind=str(kind), ts=ts, mv_id=mv_id, path=path)
+    return Event(kind=STORED_KIND[str(kind)], ts=ts, mv_id=mv_id, path=path)
 
 
 def parse_batch(body: Mapping[str, object], *, now: datetime | None = None) -> Batch:
@@ -652,6 +664,7 @@ def build_report(inputs: ReportInputs, *, now: datetime | None = None) -> dict:
             "trials": trials,
             "shown_sessions": shown,
             "use_sessions": used,
+            "contradict_sessions": agg.contradictions if agg else 0,
         }
         if f.path in inputs.index_links.get(f.root, frozenset()):
             last_use = agg.last_use if agg else None
@@ -706,6 +719,17 @@ REPORT_HEADINGS = (
 )
 
 
+USAGE_NOTE = (
+    "Trust is usage evidence (shown, used and contradicted sessions). "
+    "It does not say whether a note is correct."
+)
+
+
+def _contradicted(row: Mapping[str, object]) -> str:
+    n = row.get("contradict_sessions")
+    return f", contradicted in {n}" if isinstance(n, int) and n > 0 else ""
+
+
 def render_report(answer: Mapping[str, object], limit: int = 50) -> str:
     """The report as text: one heading per list, one line per note."""
     lines = [
@@ -721,8 +745,8 @@ def render_report(answer: Mapping[str, object], limit: int = 50) -> str:
             where = f"{r['root']}/{r['path']}" if r.get("root") else r["path"]
             lines.append(
                 f"- {where} (id {r['mv_id']}): trust {r['trust']:.2f}, trials {r['trials']}, "
-                f"shown in {r['shown_sessions']} sessions, used in {r['use_sessions']}. "
-                f"{r.get('reason') or ''}".rstrip()
+                f"shown in {r['shown_sessions']} sessions, used in {r['use_sessions']}"
+                f"{_contradicted(r)}. {r.get('reason') or ''}".rstrip()
             )
         if len(rows) > limit:
             lines.append(f"- ... {len(rows) - limit} more (use --limit)")
@@ -731,6 +755,7 @@ def render_report(answer: Mapping[str, object], limit: int = 50) -> str:
         lines.append(f"A list was cut at {REPORT_LIST_CAP} rows.")
     lines.append("")
     lines.append("NOBLIVION changes no file based on this report. You decide.")
+    lines.append(USAGE_NOTE)
     return "\n".join(lines)
 
 

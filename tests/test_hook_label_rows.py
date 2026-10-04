@@ -725,16 +725,15 @@ def _trust_uses(env, sid):
 
 
 @pytest.mark.parametrize("mode", ["", "a", "b", "c"])
-def test_a_guard_call_with_trigger_and_label_rows_records_a_use_only_for_trigger_rows(env, mode):
-    """Trigger rows on a guard call are a ``use`` (none in trust mode ``a``);
-    a label row beside them is never a use, in any trust mode. A call with
-    label rows only records nothing."""
+def test_a_guard_call_with_trigger_and_label_rows_records_no_use(env, mode):
+    """Trigger rows and label rows on a guard call only show a rule, so
+    neither is a ``use``, in any trust mode (NOBLIVION-34). A call with label
+    rows only records nothing either."""
     e = dict(env, NOBLIVION_TRUST_EVENTS="1", NOBLIVION_RECALL_TRUST_MODE=mode)
     sid = "tm" + (mode or "0")
     text = ctx(call(e, bash("deploycmd run --target multi_target.py", sid=sid)))
     assert len(label_ids(text)) == 1 and "feedback_trig_one" in text
-    want = [] if mode == "a" else ["feedback_trig_one.md", "feedback_trig_two.md"]
-    assert _trust_uses(e, sid) == want
+    assert _trust_uses(e, sid) == []
     sid = "tl" + (mode or "0")
     out = call(e, bash("cat /etc/prometheus/prometheus.yml", sid=sid))
     assert label_ids(ctx(out)) == ["project_host_alpha"]

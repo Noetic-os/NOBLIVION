@@ -77,13 +77,23 @@ def test_index_rows_map_to_recall_by_id_once_each():
     ]
 
 
-@pytest.mark.parametrize("decision,src", [("rows", "guard_rows"), ("deny", "guard_deny")])
-def test_guard_rows_and_deny_map_to_use_by_path(decision, src):
+@pytest.mark.parametrize(
+    "decision,kind,src",
+    [("deny", "use", "guard_deny"), ("override", "contradict", "guard_override")],
+)
+def test_guard_deny_is_use_and_override_is_contradict_by_path(decision, kind, src):
     evs = te.guard_events(decision, ["feedback_a", "feedback_a", "../etc", ".hidden", ""], TS)
-    assert evs == [{"path": "feedback_a.md", "kind": "use", "ts": TS, "src": src}]
+    assert evs == [{"path": "feedback_a.md", "kind": kind, "ts": TS, "src": src}]
 
 
-@pytest.mark.parametrize("decision", ["override", "error", "apply-failed", "followed", "error_hit"])
+def test_guard_rows_display_gives_no_use():
+    """NOBLIVION-34: a guard row only shows a rule; it is not a use.
+
+    MUTANT: map ``rows`` to ``use`` again."""
+    assert te.guard_events("rows", ["feedback_a", "feedback_b"], TS) == []
+
+
+@pytest.mark.parametrize("decision", ["rows", "labels", "error", "apply-failed", "followed"])
 def test_other_guard_decisions_and_dropped_kinds_map_to_nothing(decision):
     assert te.guard_events(decision, ["feedback_a"], TS) == []
 
@@ -138,8 +148,8 @@ def test_contract_event_carries_a_valid_src_as_sources_and_drops_a_bad_one():
 
     MUTANT: never copy src, or copy it unchecked.
     """
-    for src in te.GUARD_USE_DECISIONS.values():
-        got = te.contract_event({"path": "x.md", "kind": "use", "ts": TS, "src": src})
+    for kind, src in te.GUARD_EVENTS.values():
+        got = te.contract_event({"path": "x.md", "kind": kind, "ts": TS, "src": src})
         assert got["sources"] == [src]
     for bad in ("Fetch", "guard-rows", "a,b", "", "fetch\n", "x" * 33, 7, None, ["fetch"]):
         assert te.contract_event({"mv_id": 5, "kind": "use", "ts": TS, "src": bad}) == {
@@ -154,7 +164,7 @@ def test_merge_events_unions_the_sources_of_one_memory_and_kind():
     later = "2026-10-01T11:00:00+00:00"
     evs, bad = te.merge_events(
         [
-            {"path": "a.md", "kind": "use", "ts": later, "src": "guard_rows"},
+            {"path": "a.md", "kind": "use", "ts": later, "src": "index"},
             {"path": "a.md", "kind": "use", "ts": TS, "src": "guard_deny"},
             {"path": "a.md", "kind": "use", "ts": TS, "src": "guard_deny"},
             {"mv_id": 1, "kind": "use", "ts": later, "src": "fetch"},
@@ -166,7 +176,7 @@ def test_merge_events_unions_the_sources_of_one_memory_and_kind():
     assert evs == [
         {"mv_id": 2, "kind": "recall", "ts": TS},
         {"mv_id": 1, "kind": "use", "ts": TS, "sources": ["fetch"]},
-        {"path": "a.md", "kind": "use", "ts": TS, "sources": ["guard_deny", "guard_rows"]},
+        {"path": "a.md", "kind": "use", "ts": TS, "sources": ["guard_deny", "index"]},
     ]
 
 
@@ -407,7 +417,10 @@ def _guard(env: dict[str, str], command: str, cwd: str) -> str:
     return out.getvalue()
 
 
-def test_guard_deny_and_rows_append_use_events_by_path(tmp_path, guard_env):
+def test_guard_deny_appends_a_use_and_rows_append_nothing(tmp_path, guard_env):
+    """NOBLIVION-34: the deny is a use; rows only show a rule, so no event.
+
+    MUTANT: record the rows decision again."""
     env = dict(guard_env, **ON)
     deny = _guard(env, "git push --force origin x", str(tmp_path))
     rows = _guard(env, "python -m pytest tests/test_x.py", str(tmp_path))
@@ -415,19 +428,36 @@ def test_guard_deny_and_rows_append_use_events_by_path(tmp_path, guard_env):
     got = _lines(tmp_path / "cache")
     assert [(e["path"], e["src"], e["kind"]) for e in got] == [
         ("feedback_no_force.md", "guard_deny", "use"),
-        ("feedback_pytest.md", "guard_rows", "use"),
     ]
 
 
-def test_guard_override_appends_nothing(tmp_path, guard_env):
-    _guard(
-        dict(guard_env, **ON),
-        "git push --force origin x  # guard-ok: a rebased branch of mine",
-        str(tmp_path),
-    )
+def test_guard_override_appends_a_contradict(tmp_path, guard_env):
+    """A deny, then an override of the same rule: one use and one contradict.
+
+    MUTANT: drop the override event, or record it as a use."""
+    env = dict(guard_env, **ON)
+    _guard(env, "git push --force origin x", str(tmp_path))
+    _guard(env, "git push --force origin x  # guard-ok: a rebased branch of mine", str(tmp_path))
     log = (tmp_path / "guard.jsonl").read_text().splitlines()
-    assert [json.loads(x)["decision"] for x in log] == ["override"]
-    assert _lines(tmp_path / "cache") == []
+    assert [json.loads(x)["decision"] for x in log] == ["deny", "override"]
+    got = _lines(tmp_path / "cache")
+    assert [(e["path"], e["src"], e["kind"]) for e in got] == [
+        ("feedback_no_force.md", "guard_deny", "use"),
+        ("feedback_no_force.md", "guard_override", "contradict"),
+    ]
+
+
+def test_an_old_guard_rows_use_line_in_the_spool_is_not_sent():
+    """A spool line written by a hook before NOBLIVION-34 still says a guard
+    row is a use. The flush must not send it.
+
+    MUTANT: send every ``use`` line whatever its source."""
+    old = {"path": "a.md", "kind": "use", "ts": TS, "src": "guard_rows"}
+    assert te.contract_event(old) is None
+    assert te.contract_event(dict(old, src="guard_deny")) is not None
+    evs, bad = te.merge_events([old, {"path": "a.md", "kind": "contradict", "ts": TS}])
+    assert bad == 1
+    assert evs == [{"path": "a.md", "kind": "contradict", "ts": TS}]
 
 
 def test_guard_with_events_off_prints_the_same_and_writes_nothing(tmp_path, guard_env):

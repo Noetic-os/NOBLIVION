@@ -10,6 +10,17 @@ All notable changes to NOBLIVION. The format follows
 
 ### Changed
 
+- Behaviour change for readers of the trust report: a guard that only shows
+  a rule (guard rows or label rows) no longer counts as a use
+  (NOBLIVION-34). Only a guard deny, or a fetch with the MCP tool, is a use.
+  Use counts in the report fall, so fewer notes reach "promote" and more
+  can reach "retire". `NOBLIVION_RECALL_TRUST_MODE=a` now has no effect.
+  Spooled guard-row events from an older version are not sent. Events the
+  store already holds still count.
+- The docs, the report text and the package description now call trust
+  usage evidence for the retire, promote and demote report. Trust does not
+  measure whether a note is correct, and trust ranking stays off by
+  default until a time-split test shows a ranking gain (NOBLIVION-34).
 - Behaviour change: the stop checks run in shadow mode by default
   (NOBLIVION-32). They run and log what would have blocked, but never block.
   Before, the commit, tests, notify and lesson checks blocked for every new
@@ -23,6 +34,11 @@ All notable changes to NOBLIVION. The format follows
 
 ### Added
 
+- A new trust event kind, `contradict` (NOBLIVION-34). The guard records it
+  when Claude Code overrides a deny with `# guard-ok: <reason>`. It is a
+  trial and takes 2 uses off, so a note's trust value can now fall, also
+  below its prior. The store keeps it in the existing `contradiction` rows;
+  no migration is needed. Report rows carry `contradict_sessions`.
 - `noblivion stop report [--days N] [--json]` counts the stop check log rows
   per check: would block, blocked, and logged only.
 

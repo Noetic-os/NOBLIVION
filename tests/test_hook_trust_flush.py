@@ -141,7 +141,7 @@ def test_a_relative_cwd_is_not_passed_on(env):
 def test_body_shape_and_a_second_flush_sends_nothing(env):
     later = "2026-10-01T11:00:00+00:00"
     _append(env, te.index_events([19001, 19002], later))
-    _append(env, te.index_events([19001], TS) + te.guard_events("rows", ["feedback_a"], TS))
+    _append(env, te.index_events([19001], TS) + te.guard_events("deny", ["feedback_a"], TS))
     post = Recorder()
     status = _run(env, post)
     assert status.startswith("ok events=3 inserted=1")  # four lines, three merged events
@@ -151,7 +151,7 @@ def test_body_shape_and_a_second_flush_sends_nothing(env):
     assert body["session_id"] == SID and body["root"] == "-work-proj-demo"
     assert body["events"] == [  # merged: 19001 once, at its earliest time
         {"kind": "recall", "mv_id": 19001, "ts": TS, "sources": ["index"]},
-        {"kind": "use", "path": "feedback_a.md", "ts": TS, "sources": ["guard_rows"]},
+        {"kind": "use", "path": "feedback_a.md", "ts": TS, "sources": ["guard_deny"]},
         {"kind": "recall", "mv_id": 19002, "ts": later, "sources": ["index"]},
     ]
     assert post.tokens == [TOKEN]
@@ -541,19 +541,25 @@ def test_end_to_end_the_events_reach_a_live_store(tmp_path):
             "NOBLIVION_STORE_AUTOSTART": "0",
         }
         _append(env, te.index_events([memory_id], TS))
-        _append(env, te.guard_events("rows", ["feedback_tests_use_venv"], TS))
+        assert te.guard_events("rows", ["feedback_tests_use_venv"], TS) == []
+        _append(env, te.guard_events("deny", ["feedback_tests_use_venv"], TS))
+        _append(env, te.guard_events("override", ["feedback_tests_use_venv"], TS))
         status = fl.run_child(SID, "", env, refresh=_no_refresh, cwd="/work/proj/demo")
-        assert status.startswith("ok events=2 inserted=2 duplicate=0 unknown=0 rejected=0")
+        assert status.startswith("ok events=3 inserted=3 duplicate=0 unknown=0 rejected=0")
         # A second worker over the same lines (a lost offset): duplicates only.
         cache = env["NOBLIVION_RECALL_CACHE_DIR"]
         fl.save_state(cache, SID, dict(fl.load_state(cache, SID), sent=0))
         status = fl.run_child(SID, "", env, refresh=_no_refresh, cwd="/work/proj/demo")
-        assert status.startswith("ok events=2 inserted=0 duplicate=2")
+        assert status.startswith("ok events=3 inserted=0 duplicate=3")
         with run.store.connection() as conn:
             row = conn.execute(
-                "SELECT trials, use_pos FROM feedback WHERE memory_id = ?", (memory_id,)
+                "SELECT trials, use_pos, contradiction_count, trust_score "
+                "FROM feedback WHERE memory_id = ?",
+                (memory_id,),
             ).fetchone()
-        assert tuple(row) == (1, 1.0)
+        # The deny and its override in one session: one trial, below the prior.
+        assert tuple(row[:3]) == (1, 1.0, 1)
+        assert row[3] == pytest.approx(5.0 / 11.0) and row[3] < 0.5
     finally:
         run.stop()
 

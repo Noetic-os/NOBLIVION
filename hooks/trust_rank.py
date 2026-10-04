@@ -18,6 +18,11 @@ a row by about 16 places at the top and 0.8 drops one by about 15: trust
 re-orders near neighbours, it does not replace relevance (REVIEW-4453 M8).
 When every factor is 1.0 the order is the input order, exactly.
 
+Off by default, and it stays off by default. Trust is usage evidence for the
+retire, promote and demote report, not a measure of relevance or
+correctness. Turn the factor on by default only after a time-split test
+(fit on older events, test on newer ones) shows a ranking gain.
+
 Switches:
 
 - ``NOBLIVION_RECALL_INDEX_TRUST``: ``1`` (or ``on``) applies the factor;
@@ -34,9 +39,9 @@ Switches:
 - ``NOBLIVION_RECALL_TRUST_MODE`` (CRIT-trust-tools.md M1: with "shown is not a
   trial" the factor is 1.0 or exactly 1.25, and 54 of 56 boosted memories got
   there only through guard ``rows``, which fire on the command, not on the
-  prompt). Unset = the factor above. ``a``: guard ``rows`` are not a use; it
-  acts where the events are made (trust_events), the factor here is
-  unchanged. ``b``: the factor comes from the use RATE, see ``rate_factor``;
+  prompt). Unset = the factor above. ``a``: no effect now. It meant "guard
+  ``rows`` are not a use", and since NOBLIVION-34 guard rows are never a use
+  (trust_events). ``b``: the factor comes from the use RATE, see ``rate_factor``;
   it needs ``shown_sessions`` and ``shown_used_sessions`` (a replay snapshot
   has them; the daemon fields of C3 do not, so with no snapshot every factor
   is 1.0). ``c``: the factor applies only to a row whose relevance score (the

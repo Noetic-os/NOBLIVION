@@ -10,9 +10,9 @@ What these tests hold:
 
 1. THE SETTING. ``a``, ``b`` or ``c`` (any case); anything else is the default.
    The events module and the rank module read it the same way.
-2. MODE a. A guard ``rows`` decision gives no ``use`` event; ``deny`` still
-   does. The guard decision ``labels`` never gives a ``use`` event, in any
-   mode.
+2. MODE a. It has no effect now: a guard ``rows`` decision gives no
+   ``use`` event in any mode (NOBLIVION-34); ``deny`` still does. The guard
+   decision ``labels`` never gives a ``use`` event, in any mode.
 3. MODE b. The factor comes from the use rate: sessions where the memory was
    shown AND used, over the sessions where it was shown, smoothed toward the
    pool rate and divided by it. It is graded (not 1.0 or 1.25 only), 1.0 below
@@ -89,20 +89,18 @@ def test_the_mode_setting_reads_the_same_in_both_modules(raw, expected):
 
 
 # 2. mode a ---------------------------------------------------------------
-def test_mode_a_guard_rows_are_not_use_and_deny_still_is():
-    a = {MODE: "a"}
-    assert te.guard_events("rows", ["feedback_a"], TS, a) == []
-    assert te.guard_events("deny", ["feedback_a"], TS, a) == [
-        {"path": "feedback_a.md", "kind": "use", "ts": TS, "src": "guard_deny"}
-    ]
-    # default and the other modes: rows count, as before
-    for env in ({}, {MODE: "b"}, {MODE: "c"}):
-        srcs = [e["src"] for e in te.guard_events("rows", ["feedback_a"], TS, env)]
-        assert srcs == ["guard_rows"]
+def test_guard_rows_are_not_use_in_any_mode_and_deny_still_is():
+    """Since NOBLIVION-34 guard rows are never a use, so mode ``a`` changes
+    nothing. MUTANT: count rows again outside mode ``a``."""
+    for env in ({}, {MODE: "a"}, {MODE: "b"}, {MODE: "c"}):
+        assert te.guard_events("rows", ["feedback_a"], TS, env) == []
+        assert te.guard_events("deny", ["feedback_a"], TS, env) == [
+            {"path": "feedback_a.md", "kind": "use", "ts": TS, "src": "guard_deny"}
+        ]
 
 
-def test_mode_a_reads_the_process_environment_when_none_is_given(monkeypatch):
-    monkeypatch.setenv(MODE, "a")
+def test_guard_rows_are_not_use_with_no_environment_given(monkeypatch):
+    monkeypatch.delenv(MODE, raising=False)
     assert te.guard_events("rows", ["feedback_a"], TS) == []
 
 
