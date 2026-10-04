@@ -32,3 +32,12 @@ then works from the next prompt in this session. No new session is needed.
      `docs/install.md` and `docs/troubleshooting.md` in the plugin folder.
    - The script printed `uv not found`: give the user the install command it
      printed for `uv`, then ask them to run `/noblivion:setup` again.
+
+3. After a good setup, tell the user about the stop checks in two lines:
+   - The stop checks (commit, tests, notify, deploy, lesson) run in shadow
+     mode: they log what they would ask, and never block.
+     `<data dir>/venv/bin/noblivion stop report` counts what they would
+     have blocked.
+   - To let them block, set `NOBLIVION_STOP_CHECK_MODE=enforce`, or put
+     `{"stop": {"mode": "enforce"}}` in `<data dir>/config.json`. Add
+     `"checks": ["commit", "tests"]` to let only those checks block.

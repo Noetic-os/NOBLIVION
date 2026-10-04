@@ -21,16 +21,21 @@ The check table (``CHECKS``). Each row has a checker that returns a reason or No
            never a demand to commit there.
   tests    code files changed this turn and no test command ran after the last change.
   notify   the reply says deferred / skipped / cannot finish / blocked and no
-           PushNotification tool call happened this turn.
+           PushNotification tool call happened this turn. Only when the session
+           has a PushNotification tool: the transcript's tool list
+           (``deferred_tools_delta`` rows) names it, or it was called this turn.
+           With no such list, the check never fires (the hook cannot know).
   deploy   a merge command ran this turn, the reply says "merged", and no deploy check
            (a command that reads the deployed rev or health on a deploy host) ran this
            turn. Off until the config key ``stop.deploy_hosts`` names a host.
   lesson   (WI-15) the turn started with a correction prompt and no memory file under the
            memory folder was written this turn with ``rule:`` and ``apply:`` fields.
 
-Every check runs on every stop. Only the checks in ``NOBLIVION_STOP_CHECKS`` (default
-``DEFAULT_ON``) can block; the others are logged as ``shadow`` so the one-week gate has
-data for them. ``NOBLIVION_STOP_CHECK_MODE=shadow`` logs and never blocks.
+Every check runs on every stop. The mode (``NOBLIVION_STOP_CHECK_MODE`` or the config
+key ``stop.mode``) is ``shadow`` by default: the hook logs what would have blocked
+(``would_block``) and never blocks. With ``enforce``, the checks in
+``NOBLIVION_STOP_CHECKS`` (or ``stop.checks``; default ``DEFAULT_ON``) block; the
+others are logged as ``shadow``. ``noblivion stop report`` counts the log rows.
 
 Bounds: when ``stop_hook_active`` is true it never blocks. Fail open: any exception or the
 time limit (``TIME_LIMIT`` seconds) means exit 0 and no block. Standard library only.
@@ -54,8 +59,11 @@ Config file keys (hook_config; all optional):
                           Default: ``python3 -m pytest -q <absolute test path>``.
   stop.deploy_hosts       list of host names or addresses a deploy check reads.
                           Default: none, and then the ``deploy`` check never fires.
+  stop.mode               ``shadow`` (default) or ``enforce``. The env var wins.
+  stop.checks             list (or comma text) of the checks that block in enforce
+                          mode. The env var wins.
   NOBLIVION_STOP_CHECKS        comma list of blocking checks, "all", or "none"
-  NOBLIVION_STOP_CHECK_MODE    enforce (default) or shadow
+  NOBLIVION_STOP_CHECK_MODE    shadow (default) or enforce
 """
 
 from __future__ import annotations
@@ -120,6 +128,10 @@ DEPLOY_HOSTS: Tuple[str, ...] = _CFG.string_list("stop.deploy_hosts")
 
 # Set from the offline replay over the last 40 sessions (P/wi5/RESULT-WI5.md).
 DEFAULT_ON = ("commit", "tests", "notify", "deploy", "lesson")
+# NOBLIVION-32: the checks were tuned on one user's sessions, so by default they only log.
+MODES = ("shadow", "enforce")
+DEFAULT_MODE = "shadow"
+NOTIFY_TOOL = "PushNotification"
 TIME_LIMIT = 1.8  # seconds for the whole hook
 TAIL_MAX = 24_000_000  # bytes of transcript read back at most
 BLOCK = 1 << 18
@@ -591,6 +603,9 @@ class Ctx:
     state_dir: Path = DEFAULT_STATE
     marker: Optional[dict] = None  # the correction marker of this session, if any
     notes: Dict[str, object] = field(default_factory=dict)
+    transcript: str = ""  # the session transcript; its tool list is read on demand
+    # tool names the session has (from the transcript), None until read
+    tools: Optional[Set[str]] = None
 
 
 def _git_dirty(repo: str, paths: List[str], deadline: float) -> Optional[List[str]]:
@@ -735,11 +750,54 @@ NOT_DONE_RE = re.compile(
 )
 
 
+def session_tools(path: str, deadline: float = 0.0, max_bytes: int = TAIL_MAX) -> Set[str]:
+    """The deferred tool names of a session: the ``deferred_tools_delta`` attachment
+    rows of its transcript, applied oldest first (added, then removed). Empty when
+    the transcript has no such rows (an older Claude Code, tool search off, Codex)."""
+    names: Set[str] = set()
+    read = 0
+    with open(path, "rb") as fh:
+        for raw in fh:
+            read += len(raw)
+            if read > max_bytes:
+                break
+            if deadline and time.monotonic() > deadline:
+                raise Timeout("tool list read")
+            if b'"deferred_tools_delta"' not in raw:
+                continue
+            try:
+                row = json.loads(raw)
+            except ValueError:
+                continue
+            att = row.get("attachment") if isinstance(row, dict) else None
+            if not isinstance(att, dict) or att.get("type") != "deferred_tools_delta":
+                continue
+            for key, add in (("addedNames", True), ("readdedNames", True), ("removedNames", False)):
+                for n in att.get(key) or ():
+                    if isinstance(n, str):
+                        (names.add if add else names.discard)(n)
+    return names
+
+
+def has_tool(turn: Turn, ctx: Ctx, name: str) -> bool:
+    """The session has the tool ``name``: it was called this turn, or the
+    transcript's tool list names it."""
+    if any(n == name for _, n, _ in turn.calls):
+        return True
+    if ctx.tools is None:
+        ctx.tools = session_tools(ctx.transcript, ctx.deadline) if ctx.transcript else set()
+    return name in ctx.tools
+
+
 def check_notify(turn: Turn, ctx: Ctx) -> Optional[str]:
     m = NOT_DONE_RE.search(prose_of(turn.reply))
     if not m:
         return None
-    if any(name == "PushNotification" for _, name, _ in turn.calls):
+    if any(name == NOTIFY_TOOL for _, name, _ in turn.calls):
+        return None
+    if not has_tool(turn, ctx, NOTIFY_TOOL):
+        # no push tool in this session: asking for one would send Claude in a loop
+        ctx.notes["notify_skipped"] = "no " + NOTIFY_TOOL + " tool"
         return None
     ctx.notes["notify"] = m.group(0)
     return (
@@ -1023,10 +1081,26 @@ CHECKS: Tuple[Check, ...] = (
 )
 
 
+def check_mode() -> str:
+    """``shadow`` (default) or ``enforce``: ``NOBLIVION_STOP_CHECK_MODE``, else
+    the config key ``stop.mode``. Any other value is ``shadow``."""
+    raw = _CFG.setting("NOBLIVION_STOP_CHECK_MODE", "stop.mode", DEFAULT_MODE)
+    mode = raw.strip().lower() if isinstance(raw, str) else DEFAULT_MODE
+    return mode if mode in MODES else DEFAULT_MODE
+
+
 def enabled_checks() -> Set[str]:
+    """The checks that block in enforce mode: ``NOBLIVION_STOP_CHECKS``, else the
+    config key ``stop.checks`` (a list or comma text), else ``DEFAULT_ON``."""
     raw = os.environ.get("NOBLIVION_STOP_CHECKS")
     if raw is None:
-        return set(DEFAULT_ON)
+        value = _CFG.get("stop.checks")
+        if isinstance(value, list):
+            raw = ",".join(v for v in value if isinstance(v, str))
+        elif isinstance(value, str):
+            raw = value
+        else:
+            return set(DEFAULT_ON)
     raw = raw.strip().lower()
     if raw in ("all", "*"):
         return {c.name for c in CHECKS}
@@ -1148,6 +1222,7 @@ def stop_hook(event: dict, t0: float) -> Optional[str]:
         memory_dir=memory_dir(cwd if isinstance(cwd, str) else None),
         state_dir=state_dir(),
         marker=marker,
+        transcript=path,
     )
     turn = read_turn(path, deadline=ctx.deadline)
     if ctx.memory_dir is None and turn.cwd:
@@ -1158,17 +1233,20 @@ def stop_hook(event: dict, t0: float) -> Optional[str]:
         turn.reply = last
     fired = run_checks(turn, ctx)
     on = enabled_checks()
-    mode = os.environ.get("NOBLIVION_STOP_CHECK_MODE", "enforce").strip().lower()
-    blocking = [n for n in fired if n in on] if mode != "shadow" else []
+    mode = check_mode()
+    would_block = [n for n in fired if n in on]
+    blocking = would_block if mode == "enforce" else []
     shadow = [n for n in fired if n not in blocking]
-    if marker and ("lesson" in blocking or "lesson" not in fired):
-        clear_marker(session)  # cleared after the block or after the capture
+    if marker and ("lesson" in would_block or "lesson" not in fired):
+        clear_marker(session)  # cleared after the (shadow) block or after the capture
     ms = round((time.monotonic() - t0) * 1000)
     log(
         {
             **base,
-            "verdict": "block" if blocking else "pass",
+            "verdict": "block" if blocking else ("would-block" if would_block else "pass"),
+            "mode": mode,
             "blocking": blocking,
+            "would_block": would_block if mode != "enforce" else [],
             "shadow": shadow,
             "ms": ms,
             "calls": len(turn.calls),

@@ -182,9 +182,13 @@ changed. This check does not see changes in sub-folders.
 
 ## Stop checks
 
-When Claude Code wants to end a turn, the stop hook runs these checks. A
-blocking check sends Claude Code back to work with a reason. A check
-blocks at most once per stop.
+When Claude Code wants to end a turn, the stop hook runs these checks. In
+`enforce` mode, a blocking check sends Claude Code back to work with a
+reason. A check blocks at most once per stop.
+
+The default mode is `shadow`. The checks run and the log records what would
+have blocked, but no check blocks. The checks were tuned on the sessions of
+one user, so you see first what they would do in your sessions.
 
 | Check | Blocks when |
 | --- | --- |
@@ -194,14 +198,19 @@ blocks at most once per stop.
 | `deploy` | A pull request was merged, the reply says "merged", and no check of a deploy host ran. Off while `stop.deploy_hosts` is empty. |
 | `lesson` | The user corrected Claude Code and no memory file with `rule:` and `apply:` was written in this turn. |
 
-All five checks may block by default. The `deploy` check stays off until
-you list deploy hosts. The `notify` check expects a push notification tool;
-turn it off when you do not have one.
+In `enforce` mode, all five checks may block unless you choose fewer. The
+`deploy` check stays off until you list deploy hosts. The `notify` check runs
+only when the session has the `PushNotification` tool. The hook reads the
+tool list from the transcript (the deferred tool rows that Claude Code
+writes). When the transcript has no tool list, or the list does not name the
+tool, the check does not fire and the log row notes `notify_skipped`.
 
-- Choose the blocking checks with `NOBLIVION_STOP_CHECKS`, for example
-  `commit,tests`. Use `none` to turn all off.
-- Set `NOBLIVION_STOP_CHECK_MODE=shadow` to log each decision and never
-  block.
+- Run `noblivion stop report` to count, per check, the stops that would
+  have blocked in the last 7 days (`--days N` for another window).
+- Set `NOBLIVION_STOP_CHECK_MODE=enforce`, or the config key `stop.mode`,
+  to let the checks block.
+- Choose the blocking checks with `NOBLIVION_STOP_CHECKS` or the config key
+  `stop.checks`, for example `commit,tests`. Use `none` to turn all off.
 - The `stop.*` config keys tell the checks about your setup. See
   [configuration.md](configuration.md#stop-checks).
 
@@ -221,6 +230,6 @@ turn it off when you do not have one.
 | Credential guard | `NOBLIVION_GUARD_CREDENTIAL=0` |
 | Label rows | `NOBLIVION_GUARD_LABELS=0` |
 | Weak-trigger check | `NOBLIVION_GUARD_WEAK_SHARE=0` |
-| Stop checks | `NOBLIVION_STOP_CHECKS=none`, or `NOBLIVION_STOP_CHECK_MODE=shadow` |
+| Stop checks | They do not block by default (`shadow` mode). In `enforce` mode: `NOBLIVION_STOP_CHECKS=none`, or `NOBLIVION_STOP_CHECK_MODE=shadow` |
 | Memory sync | `NOBLIVION_MEMORY_SYNC_OFF=1` |
 | Guard hook, memory fields hook | Remove the rule fields from the note, or turn off the plugin. These hooks have no switch. |

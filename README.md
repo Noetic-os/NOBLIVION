@@ -23,7 +23,8 @@ Status: in development. There is no release yet.
   show the matching rule to Claude Code. A rule can also block a command.
   A separate guard blocks commands that would print a credential.
 - **Stop checks.** When Claude Code wants to end a turn, a hook can ask it
-  to finish open work first.
+  to finish open work first. By default the checks only log what they would
+  ask (shadow mode); `noblivion stop report` shows the counts.
 - **Trust.** The store records when a note is shown and when it is used. It
   computes a trust score for each note. A report lists notes to promote,
   to demote or to retire.

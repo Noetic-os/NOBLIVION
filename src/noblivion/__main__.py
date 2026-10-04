@@ -8,7 +8,8 @@ in the foreground, see ``noblivion.store``), ``ensure-running`` (start
 the store in the background unless it runs, see ``noblivion.launcher``),
 ``mine`` (the transcript miner, see ``noblivion.miner``), ``trust
 report`` (print the trust report) and ``trust recompute`` (the trust repair),
-see ``noblivion.trust``.
+see ``noblivion.trust``, and ``stop report`` (count the stop check decisions,
+see ``noblivion.stop_report``).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ USAGE = (
     "       noblivion dedup consent [--revoke]|clear-latch\n"
     "       noblivion trust report [--json] [--limit N]\n"
     "       noblivion trust recompute [--json]\n"
+    "       noblivion stop report [--days N] [--json]\n"
     "       noblivion serve [--port PORT] [--lock-wait SECONDS]\n"
     "       noblivion ensure-running [--json] [--wait SECONDS]\n"
     "       noblivion mine [--since YYYY-MM-DD] [--max-seconds S] [--json]\n"
@@ -60,6 +62,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from noblivion import trust
 
         return trust.main(rest)
+    if command == "stop":
+        from noblivion import stop_report
+
+        return stop_report.main(rest)
     if command == "migrate-from-legacy":
         from noblivion import legacy
 

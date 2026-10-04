@@ -117,6 +117,7 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         "NOBLIVION_DATA_DIR": str(data),
         "NOBLIVION_STOP_CHECK_LOG": str(tmp_path / "stop-log.jsonl"),
         "NOBLIVION_STOP_CHECK_STATE": str(tmp_path / "stop-state"),
+        "NOBLIVION_STOP_CHECK_MODE": "enforce",  # the lesson message is read from the block
         # The in-process hooks bound their cache folder at import time.
         "NOBLIVION_RECALL_CACHE_DIR": str(data / "cache"),
         "PYTHONDONTWRITEBYTECODE": "1",
@@ -412,6 +413,7 @@ def test_a_stranger_install_resolves_one_folder_in_every_hook(tmp_path, monkeypa
         "NOBLIVION_DATA_DIR": str(data),
         "NOBLIVION_STOP_CHECK_LOG": str(tmp_path / "stop-log.jsonl"),
         "NOBLIVION_STOP_CHECK_STATE": str(tmp_path / "stop-state"),
+        "NOBLIVION_STOP_CHECK_MODE": "enforce",  # the lesson message is read from the block
         "PYTHONDONTWRITEBYTECODE": "1",
     }
     tables = set()

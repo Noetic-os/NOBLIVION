@@ -12,6 +12,10 @@ The hook reads the ``stop.*`` config keys once, at import. The tests write a
 ``config.json`` in the tmp data dir and then load the module: the shared
 checkout and the worktree prefix are fictional paths, and the deploy check gets
 a fictional host only in the tests that need it (it is off by default).
+
+The default mode is ``shadow`` (NOBLIVION-32). The fixture sets
+``NOBLIVION_STOP_CHECK_MODE=enforce`` so the block tests see blocks; the
+fresh-install tests remove it again.
 """
 
 from __future__ import annotations
@@ -72,6 +76,7 @@ def hook_env(tmp_path, monkeypatch):
     mem = tmp_path / "memory"
     mem.mkdir()
     monkeypatch.setenv("NOBLIVION_MEMORY_DIR", str(mem))
+    monkeypatch.setenv("NOBLIVION_STOP_CHECK_MODE", "enforce")
     return data
 
 
@@ -100,8 +105,26 @@ def sc_deploy(hook_env, monkeypatch):
 class T:
     """A transcript builder in the Claude Code JSONL shape."""
 
-    def __init__(self, cwd="/home/user"):
+    def __init__(self, cwd="/home/user", tools=("PushNotification",)):
         self.rows, self.n, self.cwd = [], 0, cwd
+        if tools is not None:
+            self.tools(*tools)
+
+    def tools(self, *added, removed=()):
+        """A ``deferred_tools_delta`` attachment row: the session's tool list."""
+        self.rows.append(
+            {
+                "type": "attachment",
+                "isSidechain": False,
+                "cwd": self.cwd,
+                "attachment": {
+                    "type": "deferred_tools_delta",
+                    "addedNames": list(added),
+                    "removedNames": list(removed),
+                },
+            }
+        )
+        return self
 
     def prompt(self, text):
         self.rows.append(
@@ -162,6 +185,7 @@ class T:
 def _ctx(sc, **kw):
     kw.setdefault("live", False)
     kw.setdefault("memory_dir", sc.memory_dir())
+    kw.setdefault("tools", {"PushNotification"})
     return sc.Ctx(**kw)
 
 
@@ -879,6 +903,130 @@ def test_shadow_mode_never_blocks(tmp_path):
         env={"NOBLIVION_STOP_CHECK_MODE": "shadow"},
     )
     assert res.stdout.strip() == ""
+
+
+def _fresh_env(tmp_path: Path) -> dict:
+    """A fresh install: a tmp home with the data dir install.sh makes, and no
+    NOBLIVION_* or XDG env var at all."""
+    home = tmp_path / "fresh"
+    (home / ".local" / "share" / "noblivion").mkdir(parents=True)
+    return {"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+
+
+def _run_bare(event, env, args=()):
+    return subprocess.run(
+        [sys.executable, str(HOOK), *args],
+        input=json.dumps(event),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+
+def test_fresh_install_never_blocks_and_logs_would_block(tmp_path):
+    env = _fresh_env(tmp_path)
+    session = "fresh-1"
+    _run_bare({"session_id": session, "prompt": "No, that is wrong"}, env, ["--mark-correction"])
+    t = T().prompt("No, that is wrong").say("I deferred the docs fix.")
+    event = {"session_id": session, "transcript_path": str(t.write(tmp_path / "t.jsonl"))}
+    res = _run_bare(event, env)
+    assert res.returncode == 0 and res.stdout.strip() == ""
+    log = Path(env["HOME"]) / ".local" / "share" / "noblivion" / "stop-check-log.jsonl"
+    row = json.loads(log.read_text().splitlines()[-1])
+    assert row["mode"] == "shadow" and row["verdict"] == "would-block"
+    assert row["blocking"] == [] and set(row["would_block"]) == {"notify", "lesson"}
+    assert not (tmp_path / "log.jsonl").exists()  # the fixture's log path was not used
+
+
+def test_enforce_env_blocks(tmp_path):
+    t = T().prompt("x").say("I deferred the docs fix.")
+    event = {"session_id": "s", "transcript_path": str(t.write(tmp_path / "t.jsonl"))}
+    env = {**_fresh_env(tmp_path), "NOBLIVION_STOP_CHECK_MODE": "enforce"}
+    out = json.loads(_run_bare(event, env).stdout)
+    assert out["decision"] == "block" and "push notification" in out["reason"]
+    log = Path(env["HOME"]) / ".local" / "share" / "noblivion" / "stop-check-log.jsonl"
+    row = json.loads(log.read_text().splitlines()[-1])
+    assert row["mode"] == "enforce" and row["blocking"] == ["notify"]
+
+
+def test_enforce_config_key_blocks(tmp_path):
+    env = _fresh_env(tmp_path)
+    data = Path(env["HOME"]) / ".local" / "share" / "noblivion"
+    (data / "config.json").write_text(json.dumps({"stop": {"mode": "enforce"}}))
+    t = T().prompt("x").say("I deferred the docs fix.")
+    event = {"session_id": "s", "transcript_path": str(t.write(tmp_path / "t.jsonl"))}
+    assert json.loads(_run_bare(event, env).stdout)["decision"] == "block"
+
+
+def test_enforce_per_check_from_the_config(tmp_path):
+    env = _fresh_env(tmp_path)
+    data = Path(env["HOME"]) / ".local" / "share" / "noblivion"
+    (data / "config.json").write_text(
+        json.dumps({"stop": {"mode": "enforce", "checks": ["lesson"]}})
+    )
+    t = T().prompt("x").say("I deferred the docs fix.")
+    event = {"session_id": "s", "transcript_path": str(t.write(tmp_path / "t.jsonl"))}
+    assert _run_bare(event, env).stdout.strip() == ""
+    row = json.loads((data / "stop-check-log.jsonl").read_text().splitlines()[-1])
+    assert row["verdict"] == "pass" and row["shadow"] == ["notify"]
+
+
+def test_the_env_var_wins_over_the_config_mode(tmp_path):
+    env = _fresh_env(tmp_path)
+    data = Path(env["HOME"]) / ".local" / "share" / "noblivion"
+    (data / "config.json").write_text(json.dumps({"stop": {"mode": "enforce"}}))
+    t = T().prompt("x").say("I deferred the docs fix.")
+    event = {"session_id": "s", "transcript_path": str(t.write(tmp_path / "t.jsonl"))}
+    res = _run_bare(event, {**env, "NOBLIVION_STOP_CHECK_MODE": "shadow"})
+    assert res.stdout.strip() == ""
+
+
+@pytest.mark.parametrize("value", ["", "Enforce ", "block", "on"])
+def test_check_mode_values(sc, monkeypatch, value):
+    monkeypatch.setenv("NOBLIVION_STOP_CHECK_MODE", value)
+    assert sc.check_mode() == ("enforce" if value.strip().lower() == "enforce" else "shadow")
+
+
+def test_notify_is_silent_without_the_push_tool(tmp_path):
+    """Enforce mode, a not-done reply, and a transcript with no PushNotification
+    tool: no block, and the log notes the skip (it is not a would-block)."""
+    t = T(tools=None).prompt("x").say("I deferred the docs fix.")
+    res = _run_hook({"session_id": "s", "transcript_path": str(t.write(tmp_path / "t.jsonl"))})
+    assert res.stdout.strip() == ""
+    row = json.loads((tmp_path / "log.jsonl").read_text().splitlines()[-1])
+    assert row["verdict"] == "pass" and row["blocking"] == [] and row["shadow"] == []
+    assert row["notes"]["notify_skipped"] == "no PushNotification tool"
+
+
+def test_notify_is_silent_when_the_tool_list_lacks_it(sc, tmp_path):
+    t = T(tools=("Read", "Bash")).prompt("x").say("I deferred the docs fix.")
+    path = str(t.write(tmp_path / "t.jsonl"))
+    ctx = _ctx(sc, tools=None, transcript=path)
+    assert sc.check_notify(t.turn(sc), ctx) is None
+    assert ctx.notes["notify_skipped"]
+
+
+def test_session_tools_applies_added_then_removed(sc, tmp_path):
+    t = T(tools=("PushNotification", "Read")).prompt("x")
+    t.tools(removed=("PushNotification",)).say("ok")
+    path = str(t.write(tmp_path / "t.jsonl"))
+    assert sc.session_tools(path) == {"Read"}
+    t.tools("PushNotification")
+    assert "PushNotification" in sc.session_tools(str(t.write(tmp_path / "t.jsonl")))
+
+
+def test_notify_fires_from_the_transcript_tool_list(sc, tmp_path):
+    t = T().prompt("x").say("I deferred the docs fix.")
+    path = str(t.write(tmp_path / "t.jsonl"))
+    assert sc.check_notify(t.turn(sc), _ctx(sc, tools=None, transcript=path))
+
+
+def test_enabled_checks_from_the_config(hook_env, monkeypatch):
+    mod = load_sc(hook_env, monkeypatch, {"stop": {"checks": "commit, tests"}})
+    assert mod.enabled_checks() == {"commit", "tests"}
+    monkeypatch.setenv("NOBLIVION_STOP_CHECKS", "lesson")
+    assert mod.enabled_checks() == {"lesson"}
 
 
 def test_enabled_checks_parse(sc, monkeypatch):

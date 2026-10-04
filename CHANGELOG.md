@@ -8,6 +8,24 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+### Changed
+
+- Behaviour change: the stop checks run in shadow mode by default
+  (NOBLIVION-32). They run and log what would have blocked, but never block.
+  Before, the commit, tests, notify and lesson checks blocked for every new
+  user. Set `NOBLIVION_STOP_CHECK_MODE=enforce`, or the new config key
+  `stop.mode`, to let them block. The new config key `stop.checks` chooses
+  the blocking checks, like `NOBLIVION_STOP_CHECKS`. The log rows now hold
+  `mode` and `would_block`.
+- The `notify` check fires only when the session has a `PushNotification`
+  tool, read from the transcript's tool list. Without one, it does not fire
+  and the log row notes `notify_skipped`.
+
+### Added
+
+- `noblivion stop report [--days N] [--json]` counts the stop check log rows
+  per check: would block, blocked, and logged only.
+
 ### Fixed
 
 - The hooks find the session's memory folder the way Claude Code does

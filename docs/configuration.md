@@ -328,14 +328,25 @@ See [guards.md](guards.md) for what each guard does.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_STOP_CHECKS` | none | `commit,tests,notify,deploy,lesson` | A comma list of the checks that may block, or `all`, or `none`. A set but empty value means none. |
-| `NOBLIVION_STOP_CHECK_MODE` | none | `enforce` | `shadow` logs each decision and never blocks. |
+| `NOBLIVION_STOP_CHECK_MODE` | `stop.mode` | `shadow` | `shadow` runs the checks, logs what would have blocked and never blocks. `enforce` lets the checks block. Any other value means `shadow`. |
+| `NOBLIVION_STOP_CHECKS` | `stop.checks` | `commit,tests,notify,deploy,lesson` | The checks that block in `enforce` mode: a comma list, or `all`, or `none`. A set but empty value means none. The config key takes a list or a comma text. |
 | `NOBLIVION_STOP_CHECK_LOG` | none | `<data dir>/stop-check-log.jsonl` | The decision log. |
 | `NOBLIVION_STOP_CHECK_STATE` | none | `<data dir>/stop-check-state` | Marker files per session. |
 | none | `stop.shared_checkouts` | `[]` | Checkouts where an edit is reported instead of asked to be committed. |
 | none | `stop.worktree_prefixes` | `[]` | Path prefixes of your git worktrees. Each starts with `/` or `~`. |
 | none | `stop.test_command` | `python3 -m pytest -q <absolute test path>` | The test command that the tests check names in its message. |
 | none | `stop.deploy_hosts` | `[]` | Hosts of the deploy check. With none, the deploy check is off. |
+
+The env var wins over the config key. To let only the commit and tests
+checks block, set this in `<data dir>/config.json`:
+
+```json
+{"stop": {"mode": "enforce", "checks": ["commit", "tests"]}}
+```
+
+`noblivion stop report [--days N] [--json]` counts the log rows of the last
+N days (default 7) per check: would block (shadow mode), blocked (enforce
+mode) and logged only (the check is not in the blocking list).
 
 ## Trust
 
