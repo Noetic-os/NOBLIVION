@@ -95,6 +95,8 @@ The store ranks the notes of the session's root and of the shared roots.
 2. **Vector score.** The cosine similarity between the vector of the
    prompt and the vector of each note.
 3. **Fusion.** Reciprocal rank fusion joins the two ranked lists into one.
+   The keyword list holds only the notes that match a word of the prompt.
+   A note that has no vector yet and matches no word is not returned.
 
 Before the store returns a note, it removes secrets and masks text that
 tries to give the model new instructions, for example "ignore all previous

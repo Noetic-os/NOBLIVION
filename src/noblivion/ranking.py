@@ -105,7 +105,11 @@ def rank_pool(
     sem = {i: _q(c * pool[i].weight, SCORE_DECIMALS) for i, c in cosines.items()}
     lists = [sorted(sem, key=lambda i: (-sem[i], pool[i].id))]
     if n and max(bm) > 0:
-        lists.append(sorted(range(n), key=lambda i: (-bm[i], pool[i].id)))
+        # Only the rows that match a query term, as in keyword mode above. A
+        # row with a BM25 score of 0 gets no fused score from this list, so a
+        # row with no cosine and no match is in no list and is not returned.
+        matched = (i for i in range(n) if bm[i] != 0)
+        lists.append(sorted(matched, key=lambda i: (-bm[i], pool[i].id)))
     fused: dict[int, float] = {}
     for ranked in lists:
         for rank, i in enumerate(ranked, start=1):

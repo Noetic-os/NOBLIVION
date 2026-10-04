@@ -410,7 +410,9 @@ SESSION_KEEP_MAX_DEFAULT = 200
 # pass. With none the hook prints nothing, like every other empty answer here.
 # A row the store sent with NO score is kept: the floor can only judge a
 # number, and a store that stops sending scores must not silently empty the
-# index. The log note ``:floorNofM`` counts the N rows at or above the floor of
+# index. In a hybrid answer such a row has no vector yet, and the store sends
+# it only when it matches a query term (design doc section 8.3), as in keyword
+# mode. The log note ``:floorNofM`` counts the N rows at or above the floor of
 # the M ranked, and ``:unscoredU`` the rows kept without a score.
 INDEX_MIN_SCORE_ENV = "NOBLIVION_RECALL_INDEX_MIN_SCORE"
 # The verbalised check (LEVERS.md lever 5, PLAN-LEVERS.md WI-6). One line after

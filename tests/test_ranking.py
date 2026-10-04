@@ -28,20 +28,21 @@ def row(memory_id: int, weight: float = 1.0) -> ranking.PoolRow:
 
 
 def test_fusion_order_hand_computed():
-    # cosine order: 10, 20, 30.  BM25 order: 20, 30, 10.
-    # fused 10 = 1/61 + 1/63 = 0.032266
+    # cosine order: 10, 20, 30.  BM25 order: 20, 30. Row 10 matches no query
+    # term (BM25 0), so it is not in the BM25 list (NOBLIVION-49).
+    # fused 10 = 1/61        = 0.016393
     # fused 20 = 1/62 + 1/61 = 0.032522
     # fused 30 = 1/63 + 1/62 = 0.032002
-    # So BM25 lifts 20 above 10, and 30 stays last.
+    # So the two rows that match a term are above 10.
     pool = [row(10), row(20), row(30)]
     result = ranking.rank_pool(pool, [0.0, 2.0, 1.0], {0: 0.9, 1: 0.5, 2: 0.1}, top_k=5)
     assert result.mode == "hybrid"
-    assert [h.row.id for h in result.hits] == [20, 10, 30]
+    assert [h.row.id for h in result.hits] == [20, 30, 10]
     assert [h.rank for h in result.hits] == [1, 2, 3]
     assert result.hits[0].fusion_score == round(1 / 62 + 1 / 61, 6)
-    assert result.hits[1].fusion_score == round(1 / 61 + 1 / 63, 6)
-    assert result.hits[2].fusion_score == round(1 / 63 + 1 / 62, 6)
-    assert [h.score for h in result.hits] == [0.5, 0.9, 0.1]
+    assert result.hits[1].fusion_score == round(1 / 63 + 1 / 62, 6)
+    assert result.hits[2].fusion_score == round(1 / 61, 6)
+    assert [h.score for h in result.hits] == [0.5, 0.1, 0.9]
 
 
 def test_weight_multiplies_the_cosine():
@@ -78,6 +79,44 @@ def test_a_row_without_a_vector_ranks_on_bm25_only_with_a_null_score():
     by_id = {h.row.id: h for h in result.hits}
     assert by_id[2].score is None and by_id[2].fusion_score == round(1 / 61, 6)
     assert by_id[1].score == 0.9
+
+
+def test_hybrid_bm25_list_holds_only_the_rows_that_match_a_query_term():
+    # NOBLIVION-49. 200 rows, all with a vector, and only id 150 matches the
+    # query. The ids 1-4 have the lowest cosines. A BM25 list over the whole
+    # pool puts them at the BM25 ranks 2-5 (a tie of zeros breaks by id), and
+    # that lifts them into the top 10.
+    pool = [row(i) for i in range(1, 201)]
+    scores = [5.0 if r.id == 150 else 0.0 for r in pool]
+    cosines = {i: (0.001 * r.id if r.id <= 4 else 0.3 + 0.002 * r.id) for i, r in enumerate(pool)}
+    result = ranking.rank_pool(pool, scores, cosines, top_k=10)
+    assert [h.row.id for h in result.hits] == [150, 200, 199, 198, 197, 196, 195, 194, 193, 192]
+    # A row that matches no term has the score of its cosine rank alone.
+    assert result.hits[1].fusion_score == round(1 / 61, 6)
+
+
+def test_hybrid_does_not_return_a_row_with_no_cosine_and_bm25_0():
+    # NOBLIVION-49. 50 rows, the last 10 with a vector, as during a backfill.
+    # Id 45 (with a vector) and id 7 (without) match the query.
+    pool = [row(i) for i in range(1, 51)]
+    scores = [3.0 if r.id == 45 else 2.0 if r.id == 7 else 0.0 for r in pool]
+    cosines = {i: 0.3 + 0.01 * i for i in range(40, 50)}
+    result = ranking.rank_pool(pool, scores, cosines, top_k=35)
+    assert result.mode == "hybrid"
+    assert [h for h in result.hits if h.score is None and h.bm25 == 0] == []
+    assert sorted(h.row.id for h in result.hits) == [7, *range(41, 51)]
+    by_id = {h.row.id: h for h in result.hits}
+    # The matched row with no vector keeps its place: BM25 rank 2, null score.
+    assert by_id[7].score is None and by_id[7].fusion_score == round(1 / 62, 6)
+
+
+def test_hybrid_keeps_a_matched_row_with_a_negative_bm25():
+    # A matched term can have a negative idf in a small pool (section 8.4), so
+    # the test for the BM25 list is "not zero", as in keyword mode.
+    pool = [row(1), row(2), row(3)]
+    result = ranking.rank_pool(pool, [2.0, -0.1, 0.0], {0: 0.9}, top_k=5)
+    assert [h.row.id for h in result.hits] == [1, 2]
+    assert result.hits[1].score is None and result.hits[1].bm25 == -0.1
 
 
 def test_keyword_mode_drops_zero_rows_and_reports_null_score():

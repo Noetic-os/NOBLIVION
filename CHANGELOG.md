@@ -39,6 +39,15 @@ All notable changes to NOBLIVION. The format follows
   path can be that file. The README now says what the guard covers: git
   URLs, not every credential. docs/guards.md lists the limits
   (NOBLIVION-47).
+- Hybrid ranking no longer gives a keyword rank to a note that matches no
+  word of the query (NOBLIVION-49). Before, the keyword list held the whole
+  pool, and the notes with a keyword score of 0 were ordered by id. So the
+  oldest notes got a fused score for a query they do not match. A note with
+  no vector yet and no matching word was returned with no score, and the
+  hook floors keep a row with no score: during a first backfill or a model
+  change, old notes that had nothing to do with the prompt reached the
+  context. Now the keyword list holds only the notes that match, as in
+  keyword-only mode, and a note with no vector and no match is not returned.
 
 ## 0.1.5 - 2026-10-04
 

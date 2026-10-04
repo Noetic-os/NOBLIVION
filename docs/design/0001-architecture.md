@@ -1198,19 +1198,30 @@ row cannot change the ranks of the others.
 
 Reciprocal rank fusion with `k = 60`, as in the reference implementation:
 
-1. Rank the pool by weighted cosine (ties by id).
-2. Rank the pool by BM25. Skip this list when every BM25 score is zero,
-   because a list of zeros adds noise.
-3. Fused score per row: the sum over lists of `1 / (60 + rank)`.
+1. Rank the rows that have a vector by weighted cosine (ties by id).
+2. Rank the rows whose BM25 score is not 0 by BM25 (ties by id). Skip this
+   list when no BM25 score is above zero. A row that matches no query term
+   is not in this list, as in keyword-only mode (section 8.4). The reference
+   implementation ranked the whole pool here, so the tie of zeros broke by
+   id and the oldest rows got a fused score for a query they do not match
+   (NOBLIVION-49).
+3. Fused score per row: the sum over lists of `1 / (60 + rank)`. A row
+   that is in no list is not returned: it has no vector and it matches no
+   query term.
 4. Walk the fused order. Drop a row when its cosine is below 0.2 AND its
    fused score is below `1 / (60 + n)` (n = pool size). Stop at `top_k`.
 5. If nothing is left and the pool has rows, return the single best cosine
    row (empty fallback), with its cosine as `fusion_score`.
 
-Note on step 4: every row is in the cosine list at a rank of at most n, so
-its fused score is at least `1 / (60 + n)` and the floor never drops a row.
-The reference implementation behaves the same way. The store keeps the
-step for parity. Tests must not claim the floor filters anything.
+Note on step 4: every row with a fused score is in a list at a rank of at
+most n, so its fused score is at least `1 / (60 + n)` and the floor never
+drops a row. The reference implementation behaves the same way. The store
+keeps the step for parity. Tests must not claim the floor filters anything.
+
+A row with no vector (not embedded yet, or its embed failed) has a `null`
+`score` in a hybrid answer. The hook floors keep a row with no score. After
+step 2 such a row is in the answer only when it matches a query term, which
+is the evidence that keyword-only mode accepts.
 
 `score` in the answer is the weighted cosine. `fusion_score` is the fused
 score (or the cosine in the empty fallback).

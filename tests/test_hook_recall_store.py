@@ -28,7 +28,8 @@ from recall_helpers import (
     index_row,
     proof_for,
 )
-from test_store import Running, make_store, wait_for, write_memory
+from store_helpers import FakeEmbedder
+from test_store import Running, fake_service, make_store, wait_for, write_memory
 
 isolated_home = recall_helpers.isolated_home  # a fixture
 
@@ -381,6 +382,64 @@ def test_end_to_end_keyword_store(rh, tmp_path):
         run.stop()
     assert "deploy checklist" in out
     assert ":floor_off:keyword" in _log(env)
+
+
+# -- a hybrid answer over a pool where most rows have no vector (NOBLIVION-49) --------------
+
+NO_VECTOR = "unembeddable"  # the fake embedder fails on a text that holds this word
+
+
+@pytest.fixture
+def backfill_store(tmp_path):
+    """50 memory files, and only 10 of them get a vector, as during a first
+    backfill. The word "kiwi" is in one file with a vector ("note 44") and in
+    one file without ("note 03")."""
+    folder = tmp_path / "projects" / ROOT / "memory"
+    for n in range(50):
+        fruit = "kiwi" if n in (3, 44) else "plum"
+        tail = "" if n >= 40 else f" {NO_VECTOR}"
+        write_memory(folder, f"note {n:02d}", f"Topic {n:02d}.", f"A {fruit} fact.{tail}")
+    service = fake_service(FakeEmbedder(fail_on=NO_VECTOR))
+    run = Running(make_store(tmp_path, embedding_service=service))
+    assert wait_for(lambda: run.store.index_state == store.INDEX_IDLE)
+
+    def vectors() -> int:
+        with closing(db.connect(run.store.settings.db_path, create=False)) as conn:
+            return conn.execute("SELECT COUNT(*) FROM vectors").fetchone()[0]
+
+    assert wait_for(lambda: vectors() == 10)
+    assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
+    yield run, folder
+    run.stop()
+
+
+def test_hit_path_gets_no_row_that_has_no_vector_and_matches_no_query_word(
+    rh, tmp_path, backfill_store
+):
+    run, folder = backfill_store
+    status, body = run.get(f"/api/memories/index?q=kiwi&project=claude_code&top_k=50&root={ROOT}")
+    assert status == 200 and body["mode"] == "hybrid"
+    unscored = [r["title"] for r in body["results"] if r["score"] is None]
+    assert unscored == ["note 03"]
+    assert len(body["results"]) == 11  # the 10 rows with a vector, and "note 03"
+    # The hook floor keeps a hit with no score. A floor that no fake cosine
+    # reaches leaves only those hits, and the only one is the row that matches.
+    env = _store_env(tmp_path, folder, NOBLIVION_RECALL_MIN_SCORE="0.99")
+    hits = rh.recall("kiwi", rh.K_PROMPT, env, md_only=True)
+    assert [(h.title, h.score) for h in hits] == [("note 03", None)]
+
+
+def test_index_floor_gets_no_row_that_has_no_vector_and_matches_no_query_word(
+    rh, tmp_path, backfill_store
+):
+    run, folder = backfill_store
+    env = _store_env(
+        tmp_path, folder, NOBLIVION_RECALL_INDEX="1", NOBLIVION_RECALL_INDEX_MIN_SCORE="0.99"
+    )
+    out = _run(rh, env, _prompt("kiwi"))
+    assert "note 03" in out
+    assert [n for n in range(50) if f"note {n:02d}" in out] == [3]
+    assert ":floor1of11:unscored1" in _log(env)
 
 
 def test_end_to_end_store_stopped_fails_open(rh, tmp_path, real_store):
