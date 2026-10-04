@@ -6,8 +6,10 @@ Work item WI-1.
 
 Stdin is the Claude Code hook JSON (``tool_name``, ``tool_input.file_path``,
 ``cwd``, ``session_id``). When the written path is a ``feedback_*.md`` or a
-``project_*.md`` directly inside the memory folder (env ``NOBLIVION_MEMORY_DIR``,
-default the memory folder of the home-folder project), the file is checked with
+``project_*.md`` directly inside a memory folder of the session (the project
+folder of the event's ``cwd``, ``hook_config.resolve_memory_dir``, with
+``NOBLIVION_MEMORY_DIR`` as the override; and the global folder
+``NOBLIVION_GLOBAL_MEMORY_DIR`` when it is set), the file is checked with
 ``memory_fields.check_fields`` (kind ``feedback`` or ``project``);
 on a problem the hook prints one JSON object whose ``additionalContext`` lists
 the problems in plain words and says what to write. A field that sits under
@@ -26,7 +28,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 _TOOLS = Path(__file__).resolve().parent
 
@@ -43,7 +45,6 @@ def _hook_config():
 
 
 _CFG = _hook_config()
-LIVE = _CFG.default_memory_dir()
 TOOLS = ("Write", "Edit", "MultiEdit")
 KINDS = ("feedback", "project")  # the file name prefixes this hook checks
 
@@ -60,8 +61,19 @@ def _load(name: str):
     return mod
 
 
-def memory_dir() -> Path:
-    return Path(os.environ.get("NOBLIVION_MEMORY_DIR") or LIVE).expanduser()
+def _cwd(event: dict) -> Optional[str]:
+    cwd = event.get("cwd")
+    return cwd if isinstance(cwd, str) and os.path.isabs(cwd) else None
+
+
+def memory_dir(cwd: Optional[str] = None) -> Optional[Path]:
+    """The project memory folder of a session at ``cwd``, or None."""
+    return _CFG.resolve_memory_dir(cwd)
+
+
+def memory_dirs(cwd: Optional[str] = None) -> List[Path]:
+    """The project folder, then the global folder when it is set."""
+    return _CFG.memory_dirs(cwd)
 
 
 def target_path(event: dict) -> Optional[Path]:
@@ -77,10 +89,10 @@ def target_path(event: dict) -> Optional[Path]:
         p = Path(event.get("cwd") or os.getcwd()) / p
     try:
         p = p.resolve()
-        folder = memory_dir().resolve()
+        folders = [f.resolve() for f in memory_dirs(_cwd(event))]
     except OSError:
         return None
-    if p.parent != folder or kind_of(p) is None or p.suffix != ".md":
+    if p.parent not in folders or kind_of(p) is None or p.suffix != ".md":
         return None
     return p
 
@@ -116,11 +128,12 @@ def message(mf, name: str, kind: str, problems: list, nested: Optional[list] = N
 # ── WI-2 call site ─────────────────────────────────────────────────────────
 # tools/guard_table.py (WI-2) rebuilds the local guard table after a
 # memory write. A missing module or a failed rebuild is skipped silently.
-def rebuild_guard_table() -> None:
+def rebuild_guard_table(cwd: Optional[str] = None) -> None:
     try:
         mod = _load("guard_table")
-        if mod is not None and hasattr(mod, "rebuild"):
-            mod.rebuild(memory_dir())
+        folders = memory_dirs(cwd)
+        if mod is not None and hasattr(mod, "rebuild") and folders:
+            mod.rebuild(folders)
     except Exception:  # noqa: BLE001, S110 - a hook fails open
         pass
 
@@ -138,7 +151,7 @@ def run(stdin_text: str) -> str:
         return ""
     kind = kind_of(path) or "feedback"
     if kind == "feedback":  # as before: a project write does not rebuild the table
-        rebuild_guard_table()
+        rebuild_guard_table(_cwd(event))
     mf = _load("memory_fields")
     if mf is None:
         return ""

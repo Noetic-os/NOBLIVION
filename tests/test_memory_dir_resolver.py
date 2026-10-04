@@ -272,7 +272,7 @@ def test_error_recall_finds_the_main_checkout_folder_from_a_worktree(home, repo,
 def test_error_recall_logs_a_missing_folder(home, repo, tmp_path):
     log = tmp_path / "error-recall.jsonl"
     env = {"NOBLIVION_ERROR_RECALL_LOG": str(log)}
-    assert er.memory_dir(env, str(repo)) == er.DEFAULT_MEMORY_DIR
+    assert er.memory_dir(env, str(repo)) == default_folder(home, repo)  # no home default
     rec = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
     assert rec["note"] == "memory_dir_missing"
     assert rec["root"] == hc.project_slug(repo)

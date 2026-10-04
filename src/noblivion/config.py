@@ -215,6 +215,24 @@ def default_memory_dirs(env: Mapping[str, str] | None = None) -> list[Path]:
     return sorted(found)
 
 
+GLOBAL_MEMORY_DIR_ENV = "NOBLIVION_GLOBAL_MEMORY_DIR"
+GLOBAL_MEMORY_DIR_KEY = "global_memory_dir"
+
+
+def global_memory_dir(
+    env: Mapping[str, str] | None = None, cfg: Mapping | None = None
+) -> Path | None:
+    """The user-wide memory folder (NOBLIVION-31): ``NOBLIVION_GLOBAL_MEMORY_DIR``,
+    else the config key ``global_memory_dir``; None when neither is set."""
+    env = os.environ if env is None else env
+    raw: object = env.get(GLOBAL_MEMORY_DIR_ENV, "").strip()
+    if not raw:
+        raw = lookup(load_file(env) if cfg is None else cfg, GLOBAL_MEMORY_DIR_KEY)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return Path(os.path.expanduser(raw.strip()))
+
+
 def _non_negative_int(value: object, default: int) -> int:
     if isinstance(value, bool):
         return default
@@ -245,6 +263,9 @@ class Settings:
     # NOBLIVION_MEMORY_DIR: the one folder the hooks guard and sync. The store
     # always indexes it too, so the hooks and the store agree on the folders.
     hook_memory_dir: Path | None = None
+    # NOBLIVION_GLOBAL_MEMORY_DIR (config key global_memory_dir): the
+    # user-wide folder. Indexed too; its root is searched in every session.
+    global_memory_dir: Path | None = None
 
     @property
     def db_path(self) -> Path:
@@ -256,13 +277,13 @@ class Settings:
 
     def resolved_memory_dirs(self) -> list[Path]:
         """``memory_dirs`` (or the default glob), plus ``NOBLIVION_MEMORY_DIR``
-        when it is set and not in the list yet."""
+        and the global folder when they are set and not in the list yet."""
         dirs = default_memory_dirs() if self.memory_dirs is None else list(self.memory_dirs)
-        extra = self.hook_memory_dir
-        if extra is not None and extra.is_dir():
-            known = {_same(p) for p in dirs}
-            if _same(extra) not in known:
-                dirs.append(extra)
+        for extra in (self.hook_memory_dir, self.global_memory_dir):
+            if extra is not None and extra.is_dir():
+                known = {_same(p) for p in dirs}
+                if _same(extra) not in known:
+                    dirs.append(extra)
         return dirs
 
 
@@ -287,6 +308,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
 
     raw_hook_dir = env.get("NOBLIVION_MEMORY_DIR", "").strip()
     return Settings(
+        global_memory_dir=global_memory_dir(env, cfg),
         data_dir=data_dir(env),
         namespace=namespace,
         memory_dirs=dirs,
@@ -335,6 +357,18 @@ class StoreSettings:
     log_level: str = "info"
 
 
+def _shared_roots(env: Mapping[str, str], cfg: Mapping) -> tuple[str, ...]:
+    """``recall.shared_roots``, plus the root of the global folder (the name
+    of its parent folder, as the indexer names roots) when it is set."""
+    roots = list(string_list(cfg, "recall.shared_roots"))
+    extra = global_memory_dir(env, cfg)
+    if extra is not None:
+        name = Path(os.path.normpath(str(extra))).parent.name
+        if name and name not in roots:
+            roots.append(name)
+    return tuple(roots)
+
+
 def load_store_settings(env: Mapping[str, str] | None = None) -> StoreSettings:
     env = os.environ if env is None else env
     cfg = load_file(env)
@@ -348,7 +382,7 @@ def load_store_settings(env: Mapping[str, str] | None = None) -> StoreSettings:
             _env_or_cfg(env, cfg, "NOBLIVION_INDEX_INTERVAL_S", "index.interval_s"),
             DEFAULT_INDEX_INTERVAL_S,
         ),
-        shared_roots=string_list(cfg, "recall.shared_roots"),
+        shared_roots=_shared_roots(env, cfg),
         trust_ranking=_choice(
             _env_or_cfg(env, cfg, "NOBLIVION_TRUST_RANKING", "trust.ranking"),
             TRUST_RANKING_MODES,

@@ -99,7 +99,7 @@ Python versions:
 | `spawn.stamp` | hooks | mtime marks the last start attempt |
 | `cache/by-session/` | hooks | per-session recall cache and trust event spool |
 | `cache/` (other files) | hooks | continuity state, memory sync stamps and log, trust report and dedup status files |
-| `guard-table.json` | hooks | the guard table compiled from the memory rule fields |
+| `guard-tables/<slug>.json` | hooks | the guard table of one project memory folder, compiled from the memory rule fields (NOBLIVION-31) |
 | `guard-log.jsonl`, `guard-state/` | hooks | guard hook log and per-agent state |
 | `stop-check-log.jsonl`, `stop-check-state/` | hooks | stop check log and correction markers |
 | `index.lock`, `mine.lock` | store, CLI | one indexer scan and one miner run at a time |

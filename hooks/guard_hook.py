@@ -9,7 +9,10 @@ on ``PostToolUseFailure`` with the matcher ``Bash`` (WI-3d, the evidence leg
 below). Stdin is the Claude Code hook JSON (``session_id``,
 ``tool_name``, ``tool_input``, ``cwd``). The table is the WI-2 guard table
 (``guard_table.table_path()``: env ``NOBLIVION_GUARD_TABLE``, default
-``<data dir>/guard-table.json``). No daemon call, no network.
+``<data dir>/guard-tables/<slug of the memory folder>.json``). The memory
+folder is the project folder of the event's ``cwd`` (NOBLIVION-31). When that
+table is missing and the folder exists, the hook builds it once. No daemon
+call, no network.
 
 Bash
   * A ``violates:`` hit (``guard_table.match``; it strips the git
@@ -373,9 +376,22 @@ def state_dir(env: Mapping[str, str]) -> Path:
     return _path_env(env, "NOBLIVION_GUARD_STATE_DIR", DEFAULT_STATE)
 
 
-def table_file(env: Mapping[str, str]) -> Path:
+def table_file(env: Mapping[str, str], cwd: Optional[str] = None) -> Path:
+    """``NOBLIVION_GUARD_TABLE``, else the table of the project memory folder
+    of ``cwd``. A missing table of an existing folder is built here once,
+    fail open (a SessionStart that ran before the folder existed)."""
     raw = env.get("NOBLIVION_GUARD_TABLE")
-    return Path(raw).expanduser() if raw else _gt().DEFAULT_TABLE
+    if raw:
+        return Path(raw).expanduser()
+    gt = _gt()
+    folders = gt.source_dirs(cwd, env)
+    path = gt.table_path(folders[0] if folders else None, env)
+    if folders and not path.is_file() and any(f.is_dir() for f in folders):
+        try:
+            gt.rebuild(folders, path)
+        except Exception:  # noqa: BLE001, S110 - a hook fails open
+            pass
+    return path
 
 
 # --------------------------------------------------------------------------
@@ -1370,7 +1386,7 @@ def decide(event: Mapping[str, object], env: Mapping[str, str]) -> Decision:
         return Decision()  # the file-tool leg is off: nothing is read
     sid = event.get("session_id")
     agent = agent_key(event)
-    tpath = table_file(env)
+    tpath = table_file(env, cwd)
     table = _gt().load_table(tpath) if tpath.is_file() else {}
     if not table.get("entries"):
         why = "table empty or broken" if tpath.is_file() else "table missing"
@@ -1573,7 +1589,8 @@ def _record_failure(event: Mapping[str, object], env: Mapping[str, str]) -> Deci
     error = event.get("error")
     if not isinstance(command, str) or not isinstance(error, str) or not APPLY_FAILED.match(error):
         return Decision()
-    tpath = table_file(env)
+    cwd = event.get("cwd")
+    tpath = table_file(env, cwd if isinstance(cwd, str) else None)
     table = _gt().load_table(tpath) if tpath.is_file() else {}
     if not table.get("entries"):
         return Decision()  # no table: no guard, nothing to record

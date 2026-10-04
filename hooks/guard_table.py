@@ -6,8 +6,12 @@ Work item WI-2 ("guard table compiler").
 
 ``rebuild(folder)`` reads every memory file in ``folder`` ONLY through
 ``memory_fields.read_fields`` and writes one JSON table, atomically,
-to ``table_path()`` (env ``NOBLIVION_GUARD_TABLE``, default
-``<data dir>/guard-table.json``). Each entry carries the memory id (the file
+to ``table_path(folder)`` (env ``NOBLIVION_GUARD_TABLE``, default
+``<data dir>/guard-tables/<slug of the memory folder>.json``, one table per
+project). NOBLIVION-31: ``folder`` is the project memory folder of the
+session's ``cwd`` (``hook_config.resolve_memory_dir``), and also the global
+folder (``NOBLIVION_GLOBAL_MEMORY_DIR``) when it is set. A file of the project
+folder wins over a file with the same name in the global folder. Each entry carries the memory id (the file
 stem), rule, apply, scope, triggers (for the later rows-only leg) and the
 ``violates`` regex. A ``violates`` regex is kept only when
 ``memory_fields.check_fields`` reports no problem for that file; a
@@ -43,9 +47,10 @@ and ``label_error`` says why; the guard entries are built all the same.
 
 Callers:
   * the WI-1 PostToolUse hook ``memory_fields_hook.py`` calls
-    ``rebuild(memory_dir())`` after a memory write;
-  * SessionStart runs ``guard_table.py --rebuild``: fail-open,
-    exit 0 always, silent on success.
+    ``rebuild(source_dirs(cwd))`` after a memory write;
+  * SessionStart runs ``guard_table.py --rebuild`` with the hook JSON on
+    stdin (its ``cwd`` names the project): fail-open, exit 0 always, silent
+    on success.
 
 No daemon call, no network. Standard library only.
 """
@@ -79,8 +84,9 @@ def _hook_config():
 
 
 _CFG = _hook_config()
-LIVE = _CFG.default_memory_dir()
+# The table of a session with no project folder (no cwd and no override).
 DEFAULT_TABLE = _CFG.data_dir() / "guard-table.json"
+TABLES_SUBDIR = "guard-tables"
 TABLE_VERSION = 2  # 2: the label index key
 # Index and topic files are not memories.
 _NOT_MEMORY = re.compile(r"^(MEMORY|MEMORY_ARCHIVE|topic_.*)\.md$")
@@ -131,29 +137,70 @@ def _label_doc(path: Path, text: str) -> Dict[str, object]:
     }
 
 
-def table_path() -> Path:
-    return Path(os.environ.get("NOBLIVION_GUARD_TABLE") or DEFAULT_TABLE).expanduser()
+def _cwd_of(cwd: Optional[str]) -> Optional[str]:
+    if isinstance(cwd, str) and os.path.isabs(cwd):
+        return cwd
+    try:
+        return os.getcwd()
+    except OSError:
+        return None
 
 
-def memory_dir() -> Path:
-    return Path(os.environ.get("NOBLIVION_MEMORY_DIR") or LIVE).expanduser()
+def memory_dir(
+    cwd: Optional[str] = None, env: Optional[Mapping[str, str]] = None
+) -> Optional[Path]:
+    """The project memory folder of a session at ``cwd`` (default the process
+    working dir): ``NOBLIVION_MEMORY_DIR``, else the folder Claude Code uses
+    (``hook_config.resolve_memory_dir``). None when there is none."""
+    return _CFG.resolve_memory_dir(_cwd_of(cwd), env)
+
+
+def source_dirs(cwd: Optional[str] = None, env: Optional[Mapping[str, str]] = None) -> List[Path]:
+    """The folders the table of a session at ``cwd`` is built from: the
+    project folder, then the global folder when it is set."""
+    return _CFG.memory_dirs(_cwd_of(cwd), env)
+
+
+def table_path(folder: Optional[Path] = None, env: Optional[Mapping[str, str]] = None) -> Path:
+    """``NOBLIVION_GUARD_TABLE``, else the table of the project memory folder
+    ``folder`` (default ``memory_dir()``):
+    ``<data dir>/guard-tables/<slug of the folder>.json``. Each project has its
+    own table, so two sessions in two projects never overwrite each other."""
+    e = os.environ if env is None else env
+    raw = e.get("NOBLIVION_GUARD_TABLE")
+    if raw:
+        return Path(raw).expanduser()
+    if folder is None:
+        folder = memory_dir(None, env)
+    if folder is None:
+        return DEFAULT_TABLE
+    return _CFG.data_dir(env) / TABLES_SUBDIR / (_CFG.project_slug(str(folder)) + ".json")
 
 
 # --------------------------------------------------------------------------
 # building
 # --------------------------------------------------------------------------
-def build(folder: Path) -> Dict[str, Any]:
-    """The table for ``folder``, not written. Raises when ``folder`` is not a
+def _folders(folder: Any) -> List[Path]:
+    if isinstance(folder, (list, tuple)):
+        return [Path(f) for f in folder]
+    return [Path(folder)]
+
+
+def build(folder: Any) -> Dict[str, Any]:
+    """The table for ``folder`` (one folder, or a list: the project folder
+    first, then the global folder), not written. On a file name that two
+    folders hold, the first folder wins. Raises when no folder is a
     directory, so a missing folder never replaces a good table."""
-    folder = Path(folder)
-    if not folder.is_dir():
-        raise FileNotFoundError(f"memory folder {folder} does not exist")
+    folders = _folders(folder)
+    present = [f for f in folders if f.is_dir()]
+    if not present:
+        raise FileNotFoundError(f"memory folder {folders[0] if folders else ''} does not exist")
     mf = _mf()
     entries: List[Dict[str, object]] = []
     skipped: List[Dict[str, object]] = []
     label_docs: List[Dict[str, object]] = []
     label_error = ""
-    for path in sorted(folder.glob("*.md")):
+    for path in _CFG.memory_files(present):
         if _NOT_MEMORY.match(path.name):
             continue
         mem_id = path.stem
@@ -224,7 +271,8 @@ def build(folder: Path) -> Dict[str, Any]:
     table: Dict[str, Any] = {
         "version": TABLE_VERSION,
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "source": str(folder),
+        "source": str(folders[0]),
+        "sources": [str(f) for f in present],
         "entries": entries,
         "skipped": skipped,
     }
@@ -259,11 +307,15 @@ def write_atomic(path: Path, data: Dict[str, object]) -> None:
         raise
 
 
-def rebuild(folder: Optional[Path] = None, out: Optional[Path] = None) -> Dict[str, Any]:
-    """Build the table for ``folder`` (default ``memory_dir()``) and write it to
-    ``out`` (default ``table_path()``). Returns the table."""
-    table = build(Path(folder) if folder is not None else memory_dir())
-    write_atomic(Path(out) if out is not None else table_path(), table)
+def rebuild(folder: Any = None, out: Optional[Path] = None) -> Dict[str, Any]:
+    """Build the table for ``folder`` (one folder or a list, default
+    ``source_dirs()``) and write it to ``out`` (default the table of the
+    first folder, ``table_path``). Returns the table."""
+    folders = _folders(folder) if folder is not None else source_dirs()
+    if not folders:
+        raise FileNotFoundError("no memory folder")
+    table = build(folders)
+    write_atomic(Path(out) if out is not None else table_path(folders[0]), table)
     return table
 
 
@@ -963,29 +1015,32 @@ def complies_match(command: str, table: Optional[Mapping[str, Any]] = None) -> L
 # CLI
 # --------------------------------------------------------------------------
 def main(argv: Optional[List[str]] = None) -> int:
-    """``--rebuild``: rebuild the table; exit 0 always, silent on success and
-    when the memory folder does not exist, one stderr line on failure (a
-    SessionStart hook fails open). ``--report``: print
-    the skipped regexes after a rebuild. ``--match CMD``: print the hits as JSON."""
+    """``--rebuild``: rebuild the table of the session's project; exit 0
+    always, silent on success and when the memory folder does not exist, one
+    stderr line on failure (a SessionStart hook fails open). The hook JSON on
+    stdin gives the ``cwd``; without it the process working dir is used.
+    ``--report``: print the skipped regexes after a rebuild. ``--match CMD``:
+    print the hits as JSON."""
     args = list(sys.argv[1:] if argv is None else argv)
     if "--match" in args:
         try:
             cmd = args[args.index("--match") + 1]
-            print(json.dumps(match(cmd), indent=1))
+            print(json.dumps(match(cmd, load_table(table_path())), indent=1))
         except Exception as exc:  # noqa: BLE001
             print(f"guard table: match failed: {exc}", file=sys.stderr)
         return 0
     if "--rebuild" in args:
         try:
-            folder = memory_dir()
-            if not folder.is_dir():
+            folders = source_dirs(_event_cwd())
+            if not any(f.is_dir() for f in folders):
                 # A fresh install has no memory folder yet: no memory, no
                 # guards. That is not an error (NOBLIVION-27). An absent
                 # table reads as empty; an old table stays as it is.
                 if "--report" in args:
-                    print(f"no memory folder {folder}: no guards")
+                    where = folders[0] if folders else "(none)"
+                    print(f"no memory folder {where}: no guards")
                 return 0
-            table = rebuild(folder)
+            table = rebuild(folders)
             if "--report" in args:
                 n = sum(1 for e in table["entries"] if e["violates"])
                 li = table.get("label_index") or {}
@@ -996,7 +1051,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 )
                 print(
                     f"{len(table['entries'])} entries, {n} guards, "
-                    f"{len(table['skipped'])} skipped, {labels} -> {table_path()}"
+                    f"{len(table['skipped'])} skipped, {labels} -> {table_path(folders[0])}"
                 )
                 for s in table["skipped"]:
                     print(f"  skipped {s['id']}: {'; '.join(s['problems'])}")
@@ -1008,6 +1063,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     print((__doc__ or "").split("\n\n")[0], file=sys.stderr)
     return 0
+
+
+def _event_cwd() -> Optional[str]:
+    """The ``cwd`` of the hook JSON on stdin, or None (a terminal, no JSON)."""
+    try:
+        if sys.stdin is None or sys.stdin.isatty():
+            return None
+        event = json.loads(sys.stdin.read() or "{}")
+    except (OSError, ValueError):
+        return None
+    cwd = event.get("cwd") if isinstance(event, dict) else None
+    return cwd if isinstance(cwd, str) and os.path.isabs(cwd) else None
 
 
 def _make_dirs(path: Any) -> None:

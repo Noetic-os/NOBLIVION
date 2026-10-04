@@ -130,12 +130,16 @@ def test_data_dir_order(hook_env, monkeypatch) -> None:
     assert cfg.cache_dir() == hook_env["home"] / "xdg" / "noblivion" / "cache"
 
 
-def test_default_memory_dir_is_built_from_home(hook_env) -> None:
+def test_there_is_no_home_folder_default(hook_env, tmp_path) -> None:
+    """NOBLIVION-31: the hooks never fall back to the home folder's project."""
     cfg = load("hook_config")
     home = hook_env["home"]
-    slug = cfg.project_slug(home)
+    assert not hasattr(cfg, "default_memory_dir")
+    assert cfg.resolve_memory_dir(None) is None
+    project = tmp_path / "project"
+    slug = cfg.project_slug(project)
     assert "/" not in slug and slug.startswith("-")
-    assert cfg.default_memory_dir() == home / ".claude" / "projects" / slug / "memory"
+    assert cfg.resolve_memory_dir(str(project)) == home / ".claude" / "projects" / slug / "memory"
 
 
 def test_broken_config_reads_as_empty(hook_env) -> None:

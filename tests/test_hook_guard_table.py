@@ -384,11 +384,17 @@ def test_match_reads_the_table_path_and_fails_open(folder, table_file, tmp_path,
     assert gt.match("git stash pop") == []
 
 
-def test_the_default_table_is_in_the_data_dir(hook_env, monkeypatch):
-    """Without ``NOBLIVION_GUARD_TABLE`` the table is ``<data dir>/guard-table.json``."""
+def test_the_default_table_is_in_the_data_dir(hook_env, monkeypatch, tmp_path):
+    """Without ``NOBLIVION_GUARD_TABLE`` each project memory folder has its own
+    table, ``<data dir>/guard-tables/<slug of the folder>.json`` (NOBLIVION-31)."""
     monkeypatch.delenv("NOBLIVION_GUARD_TABLE")
     mod = load_hook("guard_table", "guard_table_t_table_default")
-    assert mod.table_path() == hook_env["data"] / "guard-table.json"
+    tables = hook_env["data"] / "guard-tables"
+    a, b = tmp_path / "a" / "memory", tmp_path / "b" / "memory"
+    assert mod.table_path(a) == tables / (mod._CFG.project_slug(str(a)) + ".json")
+    assert mod.table_path(a) != mod.table_path(b)
+    monkeypatch.setenv("NOBLIVION_MEMORY_DIR", str(a))
+    assert mod.table_path() == mod.table_path(a)
 
 
 def test_each_regex_is_compiled_once(folder, table_file, monkeypatch):

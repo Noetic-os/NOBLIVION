@@ -31,7 +31,7 @@ import sys
 import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 DATA_DIR_ENV = "NOBLIVION_DATA_DIR"
 CONFIG_ENV = "NOBLIVION_CONFIG"
@@ -280,13 +280,6 @@ def project_slug(path: Any) -> str:
     return "%s-%s" % (slug[:SLUG_MAX], _base36(abs(_java_hash(text))))
 
 
-def default_memory_dir() -> Path:
-    """The memory folder of the project that is the home folder:
-    ``~/.claude/projects/<slug of the home folder>/memory``."""
-    home = Path.home()
-    return home / ".claude" / "projects" / project_slug(home) / "memory"
-
-
 # ── the memory folder of a session (NOBLIVION-30) ─────────────────────────
 #
 # How Claude Code picks the auto-memory folder. Read from the Claude Code
@@ -488,3 +481,62 @@ def resolve_memory_dir(
     if name is None:
         name = project_slug(project_folder(cwd))
     return Path(unicodedata.normalize("NFC", str(base / "projects" / name / "memory")))
+
+
+# ── the user-wide memory folder (NOBLIVION-31) ────────────────────────────
+#
+# Claude Code keeps one memory folder per project. A user may keep rules that
+# hold in every project in one more folder: ``NOBLIVION_GLOBAL_MEMORY_DIR``,
+# else the config key ``global_memory_dir``. Default: none. When it is set,
+# recall, the guards and the stop checks read both folders. A file of the
+# project folder wins over a file with the same name in the global folder.
+
+GLOBAL_MEMORY_DIR_ENV = "NOBLIVION_GLOBAL_MEMORY_DIR"
+GLOBAL_MEMORY_DIR_KEY = "global_memory_dir"
+
+
+def global_memory_dir(env: Optional[Mapping[str, str]] = None) -> Optional[Path]:
+    """The user-wide memory folder, or None when none is set. ``~`` is
+    expanded. The folder may not exist."""
+    raw: Any = str(_env(env).get(GLOBAL_MEMORY_DIR_ENV) or "").strip()
+    if not raw:
+        raw = get(GLOBAL_MEMORY_DIR_KEY, None, env)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return Path(os.path.expanduser(raw.strip()))
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return os.path.realpath(str(a)) == os.path.realpath(str(b))
+    except (OSError, ValueError):
+        return str(a) == str(b)
+
+
+def memory_dirs(cwd: Optional[str], env: Optional[Mapping[str, str]] = None) -> List[Path]:
+    """The folders a session at ``cwd`` reads rules from, in order: the
+    project folder (``resolve_memory_dir``), then the global folder when it
+    is set and is not the project folder. A folder may not exist."""
+    out: List[Path] = []
+    project = resolve_memory_dir(cwd, env)
+    if project is not None:
+        out.append(project)
+    extra = global_memory_dir(env)
+    if extra is not None and not any(_same_dir(extra, p) for p in out):
+        out.append(extra)
+    return out
+
+
+def memory_files(folders: Any, pattern: str = "*.md") -> List[Path]:
+    """The top-level files that match ``pattern`` in ``folders``, sorted by
+    name. On a name that two folders hold, the first folder wins, so the
+    project folder shadows the global folder. A missing folder is skipped."""
+    seen: Dict[str, Path] = {}
+    for folder in folders:
+        try:
+            found = sorted(Path(folder).glob(pattern))
+        except OSError:
+            continue
+        for path in found:
+            seen.setdefault(path.name, path)
+    return [seen[name] for name in sorted(seen)]

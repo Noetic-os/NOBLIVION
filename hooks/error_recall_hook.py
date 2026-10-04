@@ -81,8 +81,8 @@ Memory folder
   ``NOBLIVION_ERROR_RECALL_MEMORY_DIR``, else ``NOBLIVION_RECALL_MEMORY_DIR``,
   else ``NOBLIVION_MEMORY_DIR``, else the memory folder Claude Code keeps for
   the event's ``cwd`` (``hook_config.resolve_memory_dir``: the git
-  repository's main checkout, ``autoMemoryDirectory``, ``CLAUDE_CONFIG_DIR``)
-  when it exists, else the memory folder of the home folder.
+  repository's main checkout, ``autoMemoryDirectory``, ``CLAUDE_CONFIG_DIR``).
+  There is no home-folder default: with no folder the hook searches nothing.
 
 Output and budget
   At most ``MAX_HITS`` (2) hits (WI-14b). The header says the text IS the
@@ -214,7 +214,6 @@ _MT = _load("memory_text")
 _CFG = _load("hook_config")
 DEFAULT_LOG = _CFG.data_dir() / "error-recall-log.jsonl"
 DEFAULT_STATE = _CFG.data_dir() / "guard-state"
-DEFAULT_MEMORY_DIR = _CFG.default_memory_dir()
 MEMORY_DIR_ENVS = (
     "NOBLIVION_ERROR_RECALL_MEMORY_DIR",
     "NOBLIVION_RECALL_MEMORY_DIR",
@@ -239,22 +238,21 @@ def state_dir(env: Mapping[str, str]) -> Path:
     )
 
 
-def memory_dir(env: Mapping[str, str], cwd: Any = None) -> Path:
+def memory_dir(env: Mapping[str, str], cwd: Any = None) -> Optional[Path]:
     """The memory folder: the env (``MEMORY_DIR_ENVS``), else the folder
-    Claude Code keeps for the event's ``cwd`` (``hook_config.resolve_memory_dir``)
-    when it exists, else ``DEFAULT_MEMORY_DIR``. A missing session folder
-    writes one ``memory_dir_missing`` line to the log."""
+    Claude Code keeps for the event's ``cwd`` (``hook_config.resolve_memory_dir``).
+    None when there is neither. A missing session folder writes one
+    ``memory_dir_missing`` line to the log, and is returned all the same: the
+    hook then searches nothing (NOBLIVION-31: no home-folder default)."""
     for n in MEMORY_DIR_ENVS:
         if env.get(n):
             return Path(env[n]).expanduser()
     folder = _CFG.resolve_memory_dir(cwd if isinstance(cwd, str) else None, env)
-    if folder is not None:
-        if folder.is_dir():
-            return folder
+    if folder is not None and not folder.is_dir():
         log_line(
             env, {"decision": "note", "note": "memory_dir_missing", "root": folder.parent.name}
         )
-    return DEFAULT_MEMORY_DIR
+    return folder
 
 
 def _float_env(env: Mapping[str, str], name: str, default: float) -> float:
@@ -1137,6 +1135,8 @@ def decide(
     if len(tokens(query)) < 2:
         return "", None
     folder = memory_dir(env, event.get("cwd"))
+    if folder is None:
+        return "", {"decision": "error", "error": "no memory folder: the event has no cwd"}
     if not folder.is_dir():
         return "", {"decision": "error", "error": f"memory folder missing: {folder}"}
     raw_ti = event.get("tool_input")

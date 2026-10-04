@@ -450,7 +450,8 @@ def prompt_leg(stdin_text: str, stdout: Any, env: Mapping[str, str]) -> int:
         if not isinstance(prompt, str) or not prompt.strip():
             return 0
         gh = _load("guard_hook")
-        tpath = gh.table_file(env)
+        cwd = payload.get("cwd")
+        tpath = gh.table_file(env, cwd if isinstance(cwd, str) else None)
         if not tpath.is_file():
             return 0
         table = _load("guard_table").load_table(tpath)
@@ -481,7 +482,7 @@ def prompt_leg(stdin_text: str, stdout: Any, env: Mapping[str, str]) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """``--match TEXT``: print the label matches of TEXT against the guard
-    table (``NOBLIVION_GUARD_TABLE``) as JSON."""
+    table of the working dir's project (``NOBLIVION_GUARD_TABLE`` wins) as JSON."""
     args = list(sys.argv[1:] if argv is None else argv)
     if "--match" in args and args.index("--match") + 1 < len(args):
         env = dict(os.environ)

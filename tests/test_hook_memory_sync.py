@@ -237,8 +237,11 @@ def test_the_default_state_dir_is_the_data_dir_cache(hook_env):
     mod = load_hook("memory_sync_hook", "memory_sync_hook_t_memory_sync_defaults")
     assert mod.state_dir({}) == hook_env["data"] / "cache"
     home = hook_env["home"]
-    slug = str(home).replace("/", "-").replace("_", "-").replace(".", "-")
-    assert mod.memory_dir({}) == home / ".claude" / "projects" / slug / "memory"
+    project = hook_env["home"].parent / "project"
+    slug = str(project).replace("/", "-").replace("_", "-").replace(".", "-")
+    env = {"HOME": str(home)}
+    assert mod.memory_dir(env, str(project)) == home / ".claude" / "projects" / slug / "memory"
+    assert mod.memory_dir(env) is None  # NOBLIVION-31: no home-folder default
 
 
 # ── the worker ──────────────────────────────────────────────────────────────

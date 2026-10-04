@@ -2241,6 +2241,38 @@ def memory_dir(environ: Optional[Mapping[str, str]] = None) -> Optional[str]:
     return path if os.path.isdir(path) else None
 
 
+def global_memory_dir(environ: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    """The user-wide memory folder (``NOBLIVION_GLOBAL_MEMORY_DIR``, else the
+    config key ``global_memory_dir``) when it is set, exists and is not the
+    project folder; else None (NOBLIVION-31). The store indexes it and
+    searches its root in every session."""
+    env = os.environ if environ is None else environ
+    got = _sibling_module("hook_config").global_memory_dir(env)
+    if got is None or not os.path.isdir(got):
+        return None
+    project = memory_dir(env)
+    if project and os.path.realpath(project) == os.path.realpath(str(got)):
+        return None
+    return str(got)
+
+
+def memory_dirs(environ: Optional[Mapping[str, str]] = None) -> List[str]:
+    """The folders the local steps read: the project folder, then the global
+    folder."""
+    return [f for f in (memory_dir(environ), global_memory_dir(environ)) if f]
+
+
+def load_session_corpus(environ: Optional[Mapping[str, str]] = None) -> List[MemoryFile]:
+    """The local corpus of ``memory_dirs``. On a file name that both folders
+    hold, the project file is kept and the global file is left out, as the
+    store does for a shared root."""
+    seen: Dict[str, MemoryFile] = {}
+    for folder in memory_dirs(environ):
+        for md in load_memory_corpus(folder):
+            seen.setdefault(md.rel_path, md)
+    return [seen[name] for name in sorted(seen)]
+
+
 # ── the local corpus (P3 and P1h) ───────────────────────────────────────────
 
 
@@ -2803,12 +2835,11 @@ def _serve_index(
     keyword = any(ln.keyword for ln in lines)
     by_name: Mapping[str, MemoryFile] = {}
     if local:
-        folder = memory_dir(environ)
-        if folder is None:
+        if not memory_dirs(environ):
             note = ":local_off:no_memory_dir"
         else:
             try:
-                corpus = load_memory_corpus(folder)
+                corpus = load_session_corpus(environ)
                 by_name = corpus_by_name(corpus)
                 if hygiene:
                     lines = hygiene_index(lines, by_name)

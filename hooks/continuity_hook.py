@@ -105,7 +105,6 @@ def _hook_config():
 
 
 _CFG = _hook_config()
-LIVE_MEMORY_DIR = str(_CFG.default_memory_dir())
 DEFAULT_CACHE_DIR = str(_CFG.cache_dir())
 
 ON_ENV = "NOBLIVION_CONTINUITY"
@@ -215,9 +214,25 @@ def cache_dir(env: Mapping[str, str]) -> str:
 
 
 def memory_dir(env: Mapping[str, str]) -> str:
+    """``NOBLIVION_RECALL_MEMORY_DIR``, else ``NOBLIVION_MEMORY_DIR``; ``""``
+    when neither is set. ``run`` fills the first from the event's ``cwd``."""
     return os.path.expanduser(
-        env.get("NOBLIVION_RECALL_MEMORY_DIR") or env.get("NOBLIVION_MEMORY_DIR") or LIVE_MEMORY_DIR
+        env.get("NOBLIVION_RECALL_MEMORY_DIR") or env.get("NOBLIVION_MEMORY_DIR") or ""
     )
+
+
+def session_env(env: Mapping[str, str], event: Mapping[str, Any]) -> Dict[str, str]:
+    """A copy of ``env`` with ``NOBLIVION_RECALL_MEMORY_DIR`` set to the
+    project memory folder of the event's ``cwd`` (``resolve_memory_dir``)
+    when no folder is set and that folder exists (NOBLIVION-31)."""
+    out = dict(env)
+    if memory_dir(out):
+        return out
+    cwd = event.get("cwd")
+    folder = _CFG.resolve_memory_dir(cwd if isinstance(cwd, str) else None, out)
+    if folder is not None and folder.is_dir():
+        out["NOBLIVION_RECALL_MEMORY_DIR"] = str(folder)
+    return out
 
 
 def _sid(session_id: Any) -> Optional[str]:
@@ -313,7 +328,7 @@ def _clean(text: str, limit: int) -> str:
 
 def _corpus(env: Mapping[str, str]) -> List[Any]:
     folder = memory_dir(env)
-    if not os.path.isdir(folder):
+    if not folder or not os.path.isdir(folder):
         return []
     return recall_module().load_memory_corpus(folder)
 
@@ -718,6 +733,7 @@ def run(
     event = json.loads(stdin_text or "{}")
     if not isinstance(event, dict):
         return ""
+    env = session_env(env, event)
     name = event.get("hook_event_name")
     t0 = time.monotonic()
     if name == "PreCompact":

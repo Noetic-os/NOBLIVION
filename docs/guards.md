@@ -9,21 +9,28 @@ files directly. Every guard fails open: on an error, it allows the call.
 ## The guard table
 
 The guard hook does not parse your memory files on each call. It reads a
-table, `<data dir>/guard-table.json`.
+table. Each project has its own table,
+`<data dir>/guard-tables/<slug of the memory folder>.json`.
 
-- **Source.** Every `*.md` file in one memory folder: `NOBLIVION_MEMORY_DIR`,
-  else `~/.claude/projects/<slug of your home folder>/memory`. The files
-  `MEMORY.md`, `MEMORY_ARCHIVE.md` and `topic_*.md` are skipped. When you
-  set `NOBLIVION_MEMORY_DIR`, the store indexes that folder too, so recall
-  and the guards read the same notes.
+- **Source.** Every `*.md` file in the session's memory folder: the folder
+  Claude Code keeps for the project of the session's working directory (see
+  "The session's memory folder" in [configuration.md](configuration.md)),
+  or `NOBLIVION_MEMORY_DIR` when it is set. When
+  `NOBLIVION_GLOBAL_MEMORY_DIR` is set, the table also holds the files of
+  that folder; a project file wins over a global file with the same name.
+  The files `MEMORY.md`, `MEMORY_ARCHIVE.md` and `topic_*.md` are skipped.
+  The store indexes the same folders, so recall and the guards read the same
+  notes.
 - **Entry.** A file becomes an entry when it has a `rule:` field, a
   `violates:` field or a valid trigger.
 - **Rebuild.** The table is rebuilt at session start and after Claude Code
   writes a `feedback_*.md` file. To rebuild it by hand, run:
 
   ```sh
-  python3 "<plugin dir>/hooks/guard_table.py" --rebuild --report
+  cd <your project> && python3 "<plugin dir>/hooks/guard_table.py" --rebuild --report
   ```
+
+  Run it from the project folder: the working directory names the project.
 
   `--report` prints the counts and the files that were skipped, with the
   reason.

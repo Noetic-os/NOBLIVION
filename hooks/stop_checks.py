@@ -38,8 +38,11 @@ time limit (``TIME_LIMIT`` seconds) means exit 0 and no block. Standard library 
 Env (all optional; tests set them to tmp paths):
   NOBLIVION_STOP_CHECK_LOG     decision log, default <data dir>/stop-check-log.jsonl
   NOBLIVION_STOP_CHECK_STATE   marker folder, default <data dir>/stop-check-state
-  NOBLIVION_MEMORY_DIR         memory folder, default the memory folder of the
-                               home-folder project (~/.claude/projects/<slug>/memory)
+  NOBLIVION_MEMORY_DIR         memory folder, default the project memory folder of the
+                               event's cwd (hook_config.resolve_memory_dir)
+  NOBLIVION_GLOBAL_MEMORY_DIR  user-wide memory folder, default none. A lesson written
+                               there counts too; the block message names the project
+                               folder.
 
 Config file keys (hook_config; all optional):
   stop.shared_checkouts   list of checkout paths: an edit there is reported, never
@@ -104,7 +107,6 @@ WT_RE = (
     if WORKTREE_PREFIXES
     else None
 )
-LIVE_MEMORY = _CFG.default_memory_dir()
 DEFAULT_LOG = _CFG.data_dir() / "stop-check-log.jsonl"
 DEFAULT_STATE = _CFG.data_dir() / "stop-check-state"
 _TEST_COMMAND = _CFG.get("stop.test_command")
@@ -584,7 +586,8 @@ class Ctx:
     live: bool = True  # run git status (False in the offline replay)
     deadline: float = 0.0
     session: str = ""
-    memory_dir: Path = LIVE_MEMORY
+    memory_dir: Optional[Path] = None  # the project memory folder; lessons go here
+    extra_dirs: Tuple[Path, ...] = ()  # the global folder: a lesson there counts too
     state_dir: Path = DEFAULT_STATE
     marker: Optional[dict] = None  # the correction marker of this session, if any
     notes: Dict[str, object] = field(default_factory=dict)
@@ -922,9 +925,13 @@ def has_rule_apply(text: str) -> bool:
     )
 
 
-def memory_writes(turn: Turn, memory_dir: Path) -> List[Tuple[str, str]]:
-    """(path, text or "") for memory .md files this turn wrote with a tool call."""
-    folder = os.path.normpath(str(memory_dir)) + "/"
+def memory_writes(turn: Turn, memory_dir: Any) -> List[Tuple[str, str]]:
+    """(path, text or "") for memory .md files this turn wrote with a tool call.
+    ``memory_dir`` is one folder or a list of folders."""
+    dirs = memory_dir if isinstance(memory_dir, (list, tuple)) else [memory_dir]
+    prefixes = tuple(os.path.normpath(str(d)) + "/" for d in dirs if d is not None)
+    if not prefixes:
+        return []
     out = []
     for _, name, inp in turn.calls:
         paths: List[Tuple[str, str]] = []
@@ -942,29 +949,31 @@ def memory_writes(turn: Turn, memory_dir: Path) -> List[Tuple[str, str]]:
                 for p in bash_write_paths(str(inp.get("command") or ""), call_cwd(turn, inp))
             ]
         for p, text in paths:
-            if p.startswith(folder) and p.endswith(".md"):
+            if p.startswith(prefixes) and p.endswith(".md"):
                 out.append((p, text))
     return out
 
 
 def lesson_captured(turn: Turn, ctx: Ctx) -> Optional[str]:
     """The memory path that captures the lesson, or None."""
-    cands = memory_writes(turn, ctx.memory_dir)
+    dirs = [d for d in (ctx.memory_dir, *ctx.extra_dirs) if d is not None]
+    cands = memory_writes(turn, dirs)
     since = float((ctx.marker or {}).get("ts") or 0)
     if ctx.live and since:
         # A file changed since the prompt counts only when this turn's tool calls name it:
         # another session or a mirror job may touch the folder at the same time.
         said = "\n".join(json.dumps(inp, default=str) for _, _, inp in turn.calls)
-        try:
-            for entry in os.scandir(ctx.memory_dir):
-                if (
-                    entry.name.endswith(".md")
-                    and entry.stat().st_mtime >= since - 1
-                    and entry.name[:-3] in said
-                ):
-                    cands.append((entry.path, ""))
-        except OSError:
-            pass
+        for folder in dirs:
+            try:
+                for entry in os.scandir(folder):
+                    if (
+                        entry.name.endswith(".md")
+                        and entry.stat().st_mtime >= since - 1
+                        and entry.name[:-3] in said
+                    ):
+                        cands.append((entry.path, ""))
+            except OSError:
+                pass
     for path, text in cands:
         name = os.path.basename(path)
         if name == "MEMORY.md" or name.startswith(("topic_", "MEMORY_")):
@@ -989,9 +998,10 @@ def check_lesson(turn: Turn, ctx: Ctx) -> Optional[str]:
         return None
     snippet = str(ctx.marker.get("phrase") or "")[:60]
     ctx.notes["lesson"] = snippet
+    where = str(ctx.memory_dir) if ctx.memory_dir is not None else "the project memory folder"
     return (
         f'The user corrected you this turn ("{snippet}"). Save the lesson before you stop: '
-        f"write or update a feedback memory in {ctx.memory_dir} with rule:, apply:, scope: and "
+        f"write or update a feedback memory in {where} with rule:, apply:, scope: and "
         "triggers: fields, and link it from the memory index. If the correction holds no "
         "reusable lesson, say that in one line."
     )
@@ -1058,8 +1068,21 @@ def state_dir() -> Path:
     return _env_path("NOBLIVION_STOP_CHECK_STATE", DEFAULT_STATE)
 
 
-def memory_dir() -> Path:
-    return _env_path("NOBLIVION_MEMORY_DIR", LIVE_MEMORY)
+def memory_dir(cwd: Optional[str] = None) -> Optional[Path]:
+    """The project memory folder of a session at ``cwd``:
+    ``NOBLIVION_MEMORY_DIR``, else the folder Claude Code uses. None when
+    there is no override and no absolute ``cwd``."""
+    return _CFG.resolve_memory_dir(cwd if isinstance(cwd, str) and cwd else None)
+
+
+def extra_dirs(project: Optional[Path]) -> Tuple[Path, ...]:
+    """The global folder, when it is set and is not ``project``."""
+    extra = _CFG.global_memory_dir()
+    if extra is None:
+        return ()
+    if project is not None and os.path.realpath(str(extra)) == os.path.realpath(str(project)):
+        return ()
+    return (extra,)
 
 
 def _safe_id(session: str) -> str:
@@ -1117,15 +1140,19 @@ def stop_hook(event: dict, t0: float) -> Optional[str]:
     if not path or not os.path.isfile(path):
         log({**base, "verdict": "skip-no-transcript"})
         return None
+    cwd = event.get("cwd")
     ctx = Ctx(
         live=True,
         deadline=t0 + TIME_LIMIT - 0.2,
         session=session,
-        memory_dir=memory_dir(),
+        memory_dir=memory_dir(cwd if isinstance(cwd, str) else None),
         state_dir=state_dir(),
         marker=marker,
     )
     turn = read_turn(path, deadline=ctx.deadline)
+    if ctx.memory_dir is None and turn.cwd:
+        ctx.memory_dir = memory_dir(turn.cwd)  # an event with no cwd: the transcript's
+    ctx.extra_dirs = extra_dirs(ctx.memory_dir)
     last = str(event.get("last_assistant_message") or "").strip()
     if last:
         turn.reply = last

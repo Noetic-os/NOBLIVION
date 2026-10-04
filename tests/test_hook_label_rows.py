@@ -549,7 +549,9 @@ def test_defaults_resolve_under_the_data_dir_and_nothing_else_is_written(mem, tm
     home = tmp_path / "fresh-home"
     data = home / ".local" / "share" / "noblivion"
     data.mkdir(parents=True)
-    gt.rebuild(mem, data / "guard-table.json")
+    # NOBLIVION-31: the table of the project at the events' cwd (/tmp).
+    project_mem = home / ".claude" / "projects" / "-tmp" / "memory"
+    gt.rebuild(mem, data / "guard-tables" / (gt._CFG.project_slug(str(project_mem)) + ".json"))
     before = set(tmp_path.rglob("*"))
     code = (
         "import importlib.util, io, json, sys\n"
@@ -560,7 +562,7 @@ def test_defaults_resolve_under_the_data_dir_and_nothing_else_is_written(mem, tm
         "lr = load('label_rows'); gh = load('guard_hook')\n"
         "import os\n"
         "ev = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'h1',\n"
-        "      'prompt': 'fix deploy/prometheus.yml'}\n"
+        "      'prompt': 'fix deploy/prometheus.yml', 'cwd': '/tmp'}\n"
         "n = lr.prompt_leg(json.dumps(ev), sys.stdout, dict(os.environ))\n"
         "ev = {'session_id': 'h1', 'hook_event_name': 'PreToolUse', 'tool_name': 'Bash',\n"
         "      'tool_input': {'command': 'bash alpha_tool.sh'}, 'cwd': '/tmp'}\n"

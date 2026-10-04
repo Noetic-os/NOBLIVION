@@ -252,24 +252,33 @@ class RankIndex:
     def pool_key(
         project: str, root: str | None, shared_roots: Iterable[str], include_mined: bool
     ) -> tuple:
-        roots = None if root is None else tuple(sorted({root, *shared_roots}))
-        return (project, roots, bool(include_mined))
+        if root is None:
+            return (project, None, None, bool(include_mined))
+        return (project, root, tuple(sorted(set(shared_roots) - {root})), bool(include_mined))
 
     def _pool(self, snap: _Snapshot, key: tuple) -> tuple[list[PoolRow], bm25.BM25]:
         cached = snap.pools.get(key)
         if cached is not None:
             return cached
-        project, roots, include_mined = key
-        rows = sorted(
-            (
+        project, root, shared, include_mined = key
+        roots = None if root is None else {root, *shared}
+        rows = [
+            r
+            for r in snap.rows.values()
+            if r.project == project
+            and (roots is None or r.root in roots)
+            and (include_mined or r.source_type != db.SOURCE_MINED)
+        ]
+        if root is not None and shared:
+            # NOBLIVION-31: a memory file of the session's root wins over a
+            # file with the same name in a shared root (the global folder).
+            own = {r.path for r in rows if r.root == root and r.source_type == db.SOURCE_MD}
+            rows = [
                 r
-                for r in snap.rows.values()
-                if r.project == project
-                and (roots is None or r.root in roots)
-                and (include_mined or r.source_type != db.SOURCE_MINED)
-            ),
-            key=lambda r: r.id,
-        )
+                for r in rows
+                if r.root == root or r.source_type != db.SOURCE_MD or r.path not in own
+            ]
+        rows.sort(key=lambda r: r.id)
         built = (rows, bm25.BM25([r.tokens for r in rows]))
         self.bm25_builds += 1
         if len(snap.pools) >= _CACHE_MAX:

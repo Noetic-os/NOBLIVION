@@ -59,8 +59,10 @@ from the install stamp in that venv.
 
 ### The session's memory folder
 
-The recall hooks use the folder Claude Code keeps auto memory in for the
-session. They find it the way Claude Code does:
+Every hook uses the folder Claude Code keeps auto memory in for the session:
+recall, error recall, subagent rules, continuity, the guard table and the
+guard hook, the memory fields hook, the memory sync hook and the stop checks.
+Each hook finds it from the `cwd` of its hook event, the way Claude Code does:
 
 1. `NOBLIVION_MEMORY_DIR` (or `NOBLIVION_RECALL_MEMORY_DIR`), when set.
 2. `autoMemoryDirectory` from the first Claude Code settings file that sets
@@ -77,7 +79,40 @@ session. They find it the way Claude Code does:
 
 When that folder does not exist, the recall hook writes one line to
 `<data dir>/cache/memory-dir.log` for the call, and recall reads no memory
-files.
+files. There is no home-folder default: a session in a project uses the
+folder of that project, never the folder of your home folder.
+
+The stop checks name this folder when they ask Claude to save a lesson, so a
+lesson goes where recall finds it.
+
+### The global memory folder
+
+You can keep rules that hold in every project in one more folder. Set
+`NOBLIVION_GLOBAL_MEMORY_DIR`, or the config key `global_memory_dir`, to an
+absolute path (or a path that starts with `~/`). There is no default: when it
+is not set, the hooks read only the project folder.
+
+When it is set:
+
+- The store indexes the folder and searches it in every session. Its root is
+  the name of its parent folder, and the store adds that root to
+  `recall.shared_roots`.
+- Recall, the guard table and the stop checks read the project folder and the
+  global folder.
+- A file of the project folder wins over a file with the same name in the
+  global folder (and in any other shared root).
+- A lesson saved in the global folder satisfies the stop checks too. The stop
+  checks ask for the project folder.
+
+```json
+{
+  "global_memory_dir": "~/claude-rules/memory"
+}
+```
+
+The guard table is rebuilt at the start of each session and after a write of
+a feedback memory. A change to the global folder reaches the guard table of
+another project at that project's next session start.
 
 ### Shared Claude Code and Codex settings
 
@@ -117,7 +152,8 @@ not a database namespace. It does not separate the two clients' searches.
 | none | `index.delete_grace_days` | `14` | Days a deleted note stays in the database before the store removes it. |
 | `NOBLIVION_LOG_LEVEL` | `log_level` | `info` | `debug`, `info`, `warning` or `error`. Only `debug` writes query text to the log. |
 | `NOBLIVION_PROJECT` | `namespace` | `claude_code` | The namespace of the notes. Lower-case letters, digits and `_`. |
-| `NOBLIVION_MEMORY_DIRS` | `memory_dirs` | every `<config dir>/projects/*/memory` folder, plus the `autoMemoryDirectory` of the user and managed settings | The folders the store indexes. The env var separates folders with `:`. The config key is a JSON list. The store also indexes `NOBLIVION_MEMORY_DIR` (see Guards) when it is set, so the hooks and the store always use the same folder. |
+| `NOBLIVION_MEMORY_DIRS` | `memory_dirs` | every `<config dir>/projects/*/memory` folder, plus the `autoMemoryDirectory` of the user and managed settings | The folders the store indexes. The env var separates folders with `:`. The config key is a JSON list. The store also indexes `NOBLIVION_MEMORY_DIR` (see Guards) and `NOBLIVION_GLOBAL_MEMORY_DIR` when they are set, so the hooks and the store always use the same folders. |
+| `NOBLIVION_GLOBAL_MEMORY_DIR` | `global_memory_dir` | none | The user-wide memory folder (see "The global memory folder"). Every session reads it after its project folder. |
 | `NOBLIVION_BIN` | `store.bin` | `<data dir>/venv/bin/noblivion` | The `noblivion` command the hooks run to start the store. |
 | `NOBLIVION_STORE_AUTOSTART` | none | on (switch) | When off, no hook starts the store. |
 
@@ -259,8 +295,8 @@ See [guards.md](guards.md) for what each guard does.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_MEMORY_DIR` | none | `~/.claude/projects/<slug of your home folder>/memory` | The memory folder of the guard table, the memory fields hook, the memory sync hook and the stop checks. When it is set, the store indexes this folder too, in addition to `NOBLIVION_MEMORY_DIRS`. |
-| `NOBLIVION_GUARD_TABLE` | none | `<data dir>/guard-table.json` | The guard table file. |
+| `NOBLIVION_MEMORY_DIR` | none | the session's memory folder (see "The session's memory folder") | One fixed memory folder for every hook and every session. It wins over the folder of the session's `cwd`. When it is set, the store indexes this folder too, in addition to `NOBLIVION_MEMORY_DIRS`. |
+| `NOBLIVION_GUARD_TABLE` | none | `<data dir>/guard-tables/<slug of the memory folder>.json` | The guard table file. By default each project has its own table. When this is set, every session uses this one file. |
 | `NOBLIVION_GUARD_LOG` | none | `<data dir>/guard-log.jsonl` | The guard log. |
 | `NOBLIVION_GUARD_STATE_DIR` | none | `<data dir>/guard-state` | State per agent and session. |
 | `NOBLIVION_GUARD_ROWS_SESSION_CHARS` | none | `6000` | The most characters of guard rows per agent in one session. |

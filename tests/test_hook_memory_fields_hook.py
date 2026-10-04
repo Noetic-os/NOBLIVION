@@ -203,14 +203,17 @@ def test_guard_table_call_site_calls_rebuild_when_present(mem, monkeypatch):
     monkeypatch.setattr(hook, "_load", lambda name: Fake if name == "guard_table" else None)
     monkeypatch.setenv("NOBLIVION_MEMORY_DIR", str(mem))
     hook.rebuild_guard_table()
-    assert seen == [mem]
+    assert seen == [[mem]]
 
 
-def test_default_memory_folder_is_under_home(hook_env):
+def test_default_memory_folder_is_the_project_folder(hook_env, tmp_path):
+    """NOBLIVION-31: the folder of the event's cwd, never the home folder's."""
     hook = load_fields_hook()
     home = hook_env["home"]
-    slug = "".join(c if c.isalnum() else "-" for c in str(home))
-    assert hook.memory_dir() == home / ".claude" / "projects" / slug / "memory"
+    project = tmp_path / "project"
+    slug = "".join(c if c.isalnum() else "-" for c in str(project))
+    assert hook.memory_dir(str(project)) == home / ".claude" / "projects" / slug / "memory"
+    assert hook.memory_dir(None) is None
 
 
 def test_warns_on_bad_complies(mem):
@@ -313,7 +316,7 @@ def test_a_feedback_memory_is_not_asked_for_status_or_project(mem):
 def test_a_project_write_does_not_rebuild_the_guard_table(mem, monkeypatch):
     fh = load_fields_hook()
     calls = []
-    monkeypatch.setattr(fh, "rebuild_guard_table", lambda: calls.append(1))
+    monkeypatch.setattr(fh, "rebuild_guard_table", lambda cwd=None: calls.append(1))
     monkeypatch.setenv("NOBLIVION_MEMORY_DIR", str(mem))
     (mem / "project_x.md").write_text(PROJECT_BARE)
     (mem / "feedback_x.md").write_text(BARE)

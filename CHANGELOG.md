@@ -23,6 +23,32 @@ All notable changes to NOBLIVION. The format follows
 - The store's default folder list follows `CLAUDE_CONFIG_DIR` and the
   `autoMemoryDirectory` of the user and managed settings files.
   `scripts/install_codex.py` checks the same list.
+- Every hook now uses the project memory folder of the session
+  (NOBLIVION-31). Before, the guard table, the guard hook, the stop checks,
+  continuity, the memory fields hook and the memory sync hook used the memory
+  folder of the home folder unless `NOBLIVION_MEMORY_DIR` was set. For a user
+  who did not start Claude Code in the home folder, the guards did nothing,
+  and the lesson stop check asked Claude to save rules in a folder that recall
+  did not search. Each hook now finds the folder from the `cwd` of its hook
+  event (`resolve_memory_dir`). `NOBLIVION_MEMORY_DIR` still wins. The
+  home-folder default (`default_memory_dir`) is removed.
+- The guard table is kept per project, in
+  `<data dir>/guard-tables/<slug of the memory folder>.json`, so two sessions
+  in two projects do not overwrite each other's table. The SessionStart
+  rebuild reads the `cwd` from its hook event. The guard hook builds a
+  missing table once. `NOBLIVION_GUARD_TABLE` still names one fixed file.
+- The memory sync hook keeps its Bash stamp per project folder, and gives the
+  indexer the project folder.
+
+### Added
+
+- An optional user-wide memory folder: `NOBLIVION_GLOBAL_MEMORY_DIR`, or the
+  config key `global_memory_dir` (NOBLIVION-31). Default: none. When it is
+  set, the store indexes it and searches it in every session, and recall, the
+  guard table and the stop checks read it after the project folder. A file of
+  the project folder wins over a file with the same name in the global folder,
+  in the store and in the hooks. A file of the session's root now also wins
+  over a file with the same name in a `recall.shared_roots` root.
 
 ## 0.1.2 - 2026-10-04
 

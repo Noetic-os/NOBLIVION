@@ -29,6 +29,14 @@ Two modes, one file:
     extra (idempotent) sync at the next Bash call, never one per call. Not seen: an
     edit of a file inside a sub-folder (only the top level is read).
 
+    The memory folder (NOBLIVION-31) is the project folder of the event's
+    ``cwd`` (``hook_config.resolve_memory_dir``; ``NOBLIVION_MEMORY_DIR`` is
+    the override), plus the global folder ``NOBLIVION_GLOBAL_MEMORY_DIR`` when
+    it is set. The Bash stamp is kept per project folder, so two sessions in
+    two projects do not hide each other's changes. The worker gets the project
+    folder as ``NOBLIVION_MEMORY_DIR``, so the indexer scans it even when an
+    ``autoMemoryDirectory`` of the project moved it.
+
 ``--run``  the worker. It takes a file lock, waits until no write happened for
     the debounce time, runs the indexer command once, and records the stamp it
     covered. A worker that finds its stamp already covered exits without a run,
@@ -97,7 +105,6 @@ def _hook_config():
 
 
 _CFG = _hook_config()
-LIVE_MEMORY_DIR = str(_CFG.default_memory_dir())
 DEFAULT_STATE_DIR = str(_CFG.cache_dir())
 INDEX_COMMAND_KEY = "sync.index_command"
 INDEXER_ENTRY = Path("venv") / "bin" / "noblivion"  # under the data dir
@@ -146,8 +153,29 @@ def _float(env: Mapping[str, str], name: str, default: float) -> float:
     return value if value >= 0 else default
 
 
-def memory_dir(environ: Optional[Mapping[str, str]] = None) -> Path:
-    return Path(_env(environ).get(MEMORY_DIR_ENV) or LIVE_MEMORY_DIR).expanduser()
+def _cwd(event: Optional[Mapping[str, Any]]) -> Optional[str]:
+    cwd = event.get("cwd") if isinstance(event, Mapping) else None
+    return cwd if isinstance(cwd, str) and os.path.isabs(cwd) else None
+
+
+def memory_dir(
+    environ: Optional[Mapping[str, str]] = None, cwd: Optional[str] = None
+) -> Optional[Path]:
+    """The project memory folder of a session at ``cwd``, or None."""
+    return _CFG.resolve_memory_dir(cwd, _env(environ))
+
+
+def memory_dirs(
+    environ: Optional[Mapping[str, str]] = None, cwd: Optional[str] = None
+) -> List[Path]:
+    """The project folder, then the global folder when it is set."""
+    return _CFG.memory_dirs(cwd, _env(environ))
+
+
+def bash_seen_path(state: Path, folder: Optional[Path]) -> Path:
+    """The Bash stamp of one project folder."""
+    key = _CFG.project_slug(str(folder)) if folder is not None else "none"
+    return state / f"{BASH_SEEN_NAME}.{key}"
 
 
 def state_dir(environ: Optional[Mapping[str, str]] = None) -> Path:
@@ -198,10 +226,10 @@ def target_path(
         p = Path(str(event.get("cwd") or os.getcwd())) / p
     try:
         p = p.resolve()
-        folder = memory_dir(environ).resolve()
+        folders = [f.resolve() for f in memory_dirs(environ, _cwd(event))]
     except OSError:
         return None
-    if p.suffix != ".md" or folder not in p.parents:
+    if p.suffix != ".md" or not any(f in p.parents for f in folders):
         return None
     return p
 
@@ -222,6 +250,19 @@ def _write_stamp(path: Path, stamp: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def newest_of(folders: List[Path]) -> tuple[int, str, int]:
+    """``newest_change`` over several folders: the newest time and its name,
+    and the sum of the ``*.md`` counts."""
+    best: tuple[int, str, int] = (0, "", 0)
+    total = 0
+    for folder in folders:
+        got = newest_change(folder)
+        total += got[2]
+        if got[0] > best[0]:
+            best = got
+    return best[0], best[1], total
 
 
 def newest_change(folder: Path) -> tuple[int, str, int]:
@@ -269,25 +310,46 @@ def _trigger(
     return status
 
 
+def worker_env(
+    environ: Optional[Mapping[str, str]], folder: Optional[Path]
+) -> Optional[Mapping[str, str]]:
+    """The env of the worker: the project folder as ``NOBLIVION_MEMORY_DIR``,
+    so the indexer scans it too."""
+    env = _env(environ)
+    if folder is None or (env.get(MEMORY_DIR_ENV) or "").strip():
+        return environ
+    out = dict(env)
+    out[MEMORY_DIR_ENV] = str(folder)
+    return out
+
+
 def run_bash_leg(
     environ: Optional[Mapping[str, str]] = None,
     spawn: Callable[[Optional[Mapping[str, str]]], bool] = None,  # type: ignore[assignment]
     now_ns: Callable[[], int] = time.time_ns,
+    cwd: Optional[str] = None,
 ) -> str:
-    """A Bash call ended. Sync when the memory folder changed since the last
-    trigger. Returns the logged status, or ``""`` when nothing changed."""
+    """A Bash call ended. Sync when a memory folder of the session changed
+    since the last trigger. Returns the logged status, or ``""`` when nothing
+    changed."""
     if is_bash_off(environ):
         return ""
-    newest, name, _count = newest_change(memory_dir(environ))
+    folders = memory_dirs(environ, cwd)
+    if not folders:
+        return ""
+    newest, name, _count = newest_of(folders)
     if not newest:
         return ""
     state = state_dir(environ)
-    if newest <= _read_stamp(state / BASH_SEEN_NAME):
+    seen = bash_seen_path(state, folders[0])
+    if newest <= _read_stamp(seen):
         return ""
-    status = _trigger(state, name, "bash", environ, spawn or spawn_worker, now_ns)
+    status = _trigger(
+        state, name, "bash", worker_env(environ, folders[0]), spawn or spawn_worker, now_ns
+    )
     # Record the change only when a worker runs for it: a failed start is
     # tried again at the next Bash call.
-    if status == "spawned" and not _write_stamp(state / BASH_SEEN_NAME, newest):
+    if status == "spawned" and not _write_stamp(seen, newest):
         log_line(state, "trigger", file=name, status="seen_stamp_error", leg="bash")
     return status
 
@@ -325,18 +387,22 @@ def run_hook(
     event = json.loads(stdin_text or "{}")
     if not isinstance(event, dict):
         return ""
+    cwd = _cwd(event)
     if event.get("tool_name") == BASH_TOOL:
-        return run_bash_leg(environ, spawn, now_ns)
+        return run_bash_leg(environ, spawn, now_ns, cwd)
     path = target_path(event, environ)
     if path is None:
         return ""
     state = state_dir(environ)
-    status = _trigger(state, path.name, "", environ, spawn, now_ns)
+    folders = memory_dirs(environ, cwd)
+    project = folders[0] if folders else None
+    status = _trigger(state, path.name, "", worker_env(environ, project), spawn, now_ns)
     if status == "spawned" and not is_bash_off(environ):
         # This write is covered: the next Bash call must not sync it again.
-        newest = newest_change(memory_dir(environ))[0]
-        if newest > _read_stamp(state / BASH_SEEN_NAME):
-            _write_stamp(state / BASH_SEEN_NAME, newest)
+        newest = newest_of(folders)[0]
+        seen = bash_seen_path(state, project)
+        if newest > _read_stamp(seen):
+            _write_stamp(seen, newest)
     return status
 
 

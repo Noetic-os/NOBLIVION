@@ -53,8 +53,8 @@ line per call in ``<cache>/subagent/recall.log``, in the recall log's format.
 It holds no task text and no memory text.
 
 The memory folder and the root are the session's (``recall_hook.session_env``,
-from the event's ``cwd``), else ``NOBLIVION_MEMORY_DIR``, else the memory
-folder of the home folder.
+from the event's ``cwd``), else ``NOBLIVION_MEMORY_DIR``. There is no
+home-folder default (NOBLIVION-31).
 
 Environment:
   NOBLIVION_SUBAGENT_RULES_OFF          any value: do nothing
@@ -174,10 +174,8 @@ def index_environ(env: Mapping[str, str]) -> Dict[str, str]:
     out[rh.INDEX_CAP_ENV] = str(cap - len(HEADER) - 1)
     out["NOBLIVION_RECALL_CACHE_DIR"] = sub_cache(env)
     if not out.get(rh.MEMORY_DIR_ENV):
-        folder = env.get("NOBLIVION_MEMORY_DIR") or str(
-            rh._sibling_module("hook_config").default_memory_dir()
-        )
-        if os.path.isdir(folder):
+        folder = os.path.expanduser(env.get("NOBLIVION_MEMORY_DIR") or "")
+        if folder and os.path.isdir(folder):
             out[rh.MEMORY_DIR_ENV] = folder
     return out
 
