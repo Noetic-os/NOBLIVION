@@ -684,7 +684,8 @@ With a valid token:
   "content_rev": 1093,
   "vector_rev": 1088,
   "embedding": {"backend": "fastembed", "model": "BAAI/bge-small-en-v1.5",
-                "dim": 384, "state": "ready", "missing_vectors": 0},
+                "dim": 384, "state": "ready", "missing_vectors": 0,
+                "consent": "not_needed"},
   "mode": "hybrid",
   "trust_ranking": "shadow",
   "index_state": "idle",
@@ -694,6 +695,9 @@ With a valid token:
 
 - `status` is `ok`, or `degraded` when the model failed to load. A degraded store still answers every route.
 - `embedding.state`: `loading`, `ready`, `reembedding`, `failed`, `off`.
+- `embedding.consent`: `not_needed` for a backend that keeps text on the
+  machine, else `given` or `missing` (section 7.1). The store reads it from
+  `meta` for each health answer.
 - The answer never holds a path, a user name or memory text.
 
 ### 4.8 Routes the store does not serve
@@ -1105,6 +1109,17 @@ the database, WAL, SHM and token files, and mode 0700 on the data dir.
   runs detached and cannot ask). Without that consent the store does not
   start the backend: `embedding.state = failed`, keyword mode. The consent
   text says what leaves (section 10.2 rules apply).
+- A backend that sends text out (`openrouter`, or `ollama` with a URL that
+  is not loopback) reads the consent again before each remote call: each
+  query embed, each backfill batch and each single-row retry. The jobs
+  loop reads it on each tick too. This is one read of `meta`, about 2
+  microseconds. A local backend does not read it. After
+  `noblivion consent embeddings --revoke`, a running store sends nothing
+  more and takes the state of a start without consent: `failed`, keyword
+  mode. A call that is already on its way is not stopped. A query embed
+  that still waits in the pool when its time limit ends is cancelled. The
+  check fails closed: without a database connection the remote query call
+  is not made.
 - `none`: keyword-only ranking forever.
 
 ### 7.2 What is embedded
@@ -1151,6 +1166,9 @@ For a backend that leaves the machine, two more rules hold:
 
 - Model load fails: `embedding.state = failed`, `status = degraded`,
   keyword-only ranking. The store retries the load at most once per hour.
+  One exception: when the failure is a missing consent, the store starts
+  the backend as soon as the consent is in `meta`, without that wait and
+  without a restart.
   Each failed load writes one log line with the error type and the reason
   (secrets redacted, cut to 300 characters).
 - A single embed call fails: that row stays without a vector and is

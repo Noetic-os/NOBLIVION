@@ -377,7 +377,7 @@ class Ranker:
         self.index.refresh(conn)
         vector = None
         if model_id is not None and query.strip():
-            vector = self.embedding.embed_query(query, self.query_timeout_s)
+            vector = self.embedding.embed_query(query, self.query_timeout_s, conn)
         return self.index.rank(
             query,
             project=project,

@@ -18,7 +18,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from noblivion import db, embedding
-from store_helpers import FAKE_DIM, FakeEmbedder, add_memory, change_memory, fake_vector
+from store_helpers import (
+    FAKE_DIM,
+    REMOTE_MODEL,
+    FakeEmbedder,
+    FakeRemote,
+    add_memory,
+    change_memory,
+    fake_vector,
+    remote_service,
+)
 
 
 @pytest.fixture
@@ -319,6 +328,182 @@ def test_consent_cli(tmp_path, monkeypatch):
         assert embedding.read_consent(c) is None
     finally:
         c.close()
+
+
+# -- consent while the service runs (NOBLIVION-51) ---------------------------------------
+
+
+@pytest.fixture
+def remote():
+    stub = FakeRemote()
+    yield stub
+    stub.close()
+
+
+def started(conn, remote, backend="openrouter"):
+    """A started service with a remote backend that has its consent."""
+    embedding.grant_consent(conn, backend, REMOTE_MODEL)
+    service = remote_service(remote.url, backend)
+    assert service.start(conn) in ("ready", "reembedding")
+    return service
+
+
+@pytest.mark.parametrize("backend", ["openrouter", "ollama"])
+def test_a_revoke_stops_the_next_query_embed(conn, remote, backend):
+    service = started(conn, remote, backend)
+    assert service.embed_query("alpha", conn=conn) is not None
+    assert len(remote.requests) == 1
+    embedding.revoke_consent(conn)
+    assert service.embed_query("beta", conn=conn) is None
+    assert len(remote.requests) == 1
+    # The state of a start without consent: failed, keyword mode.
+    assert service.state == "failed" and service.model_id is None
+    assert "consent" in service.error
+    service.close()
+
+
+def test_a_remote_query_embed_without_a_connection_sends_nothing(conn, remote):
+    service = started(conn, remote)
+    # Fail closed: without a connection the consent cannot be read.
+    assert service.embed_query("alpha") is None
+    assert remote.requests == []
+    service.close()
+
+
+@pytest.mark.parametrize("backend", ["openrouter", "ollama"])
+def test_a_revoke_stops_the_next_backfill_batch(conn, remote, backend):
+    for name in ("a", "b", "c"):
+        add_memory(conn, name, f"{name} text")
+    service = started(conn, remote, backend)
+    send = service.embedder.embed_documents
+
+    def send_then_revoke(texts):
+        sent = send(texts)
+        embedding.revoke_consent(conn)  # the user revokes while the pass runs
+        return sent
+
+    service.embedder.embed_documents = send_then_revoke
+    assert service.backfill(conn, batch_size=1) is None
+    assert len(remote.requests) == 1  # only the batch before the revoke
+    assert len(vectors(conn)) == 1
+    assert service.state == "failed" and service.model_id is None
+    # The pass did not end, so the model switch did not happen.
+    assert db.get_meta(conn, "embed_model") is None
+    assert service.backfill(conn) is None and len(remote.requests) == 1
+    service.close()
+
+
+def test_a_revoke_stops_the_row_by_row_retry_of_a_batch(conn, remote):
+    for name in ("a", "b", "c"):
+        add_memory(conn, name, f"{name} text")
+    service = started(conn, remote)
+    remote.refuse_batches = True  # the batch call fails, so each row goes alone
+    send = service.embedder.embed_documents
+
+    def send_then_revoke(texts):
+        try:
+            return send(texts)
+        finally:
+            if len(texts) == 1:
+                embedding.revoke_consent(conn)
+
+    service.embedder.embed_documents = send_then_revoke
+    assert service.backfill(conn) is None
+    assert [len(body["input"]) for body in remote.requests] == [3, 1]
+    service.close()
+
+
+def test_backfill_without_consent_raises_before_any_remote_call(conn, remote):
+    add_memory(conn, "a", "alpha")
+    service = started(conn, remote)
+    embedding.revoke_consent(conn)
+    with pytest.raises(embedding.ConsentRequiredError):
+        embedding.backfill(conn, service.embedder)
+    assert remote.requests == [] and vectors(conn) == {}
+    service.close()
+
+
+def test_a_new_consent_works_at_once_without_a_restart(conn, remote):
+    service = started(conn, remote)
+    embedding.revoke_consent(conn)
+    assert service.embed_query("alpha", conn=conn) is None
+    assert service.start(conn) == "failed"  # still no consent
+    embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
+    # Inside the hourly backoff of a failed load: the new consent ends it.
+    assert service.start(conn) in ("ready", "reembedding")
+    assert service.embed_query("alpha", conn=conn) is not None
+    assert len(remote.requests) == 1
+    service.close()
+
+
+def test_a_service_that_started_without_consent_uses_a_new_consent_at_once(conn, remote):
+    service = remote_service(remote.url)
+    assert service.start(conn) == "failed" and "consent" in service.error
+    embedding.grant_consent(conn, "openrouter", "vendor/other")  # not this model
+    assert service.start(conn) == "failed"
+    embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
+    assert service.start(conn) in ("ready", "reembedding")
+    service.close()
+
+
+def test_a_load_fault_that_is_not_the_consent_keeps_the_hourly_backoff(conn):
+    embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
+    attempts = []
+
+    def factory(*_a):
+        attempts.append(1)
+        raise embedding.EmbeddingError("no key")
+
+    settings = embedding.EmbeddingSettings(backend="openrouter", model=REMOTE_MODEL)
+    service = embedding.EmbeddingService(settings, factory=factory)
+    assert service.start(conn) == "failed" and service.start(conn) == "failed"
+    assert len(attempts) == 1
+    service.close()
+
+
+def test_a_query_embed_that_timed_out_in_the_queue_is_never_sent(conn, remote):
+    service = started(conn, remote)
+    remote.gate = threading.Event()  # the remote service does not answer
+    try:
+        for word in ("one", "two", "three"):  # two workers: the third call waits
+            assert service.embed_query(word, timeout_s=0.05, conn=conn) is None
+    finally:
+        remote.gate.set()
+    service._pool.shutdown(wait=True)
+    assert len(remote.requests) == 2
+
+
+def test_consent_state_for_the_health_answer(conn, remote):
+    service = remote_service(remote.url)
+    assert service.consent_state(conn) == "missing"
+    embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
+    assert service.consent_state(conn) == "given"
+    embedding.revoke_consent(conn)
+    assert service.consent_state(conn) == "missing"
+    service.close()
+
+
+def test_a_local_backend_never_reads_the_consent(conn, remote, monkeypatch):
+    def no_read(*_a):
+        raise AssertionError("a local backend read the consent")
+
+    monkeypatch.setattr(embedding, "has_consent", no_read)
+    add_memory(conn, "a", "alpha beta")
+    # A local model, then an Ollama server on a loopback address.
+    local = embedding.EmbeddingService(
+        embedding.EmbeddingSettings(), factory=lambda *a: FakeEmbedder()
+    )
+    loopback = embedding.EmbeddingService(
+        embedding.EmbeddingSettings(backend="ollama", model="embed-x", ollama_url=remote.url)
+    )
+    for service in (local, loopback):
+        assert service.start(conn) in ("ready", "reembedding")
+        assert service.check_consent(conn) is True
+        assert service.backfill(conn).embedded == 1
+        assert service.embed_query("alpha", conn=conn) is not None
+        assert service.consent_state(conn) == "not_needed"
+        service.close()
+    assert len(remote.requests) == 2  # the loopback Ollama server got both calls
 
 
 # -- HTTP backends against a fake loopback server ----------------------------------------

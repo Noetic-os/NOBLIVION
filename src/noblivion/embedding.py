@@ -11,6 +11,8 @@ Backends (section 7.1):
   memory text and query text off the machine, so it needs the embeddings
   consent in ``meta.embed_consent``. Only ``noblivion consent embeddings``
   writes that consent.
+- A backend that sends text off the machine reads the consent again before
+  each remote call, so a revoke stops a running store (NOBLIVION-51).
 - ``none``: keyword-only ranking.
 
 This module needs no numpy. Vectors are packed as float32 little-endian with
@@ -68,6 +70,10 @@ MAX_EMBED_CHARS = 8000
 
 CONSENT_VERSION = 1
 CONSENT_KEY = "embed_consent"
+# The consent state in the health answer.
+CONSENT_NOT_NEEDED = "not_needed"
+CONSENT_GIVEN = "given"
+CONSENT_MISSING = "missing"
 
 # The query instruction of the BGE v1.5 English models (section 7.2: "the
 # query is embedded with the model's query prefix if the model defines one").
@@ -393,6 +399,13 @@ def is_loopback_url(url: str) -> bool:
         return False
 
 
+def needs_consent(settings: EmbeddingSettings) -> bool:
+    """True when the configured backend sends text off the machine (section 7.1)."""
+    if settings.backend == "ollama":
+        return not is_loopback_url(settings.ollama_url)
+    return settings.backend == "openrouter"
+
+
 class OllamaEmbedder(_Base):
     backend = "ollama"
 
@@ -514,6 +527,20 @@ def make_embedder(
     raise EmbeddingError(f"unknown embedding backend {settings.backend!r}")
 
 
+def consent_ok(conn: sqlite3.Connection, embedder: Embedder) -> bool:
+    """The check before each remote call: False when ``embedder`` sends text
+    off the machine and its consent is not in ``meta`` now. One read of
+    ``meta``; a backend that keeps text on this machine costs no read."""
+    return not embedder.remote or has_consent(conn, embedder.backend, embedder.model)
+
+
+def _require_consent(conn: sqlite3.Connection, embedder: Embedder) -> None:
+    if not consent_ok(conn, embedder):
+        raise ConsentRequiredError(
+            f"{embedder.backend} embeddings need: noblivion consent embeddings"
+        )
+
+
 # -- backfill and model change (section 7.3) ------------------------------------
 
 
@@ -560,10 +587,12 @@ def _todo(
 
 
 def _embed_batch(
-    embedder: Embedder, batch: Sequence[tuple[int, str, str]]
+    conn: sqlite3.Connection, embedder: Embedder, batch: Sequence[tuple[int, str, str]]
 ) -> tuple[list[tuple[int, str, list[float]]], int]:
     """Embed a batch. When the batch call fails, embed row by row, so one bad
-    row does not cost the batch (section 7.4)."""
+    row does not cost the batch (section 7.4). A remote backend without its
+    consent raises ``ConsentRequiredError`` before the call; nothing is sent."""
+    _require_consent(conn, embedder)
     try:
         vectors = embedder.embed_documents([text for _, text, _ in batch])
         if len(vectors) != len(batch):
@@ -574,6 +603,7 @@ def _embed_batch(
     done: list[tuple[int, str, list[float]]] = []
     failed = 0
     for memory_id, text, digest in batch:
+        _require_consent(conn, embedder)
         try:
             done.append((memory_id, digest, embedder.embed_documents([text])[0]))
         except Exception:  # noqa: BLE001 - the row stays without a vector
@@ -646,13 +676,15 @@ def backfill(
     an older text, in batches; one write transaction per batch.
 
     For a remote backend pass ``include_mined=settings.remote_include_mined``.
-    With ``finish`` the pass ends with ``finish_model_switch``.
+    With ``finish`` the pass ends with ``finish_model_switch``. A remote
+    backend whose consent is revoked raises ``ConsentRequiredError`` before
+    its next call; the batches written so far stay, the pass does not finish.
     """
     model_id = embedder.model_id
     todo, skipped = _todo(conn, model_id, include_mined)
     embedded = failed = 0
     for start in range(0, len(todo), max(1, batch_size)):
-        done, batch_failed = _embed_batch(embedder, todo[start : start + batch_size])
+        done, batch_failed = _embed_batch(conn, embedder, todo[start : start + batch_size])
         written, bad, _ = _write_vectors(conn, model_id, done)
         embedded += written
         failed += batch_failed + bad
@@ -679,6 +711,11 @@ class EmbeddingService:
     instance to ``ranking.Ranker``. States: ``none`` (backend none),
     ``loading``, ``ready``, ``reembedding``, ``failed``. A failed load is
     retried at most once per ``RETRY_AFTER_S`` (section 7.4).
+
+    A backend that sends text off the machine reads its consent before each
+    remote call. When the consent is gone, the service takes the state of a
+    start without consent (``failed``, keyword mode) and sends nothing. A new
+    consent ends that state at the next ``start``, without the hourly wait.
     """
 
     def __init__(
@@ -699,17 +736,20 @@ class EmbeddingService:
         self.state = STATE_NONE if settings.backend == "none" else STATE_LOADING
         self.error: str | None = None
         self._failed_at: float | None = None
+        self._no_consent = False  # the last failure was a missing consent
 
     @property
     def model_id(self) -> str | None:
         """The model the cosine leg uses, or None while no model is usable."""
-        if self.embedder is not None and self.state in (STATE_READY, STATE_REEMBEDDING):
-            return self.embedder.model_id
+        embedder = self.embedder  # one read: a revoked consent sets it to None
+        if embedder is not None and self.state in (STATE_READY, STATE_REEMBEDDING):
+            return embedder.model_id
         return None
 
     @property
     def include_mined(self) -> bool:
-        if self.embedder is not None and self.embedder.remote:
+        embedder = self.embedder
+        if embedder is not None and embedder.remote:
             return self.settings.remote_include_mined
         return True
 
@@ -720,7 +760,12 @@ class EmbeddingService:
             return self.state
         with self._lock:
             if self.state == STATE_FAILED and self._failed_at is not None:
-                if self._clock() - self._failed_at < RETRY_AFTER_S:
+                # A missing consent is the one failure that a command of the
+                # user ends: the new consent does not wait for the retry time.
+                if self._clock() - self._failed_at < RETRY_AFTER_S and not (
+                    self._no_consent
+                    and has_consent(conn, self.settings.backend, self.settings.model)
+                ):
                     return self.state
             self.state = STATE_LOADING
             try:
@@ -734,6 +779,7 @@ class EmbeddingService:
                 self.state = STATE_FAILED
                 self.error = str(exc)
                 self._failed_at = self._clock()
+                self._no_consent = isinstance(exc, ConsentRequiredError)
                 # Once per failed attempt: the retry gate above returns early
                 # without a new attempt, so it logs nothing.
                 log.warning(
@@ -746,30 +792,82 @@ class EmbeddingService:
             self.embedder = embedder
             self.error = None
             self._failed_at = None
+            self._no_consent = False
             self.state = STATE_REEMBEDDING if needs_reembed(conn, embedder) else STATE_READY
             return self.state
 
+    def check_consent(self, conn: sqlite3.Connection) -> bool:
+        """False when the backend sends text off the machine and its consent
+        is not in ``meta`` now. The service then takes the state of a start
+        without consent. A local backend costs no read (NOBLIVION-51)."""
+        embedder = self.embedder
+        if embedder is None or consent_ok(conn, embedder):
+            return True
+        self._consent_gone(embedder)
+        return False
+
+    def _consent_gone(self, embedder: Embedder) -> None:
+        with self._lock:
+            if self.embedder is not embedder:
+                return  # another thread saw it first, or a new start replaced it
+            self.embedder = None
+            self.state = STATE_FAILED
+            self.error = f"{embedder.backend} embeddings need: noblivion consent embeddings"
+            self._failed_at = self._clock()
+            self._no_consent = True
+        log.warning(
+            "the embeddings consent for %s is gone; keyword search only, nothing more is sent",
+            embedder.backend,
+        )
+
+    def consent_state(self, conn: sqlite3.Connection) -> str:
+        """For the health answer: ``not_needed`` for a backend that keeps text
+        on this machine, else ``given`` or ``missing``."""
+        if not needs_consent(self.settings):
+            return CONSENT_NOT_NEEDED
+        given = has_consent(conn, self.settings.backend, self.settings.model)
+        return CONSENT_GIVEN if given else CONSENT_MISSING
+
     def backfill(self, conn: sqlite3.Connection, **kwargs: object) -> BackfillResult | None:
-        """One backfill pass; ends a re-embed. None while no backend is usable."""
+        """One backfill pass; ends a re-embed. None while no backend is usable,
+        and when a remote backend lost its consent before or during the pass."""
         embedder = self.embedder
         if embedder is None or self.state not in (STATE_READY, STATE_REEMBEDDING):
             return None
         kwargs.setdefault("include_mined", self.include_mined)
-        result = backfill(conn, embedder, **kwargs)  # type: ignore[arg-type]
+        try:
+            result = backfill(conn, embedder, **kwargs)  # type: ignore[arg-type]
+        except ConsentRequiredError:
+            self._consent_gone(embedder)
+            return None
         if self.state == STATE_REEMBEDDING and not needs_reembed(conn, embedder):
             self.state = STATE_READY
         return result
 
-    def embed_query(self, text: str, timeout_s: float = QUERY_TIMEOUT_S) -> list[float] | None:
+    def embed_query(
+        self,
+        text: str,
+        timeout_s: float = QUERY_TIMEOUT_S,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[float] | None:
         """The query vector, or None when no model is usable, the call fails or
-        it takes longer than ``timeout_s`` (section 7.4: keyword-only answer)."""
+        it takes longer than ``timeout_s`` (section 7.4: keyword-only answer).
+
+        A backend that sends text off the machine needs ``conn`` to read its
+        consent first. Without ``conn`` or without the consent it sends nothing.
+        """
         embedder = self.embedder
         if embedder is None or self.model_id is None or not text.strip():
+            return None
+        if embedder.remote and (conn is None or not self.check_consent(conn)):
             return None
         future = self._pool.submit(embedder.embed_query, text)
         try:
             return normalize(future.result(timeout=timeout_s))
         except FutureTimeout:
+            # A call that still waits in the pool is not sent later: its
+            # consent check is old by then, and the answer is not used.
+            future.cancel()
             return None
         except Exception:  # noqa: BLE001 - keyword-only for this answer
             return None

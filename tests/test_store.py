@@ -8,6 +8,7 @@ Fictional data only. No model download: a fake embedder. Every socket is on
 from __future__ import annotations
 
 import http.client
+import io
 import json
 import os
 import signal
@@ -24,7 +25,14 @@ from pathlib import Path
 import pytest
 
 from noblivion import __version__, config, db, embedding, indexer, launcher, rest, store
-from store_helpers import FakeEmbedder, add_memory, mark_installed
+from store_helpers import (
+    REMOTE_MODEL,
+    FakeEmbedder,
+    FakeRemote,
+    add_memory,
+    mark_installed,
+    remote_service,
+)
 
 TOKEN_KEYS = {"status", "service", "version"}
 FULL_HEALTH_KEYS = TOKEN_KEYS | {
@@ -201,7 +209,15 @@ def test_health_full_form_with_token(running):
     assert body["index_state"] == "idle"
     assert body["index_blocked"] is False
     assert body["trust_ranking"] == "off"
-    assert set(body["embedding"]) == {"backend", "model", "dim", "state", "missing_vectors"}
+    assert set(body["embedding"]) == {
+        "backend",
+        "model",
+        "dim",
+        "state",
+        "missing_vectors",
+        "consent",
+    }
+    assert body["embedding"]["consent"] == "not_needed"  # a local backend
     assert wait_for(lambda: running.get("/health")[1]["embedding"]["missing_vectors"] == 0)
     body = running.get("/health")[1]
     assert body["mode"] == "hybrid"
@@ -668,6 +684,85 @@ def test_index_command_changes_get_vectors_with_periodic_scans_off(tmp_path):
         assert any("Kettle before tea." in text for text in embedded)
     finally:
         run.stop()
+
+
+def test_a_revoked_consent_stops_a_running_store_from_sending_text(tmp_path, monkeypatch):
+    """After ``noblivion consent embeddings --revoke`` a running store sends no
+    query and no backfill batch to the remote backend. A new consent turns the
+    backend on again without a restart (NOBLIVION-51)."""
+    folder = tmp_path / "projects" / "-work-proj-demo" / "memory"
+    write_memory(folder, "lantern rule", "Light the lantern first.", "Lantern before dusk.")
+    remote = FakeRemote()
+    st = make_store(tmp_path, embedding_service=remote_service(remote.url))
+    db_path = st.settings.db_path
+    monkeypatch.setenv("NOBLIVION_DATA_DIR", str(st.data_dir))
+    monkeypatch.setenv("NOBLIVION_EMBED_BACKEND", "openrouter")
+    monkeypatch.setenv("NOBLIVION_EMBED_MODEL", REMOTE_MODEL)
+    db.open_db(db_path, create=True).close()  # install.sh made it
+
+    def consent(*argv: str) -> int:
+        return embedding.consent_main(argv, stdin=io.StringIO("yes\n"), stdout=io.StringIO())
+
+    assert consent() == 0
+    run = Running(st)
+
+    def health() -> dict:
+        return run.get("/health")[1]
+
+    def in_sync() -> bool:
+        emb = health()["embedding"]
+        return emb["state"] == "ready" and emb["missing_vectors"] == 0
+
+    try:
+        assert wait_for(in_sync)
+        assert run.get("/api/memories/index?q=lantern")[1]["mode"] == "hybrid"
+        assert health()["embedding"]["consent"] == "given"
+        sent = len(remote.requests)
+        assert sent >= 2  # the backfill batch and the query
+
+        assert consent("--revoke") == 0
+        # The next query embed sends nothing: the answer is keyword-only.
+        body = run.get("/api/memories/index?q=lantern")[1]
+        assert body["mode"] == "keyword" and len(body["results"]) == 1
+        # The next backfill batch sends nothing: a new note gets no vector.
+        write_memory(folder, "kettle rule", "Fill the kettle.", "Kettle before tea.")
+        assert indexer.main(["--memory-dir", str(folder), "--db", str(db_path)]) == 0
+        time.sleep(4 * store.JOB_TICK_S)  # the jobs loop had its turns
+        assert len(remote.requests) == sent
+        with closing(db.connect(db_path)) as conn:
+            assert conn.execute("SELECT count(*) FROM vectors").fetchone()[0] == 1
+        answer = health()
+        assert answer["status"] == "degraded" and answer["mode"] == "keyword"
+        assert answer["embedding"]["state"] == "failed"
+        assert answer["embedding"]["consent"] == "missing"
+
+        assert consent() == 0
+        assert wait_for(in_sync)
+        assert health()["embedding"]["consent"] == "given"
+        assert any("Kettle before tea." in text for text in remote.texts)
+        assert run.get("/api/memories/index?q=kettle")[1]["mode"] == "hybrid"
+    finally:
+        run.stop()
+        remote.close()
+
+
+def test_a_revoke_turns_an_idle_store_to_keyword_mode(tmp_path):
+    """No query and no backfill is needed: the jobs loop sees the revoke."""
+    remote = FakeRemote()
+    st = make_store(tmp_path, embedding_service=remote_service(remote.url))
+    with closing(db.open_db(st.settings.db_path, create=True)) as conn:
+        embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
+    run = Running(st)
+    try:
+        assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
+        with closing(db.connect(st.settings.db_path)) as conn:
+            embedding.revoke_consent(conn)
+        assert wait_for(lambda: run.store.embedding.state == embedding.STATE_FAILED)
+        assert run.store.mode() == "keyword"
+        assert remote.requests == []
+    finally:
+        run.stop()
+        remote.close()
 
 
 def test_answers_while_the_model_loads(tmp_path):

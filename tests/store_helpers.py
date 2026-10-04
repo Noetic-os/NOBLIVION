@@ -6,10 +6,12 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 from collections.abc import Sequence
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from noblivion import bm25, db
+from noblivion import bm25, db, embedding
 
 FAKE_DIM = 16
 
@@ -57,6 +59,95 @@ class FakeEmbedder:
     def embed_query(self, text: str) -> list[float]:
         self.queries.append(text)
         return fake_vector(text)
+
+
+class _RemoteHandler(BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802 - http.server API
+        stub = self.server.stub
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        stub.requests.append(body)
+        if stub.gate is not None:
+            stub.gate.wait(10)
+        texts = body["input"]
+        if stub.refuse_batches and len(texts) > 1:
+            self.send_error(500)
+            return
+        if self.path == "/api/embed":
+            answer = {"embeddings": [fake_vector(t) for t in texts]}
+        else:
+            answer = {
+                "data": [{"index": i, "embedding": fake_vector(t)} for i, t in enumerate(texts)]
+            }
+        data = json.dumps(answer).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
+
+
+class FakeRemote:
+    """A loopback HTTP server in the place of a hosted embedding service.
+
+    ``requests`` holds the body of every request it got, so a test can count
+    the calls. ``gate`` holds each answer until the test sets it.
+    ``refuse_batches`` answers 500 to a request with more than one text.
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[dict] = []
+        self.gate: threading.Event | None = None
+        self.refuse_batches = False
+        self._server = HTTPServer(("127.0.0.1", 0), _RemoteHandler)
+        self._server.stub = self  # type: ignore[attr-defined]
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self._server.server_address[1]}"
+
+    @property
+    def texts(self) -> list[str]:
+        return [text for body in self.requests for text in body["input"]]
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+REMOTE_MODEL = "vendor/embed-1"
+
+
+def remote_service(url: str, backend: str = "openrouter") -> embedding.EmbeddingService:
+    """A service with a real remote backend that posts to ``FakeRemote``.
+
+    The real ``make_embedder`` builds the backend, so its consent gate
+    applies; only the target URL changes. The ``ollama`` form is configured
+    with a non-loopback address, so it counts as remote.
+    """
+    if backend == "openrouter":
+        settings = embedding.EmbeddingSettings(backend="openrouter", model=REMOTE_MODEL)
+        target = f"{url}/api/v1/embeddings"
+    else:
+        settings = embedding.EmbeddingSettings(
+            backend="ollama",
+            model=REMOTE_MODEL,
+            ollama_url="http://192.0.2.10:11434",
+            allow_remote=True,
+        )
+        target = url
+
+    def factory(s, conn, env):
+        made = embedding.make_embedder(s, conn, env)
+        made.url = target
+        return made
+
+    return embedding.EmbeddingService(
+        settings, factory=factory, env={"OPENROUTER_API_KEY": "test-key-not-real"}
+    )
 
 
 def content(name: str, body: str, path: str | None = None) -> str:

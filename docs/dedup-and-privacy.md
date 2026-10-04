@@ -88,6 +88,20 @@ To withdraw your consent, run:
 <data dir>/venv/bin/noblivion consent embeddings --revoke
 ```
 
+The withdrawal applies at once. You do not need to restart the store:
+
+- A running store reads the consent before each request to the remote
+  service. Without the consent it sends nothing: no prompt and no note.
+- Recall then uses keyword search only. The health answer shows
+  `"consent": "missing"` and the embedding state `failed`.
+- A request that is already on its way when you run the command is not
+  stopped.
+- The vectors that the store already has stay in the database. The store
+  does not use them while the consent is missing.
+
+To turn the remote backend on again, run `noblivion consent embeddings`
+again. A running store uses the new consent within a few seconds.
+
 ## The duplicate sweep
 
 Over time, you can get several notes that say the same thing. The

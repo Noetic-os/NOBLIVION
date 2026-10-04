@@ -383,12 +383,13 @@ class Store:
     def _health_details(self) -> dict[str, object]:
         emb = self.embedding
         model_id = emb.model_id
-        memories = missing = schema_version = content_rev = vector_rev = None
+        memories = missing = schema_version = content_rev = vector_rev = consent = None
         dim = getattr(emb.embedder, "dim", None) if emb.embedder is not None else None
         try:
             with self.connection() as conn, db.read_tx(conn):
                 schema_version = db.user_version(conn)
                 content_rev, vector_rev = db.revisions(conn)
+                consent = emb.consent_state(conn)
                 memories = conn.execute(
                     "SELECT count(*) FROM memories WHERE project = ? "
                     "AND archived_at IS NULL AND deleted_at IS NULL",
@@ -422,6 +423,7 @@ class Store:
                 "dim": dim,
                 "state": "off" if emb.state == embedding.STATE_NONE else emb.state,
                 "missing_vectors": missing,
+                "consent": consent,
             },
             "mode": self.mode(),
             "trust_ranking": self.store_settings.trust_ranking,
@@ -491,6 +493,9 @@ class Store:
                 backfilled_state = None
                 backfilled_rev = -1
                 while not self._jobs_stop.wait(JOB_TICK_S):
+                    # A revoked consent turns a remote backend off, also on a
+                    # store that gets no query (NOBLIVION-51).
+                    self.embedding.check_consent(conn)
                     state = self.embedding.state
                     if self.clock() >= next_maintenance:
                         self.maintenance_once(conn)
