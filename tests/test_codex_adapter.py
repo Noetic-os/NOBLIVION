@@ -529,10 +529,10 @@ def test_failed_codex_shell_call_yields_error_memory(
 def test_recall_root_uses_installed_value_not_inherited_environment(
     cfg: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg["recall_root"] = "shared-phoenix-root"
+    cfg["recall_root"] = "shared-recall-root"
     monkeypatch.setenv("NOBLIVION_RECALL_ROOT", "wrong-client-root")
     env = adapter.environment(cfg, event(cfg, "SessionStart"))
-    assert env["NOBLIVION_RECALL_ROOT"] == "shared-phoenix-root"
+    assert env["NOBLIVION_RECALL_ROOT"] == "shared-recall-root"
 
 
 def test_an_inherited_claude_project_dir_is_dropped(
