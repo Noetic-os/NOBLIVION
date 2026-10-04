@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Keep the test session away from the user's real NOBLIVION data.
 
 At start the session drops every setting that points at real data (the

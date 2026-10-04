@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """The session set up by ``conftest.py`` never points at the user's data
 (NOBLIVION-36)."""
 
