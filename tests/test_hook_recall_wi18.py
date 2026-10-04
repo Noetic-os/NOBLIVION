@@ -179,6 +179,12 @@ def _serve(env: dict[str, str], sid: object = SID) -> str:
     return out.getvalue().rstrip("\n")
 
 
+def _no_ms(text: str) -> str:
+    """The hook text without its run time: the header shows it in ms, and a
+    slow runner can take 1 ms more on one of two otherwise equal runs."""
+    return re.sub(r"\b\d+ ms\b", "N ms", text)
+
+
 def _rows(text: str) -> list[str]:
     return [ln for ln in text.splitlines() if ROW_RE.match(ln)]
 
@@ -218,7 +224,9 @@ def test_without_the_variable_the_text_and_the_log_are_unchanged(tmp_path, corpu
     assert sum(FALLBACK in ln for ln in _rows(base)) == 4, "T1, T2, T3 and p02"
     if raw is not None:
         assert not hook.index_drop_no_rule({hook.INDEX_DROP_NO_RULE_ENV: raw})
-        assert _serve(_env(tmp_path, corpus, **{hook.INDEX_DROP_NO_RULE_ENV: raw})) == base
+        assert _no_ms(
+            _serve(_env(tmp_path, corpus, **{hook.INDEX_DROP_NO_RULE_ENV: raw}))
+        ) == _no_ms(base)
         assert _status(tmp_path) == status
     assert daemon["asked"] == [hook.INDEX_K_DEFAULT] * len(daemon["asked"]), (
         "off, the rule shape alone still does not overfetch"
@@ -311,7 +319,7 @@ def test_no_row_has_text_no_output_and_the_last_index_stays(tmp_path, corpus, da
 def test_the_drop_needs_the_rule_shape_and_the_log_says_so(tmp_path, daemon):
     env = _base_env(tmp_path)
     plain = _serve(env)
-    assert _serve(dict(env, **DROP)) == plain
+    assert _no_ms(_serve(dict(env, **DROP))) == _no_ms(plain)
     assert _status(tmp_path) == "ok:drop_no_rule_off:no_rule_rows"
     assert daemon["asked"] == [hook.INDEX_K_DEFAULT] * 2, "ignored: no overfetch"
 

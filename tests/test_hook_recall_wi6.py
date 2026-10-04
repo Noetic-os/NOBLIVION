@@ -147,6 +147,12 @@ def _serve(env: dict[str, str], sid: object = SID) -> str:
     return out.getvalue().rstrip("\n")
 
 
+def _no_ms(text: str) -> str:
+    """The hook text without its run time: the header shows it in ms, and a
+    slow runner can take 1 ms more on one of two otherwise equal runs."""
+    return re.sub(r"\b\d+ ms\b", "N ms", text)
+
+
 def _names(text: str) -> list[str]:
     return [ln.rsplit("(", 1)[1].rstrip(")") for ln in text.splitlines() if ROW_RE.match(ln)]
 
@@ -346,7 +352,7 @@ def test_the_check_line_follows_the_reduced_header_too(tmp_path, corpus, daemon)
 def test_the_check_line_without_the_rule_shape_is_ignored_and_logged(tmp_path, daemon):
     env = _base_env(tmp_path)
     plain = _serve(env)
-    assert _serve(dict(env, **CHECK)) == plain
+    assert _no_ms(_serve(dict(env, **CHECK))) == _no_ms(plain)
     assert _status(tmp_path) == "ok:check_line_off:no_rule_rows"
 
 
