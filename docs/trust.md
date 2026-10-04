@@ -406,6 +406,73 @@ that the note records.
 Decision: n 29 < 30 and lower bound 0.344 < 0.70, so the rule fails and
 the citation signal stays off by default.
 
+#### A stricter rule, tried and not adopted (NOBLIVION-45)
+
+The goal was a citation rule whose precision on a fresh sample passes the
+rule below. Recall could fall. A stricter rule was designed on the 69
+real-session events labelled so far (40 for 0.1.5 and 29 for
+NOBLIVION-43; 22 true, 47 false):
+
+- a `use` needs the note's file name; a phrase of the rule alone does
+  not count;
+- no `use` in a turn that writes a note: a `.md` file in a folder named
+  `memory`, or a file named like a shown note, also when a Bash command
+  runs `python`, `sed -i`, `cp`, `mv` or `rm` on it;
+- no `use` of a note that the prompt names or quotes: the note is the
+  task;
+- a reply that cites 3 or more shown notes is a list (5 in the shipped
+  rule);
+- more words exclude a sentence, such as "corrected", "deleted",
+  "missed" and "unread".
+
+On the 69 events it kept 16 of the 22 true events and none of the 47
+false ones. The shipped rule keeps 22 and 15. The rule was designed on
+these events, so this is not a test.
+
+The fresh test was planned before the rule ran on new data:
+
+- A new scratch data dir, with the replay method above. Sources: the
+  521 main transcripts as above, the last ones now complete;
+  11 main transcripts of a second project folder that show the output of
+  the other memory tool; 299 subagent transcripts that show it. The
+  replay skips subagent records, so each subagent transcript was copied
+  with its subagent flag cleared and replayed as a session of its own.
+  About 2,100 subagent transcripts with no memory output were not used.
+- Fresh pool: every `use` event of the stricter rule that is not one of
+  the 69 (same session, note and prompt). The plan allowed a sample of
+  up to 40, drawn with a fixed seed.
+- Labels: the same rule, by an AI reviewer that saw the prompt, the
+  reply, the tool calls of the turn and the note, but not which part of
+  the rule fired.
+
+| Item | Count |
+| --- | --- |
+| Sessions replayed | 831 (819 with prompts) |
+| Prompts replayed | 2,258 |
+| `use` events, stricter rule | 22 (16 main, 6 subagent) |
+| Of these, labelled before | 16 (all true) |
+| Fresh pool, all labelled | 6 (all subagent) |
+
+| Sample | Labelled n | True | Precision | Wilson 95% lower bound |
+| --- | --- | --- | --- | --- |
+| fresh, stricter rule | 6 | 1 | 0.167 | 0.030 |
+| same new data, shipped rule | 11 | 3 | 0.273 | 0.097 |
+
+On the same data the shipped rule found 11 fresh events: the 6 above and
+5 more. The 5 were labelled the same way, to compare the two rules on
+equal data. Of the 5 false events of the stricter rule, 2 named the note
+as a work item in a list, 2 named it as a source of facts that the task
+asked to collect, and 1 said the note was wrong.
+
+Decision: n 6 < 30 and lower bound 0.030 < 0.70, so the rule fails. Its
+fresh precision did not beat the shipped rule (0.167, against 0.517 on
+the NOBLIVION-43 sample and 0.273 on the same new data), so it was not
+adopted. The shipped rule is unchanged, and the signal stays off by
+default. No second round was run: every fresh event of the shipped rule
+on these transcripts is now labelled, so no stricter rule can reach n 30
+on them. The stricter rule found about 3 events per 100 main sessions,
+so a test with n 30 needs about 1,000 new sessions.
+
 ### Rules and resulting defaults
 
 The rules, fixed before the data was read:
@@ -417,7 +484,7 @@ The rules, fixed before the data was read:
 
 | Setting | Rule result | Default |
 | --- | --- | --- |
-| `NOBLIVION_TRUST_CITATION_USE` | n 40, lower bound 0.087 < 0.70; after NOBLIVION-43 n 29, lower bound 0.344 | off |
+| `NOBLIVION_TRUST_CITATION_USE` | n 40, lower bound 0.087 < 0.70; after NOBLIVION-43 n 29, lower bound 0.344; stricter rule of NOBLIVION-45 n 6, lower bound 0.030 (not adopted) | off |
 | `NOBLIVION_TRUST_CORRECTION_CONTRADICT` | n 0 < 30 | off |
 | Trust ranking | verdict `no gain` | off |
 
@@ -435,5 +502,9 @@ No default changed.
   since the session, and the birth time from tool calls is only an upper
   bound.
 - The labels are from one AI reviewer, with no second reviewer.
+- The fresh NOBLIVION-45 sample came only from subagent transcripts,
+  replayed as sessions. Live, the prompt hook does not run in a
+  subagent (the subagent hook shows it the rules instead), and the Stop
+  flush does not read a subagent transcript.
 - The time-split test could not show a gain or a loss: with this little
   use per note, no note reached the 5 trials that the trust factor needs.
