@@ -12,8 +12,8 @@ NOBLIVION is local by default.
   local users.
 - With the default settings, the store makes no network connection. The
   install downloads Python packages and the embedding model once.
-- The transcript miner reads your transcripts and writes to the local
-  database only.
+- The transcript miner is off by default. When you turn it on, it reads
+  your transcripts and writes to the local database only.
 
 Only two features send text off the machine. Both are off until you turn
 them on and type your consent.

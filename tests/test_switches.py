@@ -115,3 +115,7 @@ def test_the_miner_command_reads_the_switch_like_the_hook(base):
         assert miner.load_miner_settings(dict(base, NOBLIVION_MINER=value)).enabled is True
     for value in OFF:
         assert miner.load_miner_settings(dict(base, NOBLIVION_MINER=value)).enabled is False
+    # Not set, or a value that is no switch word: both keep the default, off.
+    for env in (base, dict(base, NOBLIVION_MINER="maybe")):
+        assert miner.load_miner_settings(env).enabled is False
+        assert me.is_enabled(env) is False

@@ -399,7 +399,7 @@ environment, never from the config file.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_MINER` | `miner.enabled` | on (switch) | The miner, at session end and from the command line. |
+| `NOBLIVION_MINER` | `miner.enabled` | off (switch) | The miner, at session end and from the command line. Off by default: its precision is not measured yet. See [transcript-miner.md](transcript-miner.md). |
 | `NOBLIVION_MINE_CMD` | none | `<data dir>/venv/bin/noblivion mine` | The command the session end hook runs. |
 | `NOBLIVION_MINER_STAMP_DIR` | none | `<data dir>/cache` | Folder for the miner start throttle stamp. The Codex adapter uses its own state folder so a Claude Code session does not suppress a Codex miner start. |
 | none | `miner.transcript_glob` | `~/.claude/projects/*/*.jsonl` | The transcripts to read. |

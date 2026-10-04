@@ -33,6 +33,14 @@ All notable changes to NOBLIVION. The format follows
   published number describes. The eval set is small and has no held-out
   split, so the numbers are too good as a forecast for real notes
   (NOBLIVION-48).
+- Behaviour change: the transcript miner is off by default (NOBLIVION-53).
+  Before, it ran at the end of every session. No precision figure is
+  measured for its notes yet, and it stored false notes (see Fixed). To
+  turn it on, set `miner.enabled` to `true` in `config.json` or set
+  `NOBLIVION_MINER=1`. A config file or an environment that already turns
+  the miner on keeps it on. While the miner is off, `noblivion mine` reads
+  no transcript and says how to turn it on. Notes mined before stay in the
+  database. The update does not delete or change them.
 
 ### Fixed
 
@@ -104,6 +112,23 @@ All notable changes to NOBLIVION. The format follows
   longer sent later. A new consent takes effect within seconds, without a
   restart. The health answer has a new field `embedding.consent`:
   `not_needed`, `given` or `missing` (NOBLIVION-51).
+- The transcript miner no longer stores an ordinary request as a
+  `correction` note (NOBLIVION-53). Its own word list read "Run the tests
+  again please", "Is there no index on this table?" and "Please revert the
+  last commit" as corrections. The miner now uses the correction test of
+  the stop checks and the trust signals (`is_correction` in
+  `hooks/stop_checks.py`), so one rule says what a correction is. When that
+  file does not load, the miner stores no correction.
+- The transcript miner takes a `review_request_changes` note only from the
+  result of a reviewer agent call, the `Agent` or `Task` tool
+  (NOBLIVION-53). Before, the text `**Verdict:** REQUEST_CHANGES` in any
+  tool result made a note that said "Independent review": a web page, a
+  file or shell output could put its own text there, a shell command
+  included.
+- docs/transcript-miner.md no longer says that the miner removes text that
+  looks like an instruction to the model. The injection filter masks a
+  fixed list of phrases. An instruction in plain words passes
+  (NOBLIVION-53).
 
 ## 0.1.5 - 2026-10-04
 

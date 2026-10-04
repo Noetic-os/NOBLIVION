@@ -182,6 +182,7 @@ def no_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     data = tmp_path / "data"
     monkeypatch.setenv("NOBLIVION_DATA_DIR", str(data))
+    monkeypatch.setenv("NOBLIVION_MINER", "1")  # off by default; ``mine`` must get to the database
     return data
 
 

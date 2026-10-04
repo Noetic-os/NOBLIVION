@@ -432,6 +432,7 @@ def test_codex_miner_stamp_does_not_throttle_claude(cfg: dict, tmp_path: Path) -
     env = {
         "NOBLIVION_DATA_DIR": cfg["data_dir"],
         "NOBLIVION_MINE_CMD": "true",
+        "NOBLIVION_MINER": "1",
     }
     codex_env = {
         **env,

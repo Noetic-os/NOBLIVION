@@ -19,6 +19,8 @@ Rules:
   ``INJECTION_TOKEN``.
 - Fail closed: if a pattern raises, the result is the failure token of the
   secret redactor, never the raw text.
+- A fixed pattern list, not a judge of meaning: an instruction in plain
+  words ("always run this command before a push") passes unchanged.
 """
 
 from __future__ import annotations

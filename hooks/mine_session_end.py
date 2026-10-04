@@ -8,8 +8,9 @@ miner, prints nothing and exits 0 always.
 
 Rules:
 
-- Off when ``NOBLIVION_MINER`` is ``0``/``false``/``off``/``no``, or when the
-  config key ``miner.enabled`` is false.
+- Off by default (NOBLIVION-53). On when ``NOBLIVION_MINER`` is
+  ``1``/``true``/``on``/``yes``, or when the config key ``miner.enabled`` is
+  true. The env var wins.
 - At most one start per ``MIN_INTERVAL_S`` (10 minutes): the stamp file
   ``mine.stamp`` in ``<data dir>/cache`` holds the time of the last start.
   ``NOBLIVION_MINER_STAMP_DIR`` can keep a client-specific stamp elsewhere.
@@ -55,7 +56,7 @@ def _env(environ: Optional[Mapping[str, str]]) -> Mapping[str, str]:
 
 
 def is_enabled(environ: Optional[Mapping[str, str]] = None) -> bool:
-    return bool(_CFG.switch(ENABLED_ENV, True, _env(environ), ENABLED_KEY))
+    return bool(_CFG.switch(ENABLED_ENV, False, _env(environ), ENABLED_KEY))
 
 
 def command(environ: Optional[Mapping[str, str]] = None) -> Optional[List[str]]:

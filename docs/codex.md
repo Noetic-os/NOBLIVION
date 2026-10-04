@@ -114,8 +114,10 @@ Codex install, or pass `--namespace name` to match the other client.
 
 The adapter writes a private, redacted journal of reported prompts, tool
 results and final replies under `~/.codex/noblivion/state/transcripts/`.
-Stop checks read this journal. At session end, the existing miner scans it
-for candidate lessons and writes those candidates to the shared store.
+Stop checks read this journal. When the transcript miner is on (it is off
+by default, see [transcript-miner.md](transcript-miner.md)), it scans the
+journal at session end for candidate lessons and writes those candidates
+to the shared store.
 This journal is separate from the Codex chat transcript. See
 [privacy](dedup-and-privacy.md) for how NOBLIVION handles stored text.
 

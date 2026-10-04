@@ -5,10 +5,12 @@ The miner reads the session transcripts (``~/.claude/projects/*/*.jsonl``,
 config ``miner.transcript_glob``) and stores three kinds of experience that the
 memory files never record:
 
-- ``correction``: a user turn that corrects the assistant (a cue word in the
-  first 200 characters), with the assistant text before it;
-- ``review_request_changes``: a tool result with a "request changes" review
-  verdict and a findings block;
+- ``correction``: a user turn that corrects the assistant, with the assistant
+  text before it. The test is ``is_correction`` of ``hooks/stop_checks.py``,
+  the one the stop checks and the trust signals use (NOBLIVION-53);
+- ``review_request_changes``: the result of a reviewer agent call (the
+  ``Agent`` or ``Task`` tool) with a "request changes" review verdict and a
+  findings block. No other tool result gives a review, whatever its text;
 - ``tool_error``: a failed tool call (``is_error``), paired with its call.
 
 At most one row per transcript line, in that order. Every row has
@@ -36,8 +38,9 @@ Rules:
   ``(project, root, path)`` key makes a re-read safe. A last line without a
   newline is left for the next run.
 - Bounded: a run stops at ``miner.max_run_s`` seconds and keeps its offsets.
-- Opt-out: ``miner.enabled = false`` or ``NOBLIVION_MINER=0`` and the CLI does
-  nothing.
+- Opt-in: the miner is off until ``miner.enabled = true`` or
+  ``NOBLIVION_MINER=1`` (NOBLIVION-53: its precision is not measured yet).
+  While it is off, the CLI does nothing.
 
 CLI: ``noblivion mine [--since YYYY-MM-DD]``. Exit codes: 0 done (or the miner
 is off); 3 the database schema refuses this tool; 4 another run holds
@@ -47,12 +50,15 @@ is off); 3 the database schema refuses this tool; 4 another run holds
 from __future__ import annotations
 
 import argparse
+import functools
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import sqlite3
+import string
 import sys
 import time
 from collections import Counter, OrderedDict
@@ -62,9 +68,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from noblivion import config, db, indexer, injection, redaction
+from noblivion import config, db, indexer, injection, labels, redaction
 
 MINE_LOCK_FILE = "mine.lock"
+DEFAULT_ENABLED = False  # NOBLIVION-53: off until its precision is measured
 DEFAULT_TRANSCRIPT_GLOB = "~/.claude/projects/*/*.jsonl"
 DEFAULT_MAX_RUN_S = 300.0
 
@@ -79,7 +86,7 @@ KIND_TOOL_ERROR = "tool_error"
 KINDS = (KIND_CORRECTION, KIND_REVIEW, KIND_TOOL_ERROR)
 
 CORRECTION_MAX_CHARS = 600  # the user turn, as stored
-CUE_WINDOW_CHARS = 200  # a cue must appear in this head of the turn
+CUE_MAX_CHARS = 40  # the matched phrase, as stored
 CONTEXT_MAX_CHARS = 400  # the assistant text before the correction
 ERROR_MAX_CHARS = 400  # the tool error text
 COMMAND_MAX_CHARS = 300  # the shell command that failed
@@ -89,24 +96,13 @@ TOOL_USE_WINDOW = 512  # tool calls kept per file for pairing
 LOOKBACK_BYTES = 4 * 1024 * 1024  # replayed before the offset on a resume
 DEADLINE_CHECK_LINES = 256
 
-# Precision over recall: the cue must sit in the first CUE_WINDOW_CHARS chars.
-CUES = (
-    "no",
-    "wrong",
-    "don't",
-    "do not",
-    "never",
-    "stop",
-    "again",
-    "i told you",
-    "you should have",
-    "why did you",
-    "that is not",
-    "not what i asked",
-    "undo",
-    "revert",
-    "you ignored",
-)
+# The correction test lives in the hooks folder (stdlib only, no package).
+STOP_CHECKS_FILE = "stop_checks.py"
+_STOP_CHECKS_MODULE = "_noblivion_hook_stop_checks"
+_CUE_EDGE = string.punctuation + string.whitespace + "—–…“”‘"
+
+# A review is mined only from the result of these tools (a subagent call).
+REVIEWER_TOOLS = ("Agent", "Task")
 
 # User turns that the harness writes, not the user. Matched on the stripped
 # head of the turn.
@@ -134,22 +130,40 @@ _REVIEWED_PR_RE = re.compile(r"^reviewed-pr:\s*(\S+)", re.M)
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
-def _cue_pattern() -> re.Pattern[str]:
-    alts = []
-    for cue in sorted(CUES, key=len, reverse=True):
-        alts.append(re.escape(cue).replace("'", "['’]").replace(r"\ ", r"\s+"))
-    return re.compile(r"(?<!\w)(?:" + "|".join(alts) + r")(?!\w)", re.IGNORECASE)
-
-
-CUE_RE = _cue_pattern()
+@functools.lru_cache(maxsize=1)
+def correction_test() -> Callable[[str], str | None] | None:
+    """``is_correction`` of ``hooks/stop_checks.py``: the stop checks, the trust
+    signals and the miner share one rule for "the user corrects the assistant"
+    (NOBLIVION-53). The file is found like ``labels.rules_path`` and loaded
+    once per process. ``None`` when it is not found or does not load; the
+    miner then stores no correction."""
+    for folder in labels.hooks_dirs():
+        path = folder / STOP_CHECKS_FILE
+        if not path.is_file():
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(_STOP_CHECKS_MODULE, path)
+            if spec is None or spec.loader is None:
+                return None
+            mod = importlib.util.module_from_spec(spec)
+            # A dataclass looks its module up in sys.modules while it is built.
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+            return mod.is_correction
+        except Exception:  # noqa: BLE001 - no test: no correction
+            sys.modules.pop(_STOP_CHECKS_MODULE, None)
+            return None
+    return None
 
 
 def find_cue(text: str) -> str:
-    """The leftmost cue in the head of ``text``, in its canonical spelling, or ""."""
-    m = CUE_RE.search(text[:CUE_WINDOW_CHARS])
-    if m is None:
+    """The phrase that makes ``text`` a user correction, lower case, or ""."""
+    test = correction_test()
+    phrase = test(text) if test is not None else None
+    if not phrase:
         return ""
-    return re.sub(r"\s+", " ", m.group(0).lower()).replace("’", "'")
+    words = " ".join(phrase.lower().replace("’", "'").split())
+    return _clip(words.strip(_CUE_EDGE) or words, CUE_MAX_CHARS)
 
 
 def is_harness_turn(text: str) -> bool:
@@ -161,7 +175,7 @@ def is_harness_turn(text: str) -> bool:
 
 @dataclass(frozen=True)
 class MinerSettings:
-    enabled: bool = True
+    enabled: bool = DEFAULT_ENABLED
     transcript_glob: str = DEFAULT_TRANSCRIPT_GLOB
     max_run_s: float = DEFAULT_MAX_RUN_S
 
@@ -180,7 +194,7 @@ def load_miner_settings(env: Mapping[str, str] | None = None) -> MinerSettings:
     """``miner.*`` keys (section 12.3). ``NOBLIVION_MINER`` wins over the file."""
     env = os.environ if env is None else env
     cfg = config.load_file(env)
-    enabled = config.switch(env, "NOBLIVION_MINER", cfg, "miner.enabled", True)
+    enabled = config.switch(env, "NOBLIVION_MINER", cfg, "miner.enabled", DEFAULT_ENABLED)
     pattern = config.lookup(cfg, "miner.transcript_glob")
     return MinerSettings(
         enabled=enabled,
@@ -401,11 +415,10 @@ def correction_from(content: Any) -> tuple[str, str] | None:
     raw = _content_text(content)
     if not raw.strip() or is_harness_turn(raw):
         return None
-    turn = _flat(raw)
-    cue = find_cue(turn)
+    cue = find_cue(raw)
     if not cue:
         return None
-    return _clip(turn, CORRECTION_MAX_CHARS), cue
+    return _clip(_flat(raw), CORRECTION_MAX_CHARS), cue
 
 
 def review_from(result_text: str) -> tuple[str, str] | None:
@@ -470,6 +483,12 @@ class Miner:
 
         results = _blocks(content, "tool_result")
         for block in results:
+            # Any other tool result (a web page, a file, shell output) may hold
+            # text that only looks like a review (NOBLIVION-53).
+            tid = block.get("tool_use_id")
+            pair = scan.tool_uses.get(tid) if isinstance(tid, str) else None
+            if pair is None or pair[0] not in REVIEWER_TOOLS:
+                continue
             review = review_from(_content_text(block.get("content")))
             if review is not None:
                 return self._review(review, session_id, line_no, date, short)
@@ -832,7 +851,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     miner_settings = load_miner_settings()
     if not miner_settings.enabled:
-        print("noblivion mine: the miner is off (miner.enabled)")
+        print(
+            "noblivion mine: the miner is off; to turn it on, set miner.enabled "
+            "to true in the config file or set NOBLIVION_MINER=1"
+        )
         return EXIT_OK
     settings = config.load_settings()
     db_path = args.db or settings.db_path
@@ -843,6 +865,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not db_path.is_file():
         print(f"noblivion mine: no database at {db_path}; run install.sh", file=sys.stderr)
         return EXIT_NO_DB
+    if correction_test() is None:
+        print(
+            f"noblivion mine: hooks/{STOP_CHECKS_FILE} did not load; this run stores no correction",
+            file=sys.stderr,
+        )
     try:
         with indexer.index_lock(db_path.parent / MINE_LOCK_FILE, args.lock_timeout):
             conn = db.open_db(db_path, allow_migrate=False)

@@ -35,9 +35,11 @@ release.
 - **Duplicate sweep.** An optional command finds notes that say the same
   thing. A hosted model judges each pair. This is off until you turn it
   on.
-- **Transcript miner.** At the end of a session, a hook turns the session
-  transcript into notes with a low starting trust value. The prompt hook never adds these
-  notes. Claude Code sees them only when it asks the MCP tool for them.
+- **Transcript miner.** This is off until you turn it on, because its
+  precision is not measured yet. When it is on, a hook turns the session
+  transcript into notes with a low starting trust value at the end of a
+  session. The prompt hook never adds these notes. Claude Code sees them
+  only when it asks the MCP tool for them.
 
 ## What it does not do
 

@@ -1576,11 +1576,18 @@ runs only on the local machine.
   `tool_use_id`, `is_error`.
 - Kinds it extracts, at most one per transcript line, in this order:
   - `correction`: a user turn (not meta, not a sidechain, not harness
-    text) with a correction cue word in its first 200 characters. Stored:
-    the turn (max 600 characters) and the assistant text before it (max
-    400).
-  - `review_request_changes`: a tool result that holds a review verdict of
-    "request changes" and a findings block. Max 1500 characters.
+    text) that the correction test accepts. The test is `is_correction` in
+    `hooks/stop_checks.py`: the stop checks, the trust signals and the
+    miner share it, so one rule says what a correction is. The miner loads
+    the file from the plugin's `hooks/` folder (section 13.2). When the
+    file does not load, the miner stores no correction. Stored: the turn
+    (max 600 characters) and the assistant text before it (max 400).
+  - `review_request_changes`: the result of a reviewer agent call (the
+    `Agent` or `Task` tool) that holds a review verdict of "request
+    changes" and a findings block. Max 1500 characters. A result of any
+    other tool (a web fetch, a file read, a shell command) gives no
+    review, whatever its text. A result with no known tool call gives
+    none either.
   - `tool_error`: a tool result with `is_error`, paired with its tool call.
     Stored: tool name, command (max 300), error (max 400).
 - Row: `source_type = 'transcript_mined'`, `category = <kind>`,
@@ -1636,8 +1643,10 @@ pages and files, which may hold prompt injection (section 15).
 
 ### 11.4 When it runs
 
-- `miner.enabled` (default `true`). The `SessionEnd` hook starts
-  `noblivion mine` detached, at most once per 10 minutes (stamp file).
+- `miner.enabled` (default `false`). The precision of the miner is not
+  measured yet, so the user turns it on. When it is on, the `SessionEnd`
+  hook starts `noblivion mine` detached, at most once per 10 minutes
+  (stamp file).
 - On demand: `noblivion mine [--since <date>]`. `--since YYYY-MM-DD`
   skips files with an older mtime.
 - One run at a time: `flock` on `mine.lock`. A second run exits 4 at once.
@@ -1647,8 +1656,9 @@ pages and files, which may hold prompt injection (section 15).
   `NOBLIVION_MINE_CMD` (a shell command line) when set, else
   `<data dir>/venv/bin/noblivion mine` when that file exists, else
   nothing. Its stamp file is `<data dir>/cache/mine.stamp`.
-- `miner.enabled = false` (or `NOBLIVION_MINER=0`): the hook starts
-  nothing, and `noblivion mine` reads no transcript and opens no database.
+- `miner.enabled = false` (the default, or `NOBLIVION_MINER=0`): the hook
+  starts nothing, and `noblivion mine` reads no transcript and opens no
+  database.
 
 ## 12. Configuration
 
@@ -1699,7 +1709,7 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 | `dedup.min_interval_s` | none | `1.0` |
 | `dedup.price_in_per_mtok`, `dedup.price_out_per_mtok` | none | unset (no USD estimate) |
 | `dedup.archive_retention_days` | none | `90` |
-| `miner.enabled` | `NOBLIVION_MINER` | `true` |
+| `miner.enabled` | `NOBLIVION_MINER` | `false` |
 | `miner.transcript_glob` | none | `~/.claude/projects/*/*.jsonl` |
 | `miner.max_run_s` | none | `300` |
 | `guard.generic_args_extra` | none | `[]` |
@@ -1864,8 +1874,8 @@ terminal has no `CLAUDE_PLUGIN_DATA`, so the `SessionStart` hook prints the
 exact command, with the plugin's data dir, when the venv is missing or was
 built for another plugin version (the stamp of step 6). A `noblivion`
 command run from the venv finds its data dir and the plugin's `hooks/`
-folder (label rules for `index`, `memory_fields.py` for `dedup`) through
-the same stamp.
+folder (label rules for `index`, `memory_fields.py` for `dedup`,
+`stop_checks.py` for `mine`) through the same stamp.
 
 The plugin ships the slash command `/noblivion:setup`
 (`skills/setup/SKILL.md`, `disable-model-invocation: true`). Claude Code
