@@ -545,6 +545,23 @@ def test_non_loopback_bind_is_refused(tmp_path):
     assert not (st.data_dir / "store.json").exists()
 
 
+def test_the_bind_does_no_name_lookup(tmp_path, monkeypatch):
+    """The stdlib HTTPServer looks up the name of 127.0.0.1 at bind. On macOS
+    that can block for 20 s or more, past the launcher wait."""
+
+    def no_lookup(*_args: object) -> str:
+        raise AssertionError("the bind must not look up a host name")
+
+    monkeypatch.setattr(socket, "getfqdn", no_lookup)
+    monkeypatch.setattr(socket, "gethostbyaddr", no_lookup)
+    server = store.make_server("127.0.0.1", 0, make_store(tmp_path))
+    try:
+        assert server.server_name == "127.0.0.1"
+        assert server.server_port == server.server_address[1] > 0
+    finally:
+        server.server_close()
+
+
 def test_the_server_binds_loopback(running):
     assert running.store.host == "127.0.0.1"
     assert running.store.server.server_address[0] == "127.0.0.1"

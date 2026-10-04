@@ -78,6 +78,11 @@ the per-project guards and the stop checks. After the plugin update, type
 
 ### Fixed
 
+- The store starts on macOS (NOBLIVION-35). The stdlib HTTP server looked up
+  the host name of 127.0.0.1 when it bound the port. On macOS that lookup can
+  block for 20 s or more, so the store wrote no `store.json` within the 10 s
+  start wait and `/noblivion:setup` and the SessionStart hook reported "no
+  answer from the store". The store now binds without a name lookup.
 - The hooks find the memory folder from the session's project dir
   (`CLAUDE_PROJECT_DIR`), not from the `cwd` of the hook event
   (NOBLIVION-37). Before, a Bash `cd` into another git repository moved

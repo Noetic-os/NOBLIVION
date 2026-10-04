@@ -26,6 +26,7 @@ import logging.handlers
 import os
 import secrets
 import signal
+import socketserver
 import sqlite3
 import sys
 import threading
@@ -77,6 +78,16 @@ class _Server(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], store: Store) -> None:
         self.store = store
         super().__init__(address, Handler)
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind calls socket.getfqdn(host), a reverse name
+        # lookup of 127.0.0.1. On macOS that lookup can block for 20 s or more,
+        # so the store wrote no store.json in time and the start failed. The
+        # store needs no host name: bind, and use the address as the name.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
     def handle_error(self, request: object, client_address: object) -> None:
         # The stdlib prints a traceback to stderr; log the class name only.
