@@ -22,7 +22,8 @@ release.
   about that error.
 - **Guards.** Hooks read rules from your notes. Before a tool call, they
   show the matching rule to Claude Code. A rule can also block a command.
-  A separate guard blocks commands that would print a credential.
+  A separate guard blocks commands that would print a git URL with a
+  password or a token in it.
 - **Stop checks.** When Claude Code wants to end a turn, a hook can ask it
   to finish open work first. By default the checks only log what they would
   ask (shadow mode); `noblivion stop report` shows the counts.

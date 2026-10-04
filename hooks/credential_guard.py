@@ -24,13 +24,29 @@ What the guard denies, and only when the probe finds a credential URL:
 * Bash ``git config --list`` / ``list``, ``--get`` / ``--get-all`` / ``get`` /
   the implicit ``git config <key>``, ``--get-regexp`` / ``get --regexp``: the
   entries the command would print (key match, regex match on the key), with the
-  same scope flags (``--global``, ``--file F`` ...).
+  same scope flags (``--global``, ``--file F`` ...). Bash ``git var -l``: it
+  prints every config value.
+* Bash ``git fetch`` / ``pull`` / ``push`` / ``ls-remote`` / ``submodule`` /
+  ``remote update`` with a ``GIT_TRACE*`` or ``GIT_CURL_VERBOSE`` variable set
+  (in the command or by an earlier ``export``): the trace prints the remote URL
+  on stderr.
 * Bash reads of a git config file (``cat``, ``head``, ``grep``, ``awk``, an
   interpreter one-liner that names ``.git/config`` ...), globs that match one,
   recursive ``grep -r`` / ``rg --hidden`` over a tree that holds one. The file is
   read here and scanned line by line. A ``grep`` / ``rg`` whose output cannot
   hold a credential line (``-c``, ``-l``, ``-q``, or a pattern that matches no
   credential line, context lines included) is allowed.
+* The same file by another name: as stdin (``cat < .git/config``), a glob on
+  any part of the path (``.g*/conf*``), a brace list (``.git/{config,HEAD}``),
+  a variable that the command set before (``f=.git/config; cat $f``, a ``for``
+  variable).
+* A print command (``cat``, ``head``, ``tail``, ``less``, ``grep``, ``sed``,
+  ``awk`` ...) whose file is set when the command runs: a variable with no
+  known value, ``$( )``, backticks. The path cannot be resolved here, so the
+  call is denied when a config file that git reads in that folder holds a
+  credential URL and the fixed text around the variable fits its path
+  (``$d/config`` fits, ``$HOME/notes.txt`` and ``docs/$name`` do not).
+  ``$(mktemp)`` is a new file and never fits.
 * Read of a git config file; Grep in ``content`` mode over a git config file or
   a tree that holds one, when the pattern can print a credential line.
 
@@ -40,6 +56,11 @@ regex consumes a run up to ``@``, or starts with ``.*``), ``wc``, or a counting
 ``grep -c|-q|-l``; ``sed`` with such a script reading the config file itself.
 A clone with no credential URL: everything is allowed (the probe finds none).
 
+Not covered (design limits): a path that a program builds (``python3 -c`` with
+``os.path.join``), a file descriptor opened by an earlier ``exec``, a loop that
+reads lines from an unresolved file, positional parameters (``$1``). The guard
+reads the command text; it does not run it.
+
 The deny reason never holds the URL, the user name or the secret, and there is
 no override marker: a scrubbed form always exists. Every error fails open
 (allow).
@@ -48,6 +69,7 @@ no override marker: a scrubbed form always exists. Every error fails open
 from __future__ import annotations
 
 import fnmatch
+import itertools
 import os
 import re
 import shlex
@@ -62,6 +84,7 @@ WALK_MAX_DIRS = (
 )
 WALK_MAX_DEPTH = 6
 GLOB_MAX = 200
+EXPAND_MAX = 4096  # a word longer than this gets no brace list and no variable value put in
 EXEC_DEPTH = 3
 SCRUB = "sed 's#://[^@]*@#://#'"
 
@@ -153,6 +176,35 @@ class Probe:
                     if rec:
                         k, _, v = rec.partition("\n")
                         out.append((k.lower(), v))
+        except Exception:  # noqa: BLE001 - a probe fails open
+            out = []
+        self._cfg[key] = out
+        return out
+
+    def cred_configs(self, cwd: str) -> List[str]:
+        """The config files git reads in ``cwd`` (``--show-origin``) that hold a credential URL."""
+        key = ("origins", cwd)
+        if key in self._cfg:
+            return self._cfg[key]
+        out: List[str] = []
+        try:
+            r = subprocess.run(
+                ["git", "config", "--list", "--null", "--show-origin"],
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=PROBE_TIMEOUT_S,
+                env=dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0"),
+            )
+            recs = r.stdout.decode("utf-8", "replace").split("\0") if r.returncode == 0 else []
+            for origin in dict.fromkeys(x[5:] for x in recs[0::2] if x.startswith("file:")):
+                d = cwd  # git names the config of the clone relative to its top folder
+                while not os.path.isfile(os.path.join(d, origin)) and os.path.dirname(d) != d:
+                    d = os.path.dirname(d)
+                path = os.path.normpath(os.path.join(d, origin))
+                if is_git_config(path) and self.cred_lines(path):
+                    out.append(path)
         except Exception:  # noqa: BLE001 - a probe fails open
             out = []
         self._cfg[key] = out
@@ -300,13 +352,21 @@ _REDIR = frozenset((">>", "<<<", "<<", ">&", "&>", ">|", "<&", "<", ">"))
 _PUNCT = set(";&|()<>")
 
 
+LIVE = "\x01"  # stands for a ``$`` that starts ``$name``, ``${`` or ``$(`` outside single quotes
+TICK = "\x02"  # stands for a backtick outside single quotes
+_NAME_START = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_{(")
+
+
 def _prepare(command: str) -> str:
-    """Unquoted newlines become ``;``; unquoted ``#`` comments are dropped."""
+    """Unquoted newlines become ``;``; unquoted ``#`` comments are dropped. Outside single quotes, a ``$``
+    that starts ``$name``, ``${`` or ``$(`` becomes LIVE and a backtick becomes TICK (``_expand`` reads them)."""
     out: List[str] = []
     q: Optional[str] = None
     i, n = 0, len(command)
     while i < n:
         c = command[i]
+        if q != "'" and (c == "`" or (c == "$" and command[i + 1 : i + 2] in _NAME_START)):
+            c = TICK if c == "`" else LIVE
         if q:
             out.append(c)
             if c == "\\" and q == '"' and i + 1 < n:
@@ -365,13 +425,15 @@ def tokens(command: str) -> List[str]:
 
 
 TO_STDERR = "\x00stdout-to-stderr"  # marker word: this stage copies stdout to stderr (``>&2``)
+FROM_FILE = "\x00stdin-from:"  # marker word, the file name follows: this stage reads its stdin from a file (``<``)
 
 
 def pipelines(toks: List[str]) -> List[List[List[str]]]:
     """``[[stage words, ...], ...]``: pipelines split on separators, stages on pipes,
     redirections (and a bare fd number before them) removed. A stage whose stdout
     goes to stderr (``>&2``, ``1>&2``, ``>/dev/stderr``) gets the word TO_STDERR:
-    stderr reaches the model even when a scrub follows in the pipe."""
+    stderr reaches the model even when a scrub follows in the pipe. A stage that
+    reads a file as stdin (``< file``) gets the word FROM_FILE plus the file name."""
     res: List[List[List[str]]] = []
     pipe: List[List[str]] = []
     stage: List[str] = []
@@ -388,6 +450,8 @@ def pipelines(toks: List[str]) -> List[List[List[str]]]:
                 or (t in (">", ">>", ">|") and target == "/dev/stderr")
             ):
                 stage.append(TO_STDERR)
+            if t == "<" and target and not set(target) <= _PUNCT:
+                stage.append(FROM_FILE + target)
             skip = True
             continue
         if t in _PIPES:
@@ -504,6 +568,97 @@ def _display(cwd: str, p: str) -> str:
     except ValueError:
         return p
     return p if rel.startswith("..") else rel
+
+
+_VAR = re.compile(LIVE + r"(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
+_NAME_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
+_BRACE = re.compile(r"\{([^{},]*(?:,[^{},]*)+)\}")
+#: ``$(mktemp ...)`` names a new file, so it is never a git config: it is read as NEW_FILE, a path that holds no file
+_MKTEMP = re.compile(r"\$\(\s*mktemp(?:\s[^()`$;|&<>]*)?\)")
+NEW_FILE = "/dev/null/mktemp"
+
+
+def _open_parts(word: str) -> Tuple[str, str]:
+    """``(head, tail)`` of a marked word: its fixed text before the first and after the last part that is
+    set when the command runs. A ``$(``, ``${`` or backtick that the word does not close: no tail is known."""
+    first = min(i for i in (word.find(LIVE), word.find(TICK)) if i >= 0)
+    last = max(word.rfind(c) for c in (LIVE, TICK, ")", "}", "*", "?", "]"))
+    tail = word[last + 1 :]
+    if word[last] == LIVE:
+        tail = "" if tail[:1] in ("(", "{") else tail.lstrip(_NAME_CHARS)
+    if word.count(TICK) % 2:
+        tail = ""
+    head = word[:first]
+    for ch in "*?[{":
+        head = head.split(ch, 1)[0]
+    return head, tail
+
+
+class _Shell(dict):
+    """The variables a command has set so far: their values, None when not known. ``room``: the characters
+    their values may still add to the words (the bound for a hostile command)."""
+
+    room = 4 * EXPAND_MAX
+
+
+def _expand(words: Sequence[str], shell: _Shell) -> Tuple[List[str], List[str], dict, List[str]]:
+    """One stage without the marks: ``(words, stdin files, open, alternatives)``. A variable that the command
+    set before is replaced by its value. ``open`` maps each word that still holds a variable, ``$( )`` or
+    backticks to its ``_open_parts``. A word with a ``for`` variable stays as it is, and ``alternatives``
+    holds it once per value of the variable."""
+    out: List[str] = []
+    files: List[str] = []
+    opened: dict = {}
+    alts: List[str] = []
+    for word in words:
+        dest = out
+        if word.startswith(FROM_FILE):
+            word, dest = word[len(FROM_FILE) :], files
+        parts: List[List[str]] = []
+        pos = 0
+        for m in _VAR.finditer(word) if LIVE in word and shell.room > 0 else ():
+            vals = shell.get(m.group(1) or m.group(2))
+            if vals:
+                parts += [[word[pos : m.start()]], vals]
+                pos = m.end()
+        parts.append([word[pos:]])
+        longest, count = sum(max(len(v) for v in p) for p in parts), 1
+        for p in parts:
+            count = min(count * len(p), GLOB_MAX + 1)
+        cost = max(longest * count - len(word), 0)
+        if len(parts) > 1 and (longest > EXPAND_MAX or cost > shell.room):
+            parts = [[word]]  # too long: the word stays open
+            if longest <= EXPAND_MAX:
+                shell.room = 0  # the room is used up: no later word gets a value
+        else:
+            shell.room -= cost
+        forms = ["".join(x) for x in itertools.islice(itertools.product(*parts), GLOB_MAX + 1)]
+        plain = (forms[0] if len(forms) == 1 else word).replace(LIVE, "$").replace(TICK, "`")
+        if LIVE in forms[0] or TICK in forms[0] or len(forms) > GLOB_MAX:
+            opened[plain] = _open_parts(forms[0] if len(forms) == 1 else word)
+        elif len(forms) > 1:
+            alts += forms
+        dest.append(plain)
+    return out, files, opened, alts
+
+
+def _braces(word: str) -> List[str]:
+    """The words a brace list stands for (``a/{b,c}``: ``a/b`` and ``a/c``). At most GLOB_MAX words; a word
+    longer than EXPAND_MAX stays as it is."""
+    if "{" not in word or len(word) > EXPAND_MAX:
+        return [word]
+    done: List[str] = []
+    todo = [word]
+    while todo and len(done) + len(todo) <= GLOB_MAX:
+        cur = todo.pop()
+        m = _BRACE.search(cur)
+        if m is None:
+            done.append(cur)
+        else:
+            todo += [
+                cur[: m.start()] + x + cur[m.end() :] for x in m.group(1).split(",")[:GLOB_MAX]
+            ]
+    return done + todo
 
 
 # --------------------------------------------------------------------------
@@ -961,6 +1116,8 @@ class Finding:
     """What a call would reveal. ``samples``: the credential lines in the shape the call prints them, used only
     in memory to test a later scrub stage (never printed, never logged)."""
 
+    open_path = False  # the file is named by a variable, ``$( )`` or backticks: it is a guess
+
     def __init__(
         self, what: str, repo: str, cfg: str = "", samples: Sequence[str] = (), stderr: bool = False
     ) -> None:
@@ -1104,6 +1261,22 @@ def _git_stage(
     def entries(scope: Sequence[str] = ()) -> List[Tuple[str, str]]:
         return probe.config_entries(d, git_dir, scope)
 
+    trace = any(
+        (k.startswith("GIT_TRACE") or k == "GIT_CURL_VERBOSE")
+        and v.lower() not in ("", "0", "false", "no", "off")
+        for k, v in assigns.items()
+    )
+    talks = sub in ("fetch", "ls-remote", "pull", "push", "submodule") or (
+        sub == "remote" and any(a in ("update", "prune") for a in rest)
+    )
+    if trace and talks and _remote_cred(entries()):
+        # a trace variable makes git print the commands it runs, with the remote URL, on stderr
+        return Finding(
+            f"git {sub} with a trace variable",
+            repo_disp,
+            samples=_remote_samples(entries()),
+            stderr=True,
+        )
     if sub == "remote":
         verbose = any(re.fullmatch(r"-v+", a) or a == "--verbose" for a in rest)
         pos = [a for a in rest if not a.startswith("-")]
@@ -1134,6 +1307,12 @@ def _git_stage(
                     repo_disp,
                     "" if store == "credential cache" else _display(cwd, store),
                 )
+        return None
+    if sub == "var":
+        # ``git var -l`` prints every config value, as ``git config --list`` does
+        shown = [f"{k}={v}" for k, v in entries() if credential_url(k) or credential_url(v)]
+        if "-l" in rest and shown:
+            return Finding("git var", repo_disp, samples=shown)
         return None
     if sub != "config":
         return None
@@ -1199,6 +1378,30 @@ def _git_stage(
 
 
 _CFG_IN_WORD = re.compile(r"((?:[^\s'\"()=,;]*/)?\.git/config(?:\.worktree)?)(?![\w.\-])")
+_CFG_NAMES = (
+    "config",
+    "config.worktree",
+    ".git-credentials",
+    "credentials",
+    ".gitconfig",
+    "gitconfig",
+)
+
+
+def _glob_configs(pattern: str) -> List[str]:
+    """The files with a git config name (_CFG_NAMES) that the glob ``pattern`` matches. Only the folder part
+    is expanded on disk, so the cost does not grow with the number of files in a folder."""
+    import glob as _glob
+
+    head, last = os.path.split(pattern)
+    if len(last) > 255:  # longer than a file name
+        return []
+    out: List[str] = []
+    for name in _CFG_NAMES:
+        # as in the shell, a pattern matches a leading dot only with a dot of its own
+        if fnmatch.fnmatchcase(name, last) and (last[:1] == "." or name[:1] != "."):
+            out += _glob.glob(os.path.join(head, name))[:GLOB_MAX]
+    return out
 
 
 def _find_parts(w: List[str]) -> Tuple[List[str], List[List[str]]]:
@@ -1238,8 +1441,14 @@ def _cred_files_under(probe: Probe, cwd: str, roots: Sequence[str]) -> List[str]
 
 
 def _file_stage(
-    w: List[str], cwd: str, probe: Probe, before: Sequence[List[str]] = ()
+    w: List[str],
+    cwd: str,
+    probe: Probe,
+    before: Sequence[List[str]] = (),
+    extra: Sequence[str] = (),
 ) -> Optional[Finding]:
+    """``extra``: more words that name a file the stage reads (its stdin file, a word with each value of a
+    ``for`` variable)."""
     name = os.path.basename(w[0])
     if name == "find":
         roots, execs = _find_parts(w)
@@ -1277,7 +1486,7 @@ def _file_stage(
         return None
     if name in _SAFE_FILE_CMDS:
         return None
-    for word in w[1:]:
+    for word in [*w[1:], *extra]:
         if not word.startswith("-") and _resolve(cwd, word) in probe.copies:
             return _file_finding(
                 probe,
@@ -1286,27 +1495,21 @@ def _file_stage(
                 f"{name} of a copy of a git config file",
             )
     cands: List[str] = []
-    for word in w[1:]:
+    for word in [*w[1:], *extra]:
         for m in _CFG_IN_WORD.finditer(word):
             cands.append(_resolve(cwd, m.group(1)))
         if word.startswith("-"):
             continue
-        p = _resolve(cwd, word)
-        if os.path.basename(p) in (
-            "config",
-            "config.worktree",
-            ".git-credentials",
-            "credentials",
-            ".gitconfig",
-            "gitconfig",
-        ):
-            cands.append(p)
-        if any(ch in word for ch in "*?[") and (
-            ".git" in word or os.path.basename(cwd) == ".git" or is_git_dir(cwd)
-        ):
-            import glob as _glob
+        for part in _braces(word):
+            p = _resolve(cwd, part)
+            if os.path.basename(p) in _CFG_NAMES:
+                cands.append(p)
+            if any(ch in part for ch in "*?["):
+                cands.extend(_glob_configs(p))
+                if ".git" in part or os.path.basename(cwd) == ".git" or is_git_dir(cwd):
+                    import glob as _glob
 
-            cands.extend(_glob.glob(p)[:GLOB_MAX])
+                    cands.extend(_glob.glob(p)[:GLOB_MAX])
     grep = _grep_parse(w) if name in _GREPS else None
     if grep is not None and grep["recursive"] and (not grep["rg"] or grep["hidden"]):
         roots = grep["paths"] or ["."]
@@ -1344,6 +1547,63 @@ def _file_stage(
     return None
 
 
+_KEYWORDS = frozenset(("do", "then", "else", "elif", "if", "while", "until", "!", "{", "time"))
+#: commands that print the files they name, with their options that take the next word
+_PRINT_OPTS = {
+    "cat": (),
+    "tac": (),
+    "nl": (),
+    "less": (),
+    "more": (),
+    "bat": (),
+    "head": ("-n", "-c"),
+    "tail": ("-n", "-c"),
+    "sed": ("-e", "-f"),
+    "awk": ("-v", "-F", "-f"),
+}
+
+
+def _open_read(
+    w: List[str],
+    cwd: str,
+    probe: Probe,
+    files: Sequence[str],
+    opened: Mapping[str, Tuple[str, str]],
+) -> Optional[Finding]:
+    """A print command whose file is set when the command runs (a variable, ``$( )``, backticks): a finding
+    when that word can stand for a config file that git reads in ``cwd`` and that holds a credential URL."""
+    while len(w) > 1 and w[0] in _KEYWORDS:
+        w = w[1:]
+    name = os.path.basename(w[0])
+    blind = False
+    if name in _GREPS:
+        grep = _grep_parse(w)
+        words = grep["paths"]
+        blind = not grep["quiet"] and any(p in opened for p in grep["patterns"])
+    elif name in _PRINT_OPTS:
+        takes = _PRINT_OPTS[name]
+        words = [a for k, a in enumerate(w[1:]) if not a.startswith("-") and w[k] not in takes]
+        if name == "sed":
+            words = [a for a in words if a not in _sed_scripts(w)]
+        elif name == "awk":
+            words = words[1:]  # the first one is the program
+    else:
+        return None
+    parts = [opened[a] for a in [*words, *files] if a in opened]
+    for cfg in probe.cred_configs(cwd) if parts else ():
+        if not any(
+            cfg.endswith(tail) and (not head or cfg.startswith(_resolve(cwd, head)))
+            for head, tail in parts
+        ):
+            continue
+        # an unknown grep pattern can match the credential line
+        f = _file_finding(probe, cwd, cfg, "") if blind else _file_stage(w, cwd, probe, extra=[cfg])
+        if f is not None:
+            f.what, f.open_path = f"{name} of a path that is set when the command runs", True
+            return f
+    return None
+
+
 def check_bash(
     command: str,
     cwd: str,
@@ -1361,17 +1621,27 @@ def check_bash(
         return None
     here = cwd
     exported: dict = {}
+    shell = _Shell()
     for m in _SUBST.finditer(command):  # $( ) and backticks, also inside double quotes
         inner = m.group(1) if m.group(1) is not None else m.group(2)
         f = check_bash(inner or "", cwd, probe, depth + 1)
         if f is not None:
             return f
-    for pipe in pipelines(tokens(command)):
+    for marked in pipelines(tokens(_MKTEMP.sub(NEW_FILE, command))):
+        stages = [_expand(words, shell) for words in marked]
+        pipe = [st[0] for st in stages]
+        for words in pipe:
+            for (
+                x
+            ) in words:  # a word that names a known variable may set it again (read, local, f+=...)
+                if x.partition("=")[0].rstrip("+") in shell:
+                    shell[x.partition("=")[0].rstrip("+")] = None
         first: Optional[Tuple[int, Finding]] = None
         for si, words in enumerate(pipe):
             w, assigns = unwrap([x for x in words if x != TO_STDERR])
             if not w:
                 continue
+            files, opened, alts = stages[si][1:]
             name = os.path.basename(w[0])
             f = None
             if name in _SHELLS:
@@ -1384,7 +1654,9 @@ def check_bash(
             elif name == "git":
                 f = _git_stage(w, here, {**exported, **assigns}, probe)
             else:
-                f = _file_stage(w, here, probe, pipe[:si])
+                f = _file_stage(w, here, probe, pipe[:si], [*files, *alts])
+                if f is None and opened:
+                    f = _open_read(w, here, probe, files, opened)
             if f is not None and first is None:
                 first = (si, f)
         if first is not None and (
@@ -1392,12 +1664,17 @@ def check_bash(
         ):
             return first[1]
         if len(pipe) == 1:
-            w, _ = unwrap(pipe[0])
+            w, assigns = unwrap(pipe[0])
             if w and w[0] in ("export", "declare", "typeset"):
                 for a in w[1:]:
                     if _ASSIGN.match(a):
                         k, _, val = a.partition("=")
-                        exported[k] = val
+                        exported[k] = assigns[k] = val
+            if not w or w[0] in ("export", "declare", "typeset"):
+                for k, val in assigns.items():
+                    shell[k] = [val] if val and f"{k}={val}" not in stages[0][2] else None
+            elif w[0] == "for" and w[2:3] == ["in"]:
+                shell[w[1]] = None if any(x in stages[0][2] for x in w[3:]) else w[3:]
             if w and w[0] in ("cd", "pushd"):
                 tgt = next((a for a in w[1:] if not a.startswith("-")), "~")
                 here = _resolve(here, tgt)
@@ -1471,6 +1748,10 @@ def reason(f: Finding, tool: str) -> str:
     ]
     if f.cfg:
         lines.append(f"- the config file: {SCRUB} {f.cfg}")
+    if f.open_path:
+        lines.append(
+            "- a file other than the git config: write the path in the command, not a variable or $( )"
+        )
     lines += [
         f"- access check: git -C {repo} ls-remote -q origin >/dev/null 2>&1; echo $?",
         "This rule has no override marker: the forms above always work.",

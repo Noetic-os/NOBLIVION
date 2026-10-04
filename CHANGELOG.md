@@ -29,6 +29,16 @@ All notable changes to NOBLIVION. The format follows
   is 2, so the first index scan after the update writes every Markdown
   note again with the new rules. Notes that the transcript miner stored
   before the update are not written again.
+- The credential guard now also blocks these reads of a git config that
+  holds a credential URL: the file as standard input (`cat < .git/config`),
+  a glob on a folder name (`cat .g*/conf*`), a brace list
+  (`cat .git/{config,HEAD}`), a variable or `$( )` as the path
+  (`f=.git/config; cat $f`), `git var -l`, and a `GIT_TRACE*` variable on a
+  git command that talks to the remote. A path that the guard cannot
+  resolve is blocked only when the git config holds a credential and the
+  path can be that file. The README now says what the guard covers: git
+  URLs, not every credential. docs/guards.md lists the limits
+  (NOBLIVION-47).
 
 ## 0.1.5 - 2026-10-04
 

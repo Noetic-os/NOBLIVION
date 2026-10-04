@@ -125,8 +125,9 @@ Credential guard (Bash, Read, Grep)
   * Before the table is read, ``credential_guard.decide`` denies
     a call that would put a git URL holding a credential (``user:secret@`` or
     a token as the user) into the model context: ``git remote -v|show|get-url``,
-    ``git config --list|--get|--get-regexp`` of such a key, reads of a git
-    config file (Bash ``cat``/``grep``/..., the Read tool, Grep in content
+    ``git config --list|--get|--get-regexp`` of such a key, ``git var -l``,
+    reads of a git config file (Bash ``cat``/``grep``/..., also through ``<``,
+    a glob or a variable; the Read tool; Grep in content
     mode). Only when the probe of that clone finds a credential URL, so a
     token-free clone is never denied. A scrub ``sed`` later in the pipeline
     and names-only ``git remote`` are allowed. No override marker; the reason
@@ -1294,6 +1295,7 @@ CRED_TOOLS = ("Bash", "Read", "Grep")
 _CRED_BASH_HINT = re.compile(
     r"git|config|credential|\brg\b|\bfind\b|\bxargs\b"
     r"|\bgrep\b[^|;&\n]*\s(?:-[A-Za-z]*[rR]|--recursive|--dereference-recursive|-d\s*recurse)"
+    r"|(?:^|[\s/=])\.[^\s/=*?\[]*[*?\[]"  # a glob on a hidden name: ``.g*/conf*``
 )
 
 

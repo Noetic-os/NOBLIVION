@@ -20,6 +20,11 @@ What these tests hold:
 5. THE HOOK: the check runs before the table (a missing table still denies),
    for Read and Grep with the file-tool leg off, and logs ``credential-deny``;
    ``NOBLIVION_GUARD_CREDENTIAL=0`` turns it off.
+6. THE SAME FILE BY ANOTHER NAME is denied too: stdin from the config
+   (``cat < .git/config``), a glob, a brace list, a variable, ``$( )``,
+   ``git var -l``, a ``GIT_TRACE*`` variable on a git command that talks to
+   the remote. A path that is set when the command runs is denied only when
+   the git config holds a credential. Ordinary commands stay allowed.
 
 No test reads a live file: tmp repos, tmp table, tmp state, tmp log, a tmp home
 and data dir, and the global and system git config are switched off.
@@ -32,6 +37,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -850,3 +856,292 @@ def test_review8_hook_prefilter_recursive_grep(call, env, tmp_path):
     assert hso["permissionDecision"] == "deny" and SECRET not in raw
     hso, _ = call(env, ev("Bash", {"command": f"grep -rn nomatch {home}"}, tmp_path))
     assert hso is None
+
+
+# ---------------------------------------------------------------- 12. hidden reads of the config
+@pytest.fixture
+def work(cred) -> Path:
+    """The credential clone with a few ordinary files."""
+    (cred / "src").mkdir()
+    (cred / "src" / "app.py").write_text("print('foo')\n")
+    (cred / "src" / "lib.py").write_text("X = 1\n")
+    (cred / "docs").mkdir()
+    (cred / "input.txt").write_text("b:2\na:1\n")
+    return cred
+
+
+#: Forms that print the git config without the words ``cat .git/config``: stdin from the
+#: file, a glob, a brace list, a variable, ``$( )``, ``git var -l``, a trace variable on a
+#: git command that talks to the remote.
+HIDDEN_READS = [
+    "cat < .git/config",
+    "cat<.git/config",
+    "< .git/config cat",
+    "head -n 5 < .git/config",
+    "cat < .g*/config",
+    "cp .git/config notes.txt; cat < notes.txt",
+    "grep url < .git/config",
+    'while read l; do echo "$l"; done < .git/config',
+    "cat .g*/conf*",
+    "cat .gi?/confi?",
+    "cat .[g]it/c*",
+    "cat .git/{config,HEAD}",
+    "head -3 .git/conf{ig,}",
+    "cat {.git,src}/config",
+    "git var -l",
+    "git var -l | grep url",
+    "f=.git/config; cat $f",
+    'f=.git/config; cat "$f"',
+    'f=README.md; read f < list.txt; cat "$f"',
+    "f=.git/config && head -3 ${f}",
+    "d=.git; cat $d/config",
+    "for d in .git src; do cat $d/config; done",
+    "for d in .g*; do cat $d/config; done",
+    "cat $(git rev-parse --git-dir)/config",
+    'cat "$(git rev-parse --git-dir)/config"',
+    "cat `git rev-parse --git-dir`/config",
+    'd=$(git rev-parse --git-dir); cat "$d/config"',
+    'cat "$f"',
+    'cat < "$f"',
+    'tail -n 3 "$cfg"',
+    'grep url "$f"',
+    'grep "$pattern" "$f"',
+    'sed -n 1,9p "$f"',
+    "awk '{print}' $f",
+    'find . -name config | while read f; do cat "$f"; done',
+    "GIT_TRACE=1 git ls-remote origin",
+    "GIT_TRACE=1 git fetch origin",
+    "GIT_TRACE=true git -C . pull",
+    "export GIT_TRACE=2; git push origin main",
+    "env GIT_TRACE2=1 git fetch",
+    "GIT_CURL_VERBOSE=1 git ls-remote origin",
+    "GIT_TRACE_CURL=1 git remote update",
+]
+
+
+@pytest.mark.parametrize("cmd", HIDDEN_READS)
+def test_hidden_reads_denied(work, cmd):
+    assert bash_deny(cmd, work)
+
+
+def test_denies_that_the_new_rules_must_keep(work):
+    # the copy is still followed when its name comes from mktemp
+    assert bash_deny('t=$(mktemp); cp .git/config "$t"; cat "$t"', work)
+    assert bash_deny("export f=.git/config; tail $f", work)
+
+
+@pytest.mark.parametrize("cmd", HIDDEN_READS)
+def test_hidden_reads_allowed_without_a_credential(tmp_path, cmd):
+    free = make_repo(tmp_path, "free", "https://example.invalid/owner/repo.git")
+    assert cg.decide("Bash", {"command": cmd}, str(free)) is None
+    assert cg.decide("Bash", {"command": cmd}, str(tmp_path)) is None  # not a repo
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "wc -l < .git/config",
+        f"cat < .git/config | {SCRUB}",
+        f"{SCRUB} < .git/config",
+        "grep -c url < .git/config",
+        "grep branch < .git/config",
+        f"git var -l | {SCRUB}",
+        "git var -l | wc -l",
+        "git var GIT_EDITOR",
+        "GIT_TRACE=0 git ls-remote origin",
+        "GIT_TRACE= git fetch origin",
+        "GIT_TRACE=1 git status",
+        "f=README.md; cat $f",
+        'out=notes.txt; echo hi > $out; tail -5 "$out"',
+        'tmp=$(mktemp); echo hi > "$tmp"; cat "$tmp"',
+        'tmp="$(mktemp -d)"; ls > "$tmp/list.txt"; head -3 "$tmp/list.txt"',
+        'cat "$HOME/notes.txt"',
+        "cat $TMPDIR/out.log",
+        'cat "${name}.md"',
+        "cat docs/$name",
+        'cat "$(git rev-parse --show-toplevel)/README.md"',
+        "head -n $n README.md",
+        'for f in README.md input.txt; do cat "$f"; done',
+        'for f in src/*.py; do head -3 "$f"; done',
+        'grep -n foo "$f"',
+        f'{SCRUB} "$f"',
+        "awk '{print $1}' input.txt",
+        "awk -v n=$n '{print $n}' input.txt",
+        "grep -n 'x$' README.md",
+        "sed -n '$p' README.md",
+        "cat '$f'",
+        "cat .git/{HEAD,description}",
+        "cat src/{app,lib}.py",
+        "cat *.md",
+        "cat R*",
+        "ls .g*/conf*",
+        "cat .g*/HEAD",
+    ],
+)
+def test_hidden_read_forms_that_show_no_credential(work, cmd):
+    assert not bash_deny(cmd, work)
+
+
+#: Everyday commands. None of them prints the git config, so the guard stays quiet in a
+#: clone with a token.
+ORDINARY = [
+    "git status",
+    "git log --oneline -5",
+    "git diff",
+    "git diff --stat HEAD~1",
+    "git branch -a",
+    "git add -A && git commit -m 'update the docs'",
+    "git fetch origin",
+    "git push origin main",
+    "git show --stat HEAD",
+    "cat README.md",
+    "cat < input.txt",
+    "sort < input.txt | uniq -c",
+    "ls .git",
+    "ls -la",
+    "grep -rn foo src",
+    "grep -rn foo .",
+    "rg -n foo",
+    "echo $HOME",
+    'echo "$PATH" | tr ":" "\\n" | head -3',
+    "x=5; echo $x",
+    "head -5 README.md",
+    "wc -l README.md src/*.py",
+    "cat src/*.py",
+    "find . -name '*.py' | head",
+    "python3 -m pytest -q",
+    "python3 -c 'print(1 + 1)'",
+    "mkdir -p build && cd build && ls",
+    "FOO=1 make test",
+    "test -f .git/config && echo yes",
+    "diff <(sort input.txt) <(sort README.md)",
+    "npm test 2>&1 | tail -20",
+    'curl -s "https://example.com/api?id=$ID"',
+    'export PATH="$HOME/bin:$PATH"; ls',
+    "cat > notes.txt <<'EOF'\nfirst line\nEOF",
+    "sed -n '1,5p' README.md",
+    "awk -F: '{print $1}' input.txt",
+    "tail -n 20 input.txt | grep -v '^#'",
+]
+
+
+@pytest.mark.parametrize("cmd", ORDINARY)
+def test_ordinary_commands_pass_in_a_credential_clone(call, env, work, cmd):
+    assert not bash_deny(cmd, work)
+    hso, _ = call(env, ev("Bash", {"command": cmd}, work))
+    assert hso is None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cat < .git/config",
+        "cat .g*/conf*",
+        "git var -l",
+        'f=.git/config; cat "$f"',
+        "cat $(git rev-parse --git-dir)/config",
+        "cat .git/{config,HEAD}",
+        "GIT_TRACE=1 git ls-remote origin",
+    ],
+)
+def test_hook_denies_hidden_reads(call, env, work, cmd):
+    hso, raw = call(env, ev("Bash", {"command": cmd}, work))
+    assert hso is not None and hso["permissionDecision"] == "deny"
+    assert SECRET not in raw and USER not in raw
+
+
+def test_open_path_reason_and_global_config(work, home_store, monkeypatch):
+    got = cg.decide("Bash", {"command": 'cat "$f"'}, str(work))
+    assert got is not None and "set when the command runs" in got[1]
+    assert "write the path in the command" in got[0]
+    got = cg.decide("Bash", {"command": "cat .git/config"}, str(work))
+    assert got is not None and "write the path in the command" not in got[0]
+    # from a folder below the clone, the path can still be the config of the clone
+    assert bash_deny('cat "$f"', work / "src")
+    assert not bash_deny('cat "$f".py', work / "src")
+    # a credential in the global config only: a path that can be that file is denied
+    free = make_repo(work.parent, "free", "https://example.invalid/owner/repo.git")
+    gc = home_store / ".gitconfig"
+    gc.write_text(
+        f'[url "https://u:{SECRET}@example.invalid/"]\n\tinsteadOf = https://e.invalid/\n'
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gc))
+    assert bash_deny('cat "$HOME/.gitconfig"', free)
+    assert bash_deny("cat ~/.gitc*", free)
+    assert not bash_deny('cat "$HOME/notes.txt"', free)
+    assert not bash_deny('cat ".git/$name"', free)  # the config of this clone holds no credential
+
+
+#: 100 KB commands made of short words. (One 100 KB word is slow in ``_CFG_IN_WORD``,
+#: which is older code.)
+HOSTILE = {
+    "variables": "cat " + "$a " * 34_000,
+    "variables in braces": "cat " + "${a} " * 20_000,
+    "known long value": "a=" + "x" * 4000 + "; cat " + "$a " * 33_000,
+    "for values": "for f in " + "x " * 190 + "; do cat " + "$f " * 34_000 + "; done",
+    "assignments": "a=1; " * 20_000 + "cat $a",
+    "brace lists": "cat " + "{a,b} " * 17_000,
+    "nested brace lists": "cat " + ("{a,b}" * 60 + " ") * 340,
+    "globs": "cat " + ".* " * 34_000,
+    "glob stars": "cat " + ("*c" * 100 + " ") * 500,
+    "backticks": "cat " + "` " * 50_000,
+    "open substitutions": "cat " + "$( " * 34_000,
+    "stdin redirects": "cat " + "< x " * 25_000,
+    "trace with variables": "GIT_TRACE=1 git fetch " + "$a " * 34_000,
+    "open mktemp": "cat " + "$(mktemp " * 12_000,
+    "long mktemp": "cat $(mktemp" + " a" * 50_000,
+}
+
+
+@pytest.mark.parametrize("name", sorted(HOSTILE))
+def test_hostile_100kb_command_is_decided_fast(gh, work, name):
+    cmd = HOSTILE[name]
+    assert len(cmd) >= 100_000
+    t0 = time.perf_counter()
+    cg.decide("Bash", {"command": cmd}, str(work))
+    gh._CRED_BASH_HINT.search(cmd)
+    cg._MKTEMP.sub("x", cmd)
+    assert time.perf_counter() - t0 < 5.0
+
+
+#: One 100 KB word for each new scan: the marks, the variable and brace-list regexes, the glob test.
+HOSTILE_WORDS = {
+    "variables": "$a" * 50_000,
+    "variables in braces": "${a}" * 25_000,
+    "open variable brace": "${" + "a" * 100_000,
+    "brace lists": "{a,b}" * 20_000,
+    "open brace list": "{" + "a," * 50_000,
+    "open brace lists": "{a," * 34_000,
+    "long brace parts": "{" + "a" * 50_000 + "," + "a" * 50_000,
+    "open braces": "{" * 100_000,
+    "globs": ".*" * 50_000,
+    "backticks": "`" * 100_000,
+    "open substitutions": "$(" * 50_000,
+}
+
+
+@pytest.mark.parametrize("name", sorted(HOSTILE_WORDS))
+def test_new_word_scans_are_linear(name):
+    word = HOSTILE_WORDS[name]
+    assert len(word) >= 100_000
+    t0 = time.perf_counter()
+    marked = cg._prepare(word)
+    cg._VAR.findall(marked)
+    cg._BRACE.search(word)
+    shell = cg._Shell(a=["x" * 4000])
+    words, _, opened, _ = cg._expand([marked], shell)
+    assert len(words[0]) <= len(word) + cg.EXPAND_MAX and shell.room >= 0
+    if cg.LIVE in marked or cg.TICK in marked:
+        assert words[0] in opened
+    assert len(cg._braces(word)) == 1  # too long for a brace list
+    assert len(cg._braces(word[: cg.EXPAND_MAX])) <= cg.GLOB_MAX + 1
+    assert cg._glob_configs("/no-such-folder/" + word) == []
+    assert cg._glob_configs("/no-such-folder/" + word[:250]) == []
+    assert time.perf_counter() - t0 < 2.0
+
+
+@pytest.mark.parametrize("unit", ["=.", " .", "/.", ".."])
+def test_hook_hint_regex_is_linear(gh, unit):
+    t0 = time.perf_counter()
+    assert gh._CRED_BASH_HINT.search(unit * 50_000 + "x") is None
+    assert time.perf_counter() - t0 < 1.0

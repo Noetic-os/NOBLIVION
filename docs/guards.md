@@ -149,13 +149,52 @@ The credential guard runs first, before the rule checks. It blocks a
 command that would print a git URL with a password or a token in it.
 
 - It covers `git remote -v`, `git remote show`, `git remote get-url`,
-  `git ls-remote` with no remote, `git config --list` and `--get`, reads of
-  a git config file, and a recursive grep over a tree that holds one.
+  `git ls-remote` with no remote, `git config --list` and `--get`,
+  `git var -l`, reads of a git config file, and a recursive grep over a
+  tree that holds one.
+- A read of the config file is a read in each of these forms: the file name
+  (`cat .git/config`), a glob (`cat .g*/conf*`), a brace list
+  (`cat .git/{config,HEAD}`), the file as standard input
+  (`cat < .git/config`), and a variable that the same command sets
+  (`f=.git/config; cat $f`).
+- It covers `git fetch`, `git pull`, `git push`, `git ls-remote`,
+  `git submodule` and `git remote update` when the command sets a
+  `GIT_TRACE*` variable or `GIT_CURL_VERBOSE`. The trace prints the URL.
 - It blocks only when it finds such a URL in the git config.
 - A filter later in the pipeline (`sed` that removes the secret, `wc`,
   `grep -c`, `grep -l` or `grep -q`) makes the command safe, and the guard
   allows it.
 - It has no override. The reason lists safe forms of the command.
+
+Sometimes the guard cannot know the file before the command runs. The path
+is a variable that the command does not set, `$( )` or backticks, for
+example `cat "$f"` or `cat $(git rev-parse --git-dir)/config`. The guard
+then uses this rule for `cat`, `tac`, `nl`, `head`, `tail`, `less`, `more`,
+`bat`, `grep`, `rg`, `sed` and `awk`:
+
+1. If no git config that git reads in that folder holds a credential, the
+   guard allows the command.
+2. If the fixed text of the path cannot fit the config file, the guard
+   allows the command. `cat "$HOME/notes.txt"` and `cat docs/$name` pass.
+3. If not, the guard blocks the command. Write the path in the command.
+   Then the guard can see that the file is not the git config.
+
+`$(mktemp)` always passes, because it names a new file. For `$( )` with no
+quotes, the guard does not see the text after it. Put the word in double
+quotes: `cat "$(git rev-parse --show-toplevel)/README.md"` passes.
+
+The guard has these limits:
+
+- It covers git URLs only. It does not cover other secrets. `printenv`,
+  `cat .env` and `cat ~/.aws/credentials` pass.
+- It reads the command text. It does not run the command. It cannot follow
+  a path that a program builds, for example `python3 -c` with a path made
+  from parts. Such a read is not blocked.
+- The rule for a path that the guard cannot know covers only the commands
+  in the list above. Another program that reads such a path is not blocked.
+- It does not follow a file descriptor that an earlier `exec` opened, a
+  positional parameter (`$1`), or a loop that reads lines from a file that
+  it cannot resolve.
 
 ## The memory fields hook
 
