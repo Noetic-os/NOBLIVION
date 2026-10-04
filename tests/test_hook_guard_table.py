@@ -13,6 +13,10 @@ What these tests hold:
    ``cd x && git stash pop``; quoted text and heredoc bodies do not fire.
 5. THE CLI FAILS OPEN: ``--rebuild`` exits 0 and prints nothing, on success and
    on failure; a failure never replaces a good table.
+8. A SKIPPED RULE IS NAMED (NOBLIVION-50): when the build skipped a rule,
+   ``--rebuild`` prints one ``systemMessage`` line with the rule and the reason.
+9. THE STAMP (NOBLIVION-50): the table records the names, sizes and change
+   times of the memory files; ``stale`` is true after any change of them.
 """
 
 from __future__ import annotations
@@ -879,3 +883,142 @@ def test_review_8_a_wrapper_word_or_a_line_continuation_does_not_hide_the_comman
 )
 def test_review_8_adds_no_hit_on_other_forms(cmd):
     assert gt.match(cmd, REVIEW_TABLE) == []
+
+
+# 8. NOBLIVION-50: a skipped rule is named at session start --------------------
+FORCE_ALL = r"git\s+push\s+.*--force|.*"  # the last branch matches every command
+
+
+def test_cli_rebuild_names_a_skipped_rule_in_one_line_for_the_user(folder, tmp_path):
+    """A deny rule that the build drops does not block. The SessionStart
+    rebuild says so in one ``systemMessage`` line, in the shape of the store
+    start hook: the same line for the user and for the model."""
+    (folder / "feedback_no_force.md").write_text(
+        memory("feedback_no_force", FORCE_ALL, "git push --force origin main", "ls")
+    )
+    out = tmp_path / "t.json"
+    r = _cli({"NOBLIVION_MEMORY_DIR": str(folder), "NOBLIVION_GUARD_TABLE": str(out)}, "--rebuild")
+    assert r.returncode == 0 and r.stderr == ""
+    assert r.stdout.count("\n") == 1
+    doc = json.loads(r.stdout)
+    line = doc["systemMessage"]
+    table = json.loads(out.read_text())
+    assert gt.match("git push --force origin main", table) == []  # the rule is off
+    (row,) = table["skipped"]
+    assert line.startswith("NOBLIVION: 1 rule is skipped and does not block: feedback_no_force (")
+    assert row["problems"][0] in line and "\n" not in line
+    assert doc == {
+        "systemMessage": line,
+        "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": line},
+    }
+
+
+def test_cli_rebuild_prints_nothing_for_a_folder_with_no_rules(tmp_path):
+    mem = tmp_path / "plain"
+    mem.mkdir()
+    (mem / "user_profile.md").write_text("---\nname: profile\ntype: user\n---\n\nA note.\n")
+    out = tmp_path / "t.json"
+    r = _cli({"NOBLIVION_MEMORY_DIR": str(mem), "NOBLIVION_GUARD_TABLE": str(out)}, "--rebuild")
+    assert (r.returncode, r.stdout, r.stderr) == (0, "", "")
+    assert gt.skipped_line(json.loads(out.read_text())) == ""
+
+
+def test_cli_report_keeps_its_plain_text(folder, tmp_path):
+    (folder / "feedback_no_force.md").write_text(
+        memory("feedback_no_force", FORCE_ALL, "git push --force origin main", "ls")
+    )
+    env = {"NOBLIVION_MEMORY_DIR": str(folder), "NOBLIVION_GUARD_TABLE": str(tmp_path / "t.json")}
+    r = _cli(env, "--rebuild", "--report")
+    assert "  skipped feedback_no_force: " in r.stdout and "systemMessage" not in r.stdout
+
+
+def test_the_skipped_line_is_short_and_names_the_kind_of_each_row():
+    rows = [
+        {"id": f"feedback_r{i}", "violates": "x", "problems": [f"reason {i}", "second", "third"]}
+        for i in range(7)
+    ]
+    rows.append({"id": "feedback_c", "complies": "y", "problems": ["complies is bad"]})
+    odd_row = {
+        "id": "feedback\nodd  name",
+        "violates": "",
+        "problems": ["unreadable:\n" + "x" * 900],
+    }
+    rows.append(odd_row)
+    line = gt.skipped_line({"skipped": rows})
+    assert line.startswith(
+        "NOBLIVION: 8 rules are skipped and do not block: feedback_r0 (reason 0; 2 more problems); "
+        "feedback_r1 (reason 1; 2 more problems); feedback_r2 (reason 2; 2 more problems); "
+        "and 5 more. 1 complies field is skipped (the rule still blocks): "
+        "feedback_c (complies is bad). "
+    )
+    assert "\n" not in line and len(line) < 700
+    odd = gt.skipped_line({"skipped": rows[-1:]})
+    assert "feedback odd name (unreadable: xxx" in odd and "\n" not in odd and len(odd) < 400
+    assert gt.skipped_line({"skipped": []}) == "" and gt.skipped_line({}) == ""
+
+
+# 9. NOBLIVION-50: the folder stamp ---------------------------------------------
+def test_the_table_stamp_follows_the_memory_files_only(folder, table_file):
+    assert gt.stale(folder, table_file)  # no table yet
+    table = gt.rebuild(folder)
+    assert table["stamp"] == gt.folder_stamp(folder) and not gt.stale(folder, table_file)
+    # index files, topic files and other files are not in the table
+    (folder / "MEMORY.md").write_text("- changed\n")
+    (folder / "topic_git.md").write_text("changed")
+    (folder / "notes.txt").write_text("not a memory")
+    (folder / "sub").mkdir()
+    assert not gt.stale(folder, table_file)
+    table.pop("stamp")  # a table of an older version
+    table_file.write_text(json.dumps(table))
+    assert gt.stale(folder, table_file)
+
+
+@pytest.mark.parametrize("change", ["rm", "edit", "mv", "new", "same size and mtime"])
+def test_a_changed_memory_folder_makes_the_table_stale(folder, table_file, change):
+    gt.rebuild(folder)
+    target = folder / "feedback_stash.md"
+    if change == "rm":
+        target.unlink()
+    elif change == "edit":
+        target.write_text(target.read_text() + "One more line.\n")
+    elif change == "mv":
+        target.rename(folder / "feedback_moved.md")
+    elif change == "new":
+        (folder / "project_new.md").write_text(memory("project_new"))
+    else:  # ``cp -p`` of another text: only the change time differs
+        st = target.stat()
+        target.write_text(target.read_text().replace("Body text.", "Body TEXT."))
+        os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns))
+        assert (target.stat().st_size, target.stat().st_mtime_ns) == (st.st_size, st.st_mtime_ns)
+    assert gt.stale(folder, table_file)
+    gt.rebuild(folder)
+    assert not gt.stale(folder, table_file)
+
+
+def test_the_stamp_covers_the_global_folder(folder, tmp_path, table_file):
+    shared = tmp_path / "shared"
+    gt.rebuild([folder, shared])  # the global folder does not exist yet
+    assert not gt.stale([folder, shared], table_file)
+    assert gt.stale(folder, table_file)  # another folder list
+    shared.mkdir()
+    assert gt.stale([folder, shared], table_file)
+    gt.rebuild([folder, shared])
+    (shared / "feedback_everywhere.md").write_text(memory("feedback_everywhere"))
+    assert gt.stale([folder, shared], table_file)
+
+
+def test_the_stamp_of_200_memory_files_is_cheap(tmp_path):
+    """The guard hook takes the stamp on every call: one ``scandir`` and one
+    ``stat`` per file, no file is read. Measured: under 1 ms for 200 files."""
+    import time
+
+    mem = tmp_path / "many"
+    mem.mkdir()
+    for i in range(200):
+        (mem / f"feedback_n{i}.md").write_text(memory(f"feedback_n{i}"))
+    best = 9.0
+    for _ in range(5):
+        t0 = time.perf_counter()
+        gt.folder_stamp(mem)
+        best = min(best, time.perf_counter() - t0)
+    assert best < 0.05

@@ -17,6 +17,10 @@ the problems in plain words and says what to write. A field that sits under
 fields there): ``read_fields`` reads it, but the recall hook and the trigger
 hook read the top level only, so the hook says which lines to move.
 
+A write of ANY memory file directly inside a memory folder (not an index or
+topic file) rebuilds the guard table first: ``guard_table.build`` reads
+``violates`` from every memory file, whatever its name prefix (NOBLIVION-50).
+
 It NEVER blocks a memory write: exit 0 always, silent on any error, no network
 call, standard library only.
 """
@@ -47,6 +51,7 @@ def _hook_config():
 _CFG = _hook_config()
 TOOLS = ("Write", "Edit", "MultiEdit")
 KINDS = ("feedback", "project")  # the file name prefixes this hook checks
+INDEX_FILES = ("MEMORY.md", "MEMORY_ARCHIVE.md")  # with topic_*: not in the guard table
 
 
 def _load(name: str):
@@ -76,8 +81,9 @@ def memory_dirs(cwd: Optional[str] = None) -> List[Path]:
     return _CFG.memory_dirs(cwd)
 
 
-def target_path(event: dict) -> Optional[Path]:
-    """The feedback or project memory this event wrote, or None."""
+def memory_path(event: dict) -> Optional[Path]:
+    """The memory file this event wrote, of any kind, or None: a ``*.md``
+    directly inside a memory folder that is not an index or topic file."""
     if event.get("tool_name") not in TOOLS:
         return None
     ti = event.get("tool_input") or {}
@@ -92,9 +98,17 @@ def target_path(event: dict) -> Optional[Path]:
         folders = [f.resolve() for f in memory_dirs(_cwd(event))]
     except OSError:
         return None
-    if p.parent not in folders or kind_of(p) is None or p.suffix != ".md":
+    if p.parent not in folders or p.suffix != ".md":
+        return None
+    if p.name in INDEX_FILES or p.name.startswith("topic_"):
         return None
     return p
+
+
+def target_path(event: dict) -> Optional[Path]:
+    """The feedback or project memory this event wrote, or None."""
+    p = memory_path(event)
+    return p if p is not None and kind_of(p) is not None else None
 
 
 def kind_of(path: Path) -> Optional[str]:
@@ -146,12 +160,13 @@ def run(stdin_text: str) -> str:
     event = json.loads(stdin_text)
     if not isinstance(event, dict):
         return ""
-    path = target_path(event)
+    path = memory_path(event)
     if path is None or not path.is_file():
         return ""
-    kind = kind_of(path) or "feedback"
-    if kind == "feedback":  # as before: a project write does not rebuild the table
-        rebuild_guard_table(_cwd(event))
+    rebuild_guard_table(_cwd(event))  # every kind: the table reads them all
+    kind = kind_of(path)
+    if kind is None:
+        return ""
     mf = _load("memory_fields")
     if mf is None:
         return ""

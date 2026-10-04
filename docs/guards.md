@@ -24,7 +24,26 @@ table. Each project has its own table,
 - **Entry.** A file becomes an entry when it has a `rule:` field, a
   `violates:` field or a valid trigger.
 - **Rebuild.** The table is rebuilt at session start and after Claude Code
-  writes a `feedback_*.md` file. To rebuild it by hand, run:
+  writes a memory file of any kind. The guard hook also rebuilds it before a
+  call when a memory file changed in another way: a shell command (`rm`,
+  `sed`, `mv`, `git checkout`), an editor or another session. The table
+  holds a stamp of the memory files: their names, sizes and change times.
+  The hook compares the stamp on each call. It reads no file for that, and
+  the check takes less than 1 ms for 200 files. A rebuild takes about 10 ms
+  for each `violates` expression.
+
+  A table that `NOBLIVION_GUARD_TABLE` names is not checked on each call.
+  It is rebuilt only at session start and after a memory write.
+- **Skipped rules.** A rule that fails a check is skipped. It does not
+  block. At session start, one line names the skipped rules and the reason,
+  for example:
+
+  ```text
+  NOBLIVION: 1 rule is skipped and does not block: feedback_no_force
+  (violates matches the empty command, so it matches every command).
+  ```
+
+  The line names at most 3 rules. To see all of them, rebuild by hand:
 
   ```sh
   cd <your project> && python3 "<plugin dir>/hooks/guard_table.py" --rebuild --report
@@ -123,6 +142,19 @@ command. The reason names the rule.
 
 Edit, Write and MultiEdit calls get rows only. They are never blocked.
 
+The hook has a time limit of 1.5 seconds. When the deny check is not done
+in that time, the hook allows the call and prints one line:
+
+```text
+NOBLIVION: the guard ran out of time, so the deny rules were not checked for this call.
+```
+
+This can occur with a very long command and a very large table, for
+example 1000 rules and a 90 KB command. The guard log records `timeout`.
+When the time runs out after a deny check that found nothing, only rows
+are lost, and the hook prints nothing. A rebuild of the table has its own
+limit of 6 seconds.
+
 ### Override
 
 To run a blocked command on purpose, end the command with a comment:
@@ -205,7 +237,9 @@ memory folder, this hook checks its fields.
 - For a project file: `status` and `project`.
 
 It never blocks. It returns a warning to Claude Code, which can then fix
-the file. After a feedback file changes, it rebuilds the guard table.
+the file. After a memory file of any kind changes, it rebuilds the guard
+table, because a note of any kind can hold a `violates` rule. A change to
+`MEMORY.md`, `MEMORY_ARCHIVE.md` or a `topic_*.md` file does not rebuild it.
 
 ## The memory sync hook
 

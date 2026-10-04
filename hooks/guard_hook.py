@@ -11,8 +11,11 @@ below). Stdin is the Claude Code hook JSON (``session_id``,
 (``guard_table.table_path()``: env ``NOBLIVION_GUARD_TABLE``, default
 ``<data dir>/guard-tables/<slug of the memory folder>.json``). The memory
 folder is the project folder of the event's ``cwd`` (NOBLIVION-31). When that
-table is missing and the folder exists, the hook builds it once. No daemon
-call, no network.
+table is missing, or a memory file changed since it was built
+(``guard_table.stale``: a shell ``rm``, ``sed``, ``mv`` or ``git checkout``
+sends no Write event), the hook rebuilds it before it reads it
+(NOBLIVION-50; the prompt leg of the label rows reads it as it is). A table
+named by ``NOBLIVION_GUARD_TABLE`` is read as it is. No daemon call, no network.
 
 Bash
   * A ``violates:`` hit (``guard_table.match``; it strips the git
@@ -173,8 +176,13 @@ memory with a compliant form is always refused (the guard fails closed for
 the override only; the deny itself is unchanged).
 
 Fail open: any exception, a missing or broken table, bad stdin, or a run longer
-than ``TIME_LIMIT_S`` exits 0 with no output (the error goes to the guard log
-when it can). The log and the state files are created with mode 0600 (the
+than ``TIME_LIMIT_S`` exits 0 with no deny (the error goes to the guard log
+when it can). A run over the time limit while a deny was still possible (a
+tool of ``DENY_TOOLS``, the deny check not done, no decision printed) prints
+``TIMEOUT_LINE`` as ``systemMessage`` and ``additionalContext``: the call
+goes on, and the user and the model read that the deny rules were not
+checked (NOBLIVION-50). A timeout after a deny check that found nothing
+loses rows only and prints nothing, as every other failure. The log and the state files are created with mode 0600 (the
 log holds command text), new folders with 0700. A missing, empty or broken table logs one ``error`` line per agent
 of a session, not one per call. Standard library only.
 """
@@ -260,6 +268,15 @@ ROWS_FULL_SESSION_CHARS = (
 LOG_TEXT_CHARS = 300
 STATE_MAX_AGE_S = 7 * 24 * 3600
 TIME_LIMIT_S = 1.5
+# A rebuild of the table (``table_file``) has its own limit: the build times
+# every ``violates`` regex in a child process (``memory_fields.regex_too_slow``,
+# about 10 ms each), so it does not fit in ``TIME_LIMIT_S`` from about 150
+# rules. The hook is registered with a timeout of 10 s.
+REBUILD_LIMIT_S = 6.0
+DENY_TOOLS = ("Bash", "Read", "Grep")  # a ``violates`` rule or the credential guard can deny
+TIMEOUT_LINE = (
+    "NOBLIVION: the guard ran out of time, so the deny rules were not checked for this call."
+)
 ROWS_SESSION_CHARS = 6000
 ROWS_HEADER = (
     "Memory rules for this action (guard rows). This is the memory's own text, "
@@ -377,22 +394,45 @@ def state_dir(env: Mapping[str, str]) -> Path:
     return _path_env(env, "NOBLIVION_GUARD_STATE_DIR", DEFAULT_STATE)
 
 
-def table_file(env: Mapping[str, str], cwd: Optional[str] = None) -> Path:
+def table_file(env: Mapping[str, str], cwd: Optional[str] = None, fresh: bool = False) -> Path:
     """``NOBLIVION_GUARD_TABLE``, else the table of the project memory folder
     of ``cwd``. A missing table of an existing folder is built here once,
-    fail open (a SessionStart that ran before the folder existed)."""
+    fail open (a SessionStart that ran before the folder existed). With
+    ``fresh`` (the guard's own legs) a stale table is rebuilt too: a memory
+    file changed since the build, by any means (NOBLIVION-50). A table named
+    by ``NOBLIVION_GUARD_TABLE`` is read as it is: one file for every project
+    has no one folder to follow."""
     raw = env.get("NOBLIVION_GUARD_TABLE")
     if raw:
         return Path(raw).expanduser()
     gt = _gt()
     folders = gt.source_dirs(cwd, env)
     path = gt.table_path(folders[0] if folders else None, env)
-    if folders and not path.is_file() and any(f.is_dir() for f in folders):
+    if folders and any(f.is_dir() for f in folders):
         try:
-            gt.rebuild(folders, path)
+            if not path.is_file() or (fresh and gt.stale(folders, path)):
+                _rebuild(gt, folders, path)
         except Exception:  # noqa: BLE001, S110 - a hook fails open
             pass
     return path
+
+
+def _rebuild(gt: Any, folders: List[Path], path: Path) -> None:
+    """``gt.rebuild`` inside ``REBUILD_LIMIT_S``. The time limit of the call
+    waits and goes on with the time it had left, so a slow rebuild does not
+    turn the deny check off."""
+    left = 0.0
+    try:
+        left = signal.getitimer(signal.ITIMER_REAL)[0]
+        if left > 0:  # only when ``main`` armed the alarm and its handler
+            signal.setitimer(signal.ITIMER_REAL, REBUILD_LIMIT_S)
+    except (ValueError, OSError, AttributeError):
+        left = 0.0
+    try:
+        gt.rebuild(folders, path)
+    finally:
+        if left > 0:
+            signal.setitimer(signal.ITIMER_REAL, left)
 
 
 # --------------------------------------------------------------------------
@@ -1245,14 +1285,17 @@ def deny_reason(
     return "\n".join(lines)
 
 
-def _out(context: str = "", deny: str = "") -> str:
+def _out(context: str = "", deny: str = "", message: str = "") -> str:
+    """The hook output. ``message`` is a line for the user (``systemMessage``)."""
     hso: Dict[str, str] = {"hookEventName": "PreToolUse"}
     if deny:
         hso["permissionDecision"] = "deny"
         hso["permissionDecisionReason"] = deny
     if context:
         hso["additionalContext"] = context
-    return json.dumps({"hookSpecificOutput": hso}, ensure_ascii=False)
+    doc: Dict[str, object] = {"systemMessage": message} if message else {}
+    doc["hookSpecificOutput"] = hso
+    return json.dumps(doc, ensure_ascii=False)
 
 
 class Decision:
@@ -1363,9 +1406,20 @@ def _table_problem(env: Mapping[str, str], sid: object, agent: str, error: str) 
     return Decision("", state, note, ("error", []))
 
 
-def decide(event: Mapping[str, object], env: Mapping[str, str]) -> Decision:
+def _settled(pending: Optional[List[bool]]) -> None:
+    """No deny can come from this call any more: a timeout from here on
+    loses rows only, so ``main`` prints no ``TIMEOUT_LINE``."""
+    if pending:
+        pending[0] = False
+
+
+def decide(
+    event: Mapping[str, object], env: Mapping[str, str], pending: Optional[List[bool]] = None
+) -> Decision:
     """The decision for one PreToolUse event. Nothing is charged or logged
-    here: ``main`` prints ``out`` first, then commits, then logs."""
+    here: ``main`` prints ``out`` first, then commits, then logs.
+    ``pending[0]`` is set to False (``_settled``) when the deny check is done
+    and found nothing."""
     if not isinstance(event, dict):
         return Decision()
     tool = str(event.get("tool_name") or "")
@@ -1381,6 +1435,8 @@ def decide(event: Mapping[str, object], env: Mapping[str, str]) -> Decision:
     cred = _credential_check(tool, ti, cwd, env)
     if cred is not None:
         return cred
+    if tool not in BASH_TOOLS:
+        _settled(pending)  # only the credential guard denies these tools
     file_q: Optional[Tuple[str, str]] = None
     if tool not in BASH_TOOLS and _file_tools_on(env):
         file_q = _file_query(tool, ti, cwd)
@@ -1388,9 +1444,10 @@ def decide(event: Mapping[str, object], env: Mapping[str, str]) -> Decision:
         return Decision()  # the file-tool leg is off: nothing is read
     sid = event.get("session_id")
     agent = agent_key(event)
-    tpath = table_file(env, cwd)
+    tpath = table_file(env, cwd, fresh=True)
     table = _gt().load_table(tpath) if tpath.is_file() else {}
     if not table.get("entries"):
+        _settled(pending)  # no rule
         why = "table empty or broken" if tpath.is_file() else "table missing"
         return _table_problem(env, sid, agent, f"{why}: {tpath}")
 
@@ -1399,6 +1456,8 @@ def decide(event: Mapping[str, object], env: Mapping[str, str]) -> Decision:
         if not isinstance(command, str) or not command.strip():
             return Decision()
         hits = _gt().match(command, table)
+        if not hits:
+            _settled(pending)
         marker, marker_seen = override_marker(command) if hits else (None, False)
         cands = command_rows(command, table)
         query, subject = command, "command"
@@ -1592,7 +1651,7 @@ def _record_failure(event: Mapping[str, object], env: Mapping[str, str]) -> Deci
     if not isinstance(command, str) or not isinstance(error, str) or not APPLY_FAILED.match(error):
         return Decision()
     cwd = event.get("cwd")
-    tpath = table_file(env, cwd if isinstance(cwd, str) else None)
+    tpath = table_file(env, cwd if isinstance(cwd, str) else None, fresh=True)
     table = _gt().load_table(tpath) if tpath.is_file() else {}
     if not table.get("entries"):
         return Decision()  # no table: no guard, nothing to record
@@ -1673,24 +1732,34 @@ def main(
     """Read one event and act in this order: decide, print, charge the budget,
     log (review finding F4). The log is best effort: a log failure never hides
     a printed decision. A failure before the print charges nothing. Exit 0
-    always: any error or a run over ``time_limit`` seconds prints nothing
-    (the tool call goes on)."""
+    always: any error or a run over ``time_limit`` seconds denies nothing
+    (the tool call goes on). A run over ``time_limit`` prints ``TIMEOUT_LINE``
+    when a deny was still possible: a PreToolUse call of a ``DENY_TOOLS``
+    tool, before the deny check found nothing (``_settled``) and before a
+    decision was printed. So a deny that was not checked is never silent, and
+    a timeout that loses rows only prints nothing."""
     env = dict(os.environ if environ is None else environ)
     stdin = sys.stdin if stdin is None else stdin
     stdout = sys.stdout if stdout is None else stdout
     sid, tool, agent = "", "", "main"
     d: Optional[Decision] = None
     armed = False
+    pending = [False]  # True while this call can still be denied
     try:
         armed = _arm(time_limit)
         event = json.loads(stdin.read())
         if isinstance(event, dict):
             sid, tool = event.get("session_id") or "", str(event.get("tool_name") or "")
             agent = agent_key(event)
-        d = decide(event, env)
+            pending[0] = (
+                tool in DENY_TOOLS
+                and str(event.get("hook_event_name") or "PreToolUse") == "PreToolUse"
+            )
+        d = decide(event, env, pending)
         if armed:
             _disarm()
             armed = False
+        pending[0] = False
         if d.out:
             stdout.write(d.out + "\n")
             stdout.flush()
@@ -1707,6 +1776,12 @@ def main(
         if d is not None:
             try:
                 d.abort()
+            except Exception:  # noqa: BLE001, S110 - a hook fails open
+                pass
+        if pending[0] and isinstance(exc, _TimeUp):
+            try:
+                stdout.write(_out(context=TIMEOUT_LINE, message=TIMEOUT_LINE) + "\n")
+                stdout.flush()
             except Exception:  # noqa: BLE001, S110 - a hook fails open
                 pass
         log_line(

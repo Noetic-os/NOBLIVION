@@ -74,6 +74,24 @@ All notable changes to NOBLIVION. The format follows
   change, old notes that had nothing to do with the prompt reached the
   context. Now the keyword list holds only the notes that match, as in
   keyword-only mode, and a note with no vector and no match is not returned.
+- A rule that the guard table build skips no longer goes unnoticed
+  (NOBLIVION-50). A rule whose `violates` matches the empty command or an
+  everyday command, or is too slow, does not block. Before, only
+  `guard_table.py --rebuild --report` listed it. Now the session start
+  prints one line that names the skipped rules and the reason.
+- The guard table no longer goes stale (NOBLIVION-50). Before, a rule that
+  a shell command deleted, edited or moved (`rm`, `sed`, `mv`, `git
+  checkout`) kept its old effect until the next session, and a write of a
+  `project_*.md` file did not rebuild the table. Now the table holds a
+  stamp of the memory files (names, sizes, change times). The guard hook
+  rebuilds the table before a call when the stamp changed, and a write of
+  a memory file of any kind rebuilds it. The check adds about 0.3 ms to a
+  call with 200 notes. A table that `NOBLIVION_GUARD_TABLE` names is not
+  checked on each call.
+- A deny check that runs out of time is no longer silent (NOBLIVION-50).
+  The call is still allowed after 1.5 seconds, but one line now says that
+  the deny rules were not checked for this call. Before, only the guard
+  log recorded the timeout.
 
 ## 0.1.5 - 2026-10-04
 

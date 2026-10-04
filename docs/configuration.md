@@ -122,9 +122,10 @@ When it is set:
 }
 ```
 
-The guard table is rebuilt at the start of each session and after a write of
-a feedback memory. A change to the global folder reaches the guard table of
-another project at that project's next session start.
+The guard table is rebuilt at the start of each session, after a write of
+a memory file, and before a guarded call when a memory file changed in
+another way. A change to the global folder reaches the guard table of
+another project at that project's next Bash, Edit or Write call.
 
 ### Shared Claude Code and Codex settings
 
@@ -313,7 +314,7 @@ See [guards.md](guards.md) for what each guard does.
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
 | `NOBLIVION_MEMORY_DIR` | none | the session's memory folder (see "The session's memory folder") | One fixed memory folder for every hook and every session. It wins over the folder of the session's `cwd`. When it is set, the store indexes this folder too, in addition to `NOBLIVION_MEMORY_DIRS`. |
-| `NOBLIVION_GUARD_TABLE` | none | `<data dir>/guard-tables/<slug of the memory folder>.json` | The guard table file. By default each project has its own table. When this is set, every session uses this one file. |
+| `NOBLIVION_GUARD_TABLE` | none | `<data dir>/guard-tables/<slug of the memory folder>.json` | The guard table file. By default each project has its own table. When this is set, every session uses this one file, and the guard hook does not rebuild it when a memory file changes outside a session start or a memory write. |
 | `NOBLIVION_GUARD_LOG` | none | `<data dir>/guard-log.jsonl` | The guard log. |
 | `NOBLIVION_GUARD_STATE_DIR` | none | `<data dir>/guard-state` | State per agent and session. |
 | `NOBLIVION_GUARD_ROWS_SESSION_CHARS` | none | `6000` | The most characters of guard rows per agent in one session. |

@@ -13,8 +13,9 @@ What these tests hold:
    most 3 rows, most specific first; one memory's row at most 3 times a session.
 4. EDIT, WRITE, MULTIEDIT: ``glob:`` rows on the file path; never a deny; the
    content of a Write never reaches the log.
-5. FAIL OPEN: a missing table, bad stdin, a broken regex entry, an exception
-   or a timeout print nothing and exit 0.
+5. FAIL OPEN: a missing table, bad stdin, a broken regex entry or an exception
+   print nothing and exit 0. A timeout allows the call. It prints one line
+   for the user when the deny check was not done, else nothing (13).
 6. THE LOG: one JSON line per deny, override and row set.
 7. STATE PRUNING: a new session removes state files older than 7 days.
 8. WRAPPERS: ``git -C``, ``env``, ``sudo``, ``timeout`` do not hide a guarded
@@ -28,9 +29,13 @@ What these tests hold:
    ("Exit code <n>", not interrupted) showed a failed run of that command in
    the same agent of the session. The deny names the command to run first.
    A memory without ``complies`` keeps the plain override.
+13. A CHANGED MEMORY FOLDER (NOBLIVION-50): a rule that a shell command
+   deleted, edited, moved or added is read at the next call, for every kind
+   of memory file. An ordinary command gets no deny and no message.
 
 Every test points NOBLIVION_GUARD_TABLE, NOBLIVION_GUARD_STATE_DIR and
-NOBLIVION_GUARD_LOG at tmp paths. No test reads or writes a live file.
+NOBLIVION_GUARD_LOG at tmp paths (13: no table override, the table is in the
+tmp data dir). No test reads or writes a live file.
 """
 
 from __future__ import annotations
@@ -629,7 +634,7 @@ def test_a_timeout_inside_a_fail_open_handler_still_ends_the_call(env, tmp_path,
             == 0
         )
         assert time.monotonic() - t0 < 1.5
-    assert out.getvalue() == ""
+    assert out.getvalue() == ""  # the deny check was done: only the rows are lost
     assert log(env)[-1]["error"] == "timeout"
     # nothing was charged, and the state lock is free for the next call
     assert "Text: A body." in call(env, bash("make deploy-all now"))["additionalContext"]
@@ -649,7 +654,9 @@ def test_timeout_fails_open(env, monkeypatch):
         == 0
     )
     assert time.monotonic() - t0 < 1.5
-    assert out.getvalue() == ""
+    # allowed, and one line says that no deny rule was checked (NOBLIVION-50)
+    assert json.loads(out.getvalue()) == _timeout_doc()
+    assert "never printed" not in out.getvalue()
     assert log(env)[-1]["error"] == "timeout"
 
 
@@ -1799,3 +1806,292 @@ def test_the_log_text_of_a_file_path_is_kept(env):
         gh._log_text({"tool_input": {"file_path": "/r/a1b2c3d4e5f6a7b8c9d0e1f2a3b4/x.py"}})
         == "/r/a1b2c3d4e5f6a7b8c9d0e1f2a3b4/x.py"
     )
+
+
+# 13. NOBLIVION-50: a changed memory folder, and a timeout ---------------------
+@pytest.fixture
+def folder_env(tmp_path, monkeypatch, hook_env):
+    """No table override: the hook reads the table of the memory folder
+    ``mem`` under the tmp data dir, and builds it itself."""
+    mem = tmp_path / "mem"
+    mem.mkdir()
+    e = {
+        "HOME": str(hook_env["home"]),
+        "NOBLIVION_DATA_DIR": str(hook_env["data"]),
+        "NOBLIVION_MEMORY_DIR": str(mem),
+        "NOBLIVION_GUARD_STATE_DIR": str(tmp_path / "state"),
+        "NOBLIVION_GUARD_LOG": str(tmp_path / "log.jsonl"),
+    }
+    for k, v in e.items():
+        monkeypatch.setenv(k, v)
+    return e, mem
+
+
+def _rulefile(folder, mid, word="pop"):
+    """A memory file with a deny rule on ``git stash <word>``."""
+    (folder / f"{mid}.md").write_text(
+        f"---\nname: {mid}\ndescription: a lesson\ntype: feedback\n"
+        f'rule: Never run git stash {word}.\napply: "Use git stash list."\nscope: tool\n'
+        f'triggers: [git stash]\nviolates: "^git\\\\s+stash\\\\s+{word}\\\\s*$"\n'
+        f'example_repeat: "git stash {word}"\nexample_ok: "git stash list"\n---\n\nBody.\n'
+    )
+
+
+def _denied(env, cmd):
+    out = call(env, bash(cmd))
+    return bool(out) and out.get("permissionDecision") == "deny"
+
+
+def test_a_rule_deleted_with_rm_stops_denying_at_the_next_call(folder_env):
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    _rulefile(mem, "feedback_no_stash_drop", "drop")
+    assert _denied(env, "git stash pop") and _denied(env, "git stash drop")
+    (mem / "feedback_no_stash_pop.md").unlink()
+    assert not _denied(env, "git stash pop")
+    assert _denied(env, "git stash drop")
+
+
+@pytest.mark.parametrize("name", ["feedback_no_clear", "project_no_clear", "reference_no_clear"])
+def test_a_rule_added_by_a_shell_command_denies_at_the_next_call(folder_env, name):
+    """As ``git checkout`` or ``cp`` brings a file: no Write event, any kind."""
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    assert not _denied(env, "git stash clear")
+    _rulefile(mem, name, "clear")
+    assert _denied(env, "git stash clear")
+
+
+def test_a_rule_edited_or_moved_by_a_shell_command_is_read_at_the_next_call(folder_env):
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    assert _denied(env, "git stash pop") and not _denied(env, "git stash drop")
+    _rulefile(mem, "feedback_no_stash_pop", "drop")  # ``sed -i``: the same file, a new regex
+    assert _denied(env, "git stash drop") and not _denied(env, "git stash pop")
+    (mem / "feedback_no_stash_pop.md").rename(mem / "feedback_no_stash_pop.md.off")  # ``mv``
+    assert not _denied(env, "git stash drop")
+
+
+def test_the_table_is_rebuilt_once_per_change_of_the_folder(folder_env, monkeypatch):
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    gtm = gh._gt()
+    real, calls = gtm.rebuild, []
+    monkeypatch.setattr(gtm, "rebuild", lambda *a, **k: calls.append(1) or real(*a, **k))
+    assert _denied(env, "git stash pop") and len(calls) == 1  # no table yet
+    assert _denied(env, "git stash pop") and not _denied(env, "ls") and len(calls) == 1
+    (mem / "MEMORY.md").write_text("- an index line\n")  # not a memory file
+    assert _denied(env, "git stash pop") and len(calls) == 1
+    _rulefile(mem, "user_no_stash_drop", "drop")
+    assert _denied(env, "git stash drop") and len(calls) == 2
+    assert _denied(env, "git stash drop") and _denied(env, "git stash pop") and len(calls) == 2
+
+
+def test_only_the_guard_legs_rebuild_a_stale_table(folder_env):
+    """``table_file`` without ``fresh`` (the prompt leg of the label rows)
+    builds a missing table, as before, and leaves a stale one."""
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    path = gh.table_file(env, "/tmp")
+    built = path.read_text()
+    _rulefile(mem, "feedback_no_stash_drop", "drop")
+    assert gh.table_file(env, "/tmp") == path and path.read_text() == built
+    assert gh.table_file(env, "/tmp", fresh=True) == path
+    assert "feedback_no_stash_drop" in path.read_text()
+
+
+def test_a_table_override_is_never_rebuilt_by_the_hook(env, tmp_path, monkeypatch):
+    """``NOBLIVION_GUARD_TABLE`` pins one file: the hook reads it as it is."""
+    mem = tmp_path / "mem"
+    mem.mkdir()
+    _rulefile(mem, "feedback_no_stash_clear", "clear")
+    e = dict(env, NOBLIVION_MEMORY_DIR=str(mem))
+    before = Path(env["NOBLIVION_GUARD_TABLE"]).read_text()
+    assert not _denied(e, "git stash clear") and _denied(e, "git stash pop")
+    assert Path(env["NOBLIVION_GUARD_TABLE"]).read_text() == before
+
+
+ORDINARY = [
+    "ls -la",
+    "git status",
+    "git push origin main",
+    "git stash list",
+    "cat README.md | head -5",
+    "python3 -m pytest -q tests && echo done",
+]
+
+
+@pytest.mark.parametrize("notes", ["none", "plain"])
+def test_an_ordinary_command_in_a_folder_with_no_rules_gets_no_deny_and_no_message(
+    folder_env, notes
+):
+    env, mem = folder_env
+    if notes == "plain":
+        (mem / "user_profile.md").write_text("---\nname: profile\ntype: user\n---\n\nA note.\n")
+        (mem / "MEMORY.md").write_text("- [profile](user_profile.md)\n")
+    for cmd in ORDINARY:
+        out = io.StringIO()
+        assert gh.main(stdin=io.StringIO(json.dumps(bash(cmd))), stdout=out, environ=env) == 0
+        assert out.getvalue() == ""
+    (mem / "user_other.md").write_text("---\nname: other\ntype: user\n---\n\nA note.\n")
+    for cmd in ORDINARY:  # after a change of the folder too
+        out = io.StringIO()
+        assert gh.main(stdin=io.StringIO(json.dumps(bash(cmd))), stdout=out, environ=env) == 0
+        assert out.getvalue() == ""
+
+
+def test_an_ordinary_command_next_to_a_rule_gets_no_deny_and_no_message(folder_env):
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    r = subprocess.run(
+        [sys.executable, str(HOOK)],
+        input=json.dumps(bash("ls -la && git status")),
+        capture_output=True,
+        text=True,
+        env={**os.environ, **env},
+        timeout=30,
+    )
+    assert (r.returncode, r.stdout, r.stderr) == (0, "", "")
+    (mem / "feedback_no_stash_pop.md").unlink()
+    for cmd in ORDINARY + ["git stash pop"]:
+        assert call(env, bash(cmd)) is None
+
+
+def _timed_out(env, event, time_limit=0.2):
+    out = io.StringIO()
+    t0 = time.monotonic()
+    rc = gh.main(
+        stdin=io.StringIO(json.dumps(event)), stdout=out, environ=env, time_limit=time_limit
+    )
+    assert rc == 0 and time.monotonic() - t0 < 1.5
+    return out.getvalue()
+
+
+def _timeout_doc():
+    """What a timeout prints: one line for the user and for the model, no deny."""
+    return {
+        "systemMessage": gh.TIMEOUT_LINE,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": gh.TIMEOUT_LINE,
+        },
+    }
+
+
+def test_a_deny_check_over_the_time_limit_tells_the_user(env):
+    """The ticket's reproducer through ``main``: 1000 rules and a 90 KB
+    command that ends in a force-push. The call is allowed (fail open), and
+    one line says that the deny rules were not checked."""
+    rules = [entry(f"feedback_r{i}", violates=rf"\btool{i}\s+drop\s+all\b") for i in range(1000)]
+    Path(env["NOBLIVION_GUARD_TABLE"]).write_text(json.dumps({"entries": rules + BASE}))
+    words = " ".join(f"word{i}" for i in range(10000))
+    text = _timed_out(env, bash(f"echo {words} && git push --force origin main"))
+    assert text.count("\n") == 1 and json.loads(text) == _timeout_doc()
+    assert gh.TIMEOUT_LINE.startswith("NOBLIVION: ") and "not checked" in gh.TIMEOUT_LINE
+    assert log(env)[-1]["error"] == "timeout"
+    # with the time it needs, the same call is denied
+    Path(env["NOBLIVION_GUARD_TABLE"]).write_text(json.dumps({"entries": BASE}))
+    assert _denied(env, f"echo {words} && git push --force origin main")
+
+
+def _slow_decide(monkeypatch):
+    def slow(*_a, **_k):
+        time.sleep(2)
+        return gh.Decision()
+
+    monkeypatch.setattr(gh, "decide", slow)
+
+
+@pytest.mark.parametrize("tool", ["Read", "Grep"])
+def test_a_timeout_of_the_credential_guard_tools_tells_the_user(env, monkeypatch, tool):
+    _slow_decide(monkeypatch)
+    ev = {"session_id": "s1", "tool_name": tool, "tool_input": {"file_path": "/r/x"}, "cwd": "/"}
+    assert json.loads(_timed_out(env, ev)) == _timeout_doc()
+
+
+def test_a_timeout_where_nothing_can_be_denied_prints_nothing(env, monkeypatch):
+    """Edit, Write and MultiEdit are never denied, and the evidence leg
+    (PostToolUseFailure) never denies: a timeout there loses no deny."""
+    _slow_decide(monkeypatch)
+    edit = {
+        "session_id": "s1",
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "/r/x.py", "old_string": "a", "new_string": "b"},
+        "cwd": "/",
+    }
+    failed = dict(bash("git stash list"), hook_event_name="PostToolUseFailure", error="Exit code 1")
+    assert _timed_out(env, edit) == ""
+    assert _timed_out(env, failed) == ""
+
+
+def _sleeper(*_a, **_k):
+    time.sleep(2)
+
+
+def test_a_timeout_after_a_deny_check_that_found_nothing_prints_nothing(env, monkeypatch):
+    """The line is for a deny that was not checked. When the check is done and
+    found nothing, a later timeout (the rows, the state lock) loses rows only."""
+    read = {
+        "session_id": "s1",
+        "tool_name": "Read",
+        "tool_input": {"file_path": "/r/x"},
+        "cwd": "/",
+    }
+    with monkeypatch.context() as m:
+        m.setattr(gh, "command_rows", _sleeper)  # after ``match``
+        assert _timed_out(env, bash("git push origin main")) == ""
+        assert log(env)[-1]["error"] == "timeout"
+    with monkeypatch.context() as m:
+        m.setattr(gh, "_file_tools_on", _sleeper)  # after the credential guard
+        assert _timed_out(env, read) == ""
+    with monkeypatch.context() as m:
+        m.setattr(gh, "SessionState", _sleeper)
+        # a table with no rule: nothing to deny, so no line
+        Path(env["NOBLIVION_GUARD_TABLE"]).write_text(json.dumps({"entries": []}))
+        for cmd in ORDINARY:
+            assert _timed_out(env, bash(cmd)) == ""
+        # a hit that the hook could not print: the line
+        Path(env["NOBLIVION_GUARD_TABLE"]).write_text(json.dumps({"entries": BASE}))
+        assert json.loads(_timed_out(env, bash("git push --force origin x"))) == _timeout_doc()
+    with monkeypatch.context() as m:
+        m.setattr(gh, "_credential_check", _sleeper)
+        assert json.loads(_timed_out(env, read)) == _timeout_doc()
+
+
+def test_a_timeout_after_the_deny_was_printed_adds_no_message(env, monkeypatch):
+    def slow(_self):
+        time.sleep(2)
+
+    monkeypatch.setattr(gh.Decision, "commit", slow)
+    text = _timed_out(env, bash("git push --force origin x"))
+    assert text.count("\n") == 1
+    assert json.loads(text)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "systemMessage" not in json.loads(text)
+
+
+def test_a_rebuild_of_a_changed_folder_has_its_own_time_limit(folder_env, monkeypatch):
+    """The rebuild times each regex in a child process, so it can take longer
+    than the limit of the deny check. It must not turn the check off."""
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    gtm = gh._gt()
+    real = gtm.rebuild
+
+    def slow(*a, **k):
+        time.sleep(0.6)
+        return real(*a, **k)
+
+    monkeypatch.setattr(gtm, "rebuild", slow)
+    out = io.StringIO()
+    ev = json.dumps(bash("git stash pop"))
+    assert gh.main(stdin=io.StringIO(ev), stdout=out, environ=env, time_limit=0.4) == 0
+    assert json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"] == "deny"
+    # a rebuild over its own limit ends the call: fail open, with the line
+    _rulefile(mem, "feedback_no_stash_drop", "drop")
+    monkeypatch.setattr(gh, "REBUILD_LIMIT_S", 0.2)
+    assert json.loads(_timed_out(env, bash("git stash drop"), time_limit=0.4)) == _timeout_doc()
+    # the limit of the call is back after a rebuild
+    monkeypatch.setattr(gh, "REBUILD_LIMIT_S", 5.0)
+    monkeypatch.setattr(gtm, "rebuild", real)
+    monkeypatch.setattr(gtm, "match", lambda *_a, **_k: time.sleep(2) or [])
+    assert json.loads(_timed_out(env, bash("git stash drop"), time_limit=0.4)) == _timeout_doc()

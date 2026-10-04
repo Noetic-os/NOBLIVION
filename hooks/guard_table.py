@@ -16,7 +16,15 @@ stem), rule, apply, scope, triggers (for the later rows-only leg) and the
 ``violates`` regex. A ``violates`` regex is kept only when
 ``memory_fields.check_fields`` reports no problem for that file; a
 refused one goes to ``skipped`` with the problems in plain words, and never
-stops the rebuild.
+stops the rebuild. A skipped rule does not block, so the SessionStart rebuild
+names the skipped rules in one line for the user (``skipped_line``,
+NOBLIVION-50).
+
+The key ``stamp`` (NOBLIVION-50) is ``folder_stamp`` of the folders at the
+build: a hash over the name, the size and the change times of each memory
+file. ``stale(folder)`` compares it with the folders now, so a reader sees a
+file that a shell command deleted, edited, moved or added (``rm``, ``sed``,
+``mv``, ``git checkout``) with one ``scandir``, and reads no file.
 
 WI-3d: an entry also carries ``complies`` (the optional ``complies:`` regex, a
 run of the rule's own command) and ``run_first`` (the shortest piece of
@@ -48,15 +56,18 @@ and ``label_error`` says why; the guard entries are built all the same.
 Callers:
   * the WI-1 PostToolUse hook ``memory_fields_hook.py`` calls
     ``rebuild(source_dirs(cwd))`` after a memory write;
+  * the guard hook calls ``rebuild`` before it reads a table that is
+    ``stale`` (or missing);
   * SessionStart runs ``guard_table.py --rebuild`` with the hook JSON on
     stdin (its ``cwd`` names the project): fail-open, exit 0 always, silent
-    on success.
+    when no rule was skipped.
 
 No daemon call, no network. Standard library only.
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -186,6 +197,41 @@ def _folders(folder: Any) -> List[Path]:
     return [Path(folder)]
 
 
+def folder_stamp(folder: Any) -> str:
+    """A hash over what ``build`` reads from ``folder`` (one folder or a
+    list): each folder path and, per memory file, its name, size, mtime and
+    ctime. A write, a delete, a rename or a ``cp -p`` of a memory file changes
+    it; an index or topic file does not. One ``scandir`` and one ``stat`` per
+    file; no file is read."""
+    h = hashlib.sha256()
+    for f in _folders(folder):
+        rows: Optional[List[Tuple[str, int, int, int]]] = []
+        try:
+            with os.scandir(f) as it:
+                for entry in it:
+                    if not entry.name.endswith(".md") or _NOT_MEMORY.match(entry.name):
+                        continue
+                    try:
+                        st = entry.stat()
+                        rows.append((entry.name, st.st_size, st.st_mtime_ns, st.st_ctime_ns))
+                    except OSError:
+                        rows.append((entry.name, -1, 0, 0))
+        except OSError:
+            rows = None  # no folder
+        h.update(repr((str(f), sorted(rows) if rows is not None else None)).encode("utf-8"))
+    return h.hexdigest()[:32]
+
+
+def stale(folder: Any, path: Optional[Path] = None) -> bool:
+    """True when the table at ``path`` (default the table of the first
+    folder) was not built from ``folder`` as it is now: a memory file changed
+    since the build, the table is missing or broken, or it has no ``stamp``
+    (a table of an older version)."""
+    folders = _folders(folder)
+    p = Path(path) if path is not None else table_path(folders[0])
+    return load_table(p).get("stamp") != folder_stamp(folders)
+
+
 def build(folder: Any) -> Dict[str, Any]:
     """The table for ``folder`` (one folder, or a list: the project folder
     first, then the global folder), not written. On a file name that two
@@ -195,6 +241,9 @@ def build(folder: Any) -> Dict[str, Any]:
     present = [f for f in folders if f.is_dir()]
     if not present:
         raise FileNotFoundError(f"memory folder {folders[0] if folders else ''} does not exist")
+    # Before the files are read: a write during the build gives a table that
+    # is stale, never a new stamp on old text.
+    stamp = folder_stamp(folders)
     mf = _mf()
     entries: List[Dict[str, object]] = []
     skipped: List[Dict[str, object]] = []
@@ -273,6 +322,7 @@ def build(folder: Any) -> Dict[str, Any]:
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source": str(folders[0]),
         "sources": [str(f) for f in present],
+        "stamp": stamp,
         "entries": entries,
         "skipped": skipped,
     }
@@ -317,6 +367,54 @@ def rebuild(folder: Any = None, out: Optional[Path] = None) -> Dict[str, Any]:
     table = build(folders)
     write_atomic(Path(out) if out is not None else table_path(folders[0]), table)
     return table
+
+
+SKIPPED_NAMED = 3  # rules that ``skipped_line`` names per kind
+SKIPPED_ID_CHARS = 60
+SKIPPED_WHY_CHARS = 100
+
+
+def _one_line(text: object, n: int) -> str:
+    out = " ".join(str(text or "").split())
+    return out if len(out) <= n else out[: n - 3] + "..."
+
+
+def skipped_line(table: Mapping[str, Any]) -> str:
+    """One line for the user about the rules that ``build`` skipped, ``""``
+    when it skipped none. A skipped ``violates`` (or an unreadable file) is a
+    rule that does not block; a skipped ``complies`` leaves the deny in
+    place. It names at most ``SKIPPED_NAMED`` rules per kind, each with its
+    first problem; ``--report`` prints them all."""
+    rows = [r for r in table.get("skipped") or [] if isinstance(r, dict)]
+    parts: List[str] = []
+    for kind, one, many in (
+        ("violates", "rule is skipped and does not block", "rules are skipped and do not block"),
+        (
+            "complies",
+            "complies field is skipped (the rule still blocks)",
+            "complies fields are skipped (the rules still block)",
+        ),
+    ):
+        group = [r for r in rows if ("complies" in r) == (kind == "complies")]
+        if not group:
+            continue
+        named = []
+        for r in group[:SKIPPED_NAMED]:
+            probs = [p for p in r.get("problems") or [] if p]
+            why = _one_line(probs[0] if probs else "no reason", SKIPPED_WHY_CHARS)
+            if len(probs) > 1:
+                why += f"; {len(probs) - 1} more problem" + ("s" if len(probs) > 2 else "")
+            named.append(f"{_one_line(r.get('id'), SKIPPED_ID_CHARS)} ({why})")
+        if len(group) > SKIPPED_NAMED:
+            named.append(f"and {len(group) - SKIPPED_NAMED} more")
+        parts.append(f"{len(group)} {one if len(group) == 1 else many}: " + "; ".join(named))
+    if not parts:
+        return ""
+    return (
+        "NOBLIVION: "
+        + ". ".join(parts)
+        + ". Fix the memory file. For the full list, run guard_table.py --rebuild --report."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1016,11 +1114,14 @@ def complies_match(command: str, table: Optional[Mapping[str, Any]] = None) -> L
 # --------------------------------------------------------------------------
 def main(argv: Optional[List[str]] = None) -> int:
     """``--rebuild``: rebuild the table of the session's project; exit 0
-    always, silent on success and when the memory folder does not exist, one
-    stderr line on failure (a SessionStart hook fails open). The hook JSON on
+    always, silent when no rule was skipped and when the memory folder does
+    not exist, one stderr line on failure (a SessionStart hook fails open).
+    When the build skipped a rule, it prints ``skipped_line`` as one JSON
+    object: ``systemMessage`` for the user and ``additionalContext`` for the
+    model (the shape of ``store_client.main``). The hook JSON on
     stdin gives the ``cwd``; without it the process working dir is used.
-    ``--report``: print the skipped regexes after a rebuild. ``--match CMD``:
-    print the hits as JSON."""
+    ``--report``: print the skipped regexes after a rebuild, as plain text.
+    ``--match CMD``: print the hits as JSON."""
     args = list(sys.argv[1:] if argv is None else argv)
     if "--match" in args:
         try:
@@ -1055,6 +1156,20 @@ def main(argv: Optional[List[str]] = None) -> int:
                 )
                 for s in table["skipped"]:
                     print(f"  skipped {s['id']}: {'; '.join(s['problems'])}")
+            else:
+                line = skipped_line(table)
+                if line:
+                    print(
+                        json.dumps(
+                            {
+                                "systemMessage": line,
+                                "hookSpecificOutput": {
+                                    "hookEventName": "SessionStart",
+                                    "additionalContext": line,
+                                },
+                            }
+                        )
+                    )
         except Exception as exc:  # noqa: BLE001 - fail open
             try:
                 print(f"guard table: rebuild failed: {exc}", file=sys.stderr)

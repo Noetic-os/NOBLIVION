@@ -313,7 +313,9 @@ def test_a_feedback_memory_is_not_asked_for_status_or_project(mem):
     assert "status 'done' is not one of open, closed, parked" in ctx and ADD_LINE in ctx
 
 
-def test_a_project_write_does_not_rebuild_the_guard_table(mem, monkeypatch):
+def test_a_write_of_every_memory_kind_rebuilds_the_guard_table(mem, monkeypatch, tmp_path):
+    """NOBLIVION-50: the table reads ``violates`` from every memory file, so a
+    write of any kind rebuilds it. An index or topic file is not in the table."""
     fh = load_fields_hook()
     calls = []
     monkeypatch.setattr(fh, "rebuild_guard_table", lambda cwd=None: calls.append(1))
@@ -321,9 +323,33 @@ def test_a_project_write_does_not_rebuild_the_guard_table(mem, monkeypatch):
     (mem / "project_x.md").write_text(PROJECT_BARE)
     (mem / "feedback_x.md").write_text(BARE)
     assert "status is missing" in fh.run(event(mem / "project_x.md"))
-    assert calls == []
-    assert "rule is missing" in fh.run(event(mem / "feedback_x.md"))
     assert calls == [1]
+    assert "rule is missing" in fh.run(event(mem / "feedback_x.md"))
+    assert calls == [1, 1]
+    for name in ("user_x.md", "reference_x.md", "note.md"):
+        (mem / name).write_text(BARE)
+        assert fh.run(event(mem / name)) == ""  # no field check for these kinds
+    assert calls == [1] * 5
+    (mem / "sub").mkdir()
+    outside = tmp_path / "feedback_elsewhere.md"
+    for path in (mem / "MEMORY.md", mem / "topic_git.md", mem / "notes.txt", mem / "sub" / "a.md"):
+        path.write_text(BARE)
+        assert fh.run(event(path)) == ""
+    outside.write_text(BARE)
+    assert fh.run(event(outside)) == "" and fh.run(event(mem / "user_gone.md")) == ""
+    assert calls == [1] * 5
+
+
+def test_a_project_write_with_a_deny_rule_reaches_the_table(mem, hook_env):
+    """End to end: the rule of a ``project_*`` file denies after the Write."""
+    text = mf.write_fields(PROJECT_BARE, GOOD)
+    (mem / "project_x.md").write_text(
+        text.replace("metadata:", "status: open\nproject: global\nmetadata:")
+    )
+    r, _ = run_hook(event(mem / "project_x.md"), mem)
+    assert r.returncode == 0 and r.stdout == ""
+    table = json.loads((hook_env["data"] / "guard-table.json").read_text())
+    assert [(e["id"], e["violates"]) for e in table["entries"]] == [("project_x", GOOD["violates"])]
 
 
 NESTED_RULE = (
