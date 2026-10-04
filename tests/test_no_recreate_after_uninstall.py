@@ -62,6 +62,24 @@ def _kill(pid: int) -> None:
         pass
 
 
+def _delete_running_data_dir(path: Path, timeout: float = 5.0) -> None:
+    """Delete a data dir that a live store may still write into. A file the
+    store writes during the walk makes rmtree fail with "Directory not empty",
+    so retry until the folder is gone. The tests check afterwards that nothing
+    comes back, so a retry cannot hide the bug they guard."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.05)
+
+
 # -- the reproducer -----------------------------------------------------------------
 
 
@@ -70,7 +88,7 @@ def test_a_store_stopping_after_the_data_dir_was_deleted_makes_nothing(tmp_path)
     Before the fix the stop made the folder and an empty noblivion.db."""
     data, pid, _ = _start_real_store(tmp_path)
     try:
-        shutil.rmtree(data)
+        _delete_running_data_dir(data)
         os.kill(pid, signal.SIGTERM)
         assert wait_for(lambda: _gone(pid), 30), "the store did not stop"
         time.sleep(0.3)
@@ -82,7 +100,7 @@ def test_a_store_stopping_after_the_data_dir_was_deleted_makes_nothing(tmp_path)
 def test_a_running_store_stops_when_its_data_dir_is_deleted(tmp_path):
     data, pid, _ = _start_real_store(tmp_path)
     try:
-        shutil.rmtree(data)
+        _delete_running_data_dir(data)
         assert wait_for(lambda: _gone(pid), 20), "the store kept running without a data dir"
         assert not data.exists()
     finally:
