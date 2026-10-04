@@ -7,8 +7,10 @@ What these tests hold:
 1. THE SETTINGS. Both signals are off by default, each turns on by its env
    var or config key, and both are off when the trust events are off.
 2. THE MATCH. A citation is a distinct name or an 8-word verbatim phrase of
-   the rule, in a sentence that does not set the note aside. A correction
-   needs a shown, cited note on its topic and no second candidate.
+   the rule, in a sentence that does not set the note aside. A ``use``
+   needs the name, in a turn that writes no note, of a note that the
+   prompt does not quote (NOBLIVION-45). A correction needs a shown, cited
+   note on its topic and no second candidate.
 3. THE PRECISION on the labelled set equals the numbers in docs/trust.md.
 4. THE FILES. The prompt hook writes each shown note once per session; the
    Stop flush reads the transcript once and appends the events to the spool.
@@ -259,7 +261,8 @@ def test_a_write_of_another_file_or_a_read_does_not_skip() -> None:
     turns = [("Remember this.", [101], "The note is `feedback_no_git_stash.md`.")]
     tools = {
         0: [
-            _tool("Write", file_path="/m/memory/feedback_other.md", content="x"),
+            _tool("Write", file_path="/repo/docs/guide.md", content="x"),
+            _tool("Bash", command="python3 tools/build.py > out.txt"),
             _tool("Read", file_path="/m/memory/feedback_no_git_stash.md"),
             _tool("Bash", command="cat /m/feedback_no_git_stash.md | head -5"),
         ]
@@ -349,6 +352,121 @@ def test_events_are_valid_contract_events() -> None:
     }
     ev = dict(ev, kind="contradict", src="correction")
     assert te.contract_event(ev)["sources"] == ["correction"]
+
+
+# ── 2c. the stricter use rule (NOBLIVION-45) ────────────────────────────
+
+
+def test_names_needs_the_name_not_a_phrase() -> None:
+    phrase = "So: never use git stash, commit work in progress as a WIP commit."
+    assert not sig.names(phrase, "feedback_no_git_stash")
+    assert sig.names("Per feedback_no_git_stash I commit.", "feedback_no_git_stash")
+    assert not sig.names("I saved feedback_no_git_stash.", "feedback_no_git_stash")
+
+
+def test_a_phrase_without_the_name_is_cited_but_not_a_use() -> None:
+    reply = "Merged. A merge to main is the deploy; check the deployed revision after the merge."
+    turns = [("Merge the pull request.", [102], reply)]
+    assert _uses(turns) == []
+    records, exposures = cases.build(turns)
+    _, state = sig.scan(records, cases.shown_map(), exposures, None, True, False)
+    assert "102" in state["cited"]  # the correction signal still sees it
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        _tool("Write", file_path="/m/memory/feedback_other.md", content="x"),
+        _tool("Edit", file_path="/m/memory/MEMORY.md", old_string="a"),
+        _tool("Bash", command="python3 - <<'EOF'\np = 'feedback_limit_command_output.md'\nEOF"),
+        _tool("Bash", command="sed -i 's/a/b/' $M/project_deploy_via_main_merge.md"),
+        _tool("Bash", command="cp /tmp/x.md ~/.claude/projects/p/memory/feedback_new.md"),
+    ],
+)
+def test_a_turn_that_writes_any_note_gives_no_use(block: dict[str, Any]) -> None:
+    turns = [("Remember this.", [101, 102, 103], "Per feedback_no_git_stash I commit.")]
+    assert _uses(turns, {0: [block]}) == []
+    later = turns + [("Save my work.", [], "Per feedback_no_git_stash I commit.")]
+    assert _uses(later, {0: [block]}) == [101]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat ~/.claude/projects/p/memory/feedback_no_git_stash.md | head -5",
+        "grep -n stash memory/feedback_no_git_stash.md",
+        "rg -l main docs/ | head",
+    ],
+)
+def test_a_read_of_a_note_is_not_a_write(command: str) -> None:
+    rec = {"type": "assistant", "message": {"content": [_tool("Bash", command=command)]}}
+    assert sig.written_files(rec) == set()
+
+
+def test_written_files_marks_a_note_write() -> None:
+    def rec(*blocks: dict[str, Any]) -> dict[str, Any]:
+        return {"type": "assistant", "message": {"content": list(blocks)}}
+
+    got = sig.written_files(rec(_tool("Write", file_path="/p/memory/feedback_a_b.md")))
+    assert got == {"feedback_a_b", sig.NOTE_WRITE}
+    got = sig.written_files(rec(_tool("Bash", command="python3 fix.py notes/feedback_a_b.md")))
+    assert got == {"feedback_a_b"}
+    got = sig.written_files(rec(_tool("Write", file_path="/p/docs/memory.md")))
+    assert got == {"memory"}
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Continue: never use git stash; commit work in progress as a WIP commit.",
+        "Is feedback_no_git_stash still right?",
+    ],
+)
+def test_a_note_that_the_prompt_quotes_is_the_task_not_a_use(prompt: str) -> None:
+    assert sig.quotes(prompt, "feedback_no_git_stash", RULE)
+    reply = "Work item: feedback_no_git_stash. Status: unchanged."
+    assert _uses([(prompt, [101], reply)]) == []
+    assert _uses([("What is the state?", [101], reply)]) == [101]
+
+
+def test_quotes_needs_the_name_or_a_long_phrase() -> None:
+    assert not sig.quotes("Commit the work in progress.", "feedback_no_git_stash", RULE)
+    assert not sig.quotes("see feedback_no_git_stash_v2", "feedback_no_git_stash", RULE)
+
+
+def test_the_task_of_a_turn_survives_a_second_call() -> None:
+    turns = [("Is feedback_no_git_stash still right?", [101], "Checking.")]
+    records, exposures = cases.build(turns)
+    late = {
+        "type": "assistant",
+        "timestamp": records[1]["timestamp"],
+        "message": {"content": [{"type": "text", "text": "Per feedback_no_git_stash, yes."}]},
+    }
+    shown = cases.shown_map()
+    _, state = sig.scan(records, shown, exposures, None, True, False)
+    events, _ = sig.scan([late], shown, exposures, json.loads(json.dumps(state)), True, False)
+    assert events == []
+
+
+def test_a_reply_that_names_three_shown_notes_is_a_list() -> None:
+    reply = (
+        "Rules: feedback_no_git_stash, feedback_limit_command_output, user_prefers_short_sentences."
+    )
+    assert sig.ECHO_MIN_NOTES == 3
+    assert _uses([("Go on.", [101, 103, 104], reply)]) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Corrected the memory feedback_no_git_stash.",
+        "These went unread: feedback_no_git_stash.",
+        "I missed feedback_no_git_stash today.",
+        "I walked straight into feedback_no_git_stash.",
+    ],
+)
+def test_a_fixed_note_or_an_unread_note_is_not_a_use(text: str) -> None:
+    assert _uses([("Go on.", [101], text)]) == []
 
 
 # ── 3. the precision ────────────────────────────────────────────────────────

@@ -86,21 +86,33 @@ background, so the hooks stay fast. It does not read subagent transcripts.
 A reply cites a note when all of these hold:
 
 - the prompt hook showed the note earlier in the session;
-- one sentence of the reply names the note (its file name, at least 10
-  characters and 2 parts, such as `feedback_no_git_stash`), or repeats 8
-  words of its rule in a row, with at least 4 content words among them;
+- one sentence of the reply names the note by its file name (at least 10
+  characters and 2 parts, such as `feedback_no_git_stash`). A phrase of
+  the rule without the name is not a `use` (NOBLIVION-45): on real
+  sessions it matched a fact that the reply and the note both state. The
+  correction signal still counts such a phrase as a citation: 8 words of
+  the rule in a row, with at least 4 content words among them;
 - that sentence does not set the note aside. Words such as "does not
   apply", "outdated", "ignore", "override", "could not", "missing",
-  "index" or "showed" exclude it;
-- the reply does not save or edit the note. A sentence with "saved",
-  "recorded", "updated", "wrote", "added", "created" or a similar word
-  counts no note name (a phrase of the rule still counts), and a note
-  that a tool call of the same turn writes (Write, Edit, MultiEdit,
-  NotebookEdit, or a `>`, `>>` or `tee` in a Bash command) is not cited in
-  that turn;
+  "index", "showed", "missed" or "unread" exclude it;
+- the sentence does not save or edit the note. A sentence with "saved",
+  "recorded", "updated", "wrote", "added", "created", "corrected",
+  "deleted" or a similar word counts no note name;
+- the turn keeps no notes. No `use` counts in a turn in which a tool call
+  writes a note: a `.md` file in a folder named `memory` (where Claude
+  Code keeps its notes) or a file named like a shown note. A write is a
+  Write, Edit, MultiEdit or NotebookEdit call, a `>`, `>>` or `tee` in a
+  Bash command, or a `.md` file that a Bash command names when it runs
+  `python`, `sed -i`, `perl -i`, `cp`, `mv`, `rm`, `install` or
+  `truncate`. A turn like that saves, fixes or reviews notes;
+- the prompt does not quote the note. When the prompt names the note or
+  repeats 8 words of its rule, the note is the task, and a reply that
+  names it restates the task;
 - the reply is not a list of notes. No citation counts in a turn whose
   prompt asks to list, show or print the rules, memories or notes, or in
-  a reply that names 5 or more shown notes at once.
+  a reply that cites 3 or more shown notes at once (5 before
+  NOBLIVION-45; on real sessions the replies that used a note named at
+  most 2).
 
 A tool call is not a reply: a note name in a command does not count.
 
@@ -134,16 +146,20 @@ recorded events that the label holds.
 | Signal | Cases | Events found | True | Precision | Missed |
 | --- | --- | --- | --- | --- | --- |
 | citation, first run | 16 | 9 | 6 | 0.67 | 0 |
-| citation, now | 16 | 6 | 6 | 1.00 | 0 |
+| citation, NOBLIVION-43 | 16 | 6 | 6 | 1.00 | 0 |
+| citation, now (NOBLIVION-45) | 19 | 5 | 5 | 1.00 | 1 |
 | correction | 13 | 5 | 4 | 0.80 | 0 |
 
-<!-- citation-precision: 6 of 6 -->
+<!-- citation-precision: 5 of 5 -->
 <!-- correction-precision: 4 of 5 -->
 
 The citation rule first counted a reply that listed the shown notes and a
 reply that could not open a note. Two groups of exclusion words were added
 after that run. The second number is on the same set, so it is not an
-independent test. The correction rule counts a correction that agrees with
+independent test. NOBLIVION-45 added three near misses (a turn that saves
+another note, a prompt that quotes the note, a reply that names three
+notes); the earlier rule counted all three. The stricter rule misses the
+case that repeats the rule word for word without the name. The correction rule counts a correction that agrees with
 a note that Claude Code cited and then broke. A test keeps this table equal
 to the measured numbers.
 

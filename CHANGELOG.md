@@ -8,6 +8,16 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+### Changed
+
+- The citation trust signal (`NOBLIVION_TRUST_CITATION_USE`) is stricter
+  (NOBLIVION-45). A `use` now needs the note's file name in the reply: a
+  phrase of the rule alone no longer counts. No `use` counts in a turn
+  that writes a note, for a note that the prompt names or quotes, or in a
+  reply that names 3 or more shown notes (5 before). "Corrected",
+  "deleted", "missed", "unread" and similar words now also exclude a
+  sentence.
+
 ### Fixed
 
 - The citation trust signal (`NOBLIVION_TRUST_CITATION_USE`) no longer

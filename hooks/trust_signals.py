@@ -3,12 +3,13 @@
 """Two more trust signals from the session transcript (NOBLIVION-38).
 
 1. CITATION -> ``use``. The reply names a note that the prompt hook showed
-   earlier in the session, or it repeats a long phrase of the note's rule
-   word for word. Setting ``NOBLIVION_TRUST_CITATION_USE`` (config key
-   ``trust.citation_use``). Off by default: on the labelled set its
-   precision was 6 of 9 at the first run, and on real sessions 7 of 40,
-   then 15 of 29 after the save and list-echo skips (NOBLIVION-43,
-   docs/trust.md).
+   earlier in the session, by its file name. Setting
+   ``NOBLIVION_TRUST_CITATION_USE`` (config key ``trust.citation_use``).
+   Off by default: on real sessions its precision was 7 of 40 at first,
+   then 15 of 29 after the save and list-echo skips (NOBLIVION-43). The
+   stricter rule of NOBLIVION-45 (name only, no note-keeping turn, no note
+   the prompt quotes, at most 2 notes per reply) is measured in
+   docs/trust.md.
 2. CORRECTION -> ``contradict``. The user corrects Claude Code, and the
    correction is about a note that was shown in the last prompts and that
    the reply cited. Setting ``NOBLIVION_TRUST_CORRECTION_CONTRADICT``
@@ -107,7 +108,9 @@ NEGATION_RE = re.compile(
     # it could not read the note
     r"could\s*n[o']?t|cannot|can't|unable|missing|not\s+found|"
     # it talks about the index, not the task
-    r"index|showed|listed)\b",
+    r"index|showed|listed|"
+    # it says it did not follow the note (NOBLIVION-45)
+    r"unread|missed|overlooked|violat\w*|walked\s+(?:straight\s+)?into)\b",
     re.I,
 )
 
@@ -117,23 +120,36 @@ NEGATION_RE = re.compile(
 # turn writes is not cited in that turn.
 SAVE_RE = re.compile(
     r"\b(?:saved|recorded|updated|wrote|written|rewrote|rewritten|added|created|"
-    r"stored|edited|appended)\b",
+    r"stored|edited|appended|"
+    # more ways to say it (NOBLIVION-45)
+    r"corrected|amended|revised|renamed|deleted|removed|append|appending|saving|"
+    r"recording|updating|editing)\b",
     re.I,
 )
 WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 _REDIRECT_RE = re.compile(r"(?:>>?|\btee\s+(?:-a\s+)?)\s*['\"]?([^\s'\";|&<>()]+)")
 WRITTEN_MAX = 200
+# A Bash command that runs one of these can write any file it names
+# (NOBLIVION-45: a note fixed by a Python heredoc or ``sed -i``).
+_WRITER_RE = re.compile(
+    r"(?:^|[\s;&|(/])(?:python[0-9.]*|perl\s+-\S*i|sed\s+(?:-\S+\s+)*-i|cp|mv|rm|"
+    r"install|truncate|tee)\b"
+)
+_MD_FILE_RE = re.compile(r"[\w.-]+\.md\b", re.I)
+# Claude Code keeps its notes as ``.md`` files in a folder of this name.
+NOTE_DIR = "memory"
+NOTE_WRITE = "/" + NOTE_DIR  # in written_files: the turn writes a note
 
 # A list echo is not a use (NOBLIVION-43): the user asked to see the notes,
 # or one reply names many shown notes at once. A reply that applies notes to
-# a task names a few of them. On the real-session set the replies labelled
+# a task names a few of them. On the real-session sets the replies labelled
 # true named at most 2 shown notes, the list echoes 24 and 38.
 ECHO_PROMPT_RE = re.compile(
     r"\b(?:list|show|print|display|repeat|recite|quote|dump|enumerate)\b"
     r"[^.?!\n]{0,60}?\b(?:rules?|memor(?:y|ies)|notes?)\b",
     re.I,
 )
-ECHO_MIN_NOTES = 5
+ECHO_MIN_NOTES = 3  # NOBLIVION-45: 5 before; the true replies named at most 2
 
 # A correction that holds the user TO a note says the note is right.
 ENFORCE_RE = re.compile(
@@ -413,16 +429,51 @@ class _Reply:
     def empty(self) -> bool:
         return not self.tokens and not self.grams
 
+    def names(self, note: _Note) -> bool:
+        return bool(note.stem) and note.stem in self.tokens
+
     def cites(self, note: _Note) -> bool:
-        if note.stem and note.stem in self.tokens:
+        if self.names(note):
             return True
         return bool(note.runs) and not note.runs.isdisjoint(self.grams)
 
 
 def cites(text: str, name: str, rule: str) -> bool:
     """True when a sentence of ``text`` names the note or repeats a long
-    phrase of its rule, and that sentence does not set the note aside."""
+    phrase of its rule, and that sentence does not set the note aside. The
+    correction signal needs this; a ``use`` needs the name (``names``)."""
     return _Reply(text).cites(_Note(name, rule))
+
+
+def names(text: str, name: str) -> bool:
+    """True when a sentence of ``text`` names the note by its file name,
+    and that sentence neither sets the note aside nor saves it. Only this
+    counts as a ``use`` (NOBLIVION-45): a phrase of the rule in the reply
+    also matched a fact that the reply and the note both state."""
+    return _Reply(text).names(_Note(name, ""))
+
+
+class _Prompt:
+    """A prompt, prepared once: its lower-case text and its word runs."""
+
+    __slots__ = ("low", "grams")
+
+    def __init__(self, text: str):
+        self.low = (text or "").lower()
+        ws = words(text)
+        self.grams = {tuple(ws[i : i + PHRASE_WORDS]) for i in range(len(ws) - PHRASE_WORDS + 1)}
+
+    def quotes(self, note: _Note) -> bool:
+        if note.stem and re.search(r"(?<![\w-])" + re.escape(note.stem) + r"(?![\w-])", self.low):
+            return True
+        return bool(note.runs) and not note.runs.isdisjoint(self.grams)
+
+
+def quotes(prompt: str, name: str, rule: str) -> bool:
+    """The prompt names the note or repeats a long phrase of its rule: the
+    note is the task, so a reply that names it restates the task
+    (NOBLIVION-45)."""
+    return _Prompt(prompt).quotes(_Note(name, rule))
 
 
 def about(prompt: str, name: str, rule: str) -> bool:
@@ -504,10 +555,22 @@ def file_key(path: str) -> str:
     return base.replace("-", "_")
 
 
+def _note_path(path: str) -> bool:
+    """A ``.md`` file in a folder named NOTE_DIR: a note of Claude Code."""
+    parts = re.split(r"[/\\]+", str(path or ""))
+    return len(parts) >= 2 and parts[-2] == NOTE_DIR and parts[-1].lower().endswith(".md")
+
+
+_NOTE_PATH_RE = re.compile(r"(?:^|[/\\])" + NOTE_DIR + r"[/\\][\w.-]+\.md\b")
+
+
 def written_files(rec: Mapping[str, Any]) -> Set[str]:
     """The ``file_key`` of each file that a tool call of this assistant
-    record writes: Write, Edit, MultiEdit, NotebookEdit, or a shell
-    redirect (``>``, ``>>``, ``tee``) in a Bash command."""
+    record writes: Write, Edit, MultiEdit, NotebookEdit, a shell redirect
+    (``>``, ``>>``, ``tee``) in a Bash command, or a ``.md`` file that a
+    Bash command names when it runs a writer (``python``, ``sed -i``,
+    ``cp``, ``mv``, ``rm`` ...). When one of these files is a note
+    (``_note_path``), the set also holds NOTE_WRITE."""
     out: Set[str] = set()
     if rec.get("type") != "assistant" or rec.get("isSidechain"):
         return out
@@ -520,12 +583,21 @@ def written_files(rec: Mapping[str, Any]) -> Set[str]:
         if not isinstance(inp, dict):
             continue
         name = block.get("name")
+        paths: List[str] = []
         if name in WRITE_TOOLS:
-            for field in ("file_path", "notebook_path"):
-                if isinstance(inp.get(field), str) and inp[field]:
-                    out.add(file_key(inp[field]))
+            paths = [inp[f] for f in ("file_path", "notebook_path") if isinstance(inp.get(f), str)]
         elif name == "Bash" and isinstance(inp.get("command"), str):
-            out.update(file_key(m) for m in _REDIRECT_RE.findall(inp["command"]))
+            command = inp["command"]
+            paths = _REDIRECT_RE.findall(command)
+            if _WRITER_RE.search(command):
+                paths += _MD_FILE_RE.findall(command)
+                if _NOTE_PATH_RE.search(command):
+                    out.add(NOTE_WRITE)
+        for path in paths:
+            if path:
+                out.add(file_key(path))
+                if _note_path(path):
+                    out.add(NOTE_WRITE)
     out.discard("")
     return out
 
@@ -574,6 +646,7 @@ def _state(raw: Any) -> Dict[str, Any]:
     turn = {
         "echo": turn_raw.get("echo") is True,
         "written": {w for w in _list(turn_raw.get("written")) if isinstance(w, str)},
+        "task": {m for m in (_mid(x) for x in _list(turn_raw.get("task"))) if m is not None},
     }
     return {"prompts": prompts, "cited": cited, "used": used, "contradicted": hit, "turn": turn}
 
@@ -597,8 +670,12 @@ def scan(
     count when the turn ends, or at the end of ``records``: a citation of a
     note that a tool call of the same turn writes does not count, and in a
     turn whose prompt asks to see the notes (``ECHO_PROMPT_RE``) none does.
-    A turn split over two calls keeps what its first part wrote in
-    ``state``; a citation counted in the first part stays counted.
+    A ``use`` also needs the note's name (a phrase only is a citation for
+    the correction signal), a turn that writes no note (``NOTE_WRITE`` or
+    a shown note's file), and a prompt that does not quote the note.
+    A turn split over two calls keeps what its first part wrote and the
+    notes its prompt quotes in ``state``; a citation counted in the first
+    part stays counted.
     """
     st = _state(state)
     used: Set[int] = set(st["used"])
@@ -606,13 +683,24 @@ def scan(
     events: List[Dict[str, Any]] = []
     notes: Dict[int, _Note] = {}
     turn: Dict[str, Any] = st["turn"]
-    pending: List[Tuple[int, str]] = []
+    pending: List[Tuple[int, str, bool]] = []
+
+    keys = {file_key(n.get("name", "")) for n in shown.values()} - {""}
+
+    def note(mid: int) -> _Note:
+        if mid not in notes:
+            notes[mid] = _Note(shown[mid].get("name", ""), shown[mid].get("rule", ""))
+        return notes[mid]
 
     def settle() -> None:
-        for mid, at in pending:
-            if file_key(shown[mid].get("name", "")) in turn["written"]:
+        written = turn["written"]
+        keeping = NOTE_WRITE in written or not keys.isdisjoint(written)
+        for mid, at, named in pending:
+            if file_key(shown[mid].get("name", "")) in written:
                 continue  # the turn saves or edits this note
             st["cited"][str(mid)] = at
+            if not named or keeping or mid in turn["task"]:
+                continue  # a phrase only, a note-keeping turn, or the task itself
             if citation and mid not in used:
                 used.add(mid)
                 events.append({"mv_id": mid, "kind": te().KIND_USE, "ts": at, "src": SRC_CITATION})
@@ -625,7 +713,12 @@ def scan(
         prompt = user_prompt(rec)
         if prompt is not None:
             settle()
-            turn = {"echo": bool(ECHO_PROMPT_RE.search(prompt)), "written": set()}
+            asked = _Prompt(prompt)
+            turn = {
+                "echo": bool(ECHO_PROMPT_RE.search(prompt)),
+                "written": set(),
+                "task": {mid for mid in shown if asked.quotes(note(mid))},
+            }
             if correction:
                 mid = _correction_target(prompt, ts, shown, exposures, st)
                 if mid is not None and mid not in contradicted:
@@ -649,18 +742,20 @@ def scan(
         if prepared.empty:
             continue
         found: List[int] = []
-        for mid, note in shown.items():
+        for mid in shown:
             times = exposures.get(mid) or ()
             if not times or min(times) > ts:
                 continue  # not shown yet
-            if mid not in notes:
-                notes[mid] = _Note(note.get("name", ""), note.get("rule", ""))
-            if prepared.cites(notes[mid]):
+            if prepared.cites(note(mid)):
                 found.append(mid)
         if len(found) < ECHO_MIN_NOTES:  # more is a list of the notes
-            pending.extend((mid, ts) for mid in found)
+            pending.extend((mid, ts, prepared.names(note(mid))) for mid in found)
     settle()
-    st["turn"] = {"echo": turn["echo"], "written": sorted(turn["written"])[:WRITTEN_MAX]}
+    st["turn"] = {
+        "echo": turn["echo"],
+        "written": sorted(turn["written"])[:WRITTEN_MAX],
+        "task": sorted(turn["task"])[:CITED_MAX],
+    }
     if len(st["cited"]) > CITED_MAX:
         keep = sorted(st["cited"].items(), key=lambda kv: kv[1])[-CITED_MAX:]
         st["cited"] = dict(keep)

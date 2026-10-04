@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """A labelled set of made-up sessions for the citation and correction
-signals (``hooks/trust_signals.py``, NOBLIVION-38).
+signals (``hooks/trust_signals.py``, NOBLIVION-38). NOBLIVION-45 added three near
+misses for its stricter ``use`` rule.
 
 Each case is a short session: turns of (prompt, notes shown at that prompt,
 reply). The label is the set of events a careful reader would record. The
@@ -213,6 +214,45 @@ CASES: list[Case] = [
                 "Open the push rule.",
                 [105],
                 "I could not open feedback_run_tests_before_push, the file is missing.",
+            )
+        ],
+        set(),
+    ),
+    (
+        "a turn that saves another note",
+        "citation",
+        [
+            (
+                "Remember that a deploy needs a tag.",
+                [101],
+                "It sits next to feedback_no_git_stash in the folder.",
+                "cat > ~/.claude/projects/p/memory/project_deploy_tag.md <<'EOF'\nx\nEOF",
+            )
+        ],
+        set(),
+    ),
+    (
+        "the prompt quotes the note",
+        "citation",
+        [
+            (
+                "Continue this work item: a merge to main is the deploy; check the "
+                "deployed revision after the merge.",
+                [102],
+                "Work item: project_deploy_via_main_merge. The check is still open.",
+            )
+        ],
+        set(),
+    ),
+    (
+        "names three notes in one reply",
+        "citation",
+        [
+            (
+                "What is related?",
+                [101, 103, 105],
+                "Related: feedback_no_git_stash, feedback_limit_command_output, "
+                "feedback_run_tests_before_push.",
             )
         ],
         set(),
