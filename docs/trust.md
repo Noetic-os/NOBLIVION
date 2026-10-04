@@ -294,3 +294,109 @@ logs the order it would have used and keeps the order it shows. Turn trust
 ranking on only when your own run says `gain`.
 
 It exits with the same codes as `noblivion trust report`.
+
+## Real-session results (0.1.5)
+
+The defaults of the two transcript signals and of trust ranking were set
+from real sessions, by rules fixed before the data was read. The numbers
+are aggregates only. No note text, note name or prompt is published.
+
+### Method
+
+- Data: the past Claude Code sessions of one developer, 53 days of work,
+  read offline. 521 main transcripts, 515 with at least one typed prompt.
+  The memory folder had 766 notes. Subagent transcripts were not replayed.
+- Store: a scratch data dir with the shipped config
+  (`config/config.default.json`) and the default embedding model
+  (`BAAI/bge-small-en-v1.5`). All 766 rows had a vector.
+- Replay: `tools/replay_transcripts.py`. For each session, oldest first,
+  it runs the prompt hook for each typed prompt, with the clock set to the
+  time of the prompt, so the hook writes its `recall` events and the shown
+  notes as it would live. Then the Stop flush's own scan reads the
+  transcript (citation -> `use`, correction -> `contradict`), and the
+  events go into the store through the store's own checks, with their
+  original times.
+- A note counts as existing from the first tool call in any transcript
+  that names its file (`--birth-from-tool-calls`). Before that, the hook
+  did not get it from the store. This is an upper bound on the true
+  creation time, and the note text is today's text.
+- Precision: a random sample (fixed seed) of up to 40 events per signal
+  was labelled true or false by an AI reviewer, not by a human. A `use` is
+  true when the reply applies the note, relies on it for a decision, or
+  gives it to a worker as a rule to follow. Saving or editing the note,
+  or repeating a list of rules that the user asked to see, is not a use.
+
+### Counts
+
+| Item | Count |
+| --- | --- |
+| Sessions replayed | 521 (515 with prompts) |
+| Prompts replayed | 1,884 |
+| Notes shown (once per note and session) | 40,899 |
+| `recall` events | 40,899 |
+| `use` events (citation) | 143, in 64 sessions, on 100 notes |
+| `contradict` events (correction) | 0 |
+| Prompts that the correction test matched | 21 |
+
+Of the 21 corrections, 7 held Claude Code to a note, 3 came after a reply
+that cited a note, 1 had that note shown in the last 2 prompts, and none
+was about that note. So the correction signal had no event to label.
+
+### Time-split test
+
+`noblivion trust timesplit --json` on the replayed store. The per-prompt
+units come from the hook's trust log, written in `shadow` mode, which
+serves the order unchanged.
+
+| Cut | Test sessions | Unit | Units | MRR off | MRR on | hit@5 off | hit@5 on | Better | Worse |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| default (70% train, 30% test) | 155 | prompt | 71 | 0.447 | 0.447 | 0.592 | 0.592 | 0 | 0 |
+| default (70% train, 30% test) | 155 | session | 33 | 0.131 | 0.131 | 0.164 | 0.164 | 0 | 0 |
+| `--train-share 0.5` | 258 | prompt | 105 | 0.497 | 0.497 | 0.629 | 0.629 | 0 | 0 |
+| `--train-share 0.5` | 258 | session | 49 | 0.117 | 0.117 | 0.143 | 0.143 | 0 | 0 |
+
+Verdict: `no gain` for both cuts. No note had the 5 trials that the
+factor needs before the cut (the most was 2), so trust moved no note.
+
+### Precision
+
+| Signal | Labelled n | True | Precision | Wilson 95% lower bound |
+| --- | --- | --- | --- | --- |
+| citation -> `use` | 40 | 7 | 0.175 | 0.087 |
+| correction -> `contradict` | 0 | - | - | - |
+
+Of the 33 false `use` events, 16 repeated a list of rules that the user
+had asked to see, 15 saved or edited the note itself, 1 called the note
+outdated, and 1 was a phrase match on a note that records the same work.
+
+### Rules and resulting defaults
+
+The rules, fixed before the data was read:
+
+- A signal is on by default only if its labelled n is at least 30 and the
+  Wilson 95% lower bound of its precision is at least 0.70.
+- Trust ranking is on by default only if the time-split verdict on the
+  default cut is `gain`.
+
+| Setting | Rule result | Default |
+| --- | --- | --- |
+| `NOBLIVION_TRUST_CITATION_USE` | n 40, lower bound 0.087 < 0.70 | off |
+| `NOBLIVION_TRUST_CORRECTION_CONTRADICT` | n 0 < 30 | off |
+| Trust ranking | verdict `no gain` | off |
+
+No default changed.
+
+### Limits
+
+- The replies were written while another memory tool showed notes from
+  the same folder, often by name. So a reply names a note more often than
+  it would with NOBLIVION alone, and the citation rate can be biased
+  upward.
+- One developer, one memory folder, 53 days. Other users can get other
+  numbers: run the replay on your own transcripts.
+- The notes are read as they are today. A note's text may have changed
+  since the session, and the birth time from tool calls is only an upper
+  bound.
+- The labels are from one AI reviewer, with no second reviewer.
+- The time-split test could not show a gain or a loss: with this little
+  use per note, no note reached the 5 trials that the trust factor needs.

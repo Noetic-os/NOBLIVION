@@ -8,6 +8,21 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+### Added
+
+- `tools/replay_transcripts.py` replays past Claude Code sessions offline
+  through the prompt hook and the Stop flush's citation and correction
+  scan, with the original times, into a scratch store. Then `noblivion
+  trust timesplit` and the trust report run on real history
+  (NOBLIVION-39).
+- docs/trust.md has a new section "Real-session results (0.1.5)": counts,
+  time-split results and the measured precision of the two transcript
+  signals on one developer's real sessions, with the rules that set the
+  defaults. Citation precision was 7 of 40 (Wilson 95% lower bound
+  0.087), the correction signal had no event, and the time-split verdict
+  was `no gain`, so the citation signal, the correction signal and trust
+  ranking all stay off by default (NOBLIVION-39).
+
 ### Fixed
 
 - `noblivion migrate-from-legacy` and the migration check in the setup
