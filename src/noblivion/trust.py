@@ -710,7 +710,7 @@ def report(
     return build_report(load_report_inputs(conn, project), now=now)
 
 
-# -- CLI: noblivion trust report | recompute ----------------------------------------
+# -- CLI: noblivion trust report | recompute | timesplit ----------------------------
 
 REPORT_HEADINGS = (
     ("retire", "Retire (consider deleting or merging)"),
@@ -761,18 +761,24 @@ def render_report(answer: Mapping[str, object], limit: int = 50) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """``noblivion trust report``: print the trust report (section 9.5).
-    ``noblivion trust recompute``: the repair pass, same as at store start."""
+    ``noblivion trust recompute``: the repair pass, same as at store start.
+    ``noblivion trust timesplit``: the time-split test (``trust_timesplit``)."""
     import argparse
     import json
     import sys
 
     from noblivion import config
 
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list[:1] == ["timesplit"]:
+        from noblivion import trust_timesplit
+
+        return trust_timesplit.main(args_list[1:])
     parser = argparse.ArgumentParser(prog="noblivion trust")
     parser.add_argument("action", choices=("report", "recompute"))
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
     parser.add_argument("--limit", type=int, default=50, help="report: rows per list (default 50)")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(args_list)
     settings = config.load_settings()
     store_settings = config.load_store_settings()
     try:

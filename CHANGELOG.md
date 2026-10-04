@@ -6,6 +6,32 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- `noblivion trust timesplit`: the time-split test for trust ranking
+  (NOBLIVION-38). It computes trust from the events before a cut and
+  measures on the newer sessions whether the used notes rank higher with
+  trust on than off (MRR and hit@k). It runs on your own store, per prompt
+  when the hook's trust log exists, else per session. It changes no
+  setting. Trust ranking stays off by default.
+- A citation in a reply can count as a `use` (NOBLIVION-38): the reply
+  names a shown note or repeats 8 words of its rule in a row. Setting
+  `NOBLIVION_TRUST_CITATION_USE` or `trust.citation_use`, off by default.
+  Its precision on a labelled set of made-up sessions was 0.67 at the first
+  run.
+- A user correction can count as a `contradict` (NOBLIVION-38): the user
+  corrects a reply that cited a note shown in the last 2 prompts, on that
+  note's topic. Setting `NOBLIVION_TRUST_CORRECTION_CONTRADICT` or
+  `trust.correction_contradict`, off by default. Its precision on the
+  labelled set is 0.80, and a correction does not say whether the note was
+  wrong.
+- With one of these settings on, the prompt hook writes the name and rule
+  of each shown note once per session to
+  `<data dir>/cache/by-session/<session id>.trust-shown.jsonl`. The trust
+  flush removes it with the other session files.
+
 ## 0.1.3 - 2026-10-04
 
 Makes the hooks correct for users other than the author: the memory folder,

@@ -7,8 +7,9 @@ opt-in duplicate sweep, see ``noblivion.dedup``), ``serve`` (the store
 in the foreground, see ``noblivion.store``), ``ensure-running`` (start
 the store in the background unless it runs, see ``noblivion.launcher``),
 ``mine`` (the transcript miner, see ``noblivion.miner``), ``trust
-report`` (print the trust report) and ``trust recompute`` (the trust repair),
-see ``noblivion.trust``, and ``stop report`` (count the stop check decisions,
+report`` (print the trust report), ``trust recompute`` (the trust repair),
+see ``noblivion.trust``, ``trust timesplit`` (the time-split test, see
+``noblivion.trust_timesplit``), and ``stop report`` (count the stop check decisions,
 see ``noblivion.stop_report``).
 """
 
@@ -24,6 +25,7 @@ USAGE = (
     "       noblivion dedup consent [--revoke]|clear-latch\n"
     "       noblivion trust report [--json] [--limit N]\n"
     "       noblivion trust recompute [--json]\n"
+    "       noblivion trust timesplit [--cut YYYY-MM-DD] [--train-share F] [--k N] [--json]\n"
     "       noblivion stop report [--days N] [--json]\n"
     "       noblivion serve [--port PORT] [--lock-wait SECONDS]\n"
     "       noblivion ensure-running [--json] [--wait SECONDS]\n"

@@ -16,6 +16,10 @@ lock:
 1. reads the transcript (and its subagent transcripts) from where the last
    flush stopped, and appends one ``use`` event per ``noblivion_recall`` fetch
    that returned a memory (``trust_events.fetch_uses``);
+1b. reads the main transcript from where the signal scan stopped, and appends
+   a ``use`` per note a reply cited and, when that setting is on, a
+   ``contradict`` per note a user correction was about
+   (``trust_signals.scan``, NOBLIVION-38);
 2. reads the session's event file from the sent offset, merges repeats (one
    event per memory and kind, the earliest time), and POSTs them to
    ``POST /api/memory/feedback/batch`` (design doc section 4.5) in batches of
@@ -63,6 +67,7 @@ ROUTE = "/api/memory/feedback/batch"
 STATE_NAME = "trust-flush.json"
 LOCK_NAME = "trust-flush.lock"
 LOG_NAME = "trust-flush.log"
+SHOWN_NAME = "trust-shown.jsonl"  # trust_signals.SHOWN_NAME
 POST_TIMEOUT_S = 2.0
 MAX_EVENTS = 500
 MAX_BYTES = 256 * 1024
@@ -121,6 +126,9 @@ def load_state(cache: str, sid: str) -> Dict[str, Any]:
     }
     if isinstance(root, str) and root:
         state["root"] = root
+    signals = doc.get("signals")
+    if isinstance(signals, dict):
+        state["signals"] = signals
     return state
 
 
@@ -234,6 +242,47 @@ def scan_transcripts(
         return -1
     seen.update(moved)
     return len(found)
+
+
+# ── 1b. citations and corrections (NOBLIVION-38) ───────────────────────────
+
+
+def scan_signals(
+    cache: str, sid: str, transcript: str, state: Dict[str, Any], environ: Mapping[str, str]
+) -> str:
+    """Append the citation ``use`` and correction ``contradict`` events
+    (``trust_signals``) of the main transcript since the last flush. Returns
+    a short log note: ``""`` when both signals are off or nothing was read,
+    else ``use:N,contradict:M`` or a failure reason. The offset moves only
+    once the events are on disk."""
+    try:
+        ts_mod = _load("trust_signals")
+        citation = ts_mod.citation_on(environ)
+        correction = ts_mod.correction_on(environ)
+        if not (citation or correction) or not transcript or not os.path.isfile(transcript):
+            return ""
+        raw = state.get("signals")
+        doc: Dict[str, Any] = raw if isinstance(raw, dict) else {}
+        off = doc.get("offset")
+        offset = off if isinstance(off, int) and off >= 0 else 0
+        if os.path.getsize(transcript) < offset:  # rewritten: read it again
+            offset, doc = 0, {}
+        records, new_offset = te().read_records(transcript, offset)
+        if new_offset == offset:
+            return ""
+        shown = ts_mod.load_shown(cache, sid)
+        exposures = ts_mod.load_exposures(cache, sid) if shown else {}
+        events, new_doc = ts_mod.scan(
+            [r for _, r in records], shown, exposures, doc, citation, correction
+        )
+        if events and not te().append_events(cache, sid, events, environ):
+            return "append_failed"
+        new_doc["offset"] = new_offset
+        state["signals"] = new_doc
+        uses = sum(1 for e in events if e["kind"] == te().KIND_USE)
+        return f"use:{uses},contradict:{len(events) - uses}" if events else ""
+    except Exception as exc:  # noqa: BLE001 - the signals are optional
+        return f"fail:{type(exc).__name__}"
 
 
 # ── 2. the batch ────────────────────────────────────────────────────────────
@@ -525,7 +574,12 @@ def prune(cache: str, own: str, now: Optional[float] = None) -> int:
     any session older than MAX_KEEP_DAYS. Returns the count removed."""
     t = time.time() if now is None else now
     folder = os.path.join(cache, "by-session")
-    suffixes = ("." + te().EVENTS_NAME, "." + STATE_NAME, "." + LOCK_NAME)
+    suffixes = (
+        "." + te().EVENTS_NAME,
+        "." + STATE_NAME,
+        "." + LOCK_NAME,
+        "." + SHOWN_NAME,
+    )
     try:
         names = os.listdir(folder)
     except OSError:
@@ -608,9 +662,12 @@ def run_child(
         if root:
             state["root"] = root
         fetched = scan_transcripts(cache, sid, transcript, state, environ)
+        signals = scan_signals(cache, sid, transcript, state, environ)
         status = flush_events(cache, sid, state, environ, post, connect)
         save_state(cache, sid, state)
     status = f"{status} fetch_uses={fetched}" if fetched >= 0 else f"{status} fetch_append_failed"
+    if signals:
+        status += f" signals={signals}"
     if status.startswith("ok"):
         others = flush_others(cache, sid, environ, post, connect=connect)
         status += f" others={others}"

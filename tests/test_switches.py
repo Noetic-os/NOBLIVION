@@ -32,6 +32,7 @@ cg = load_hook("credential_guard", "switchtest_credential_guard")
 ms = load_hook("memory_sync_hook", "switchtest_memory_sync_hook")
 te = load_hook("trust_events", "switchtest_trust_events")
 me = load_hook("mine_session_end", "switchtest_mine_session_end")
+ts = load_hook("trust_signals", "switchtest_trust_signals")
 
 Reader = Callable[[Mapping[str, str]], bool]
 
@@ -61,6 +62,8 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_MEMORY_SYNC_OFF": ms.is_off,
     "NOBLIVION_MEMORY_SYNC_BASH_OFF": ms.is_bash_off,
     "NOBLIVION_TRUST_EVENTS": te.enabled,
+    "NOBLIVION_TRUST_CITATION_USE": ts.citation_on,
+    "NOBLIVION_TRUST_CORRECTION_CONTRADICT": ts.correction_on,
     "NOBLIVION_MINER": me.is_enabled,
 }
 

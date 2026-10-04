@@ -2700,11 +2700,39 @@ def _record_shown_events(
         mod = _sibling_module("trust_events")
         if not mod.enabled(environ):
             return ""
+        _record_shown_text(cache, sid, event, shown, environ)
         if mod.record_index(cache, sid, event, [ln.mid for ln in shown], environ):
             return ""
         return ":trust_events_unwritable" if event in mod.RECALL_EVENTS and _valid_sid(sid) else ""
     except Exception as exc:  # noqa: BLE001 - fail open; the log line names it
         return f":trust_events_off:{type(exc).__name__}"
+
+
+# NOBLIVION-38: the two transcript signals (trust_signals.CITATION_ENV and
+# CORRECTION_ENV with their config keys; a test keeps them equal). Both off by
+# default.
+TRUST_SIGNAL_SWITCHES = (
+    ("NOBLIVION_TRUST_CITATION_USE", "trust.citation_use"),
+    ("NOBLIVION_TRUST_CORRECTION_CONTRADICT", "trust.correction_contradict"),
+)
+
+
+def _record_shown_text(
+    cache: str, sid: Any, event: str, shown: Sequence[IndexLine], environ: Mapping[str, str]
+) -> None:
+    """NOBLIVION-38: the name and rule of each row just shown, once per
+    session, for the citation and correction signals (``trust_signals``).
+    Only when one of them is on: the switches are read here first, so a
+    prompt with both off does not load the module. Never raises."""
+    try:
+        hc = _sibling_module("hook_config")
+        if not any(hc.switch(name, False, environ, key) for name, key in TRUST_SIGNAL_SWITCHES):
+            return
+        _sibling_module("trust_signals").record_shown(
+            cache, sid, event, [(ln.mid, ln.title, ln.rule or ln.summary) for ln in shown], environ
+        )
+    except Exception:  # noqa: BLE001, S110 - optional; the recall events still go out
+        pass
 
 
 def emit(event: str, text: str, stdout) -> int:
