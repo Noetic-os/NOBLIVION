@@ -177,6 +177,25 @@ def test_new_redactor_version_reindexes(conn, tmp_path):
     assert indexer.scan(conn, [folder]).updated == 0
 
 
+def test_rows_written_by_redactor_version_1_are_redone(conn, tmp_path, monkeypatch):
+    # Version 1 kept a JSON-quoted password. The file does not change, so only
+    # the new redactor version makes the scan write the row again.
+    folder = make_folder(
+        tmp_path, "proj-demo", {"reference_db.md": '{"password": "hunter2hunter2"}\n'}
+    )
+    with monkeypatch.context() as old:
+        old.setattr(redaction, "REDACTOR_VERSION", "1")
+        old.setattr(redaction, "redact_at_rest", lambda text: text)
+        indexer.scan(conn, [folder])
+    key = ("proj-demo", "reference_db.md")
+    assert "hunter2hunter2" in rows(conn)[key]["content"]
+    assert db.get_meta(conn, "redactor_version") == "1"
+    assert indexer.scan(conn, [folder]).updated == 1
+    assert "hunter2hunter2" not in rows(conn)[key]["content"]
+    assert db.get_meta(conn, "redactor_version") == redaction.REDACTOR_VERSION
+    assert indexer.scan(conn, [folder]).updated == 0
+
+
 def test_secrets_are_redacted_before_storing(conn, tmp_path):
     secret = "sk" + "-" + "Q3x9" * 6
     folder = make_folder(

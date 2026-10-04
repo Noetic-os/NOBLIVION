@@ -79,9 +79,10 @@ The store scans the memory folders at start and then every 30 seconds.
   the indexer deletes none of them. It also deletes nothing when it cannot
   read or redact a file. Run `noblivion index --allow-shrink` when you
   really removed many files.
-- **Redaction.** The indexer removes secrets (keys, tokens, passwords)
-  from the text before it stores the text. A file that cannot be redacted
-  is not stored.
+- **Redaction.** The indexer removes secrets (keys, private key blocks,
+  tokens, passwords) from the text before it stores the text. A file that
+  cannot be redacted is not stored. When an update changes the redaction
+  rules, the next scan writes every note again with the new rules.
 
 After Claude Code writes a memory file, the memory sync hook runs
 `noblivion index` at once. You do not have to wait for the next scan.

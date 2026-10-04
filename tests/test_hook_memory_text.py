@@ -8,6 +8,12 @@ compact shape, the head fallback, the size bound, and redaction.
 
 from __future__ import annotations
 
+import re
+import time
+
+import pytest
+
+import secret_forms
 from hookload import load_hook
 
 mt = load_hook("memory_text", "memory_text_t_memory_text")
@@ -89,6 +95,50 @@ def test_every_field_is_redacted_and_inert() -> None:
         {"id": "p", "body": "The token budget and the auth hook: docker compose -p proj up."}, ""
     )
     assert "token budget" in prose and "auth hook" in prose and "-p proj" in prose
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [form[1:] for form in secret_forms.FORMS],
+    ids=[form[0] for form in secret_forms.FORMS],
+)
+def test_both_pattern_sets_remove_every_shared_secret_form(text: str, secret: str) -> None:
+    assert secret not in mt.redact(text)
+    assert secret not in mt.redact_memory(text)
+    assert secret not in mt.inert(text)
+
+
+def test_a_quoted_key_keeps_its_name() -> None:
+    key = secret_forms.API_KEY
+    text = '{"user": "alice", "password": "hunter2hunter2", "api_key": "' + key + '"}'
+    want = '{"user": "alice", "password": [REDACTED], "api_key": [REDACTED]}'
+    assert mt.redact(text) == want
+    assert mt.redact_memory(text) == want
+    assert mt.redact(want) == want  # the error recall hook redacts a query twice
+    # only a key that ends in a secret word: these keys only hold one
+    code = '{"max_tokens": limit, "prompt_tokens": used, "author": "alice", "auth": cfg}'
+    assert mt.redact(code) == code
+    assert mt.redact_memory(code) == code
+
+
+@pytest.mark.parametrize("text", secret_forms.ORDINARY)
+def test_ordinary_text_is_not_changed(text: str) -> None:
+    assert mt.redact(text) == text
+    assert mt.redact_memory(text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [text for _name, text in secret_forms.HOSTILE],
+    ids=[name for name, _text in secret_forms.HOSTILE],
+)
+def test_new_rules_run_in_linear_time(text: str) -> None:
+    # Each new rule alone, on 100 KB: a quadratic rule needs many seconds.
+    rules = [re.compile(*rule) for rule in mt._SHARED_SHAPES + (mt._RX_QUOTED_KEY,)]
+    start = time.perf_counter()
+    for rule in rules:
+        rule.sub("", text)
+    assert time.perf_counter() - start < 1.0
 
 
 def test_inert_uses_the_corpus_helper_and_drops_line_breaks() -> None:

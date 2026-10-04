@@ -17,6 +17,18 @@ All notable changes to NOBLIVION. The format follows
   On a fresh real-session sample its precision rose to 15 of 29 (Wilson
   95% lower bound 0.344), still below the 0.70 rule, so the signal stays
   off by default. docs/trust.md has the numbers (NOBLIVION-43).
+- The secret redactor of the store now removes a private key block
+  (`-----BEGIN ... PRIVATE KEY-----`, also one with no END line), a secret
+  whose key is in quotes (JSON: `"password": "value"`), the value of a key
+  that ends in `pass` (`DB_PASS=value`) and the token prefixes `glpat-`,
+  `AIza`, `sk_live_`, `hf_` and `npm_` (NOBLIVION-46). Before, the indexer,
+  the transcript miner and the MCP tool `noblivion_remember` stored these
+  as written. The redactor of the hooks now removes the same forms: the
+  quoted key and the last 4 prefixes were missing there. One list of
+  secret forms is now tested against both redactors. The redactor version
+  is 2, so the first index scan after the update writes every Markdown
+  note again with the new rules. Notes that the transcript miner stored
+  before the update are not written again.
 
 ## 0.1.5 - 2026-10-04
 

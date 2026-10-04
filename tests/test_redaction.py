@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import itertools
 import re
+import time
 
 import pytest
 
+import secret_forms
+from hookload import load_hook
 from noblivion import redaction
 from noblivion.redaction import EMAIL_TOKEN, FIELD_TOKEN, REDACTION_TOKEN, redact_at_rest
 
@@ -31,6 +34,9 @@ CLOUD_KEY = "AK" + "IA" + "Q3EXAMPLEQ3EXAMP"
 JWT = "ey" + "J" + fake("", 20) + ".ey" + "J" + fake("", 30) + "." + fake("", 25)
 BASIC = "YWxpY2U6c2VjcmV0cGFzc3dvcmQ="
 BEARER_VALUE = "abcd" + "efgh" + "1234" * 2
+KEY_BLOCK = secret_forms.key_block("RSA")
+KEY_BLOCK_CUT = secret_forms.key_block("EC", end=False)
+KEY_BLOCK_IN_JSON = secret_forms.key_block("").replace("\n", "\\n") + "\\n"
 
 
 @pytest.mark.parametrize(
@@ -70,6 +76,30 @@ BEARER_VALUE = "abcd" + "efgh" + "1234" * 2
             f"https://example.com/p?next=http://bob:{FIELD_TOKEN}@inner.example.com/x",
         ),
         ("mail alice@example.com now", f"mail {EMAIL_TOKEN} now"),
+        (f"before\n{KEY_BLOCK}\nafter", f"before\n{REDACTION_TOKEN}\nafter"),
+        (f"before\n{KEY_BLOCK_CUT}\n", f"before\n{REDACTION_TOKEN}\n"),
+        (
+            f'{{"private_key": "{KEY_BLOCK_IN_JSON}"}}',
+            f'{{"private_key": "{REDACTION_TOKEN}\\n"}}',
+        ),
+        (f"use {secret_forms.GLPAT} here", f"use {REDACTION_TOKEN} here"),
+        (f"use {secret_forms.GOOGLE_KEY} here", f"use {REDACTION_TOKEN} here"),
+        (f"use {secret_forms.PAYMENT_KEY} here", f"use {REDACTION_TOKEN} here"),
+        (f"use {secret_forms.HF_TOKEN} here", f"use {REDACTION_TOKEN} here"),
+        (f"use {secret_forms.NPM_TOKEN} here", f"use {REDACTION_TOKEN} here"),
+        ('{"password": "hunter2hunter2"}', f'{{"password": "{FIELD_TOKEN}"}}'),
+        (
+            '{"user":"alice","password":"hunter2hunter2","port":5432}',
+            f'{{"user":"alice","password":"{FIELD_TOKEN}","port":5432}}',
+        ),
+        ('{"password": "correct horse battery"}', f'{{"password": "{FIELD_TOKEN}"}}'),
+        ('{"password": "a \\"quoted\\" word"}', f'{{"password": "{FIELD_TOKEN}"}}'),
+        (f"{{'api_key': '{secret_forms.API_KEY}'}}", f"{{'api_key': '{FIELD_TOKEN}'}}"),
+        ('password: "hunter2hunter2', f"password: {FIELD_TOKEN}"),
+        ("DB_PASS=hunter2hunter2", f"DB_PASS={FIELD_TOKEN}"),
+        ("smtp:\n  smtp-pass: hunter2hunter2\n", f"smtp:\n  smtp-pass: {FIELD_TOKEN}\n"),
+        ('{"db_pass": "hunter2hunter2"}', f'{{"db_pass": "{FIELD_TOKEN}"}}'),
+        ("login?user=bob&pass=hunter2hunter2", f"login?user=bob&pass={FIELD_TOKEN}"),
     ],
 )
 def test_redacts(text, expected):
@@ -86,18 +116,65 @@ def test_redacts(text, expected):
         "docker run -p8080:80 demo",
         "the password rule is in the guide",
         "use a token bucket",
+        "all 12 tests passed: see the report",
+        "bypass=disabled and compass: north-east",
+        "--- PASS: TestIndexer (0.01s)",
+        "the first pass: compile everything",
+        *secret_forms.ORDINARY,
     ],
 )
 def test_keeps_text_that_is_not_a_secret(text):
     assert redact_at_rest(text) == text
 
 
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [form[1:] for form in secret_forms.FORMS],
+    ids=[form[0] for form in secret_forms.FORMS],
+)
+def test_removes_every_shared_secret_form(text, secret):
+    out = redact_at_rest(text)
+    assert out != redaction.REDACTION_FAILED_TOKEN
+    assert secret not in out
+    assert redact_at_rest(out) == out
+
+
+def test_the_hook_redactor_holds_the_same_shared_shapes():
+    # The hooks run without the package, so they hold a copy of the table.
+    hook = load_hook("memory_text", "memory_text_t_redaction")
+    assert hook._SHARED_SHAPES == redaction.SHARED_SHAPES
+    # Both sides use every row of the table.
+    in_use = {pattern.pattern for pattern, _repl in redaction._SHAPE_PATTERNS}
+    assert all(shape in in_use for shape, _flags in redaction.SHARED_SHAPES)
+    assert all(row in hook._SECRET_PATTERNS for row in hook._SHARED_SHAPES)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [text for _name, text in secret_forms.HOSTILE],
+    ids=[name for name, _text in secret_forms.HOSTILE],
+)
+def test_new_rules_run_in_linear_time(text):
+    # Each new or changed rule alone, on 100 KB: a quadratic rule needs many
+    # seconds. The whole redactor is not timed here: its URL rule is slow on a
+    # long run of letters.
+    rules = [re.compile(shape, flags) for shape, flags in redaction.SHARED_SHAPES]
+    rules.append(redaction._SECRET_FIELD_RE)
+    start = time.perf_counter()
+    for rule in rules:
+        rule.sub("", text)
+    assert time.perf_counter() - start < 1.0
+
+
 def test_cluster_secret_data_only_in_a_secret_manifest():
+    # The key is not a secret field name: a key that ends in "pass" is masked
+    # in any text (NOBLIVION-46).
     value = fake("", 24, "QWxhZGRpbjpvcGVuIHNlc2FtZQ")
-    manifest = f"apiVersion: v1\nkind: Secret\ndata:\n  db-pass: {value}\n"
-    assert f"  db-pass: {FIELD_TOKEN}" in redact_at_rest(manifest)
-    config_map = f"apiVersion: v1\nkind: ConfigMap\ndata:\n  db-pass: {value}\n"
+    manifest = f"apiVersion: v1\nkind: Secret\ndata:\n  db-conn: {value}\n"
+    assert f"  db-conn: {FIELD_TOKEN}" in redact_at_rest(manifest)
+    config_map = f"apiVersion: v1\nkind: ConfigMap\ndata:\n  db-conn: {value}\n"
     assert redact_at_rest(config_map) == config_map
+    assert f"  db-pass: {FIELD_TOKEN}" in redact_at_rest(config_map.replace("db-conn", "db-pass"))
 
 
 def test_word_boundary_created_by_a_replacement_still_settles():
@@ -125,6 +202,11 @@ FRAGMENTS = [
     "alice@example.com",
     SK_KEY,
     "secret_key=",
+    'password": "',
+    "DB_PASS=",
+    '"',
+    KEY_BLOCK_CUT,
+    secret_forms.GLPAT,
 ]
 
 

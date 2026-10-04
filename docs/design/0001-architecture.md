@@ -832,13 +832,22 @@ description is left out with its blank line.
 ### 5.7 Redaction
 
 The redactor is a port of the reference at-rest redactor, stdlib only. It
-covers auth headers (Basic, Bearer, JWT), API key shapes (`sk-`, GitHub
-token prefixes, Slack `xox`, chat bot tokens, cloud access key ids), CLI
-`key=value` and `--password=` forms, secret field names, the password in a
-connection URL, cluster secret data and email addresses. It runs up to 5
-passes until the text is stable. If it does not settle or raises, it
-returns its fail token. It runs before the content is stored, embedded, or
-sent anywhere.
+covers private key blocks, auth headers (Basic, Bearer, JWT), API key
+shapes (`sk-`, GitHub token prefixes, Slack `xox`, chat bot tokens, cloud
+access key ids, and the token prefixes `glpat-`, `AIza`, `sk_live_`, `hf_`
+and `npm_`), CLI `key=value` and `--password=` forms, secret field names
+(also with the key in quotes, as in JSON), the password in a connection
+URL, cluster secret data and email addresses. It runs up to 5 passes until
+the text is stable. If it does not settle or raises, it returns its fail
+token. It runs before the content is stored, embedded, or sent anywhere.
+
+The hooks have a redactor of their own for the text that they show to the
+model (`hooks/memory_text.py`), because they run without the package. The
+rules for a private key block and for the token prefixes are one table
+(`SHARED_SHAPES`). Each of the two files holds a copy, and a test fails
+when the copies differ. A second test feeds one list of secret forms
+(`tests/secret_forms.py`) to both redactors, so a form that one of them
+misses fails the suite (NOBLIVION-46).
 
 ## 6. SQLite schema
 

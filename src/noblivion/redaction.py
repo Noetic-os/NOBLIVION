@@ -6,12 +6,15 @@ before text is stored, embedded or sent anywhere.
 
 Covered shapes:
 
+- a private key block (``-----BEGIN ... PRIVATE KEY-----``);
 - HTTP auth headers (``Authorization``, ``Proxy-Authorization``), bare ``Basic``
   credentials, ``Bearer`` tokens and JWTs;
 - API key shapes: ``sk-`` keys, GitHub token prefixes, Slack ``xox`` tokens,
-  chat bot tokens, cloud access key ids;
+  chat bot tokens, cloud access key ids, and the token prefixes ``glpat-``,
+  ``AIza``, ``sk_live_``, ``hf_`` and ``npm_``;
 - CLI ``key=value``, ``--token=``, ``--password=`` and ``-p VALUE`` forms;
-- secret field names in ``key: value`` and ``key=value`` form;
+- secret field names in ``key: value`` and ``key=value`` form, also with the
+  key in quotes (JSON: ``"password": "value"``);
 - the password in a connection URL (``scheme://user:PASSWORD@host``);
 - the data block of a cluster ``kind: Secret`` manifest;
 - email addresses.
@@ -35,7 +38,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-REDACTOR_VERSION = "1"
+REDACTOR_VERSION = "2"
 
 REDACTION_TOKEN = "***REDACTED***"
 FIELD_TOKEN = "[REDACTED]"
@@ -51,9 +54,28 @@ _NOT_A_MARKER = r"(?!\*\*\*REDACTED|\[REDACTED)"
 
 _Replacement = Callable[["re.Match[str]"], str]
 
-# -- Credential shapes. Order matters: the more specific header form first, so
-# a Bearer token inside an Authorization header is not masked twice.
+# -- Shapes that the hook redactor removes too: ``(pattern, flags)`` rows. The
+# hooks run on the user's python3 without this package, so
+# ``hooks/memory_text.py`` holds a copy of this table (``_SHARED_SHAPES``). A
+# test fails when the two copies differ: change both.
+SHARED_SHAPES: tuple[tuple[str, int], ...] = (
+    # A private key block. With no END line (a cut-off paste) it runs to the
+    # end of the text.
+    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S),
+    # Token prefixes: a code host, a cloud API, a payment API, a model hub, a
+    # package registry.
+    (r"\bglpat-[A-Za-z0-9_-]{16,}", 0),
+    (r"\bAIza[A-Za-z0-9_-]{30,}", 0),
+    (r"\bsk_live_[A-Za-z0-9]{16,}", 0),
+    (r"\bhf_[A-Za-z0-9]{30,}", 0),
+    (r"\bnpm_[A-Za-z0-9]{30,}", 0),
+)
+
+# -- Credential shapes. Order matters: the key block first, so no later rule
+# masks a part of it, and the more specific header form before the bare one,
+# so a Bearer token inside an Authorization header is not masked twice.
 _SHAPE_PATTERNS: list[tuple[re.Pattern[str], _Replacement]] = [
+    *((re.compile(shape, flags), lambda m: REDACTION_TOKEN) for shape, flags in SHARED_SHAPES),
     (
         re.compile(r"Proxy-Authorization:\s*([A-Za-z]+)\s+[^\s'\"\r\n]+", re.IGNORECASE),
         lambda m: f"Proxy-Authorization: {m.group(1)} {REDACTION_TOKEN}",
@@ -116,11 +138,21 @@ _KEYVALUE_PATTERNS: list[tuple[re.Pattern[str], _Replacement]] = [
 ]
 
 # -- Secret field names in `key: value` or `key=value` form (config files,
-# command output). The value must have at least 6 characters.
+# command output). The value must have at least 6 characters. The key may end
+# with a quote (JSON: `"password": "value"`). A value in quotes is masked up
+# to its closing quote on the same line, so a space in it does not end it and
+# the rest of a compact JSON line stays. Any other value is the run up to the
+# next whitespace.
+# `pass` is a key only as the last part of a name (`DB_PASS`, `db-pass`), or
+# alone in front of `=`. So "passed", "bypass", "the first pass: ..." and a
+# `PASS: test_name` line of a test report stay.
+_PASS_KEY = r"(?<=[_.\-])pass(?![a-z])|(?<![a-z])pass(?=['\"]?\s*=)"
 _SECRET_FIELD_RE = re.compile(
-    r"(?i)((?:password|passwd|secret|token|api[_-]?key|credential|private[_-]?key"
-    r"|access[_-]?key|secret[_-]?key|client[_-]?secret|jwt|\.dockerconfigjson"
-    r"|tls\.crt|tls\.key|ca\.crt)\s*[=:]\s*)" + _NOT_A_MARKER + r"([^\s]{6,})",
+    r"(?i)((?:password|passwd|" + _PASS_KEY + r"|secret|token|api[_-]?key|credential"
+    r"|private[_-]?key|access[_-]?key|secret[_-]?key|client[_-]?secret|jwt|\.dockerconfigjson"
+    r"|tls\.crt|tls\.key|ca\.crt)['\"]?\s*[=:]\s*)"
+    r"(?:(['\"])" + _NOT_A_MARKER + r"(?:(?!\2)[^\\\n]|\\.){6,}\2"
+    r"|(?!['\"]?(?:\*\*\*REDACTED|\[REDACTED))[^\s]{6,})",
 )
 _BEARER_FIELD_RE = re.compile(
     r"(?i)((?:authorization|bearer)\s*[=:\s]\s*(?:bearer\s+)?)"
@@ -178,13 +210,18 @@ def _redact_conn_str_urls(text: str) -> str:
     return _URL_SPAN_RE.sub(_sub, text)
 
 
+def _mask_field(m: re.Match[str]) -> str:
+    quote = m.group(2) or ""
+    return f"{m.group(1)}{quote}{FIELD_TOKEN}{quote}"
+
+
 def _redact_once(text: str) -> str:
     out = text
     for pattern, repl in _SHAPE_PATTERNS:
         out = pattern.sub(repl, out)
     for pattern, repl in _KEYVALUE_PATTERNS:
         out = pattern.sub(repl, out)
-    out = _SECRET_FIELD_RE.sub(lambda m: m.group(1) + FIELD_TOKEN, out)
+    out = _SECRET_FIELD_RE.sub(_mask_field, out)
     out = _BEARER_FIELD_RE.sub(lambda m: m.group(1) + FIELD_TOKEN, out)
     out = _redact_conn_str_urls(out)
     if _K8S_KIND_RE.search(out):

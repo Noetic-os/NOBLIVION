@@ -103,6 +103,15 @@ _RX_KEY_NAME_MEMORY = (
     r"(\s*[:=]\s*)(['\"]?)(?!\d+(?:[\s'\"&,;]|$))[^\s'\"&,;]{4,}\3",
     0,
 )
+# A key in quotes, the JSON form ``"password": "value"``: the closing quote of
+# the key stops the two key name rules above. Only a key that ends in a secret
+# word counts, so ``"max_tokens": 4096`` and ``"author": "..."`` stay. The
+# same rule serves the query and the memory text.
+_RX_QUOTED_KEY = (
+    r"(?i)(['\"][\w-]*(?:password|passwd|pwd|secret|token|api[_-]?key|credential|private[_-]?key)['\"])"
+    r"(\s*:\s*)(['\"]?)(?!\[REDACTED\])[^\s'\"&,;]{4,}\3",
+    0,
+)
 _RX_DASH_P = (
     r"(?<!\S)(-p|--pass(?:word|wd)?)(\s+|=|(?=['\"]))(['\"]?)(?![\d:.]+(?:[\s'\"]|$))(?![/~.])"
     r"[^\s'\"]{4,}\3",
@@ -117,20 +126,35 @@ _RX_DASH_P_MEMORY = (
     r"(?![/~.])[^\s'\"]{4,}\3",
     0,
 )
-_SECRET_PATTERNS = (
+# The shapes that the at-rest redactor of the store removes too. The hooks run
+# without the store package, so this table is a copy of ``SHARED_SHAPES`` in
+# ``src/noblivion/redaction.py``. A test fails when the two copies differ:
+# change both.
+_SHARED_SHAPES = (
+    # A private key block. With no END line (a cut-off paste) it runs to the
+    # end of the text.
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S),
+    # Token prefixes: a code host, a cloud API, a payment API, a model hub, a
+    # package registry.
+    (r"\bglpat-[A-Za-z0-9_-]{16,}", 0),
+    (r"\bAIza[A-Za-z0-9_-]{30,}", 0),
+    (r"\bsk_live_[A-Za-z0-9]{16,}", 0),
+    (r"\bhf_[A-Za-z0-9]{30,}", 0),
+    (r"\bnpm_[A-Za-z0-9]{30,}", 0),
+)
+_SECRET_PATTERNS = _SHARED_SHAPES + (
     _RX_SCHEME,
     (r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}", 0),
     (r"\bgithub_pat_[A-Za-z0-9_]{20,}", 0),
     (r"\bsk-(?:ant-|proj-|or-)?[A-Za-z0-9_-]{16,}", 0),
     (r"\bxox[abposr]-[A-Za-z0-9-]{10,}", 0),
     (r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b", 0),
-    (r"\bglpat-[A-Za-z0-9_-]{16,}", 0),
     (r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}", 0),
     # URL user info up to the LAST @ before the host: a token with no colon
     # (https://<token>@github.com) and a password that holds an @.
     (r"(?<=://)[^/\s]+(?=@[^@/\s]*(?:[/\s:?#]|$))", 0),
     _RX_KEY_NAME,
+    _RX_QUOTED_KEY,
     # pass / session / cookie keys only with ":" or "=" ("3 passed" stays).
     (r"(?i)\b([\w-]*(?:pass|session|cookie)[\w-]*)(\s*[:=]\s*)(['\"]?)[^\s'\"&,;]{3,}\3", 0),
     # -p / --password <value>; not a path, a port or a host:port (mkdir -p,
