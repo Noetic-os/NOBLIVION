@@ -509,7 +509,7 @@ Field rules:
   source marker (section 7.3). `null` when the row has none.
 - `score`: weight times cosine, rounded to 4 places, range -1..1. In
   keyword-only mode it is `null` (section 8.4). The hooks use `score` for
-  floors (0.3 for search hits, 0.60 for error recall) and as the cosine
+  floors (0.68 for search hits, 0.70 for error recall) and as the cosine
   order they fuse with their own BM25.
 - `fusion_score`: the reciprocal rank fusion score, rounded to 6 places.
   It compares rows inside one answer only. No hook reads it today.
@@ -1392,7 +1392,7 @@ the indexer never sees a half-done merge.
 
 1. `noblivion dedup plan`: the CLI reads the vectors from the database
    and lists candidate pairs in one root. A pair needs
-   cosine of at least `dedup.min_cosine` (default 0.82, see section 18) and
+   cosine of at least `dedup.min_cosine` (default 0.75, see section 18) and
    the same category prefix (`feedback`, `project`, `reference`, `user`).
    Index and topic files are never candidates. Files changed in the last 30
    minutes are skipped. Pairs in `dedup_vetoes` are skipped.
@@ -1642,7 +1642,7 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 | `index.delete_grace_days` | none | `14` |
 | `recall.shared_roots` | none | `[]` |
 | `recall.timeout_s` | `NOBLIVION_RECALL_TIMEOUT_S` | `2.0` |
-| `recall.min_score` | `NOBLIVION_RECALL_MIN_SCORE` | `0.3` |
+| `recall.min_score` | `NOBLIVION_RECALL_MIN_SCORE` | `0.68` |
 | `recall.index_k` | `NOBLIVION_RECALL_INDEX_K` | `35` (shipped config: `30`) |
 | `recall.env` | the `NOBLIVION_RECALL_*` env vars it names | `{}`; the shipped config turns on the ranked index and its steps (section 13.2) |
 | `trust.events` | `NOBLIVION_TRUST_EVENTS` | `1` (on; `0`, `off`, `false` or `no` turns it off) |
@@ -1655,7 +1655,7 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 | `embedding.remote_include_mined` | none | `false` |
 | `dedup.judge` | `NOBLIVION_DEDUP_JUDGE` | `openrouter`; `off` refuses (section 10.2) |
 | `dedup.model` | `NOBLIVION_DEDUP_MODEL` | unset; `plan` refuses without it |
-| `dedup.min_cosine` | none | `0.82` |
+| `dedup.min_cosine` | none | `0.75` |
 | `dedup.max_pairs` | none | `50` judge calls per `plan` |
 | `dedup.timeout_s` | none | `60` |
 | `dedup.min_interval_s` | none | `1.0` |
@@ -2034,10 +2034,35 @@ later goal, not a v0.1 gate.
 - Recall quality. The reference used a 1024-dim multilingual model. The
   default here is a 384-dim English model. Non-English memories will
   recall worse. Users can switch to a multilingual model through Ollama.
-- Thresholds were tuned for the old model: search floor 0.3, error recall
-  floor 0.60, dedup cosine 0.82. The new model gives a different cosine
-  spread. E3b measures the spread on a fictional corpus and sets the
-  defaults; until then they are guesses.
+- Thresholds. The old values (search floor 0.3, error recall floor 0.60,
+  dedup cosine 0.82) were tuned for the old 1024-dim model. NOBLIVION-33
+  measured all three for `BAAI/bge-small-en-v1.5` with
+  `tools/eval_thresholds.py` on the made-up eval set
+  `tools/eval/thresholds.json`: 36 memories, 57 prompts (37 with an
+  expected memory, 20 without), 24 error lines (14 with, 10 without), and
+  24 dedup memories with 8 duplicate pairs among 276 pairs. The script runs
+  a real store and measures each score on the code path that compares it.
+  The search and error scores are the store's weighted cosine (weight 1.0
+  by default), not the fused rank score. Each value is the grid point
+  (step 0.01) with the best F1, the middle one when several share it.
+
+  | Threshold | Old | New | Precision old / new | Recall old / new |
+  |---|---|---|---|---|
+  | search floor `recall.min_score` (hook, k = 5) | 0.3 | 0.68 | 0.137 / 0.857 | 0.975 / 0.750 |
+  | error recall store floor `STORE_MIN_SCORE` | 0.60 | 0.70 | 0.255 / 1.000 | 0.929 / 0.857 |
+  | dedup cosine `dedup.min_cosine` | 0.82 | 0.75 | 1.000 / 1.000 | 0.875 / 1.000 |
+
+  This model packs cosines into a narrow band: an unrelated prompt still
+  scores about 0.5 to 0.6. At 0.3 the search floor cut nothing, and all 20
+  prompts without a memory got hits. At 0.68 one of them does. The error
+  recall precision is before the quote check, which removes more wrong
+  hits. The dedup duplicates scored 0.776 to 0.899, the best non-duplicate
+  0.726. The eval set is small and written by hand, so each number can move
+  by several points on real memories. CI job `real-model` runs the eval and
+  fails when precision or recall at a shipped value falls under its floor
+  in the eval file. Each threshold sits next to `THRESHOLD_MODEL`; a test
+  fails when `embedding.DEFAULT_MODEL` changes, so a new model needs a new
+  measurement.
 - First-run cost: about 130 MB model download and a numpy plus
   onnxruntime venv. Offline machines get keyword-only search.
 - The `localhost` name is refused by the hook transport guard. A user who

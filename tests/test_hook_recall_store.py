@@ -299,6 +299,9 @@ def real_store(tmp_path):
 
 
 def _store_env(tmp_path: Path, folder: Path, **extra: str) -> dict:
+    # The fake embedder's cosines are not on the scale of the real model, so
+    # the default floor (measured for the real model) does not fit them.
+    extra.setdefault("NOBLIVION_RECALL_MIN_SCORE", "0")
     return hook_env(tmp_path, NOBLIVION_RECALL_MEMORY_DIR=str(folder), **extra)
 
 

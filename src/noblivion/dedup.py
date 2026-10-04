@@ -55,7 +55,11 @@ from noblivion import config, db, embedding, indexer, labels, redaction
 JUDGES = ("openrouter", "off")
 DEFAULT_JUDGE = "openrouter"
 EXAMPLE_MODEL = "google/gemini-2.5-flash"  # docs and help only, never a default
-DEFAULT_MIN_COSINE = 0.82
+# Measured for THRESHOLD_MODEL by tools/eval_thresholds.py (design doc 0001,
+# section 18). A test fails when embedding.DEFAULT_MODEL changes and this
+# string does not: a new model needs a new measurement.
+DEFAULT_MIN_COSINE = 0.75
+THRESHOLD_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_MAX_PAIRS = 50
 DEFAULT_TIMEOUT_S = 60.0
 DEFAULT_MIN_INTERVAL_S = 1.0

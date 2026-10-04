@@ -130,7 +130,7 @@ The hook has two output shapes.
 ### Note text (default without a config file)
 
 The hook asks for the 5 best hits. It drops a hit whose vector score is
-below `recall.min_score` (default 0.3). In keyword-only mode a hit has no
+below `recall.min_score` (default 0.68). In keyword-only mode a hit has no
 vector score and always passes. It prints their text under a header
 that starts with `GROUNDED MEMORY`. The output is at most 4000
 characters. A note shown earlier in the same session is not shown again.

@@ -178,7 +178,7 @@ Run the steps in this order. All commands are
    ```
 
    A pair needs the same root, the same category and a cosine similarity
-   of at least `dedup.min_cosine` (0.82). Files changed in the last 30
+   of at least `dedup.min_cosine` (0.75). Files changed in the last 30
    minutes are skipped. A pair you undid before is skipped.
 
 2. **Check the cost first (optional).** This prints the pairs that a

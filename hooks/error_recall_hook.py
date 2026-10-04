@@ -68,7 +68,7 @@ Search (env ``NOBLIVION_ERROR_RECALL_MODE``, see ``search``)
                    file); HTTP budget ``NOBLIVION_ERROR_RECALL_TIMEOUT_S``
                    (0.8 s). Only rows of a memory file are kept (no
                    transcript-miner rows, no index or topic files). Gate
-                   ``STORE_MIN_SCORE`` 0.60 (env
+                   ``STORE_MIN_SCORE`` 0.70 (env
                    ``NOBLIVION_ERROR_RECALL_MIN_SCORE``).
   fused            both lists, reciprocal rank fusion; a hit passes when either
                    of its scores reaches its gate.
@@ -152,7 +152,11 @@ SESSION_CHARS = 6000
 STORE_TIMEOUT_S = 0.8
 STORE_TOP_K = 10
 TIME_LIMIT_S = 1.5
-STORE_MIN_SCORE = 0.60
+# Measured for THRESHOLD_MODEL by tools/eval_thresholds.py (design doc 0001,
+# section 18). A test fails when embedding.DEFAULT_MODEL changes and this
+# string does not. LOCAL_MIN_SCORE is a BM25 share and needs no model.
+STORE_MIN_SCORE = 0.70
+THRESHOLD_MODEL = "BAAI/bge-small-en-v1.5"
 LOCAL_MIN_SCORE = 0.75
 RULE_CHARS = 160
 CONTEXT_WEIGHT = 0.5

@@ -92,7 +92,7 @@ Log
 
 Environment (config file keys in design doc section 12.3)
   NOBLIVION_DATA_DIR            the data dir (store.json, token, cache)
-  NOBLIVION_RECALL_MIN_SCORE    default 0.3, see above
+  NOBLIVION_RECALL_MIN_SCORE    default 0.68, see above
   NOBLIVION_RECALL_TIMEOUT_S    default 2.0
   NOBLIVION_RECALL_CACHE_DIR    default <data dir>/cache
   NOBLIVION_RECALL_DISABLE      any non-empty value: exit 0, no call, no output
@@ -175,7 +175,11 @@ _WORKERS = threading.BoundedSemaphore(WORKER_MAX)
 LOCK_WAIT_S = 0.5  # at most this long for the session lock, then unlocked
 LOCK_POLL_S = 0.01
 DEFAULT_TIMEOUT_S = 2.0
-DEFAULT_MIN_SCORE = 0.3
+# Measured for THRESHOLD_MODEL by tools/eval_thresholds.py (design doc 0001,
+# section 18). A test fails when embedding.DEFAULT_MODEL changes and this
+# string does not: a new model needs a new measurement.
+DEFAULT_MIN_SCORE = 0.68
+THRESHOLD_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_CACHE_DIR = ""  # "": <data dir>/cache (hook_config)
 QUERY_MAX_CHARS = 300
 BODY_MAX_CHARS = 200

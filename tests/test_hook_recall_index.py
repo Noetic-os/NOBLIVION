@@ -264,13 +264,13 @@ def test_the_hit_shape_still_dedupes_in_the_same_session(daemon, env):
 
 
 def test_no_min_score_floor_cuts_a_candidate(daemon, env):
-    # The hook's default floor is 0.3 and it applies to the hit shape. The index
+    # The hook's default floor is 0.68 and it applies to the hit shape. The index
     # must not apply it: the store has its own floor.
     daemon.index_rows = [_row(1, 101, "low", "a weak but real candidate", score=0.05)]
     env["NOBLIVION_RECALL_INDEX"] = "1"
     _code, out = run_hook(_prompt("anything"), env)
     assert "id 101" in out
-    assert hook.DEFAULT_MIN_SCORE == 0.3  # the floor that was NOT applied
+    assert hook.DEFAULT_MIN_SCORE == 0.68  # the floor that was NOT applied
 
 
 # -- k, the cap, and the env that sets them -------------------------------------------

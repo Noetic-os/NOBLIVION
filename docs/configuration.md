@@ -191,7 +191,7 @@ run `noblivion consent embeddings`. The `openrouter` backend also needs
 | --- | --- | --- | --- |
 | `NOBLIVION_RECALL_DISABLE` | none | off (switch) | Turns the recall hook off. It also turns off the label rows at prompt time and the subagent rules hook. |
 | `NOBLIVION_RECALL_TIMEOUT_S` | `recall.timeout_s` | `2.0` | The time budget of one recall, in seconds. |
-| `NOBLIVION_RECALL_MIN_SCORE` | `recall.min_score` | `0.3` | The lowest score a hit needs. The store sends a cosine score with each hit. A hit with no score (keyword-only mode) always passes. |
+| `NOBLIVION_RECALL_MIN_SCORE` | `recall.min_score` | `0.68` | The lowest score a hit needs. The store sends a cosine score with each hit. A hit with no score (keyword-only mode) always passes. |
 | `NOBLIVION_RECALL_PROJECT` | `namespace` | `claude_code` | The namespace to search. `NOBLIVION_PROJECT` is read when this is not set. |
 | `NOBLIVION_RECALL_MEMORY_DIR` | none | the session's memory folder (see "The session's memory folder") | The memory folder of the session. It sets the root (see below) and the folder for local re-ranking and rule rows. `NOBLIVION_MEMORY_DIR` is read when this is not set. |
 | `NOBLIVION_RECALL_ROOT` | none | the name of the project folder that holds the memory folder | The root. Recall searches only the notes of this root, plus the shared roots. |
@@ -259,7 +259,7 @@ that is set in the environment wins over `recall.env`.
 | --- | --- | --- | --- |
 | `NOBLIVION_ERROR_RECALL_MODE` | none | `local` | `local` searches the memory files with a keyword score and needs no store. `store` asks the store. `fused` uses both. |
 | `NOBLIVION_ERROR_RECALL_LOCAL_MIN_SCORE` | none | `0.75` | The lowest score of a local hit. |
-| `NOBLIVION_ERROR_RECALL_MIN_SCORE` | none | `0.60` | The lowest score of a store hit. |
+| `NOBLIVION_ERROR_RECALL_MIN_SCORE` | none | `0.70` | The lowest score of a store hit. |
 | `NOBLIVION_ERROR_RECALL_TIMEOUT_S` | none | `0.8` | The time budget of the store call, in seconds. |
 | `NOBLIVION_ERROR_RECALL_SESSION_CHARS` | none | `6000` | The most characters the hook adds per agent in one session. |
 | `NOBLIVION_ERROR_RECALL_MEMORY_DIR` | none | `NOBLIVION_RECALL_MEMORY_DIR`, else `NOBLIVION_MEMORY_DIR`, else the session's memory folder | The memory folder to search. |
@@ -376,7 +376,7 @@ mode) and logged only (the check is not in the blocking list).
 | --- | --- | --- | --- |
 | `NOBLIVION_DEDUP_JUDGE` | `dedup.judge` | `openrouter` | `openrouter`, or `off`. Any other value counts as `off`. |
 | `NOBLIVION_DEDUP_MODEL` | `dedup.model` | none | The judge model on OpenRouter. With no model, `noblivion dedup plan` refuses. |
-| none | `dedup.min_cosine` | `0.82` | The lowest vector similarity of a candidate pair. |
+| none | `dedup.min_cosine` | `0.75` | The lowest vector similarity of a candidate pair. |
 | none | `dedup.max_pairs` | `50` | The most judge calls in one `plan` run. |
 | none | `dedup.timeout_s` | `60` | The time limit of one judge call, in seconds. |
 | none | `dedup.min_interval_s` | `1.0` | The shortest time between two judge calls, in seconds. |

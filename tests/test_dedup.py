@@ -645,7 +645,7 @@ def test_bad_run_id_is_refused(garden):
 
 def test_settings_have_no_default_model(tmp_path):
     ds = dedup.load_dedup_settings({"NOBLIVION_DATA_DIR": str(tmp_path)})
-    assert ds.model == "" and ds.judge == "openrouter" and ds.min_cosine == 0.82
+    assert ds.model == "" and ds.judge == "openrouter" and ds.min_cosine == 0.75
     ds = dedup.load_dedup_settings(
         {"NOBLIVION_DATA_DIR": str(tmp_path), "NOBLIVION_DEDUP_JUDGE": "ollama"}
     )

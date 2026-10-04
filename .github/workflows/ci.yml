@@ -44,6 +44,31 @@ jobs:
       - run: uv sync --locked
       - run: uv run pytest -q
 
+  # The shipped embedding model (noblivion[embed], fastembed) and the threshold
+  # eval (NOBLIVION-33). The eval fails when precision or recall at a shipped
+  # threshold drops under its floor in tools/eval/thresholds.json.
+  real-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NOBLIVION_TEST_REAL_MODEL: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked --extra embed
+      - name: Model cache folder
+        run: echo "FASTEMBED_CACHE_PATH=$HOME/.cache/fastembed" >> "$GITHUB_ENV"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/fastembed
+          key: fastembed-${{ runner.os }}-bge-small-en-v1.5
+      - name: Real-model tests
+        run: uv run pytest -q tests/test_embedding.py tests/test_threshold_model.py
+      - name: Threshold eval with the score gate
+        run: uv run python tools/eval_thresholds.py --check
+
   leaks:
     runs-on: ubuntu-latest
     timeout-minutes: 10

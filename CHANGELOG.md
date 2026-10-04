@@ -31,6 +31,15 @@ All notable changes to NOBLIVION. The format follows
 - The `notify` check fires only when the session has a `PushNotification`
   tool, read from the transcript's tool list. Without one, it does not fire
   and the log row notes `notify_skipped`.
+- Behaviour change: three score thresholds are now measured for the shipped
+  model `BAAI/bge-small-en-v1.5` (NOBLIVION-33). The search floor
+  `recall.min_score` goes from 0.3 to 0.68: at 0.3 it cut nothing, because
+  this model gives an unrelated prompt a cosine of about 0.5 to 0.6. The
+  hook and the MCP search tool now return fewer, more relevant hits. The
+  error recall store floor goes from 0.60 to 0.70. The dedup cosine
+  `dedup.min_cosine` goes from 0.82 to 0.75, so fewer duplicate pairs are
+  missed. Set the env var or config key to keep an old value. The measured
+  numbers are in the design doc, section 18.
 
 ### Added
 
@@ -39,6 +48,12 @@ All notable changes to NOBLIVION. The format follows
   trial and takes 2 uses off, so a note's trust value can now fall, also
   below its prior. The store keeps it in the existing `contradiction` rows;
   no migration is needed. Report rows carry `contradict_sessions`.
+- `tools/eval_thresholds.py` and the made-up eval set
+  `tools/eval/thresholds.json` measure precision and recall per threshold
+  through a real store. CI job `real-model` installs the `embed` extra,
+  runs the real-model tests and fails when a shipped threshold misses its
+  floor. Each threshold names its model in `THRESHOLD_MODEL`; a test fails
+  when the default model changes.
 - `noblivion stop report [--days N] [--json]` counts the stop check log rows
   per check: would block, blocked, and logged only.
 
