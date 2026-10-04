@@ -62,18 +62,30 @@ from the install stamp in that venv.
 Every hook uses the folder Claude Code keeps auto memory in for the session:
 recall, error recall, subagent rules, continuity, the guard table and the
 guard hook, the memory fields hook, the memory sync hook and the stop checks.
-Each hook finds it from the `cwd` of its hook event, the way Claude Code does:
+Each hook finds it from the session's project dir, the way Claude Code does.
+The project dir is `CLAUDE_PROJECT_DIR` when it is an existing absolute
+folder, else the `cwd` of the hook event. Claude Code sets
+`CLAUDE_PROJECT_DIR` for every hook to the folder the session started in. It
+does not change when a Bash `cd` moves the session into another repository,
+and Claude Code keeps its auto memory on the start folder too. So the hooks
+keep reading the folder of the project you started in, not the folder of the
+repository the session is in now. In a linked worktree `CLAUDE_PROJECT_DIR` is
+the worktree, and step 3 gives its main checkout. `--add-dir` does not change
+it. Codex does not set it, so there the event `cwd` is used.
+
+1. `NOBLIVION_MEMORY_DIR` (or `NOBLIVION_RECALL_MEMORY_DIR`), when set.
 
 1. `NOBLIVION_MEMORY_DIR` (or `NOBLIVION_RECALL_MEMORY_DIR`), when set.
 2. `autoMemoryDirectory` from the first Claude Code settings file that sets
    it: the managed settings, the project's `.claude/settings.local.json` and
-   `.claude/settings.json`, then the user's `settings.json`. The value must be
+   `.claude/settings.json` in the project dir, then the user's
+   `settings.json`. The value must be
    absolute or start with `~/`.
 3. `<config dir>/projects/<project>/memory`. The config dir is
    `CLAUDE_CONFIG_DIR`, else `~/.claude`. The project is the main checkout of
-   the git repository that holds the working directory, so a subfolder and
-   every linked worktree share one folder. Outside git it is the working
-   directory. Its name has every character that is not a letter or a digit
+   the git repository that holds the project dir, so a subfolder and
+   every linked worktree share one folder. Outside git it is the project
+   dir. Its name has every character that is not a letter or a digit
    replaced by `-`. `CLAUDE_CODE_PROJECT_DIR_NAME` replaces the name when
    `CLAUDE_CONFIG_DIR` is set.
 

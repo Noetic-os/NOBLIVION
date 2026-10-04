@@ -305,7 +305,16 @@ def project_slug(path: Any) -> str:
 #    ``CLAUDE_CODE_PROJECT_DIR_NAME`` when the base is the config dir,
 #    ``CLAUDE_CONFIG_DIR`` is set and the name is valid; else the slug of the
 #    project folder. The project folder is the main checkout of the git
-#    repository that holds the working dir, else the working dir itself.
+#    repository that holds the session's project dir, else that dir itself.
+#
+# The session's project dir (NOBLIVION-37) is the folder the session started
+# in, not the working dir of the event. Claude Code keeps its memory folder
+# on that start folder when a Bash ``cd`` moves the working dir into another
+# repository, and it gives every hook the start folder in
+# ``CLAUDE_PROJECT_DIR``. So ``CLAUDE_PROJECT_DIR`` wins when it is an
+# existing absolute folder; else the event's ``cwd`` is used (Codex, a test,
+# a hook run by hand). In a linked worktree ``CLAUDE_PROJECT_DIR`` is the
+# worktree, and the git walk below gives its main checkout.
 #
 # Claude Code finds the repository with no ``git`` call: it walks up from the
 # working dir to the first folder with a ``.git`` entry. When ``.git`` is a
@@ -318,6 +327,7 @@ REMOTE_MEMORY_ENV = "CLAUDE_CODE_REMOTE_MEMORY_DIR"
 CLAUDE_CONFIG_ENV = "CLAUDE_CONFIG_DIR"
 PROJECT_DIR_NAME_ENV = "CLAUDE_CODE_PROJECT_DIR_NAME"
 MEMORY_DIR_OVERRIDE_ENV = "NOBLIVION_MEMORY_DIR"
+PROJECT_DIR_ENV = "CLAUDE_PROJECT_DIR"
 AUTO_MEMORY_KEY = "autoMemoryDirectory"
 
 _DIR_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -451,12 +461,32 @@ def project_folder(cwd: str) -> str:
     return canonical_git_root(root) if root else cwd
 
 
+def session_project_dir(
+    cwd: Optional[str], env: Optional[Mapping[str, str]] = None
+) -> Optional[str]:
+    """The folder the session started in (NOBLIVION-37):
+    ``CLAUDE_PROJECT_DIR`` when it is an existing absolute folder, else
+    ``cwd`` when it is absolute, else None."""
+    raw = str(_env(env).get(PROJECT_DIR_ENV) or "").strip()
+    if raw and "${" not in raw and os.path.isabs(raw):
+        try:
+            if os.path.isdir(raw):
+                return raw
+        except (OSError, ValueError):
+            pass
+    if isinstance(cwd, str) and os.path.isabs(cwd):
+        return cwd
+    return None
+
+
 def resolve_memory_dir(
     cwd: Optional[str], env: Optional[Mapping[str, str]] = None
 ) -> Optional[Path]:
-    """The memory folder of a session at ``cwd``: ``NOBLIVION_MEMORY_DIR``,
-    else the folder Claude Code uses (the rule above). None when there is no
-    override and ``cwd`` is not an absolute path. The folder may not exist."""
+    """The memory folder of a session whose event has ``cwd``:
+    ``NOBLIVION_MEMORY_DIR``, else the folder Claude Code uses (the rule
+    above) for the session's project dir (``session_project_dir``). None when
+    there is no override and no absolute project dir. The folder may not
+    exist."""
     e = _env(env)
     raw = str(e.get(MEMORY_DIR_OVERRIDE_ENV) or "").strip()
     if raw:
@@ -464,9 +494,10 @@ def resolve_memory_dir(
     cowork = _check_dir(e.get(COWORK_MEMORY_ENV), expand_home=False)
     if cowork:
         return cowork
-    if not (isinstance(cwd, str) and os.path.isabs(cwd)):
+    root = session_project_dir(cwd, e)
+    if root is None:
         return None
-    value, _ = auto_memory_setting(cwd, e)
+    value, _ = auto_memory_setting(root, e)
     custom = _check_dir(value, expand_home=True)
     if custom:
         return custom
@@ -479,7 +510,7 @@ def resolve_memory_dir(
         if _DIR_NAME_RE.match(pinned) and not _DEVICE_NAME_RE.match(pinned):
             name = pinned
     if name is None:
-        name = project_slug(project_folder(cwd))
+        name = project_slug(project_folder(root))
     return Path(unicodedata.normalize("NFC", str(base / "projects" / name / "memory")))
 
 

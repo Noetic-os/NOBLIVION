@@ -51,6 +51,7 @@ RULED = (
 )
 
 CLAUDE_ENVS = (
+    "CLAUDE_PROJECT_DIR",
     "CLAUDE_CONFIG_DIR",
     "CLAUDE_CODE_PROJECT_DIR_NAME",
     "CLAUDE_CODE_REMOTE_MEMORY_DIR",
@@ -439,3 +440,62 @@ def test_a_stranger_install_resolves_one_folder_in_every_hook(tmp_path, monkeypa
     res = run("stop_checks.py", stop, env)
     assert f"feedback memory in {folder} with rule:" in json.loads(res.stdout)["reason"]
     assert not (home / ".claude" / "projects" / hc.project_slug(home)).exists()
+
+
+def test_every_hook_keeps_the_start_project_after_cd(tmp_path, monkeypatch):
+    """NOBLIVION-37: a session starts in a linked worktree of repo A and runs
+    ``cd`` into repo B. The event ``cwd`` is B, ``CLAUDE_PROJECT_DIR`` is the
+    worktree. Every hook names the folder of A's main checkout, as Claude
+    Code does."""
+    home = tmp_path / "home"
+    data = tmp_path / "data"
+    home.mkdir()
+    data.mkdir()
+    for name in list(os.environ):
+        if name.startswith("NOBLIVION_") or name in CLAUDE_ENVS:
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("NOBLIVION_DATA_DIR", str(data))
+    repo_a = tmp_path / "code" / "a"
+    repo_b = tmp_path / "code" / "b"
+    for repo in (repo_a, repo_b):
+        repo.mkdir(parents=True)
+        git("init", "-q", str(repo))
+        git("-C", str(repo), "commit", "-q", "--allow-empty", "-m", "init")
+    linked = tmp_path / "code" / "a-linked"
+    git("-C", str(repo_a), "worktree", "add", "-q", str(linked))
+    folder = home / ".claude" / "projects" / hc.project_slug(repo_a) / "memory"
+    folder.mkdir(parents=True)
+    (folder / "feedback_stash.md").write_text(
+        memory("feedback_stash", STASH, "git stash pop", "git stash list")
+    )
+    b_folder = home / ".claude" / "projects" / hc.project_slug(repo_b) / "memory"
+    b_folder.mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(linked))
+    env = {
+        "HOME": str(home),
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "NOBLIVION_DATA_DIR": str(data),
+        "CLAUDE_PROJECT_DIR": str(linked),
+        "NOBLIVION_STOP_CHECK_LOG": str(tmp_path / "stop-log.jsonl"),
+        "NOBLIVION_STOP_CHECK_STATE": str(tmp_path / "stop-state"),
+        "NOBLIVION_STOP_CHECK_MODE": "enforce",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    cwd = str(repo_b)
+    event = {"cwd": cwd}
+    assert rh.session_env(env, event)["NOBLIVION_RECALL_MEMORY_DIR"] == str(folder)
+    assert gt.memory_dir(cwd, env) == folder
+    assert sc.memory_dir(cwd) == folder
+    assert ch.session_env(env, event)["NOBLIVION_RECALL_MEMORY_DIR"] == str(folder)
+    assert ms.memory_dir(env, cwd) == folder
+    assert fh.memory_dir(cwd) == folder
+    assert er.memory_dir(env, cwd) == folder
+    # End to end: the rule of A guards a command run from B.
+    start(repo_b, env)
+    assert denied(run("guard_hook.py", bash_event(repo_b, "git stash pop"), env))
+    # Without CLAUDE_PROJECT_DIR the hooks use B's folder, which has no rule.
+    plain = {k: v for k, v in env.items() if k != "CLAUDE_PROJECT_DIR"}
+    assert gt.memory_dir(cwd, plain) == b_folder
+    start(repo_b, plain)
+    assert not denied(run("guard_hook.py", bash_event(repo_b, "git stash pop"), plain))

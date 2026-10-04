@@ -28,6 +28,14 @@ All notable changes to NOBLIVION. The format follows
 
 ### Fixed
 
+- The hooks find the memory folder from the session's project dir
+  (`CLAUDE_PROJECT_DIR`), not from the `cwd` of the hook event
+  (NOBLIVION-37). Before, a Bash `cd` into another git repository moved
+  recall, the guards and the stop checks to that repository's memory folder,
+  while Claude Code kept its auto memory on the project the session started
+  in. The event `cwd` is still used when `CLAUDE_PROJECT_DIR` is not set or
+  is not an existing folder (Codex, a hook run by hand). The Codex adapter
+  drops a `CLAUDE_PROJECT_DIR` it inherits from an outer Claude Code session.
 - The hooks find the session's memory folder the way Claude Code does
   (NOBLIVION-30). A session started in a subfolder of a git repository, or in
   a linked worktree, now uses the memory folder of the main checkout, so it

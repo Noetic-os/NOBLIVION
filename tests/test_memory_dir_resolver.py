@@ -30,6 +30,7 @@ TEST_CLASSIFICATION = "coherent"  # one of: "coherent" | "atomic" | "invariant"
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
 CLAUDE_ENVS = (
+    "CLAUDE_PROJECT_DIR",
     "CLAUDE_CONFIG_DIR",
     "CLAUDE_CODE_PROJECT_DIR_NAME",
     "CLAUDE_CODE_REMOTE_MEMORY_DIR",
@@ -205,6 +206,87 @@ def test_noblivion_memory_dir_wins_over_everything(home, repo):
     env = {"NOBLIVION_MEMORY_DIR": "~/pinned", "CLAUDE_CONFIG_DIR": "/srv/cfg"}
     assert hc.resolve_memory_dir(str(repo), env) == home / "pinned"
     assert hc.resolve_memory_dir("relative", {}) is None
+
+
+# ── the session's project dir, not the event's cwd (NOBLIVION-37) ─────────
+#
+# Measured with Claude Code 2.1.x: after a Bash ``cd`` into another
+# repository, the hook event's ``cwd`` is the new folder, but every hook gets
+# the start folder in ``CLAUDE_PROJECT_DIR``, and the auto-memory folder stays
+# on the start folder. In a linked worktree ``CLAUDE_PROJECT_DIR`` is the
+# worktree itself; ``--add-dir`` does not change it.
+
+
+@pytest.fixture
+def other(tmp_path: Path) -> Path:
+    b = tmp_path / "work" / "other"
+    b.mkdir(parents=True)
+    git("init", "-q", str(b))
+    return b
+
+
+def test_claude_project_dir_wins_over_the_event_cwd(home, repo, other):
+    env = {"CLAUDE_PROJECT_DIR": str(repo)}
+    assert hc.resolve_memory_dir(str(other), env) == default_folder(home, repo)
+    assert hc.resolve_memory_dir(str(repo / "sub"), env) == default_folder(home, repo)
+    # A hook with no cwd in its event still finds the project.
+    assert hc.resolve_memory_dir(None, env) == default_folder(home, repo)
+
+
+def test_without_claude_project_dir_the_event_cwd_is_used(home, repo, other):
+    assert hc.resolve_memory_dir(str(other), {}) == default_folder(home, other)
+    assert hc.resolve_memory_dir(str(other), {"CLAUDE_PROJECT_DIR": ""}) == default_folder(
+        home, other
+    )
+
+
+def test_an_unusable_claude_project_dir_falls_back_to_the_cwd(home, repo, other, tmp_path):
+    a_file = tmp_path / "a-file"
+    a_file.write_text("x", encoding="utf-8")
+    for bad in (
+        str(tmp_path / "missing"),
+        "relative/dir",
+        "${CLAUDE_PROJECT_DIR}",
+        str(a_file),
+    ):
+        env = {"CLAUDE_PROJECT_DIR": bad}
+        assert hc.resolve_memory_dir(str(other), env) == default_folder(home, other), bad
+    assert hc.resolve_memory_dir(None, {"CLAUDE_PROJECT_DIR": str(tmp_path / "missing")}) is None
+
+
+def test_a_worktree_session_keeps_the_main_checkout_folder_after_cd(home, repo, other, tmp_path):
+    linked = tmp_path / "work" / "linked"
+    git("-C", str(repo), "worktree", "add", "-q", str(linked))
+    env = {"CLAUDE_PROJECT_DIR": str(linked)}  # what Claude Code sets in a worktree
+    assert hc.resolve_memory_dir(str(other), env) == default_folder(home, repo)
+    assert hc.resolve_memory_dir(str(linked / "x"), env) == default_folder(home, repo)
+
+
+def test_project_settings_are_read_from_the_project_dir(home, repo, other, tmp_path):
+    for folder, name in ((repo, "a-memory"), (other, "b-memory")):
+        local = folder / ".claude" / "settings.local.json"
+        local.parent.mkdir()
+        local.write_text(
+            json.dumps({"autoMemoryDirectory": str(tmp_path / name)}), encoding="utf-8"
+        )
+    env = {"CLAUDE_PROJECT_DIR": str(repo)}
+    assert hc.resolve_memory_dir(str(other), env) == tmp_path / "a-memory"
+    assert hc.resolve_memory_dir(str(other), {}) == tmp_path / "b-memory"
+
+
+def test_noblivion_memory_dir_still_wins_over_claude_project_dir(home, repo, other):
+    env = {"NOBLIVION_MEMORY_DIR": "~/pinned", "CLAUDE_PROJECT_DIR": str(repo)}
+    assert hc.resolve_memory_dir(str(other), env) == home / "pinned"
+
+
+def test_session_env_follows_claude_project_dir(home, repo, other):
+    folder = default_folder(home, repo)
+    folder.mkdir(parents=True)
+    env = rh.session_env({"CLAUDE_PROJECT_DIR": str(repo)}, {"cwd": str(other)})
+    assert env["NOBLIVION_RECALL_MEMORY_DIR"] == str(folder)
+    assert rh.session_root(env) == hc.project_slug(repo)
+    env = rh.session_env({"CLAUDE_PROJECT_DIR": str(repo)}, {})
+    assert env["NOBLIVION_RECALL_MEMORY_DIR"] == str(folder)
 
 
 def test_project_slug_matches_claude_code():

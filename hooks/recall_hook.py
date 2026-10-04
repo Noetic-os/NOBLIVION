@@ -99,7 +99,7 @@ Environment (config file keys in design doc section 12.3)
   NOBLIVION_RECALL_MEMORY_DIR   the memory folder of the local re-rank, the rule
                                 rows and the session root. Unset: the memory
                                 folder Claude Code keeps for the session's
-                                working dir (``hook_config.resolve_memory_dir``),
+                                project dir (``hook_config.resolve_memory_dir``),
                                 when it exists.
   NOBLIVION_RECALL_INDEX        any non-empty value: serve a RANKED INDEX instead
                                 of hits (see "Ranked index" below)
@@ -686,7 +686,8 @@ def session_env(environ: Mapping[str, str], payload: Mapping[str, Any]) -> Dict[
 
     The memory folder is ``NOBLIVION_RECALL_MEMORY_DIR`` (or
     ``NOBLIVION_MEMORY_DIR``), else the folder Claude Code keeps for the
-    session's working dir (``hook_config.resolve_memory_dir``: the git
+    session's project dir (``hook_config.resolve_memory_dir``:
+    ``CLAUDE_PROJECT_DIR``, else ``cwd``; the git
     repository's main checkout, ``autoMemoryDirectory``, ``CLAUDE_CONFIG_DIR``),
     when it exists. The root (design doc section 5.1) is
     ``NOBLIVION_RECALL_ROOT``, else the name of the memory folder's parent,
@@ -720,7 +721,7 @@ def session_env(environ: Mapping[str, str], payload: Mapping[str, Any]) -> Dict[
     cwd = payload.get("cwd") if isinstance(payload, Mapping) else None
     cwd = cwd if isinstance(cwd, str) and os.path.isabs(cwd) else None
     folder = _memory_dir_env(env)
-    resolved = cfg.resolve_memory_dir(cwd, env) if not folder and cwd else None
+    resolved = cfg.resolve_memory_dir(cwd, env) if not folder else None
     if resolved is not None and os.path.isdir(resolved):
         env[MEMORY_DIR_ENV] = folder = str(resolved)
     if not (env.get(ROOT_ENV) or "").strip():

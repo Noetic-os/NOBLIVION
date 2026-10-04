@@ -39,6 +39,7 @@ def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         if name.startswith("NOBLIVION_"):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global-gitconfig"))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -532,3 +533,14 @@ def test_recall_root_uses_installed_value_not_inherited_environment(
     monkeypatch.setenv("NOBLIVION_RECALL_ROOT", "wrong-client-root")
     env = adapter.environment(cfg, event(cfg, "SessionStart"))
     assert env["NOBLIVION_RECALL_ROOT"] == "shared-phoenix-root"
+
+
+def test_an_inherited_claude_project_dir_is_dropped(
+    cfg: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # NOBLIVION-37: Codex never sets CLAUDE_PROJECT_DIR. A value inherited
+    # from an outer Claude Code session must not pick the memory folder.
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path / "project"))
+    env = adapter.environment(cfg, event(cfg, "SessionStart"))
+    assert "CLAUDE_PROJECT_DIR" not in env
+    assert env["NOBLIVION_MEMORY_DIR"] == cfg["memory_dir"]

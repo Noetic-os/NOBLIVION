@@ -46,6 +46,9 @@ def environment(cfg: dict, event: dict) -> dict[str, str]:
     env = dict(os.environ)
     env.pop("CLAUDE_PLUGIN_DATA", None)
     env.pop("CLAUDE_PLUGIN_ROOT", None)
+    # Codex never sets CLAUDE_PROJECT_DIR. A value here came from an outer
+    # Claude Code session and names that session's project, not this one.
+    env.pop("CLAUDE_PROJECT_DIR", None)
     env.update(
         NOBLIVION_DATA_DIR=str(cfg["data_dir"]),
         NOBLIVION_MEMORY_DIR=str(cfg["memory_dir"]),
