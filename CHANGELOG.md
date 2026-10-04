@@ -6,7 +6,12 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.4 - 2026-10-04
+
+Adds the time-split test for trust ranking and two optional trust signals.
+Both signals and trust ranking stay off by default. After the plugin update,
+type `/noblivion:setup` in the next session: the store venv must be rebuilt
+for 0.1.4.
 
 ### Added
 
