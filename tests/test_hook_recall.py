@@ -841,7 +841,8 @@ def test_unsafe_session_id_writes_no_file_but_still_answers(daemon, env):
     _c, out = run_hook(_prompt("x", session="../../etc/passwd"), env)
     assert out.startswith("GROUNDED MEMORY")
     cache = Path(env["NOBLIVION_RECALL_CACHE_DIR"])
-    assert sorted(p.name for p in cache.iterdir()) == ["recall.log"]
+    # Only log files: no session file. (memory-dir.log: this env has no memory folder.)
+    assert sorted(p.name for p in cache.iterdir()) == ["memory-dir.log", "recall.log"]
     assert " session=- " in read_log(env)[-1]
 
 

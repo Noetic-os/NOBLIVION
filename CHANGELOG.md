@@ -6,6 +6,24 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- The hooks find the session's memory folder the way Claude Code does
+  (NOBLIVION-30). A session started in a subfolder of a git repository, or in
+  a linked worktree, now uses the memory folder of the main checkout, so it
+  gets recall. The hooks also follow `autoMemoryDirectory` in the Claude Code
+  settings files, `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_PROJECT_DIR_NAME`. One
+  rule, `resolve_memory_dir` in `hooks/hook_config.py`, serves the recall,
+  error recall, subagent rules and trust flush hooks. When the folder does
+  not exist, the recall hook writes one line to
+  `<data dir>/cache/memory-dir.log`; the error recall hook writes one
+  `memory_dir_missing` record to its log.
+- The store's default folder list follows `CLAUDE_CONFIG_DIR` and the
+  `autoMemoryDirectory` of the user and managed settings files.
+  `scripts/install_codex.py` checks the same list.
+
 ## 0.1.2 - 2026-10-04
 
 Fixes from the first real install on a second host. After the plugin

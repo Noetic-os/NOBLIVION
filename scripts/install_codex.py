@@ -6,12 +6,14 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import importlib.util
 import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -173,10 +175,24 @@ def _store_config(data: Path) -> dict[str, Any]:
     return doc
 
 
+def _store_default_memory_dirs() -> list[Path]:
+    """The store's default memory folders (``noblivion.config``), which
+    follow Claude Code's config dir and ``autoMemoryDirectory`` (NOBLIVION-30).
+    Loaded by path: this script runs on the system python, outside the venv."""
+    path = Path(__file__).resolve().parent.parent / "src/noblivion/config.py"
+    spec = importlib.util.spec_from_file_location("noblivion_store_config", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(str(path))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses look the module up by name
+    spec.loader.exec_module(module)
+    return module.default_memory_dirs()
+
+
 def _memory_indexed(memory: Path, store_cfg: dict[str, Any]) -> bool:
     configured = store_cfg.get("memory_dirs")
     if configured is None:
-        candidates = (Path.home() / ".claude/projects").glob("*/memory")
+        candidates = iter(_store_default_memory_dirs())
     elif isinstance(configured, list) and all(isinstance(x, str) for x in configured):
         candidates = (Path(x).expanduser() for x in configured)
     else:

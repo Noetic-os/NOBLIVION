@@ -80,8 +80,9 @@ Search (env ``NOBLIVION_ERROR_RECALL_MODE``, see ``search``)
 Memory folder
   ``NOBLIVION_ERROR_RECALL_MEMORY_DIR``, else ``NOBLIVION_RECALL_MEMORY_DIR``,
   else ``NOBLIVION_MEMORY_DIR``, else the memory folder Claude Code keeps for
-  the event's ``cwd`` (``~/.claude/projects/<slug of cwd>/memory``) when it
-  exists, else the memory folder of the home folder.
+  the event's ``cwd`` (``hook_config.resolve_memory_dir``: the git
+  repository's main checkout, ``autoMemoryDirectory``, ``CLAUDE_CONFIG_DIR``)
+  when it exists, else the memory folder of the home folder.
 
 Output and budget
   At most ``MAX_HITS`` (2) hits (WI-14b). The header says the text IS the
@@ -239,16 +240,20 @@ def state_dir(env: Mapping[str, str]) -> Path:
 
 
 def memory_dir(env: Mapping[str, str], cwd: Any = None) -> Path:
-    """The memory folder: the env (``MEMORY_DIR_ENVS``), else the folder of
-    the event's ``cwd`` when it exists, else ``DEFAULT_MEMORY_DIR``."""
+    """The memory folder: the env (``MEMORY_DIR_ENVS``), else the folder
+    Claude Code keeps for the event's ``cwd`` (``hook_config.resolve_memory_dir``)
+    when it exists, else ``DEFAULT_MEMORY_DIR``. A missing session folder
+    writes one ``memory_dir_missing`` line to the log."""
     for n in MEMORY_DIR_ENVS:
         if env.get(n):
             return Path(env[n]).expanduser()
-    if isinstance(cwd, str) and os.path.isabs(cwd):
-        slug = _CFG.project_slug(cwd.rstrip("/") or "/")
-        folder = Path.home() / ".claude" / "projects" / slug / "memory"
+    folder = _CFG.resolve_memory_dir(cwd if isinstance(cwd, str) else None, env)
+    if folder is not None:
         if folder.is_dir():
             return folder
+        log_line(
+            env, {"decision": "note", "note": "memory_dir_missing", "root": folder.parent.name}
+        )
     return DEFAULT_MEMORY_DIR
 
 

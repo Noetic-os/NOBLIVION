@@ -98,8 +98,8 @@ Environment (config file keys in design doc section 12.3)
   NOBLIVION_RECALL_DISABLE      any non-empty value: exit 0, no call, no output
   NOBLIVION_RECALL_MEMORY_DIR   the memory folder of the local re-rank, the rule
                                 rows and the session root. Unset: the memory
-                                folder of the session's working dir,
-                                ``~/.claude/projects/<slug of cwd>/memory``,
+                                folder Claude Code keeps for the session's
+                                working dir (``hook_config.resolve_memory_dir``),
                                 when it exists.
   NOBLIVION_RECALL_INDEX        any non-empty value: serve a RANKED INDEX instead
                                 of hits (see "Ranked index" below)
@@ -161,7 +161,6 @@ import sys
 import threading
 import time
 import urllib.parse
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 PERSONA = "claude_code"  # the default namespace
@@ -687,9 +686,11 @@ def session_env(environ: Mapping[str, str], payload: Mapping[str, Any]) -> Dict[
 
     The memory folder is ``NOBLIVION_RECALL_MEMORY_DIR`` (or
     ``NOBLIVION_MEMORY_DIR``), else the folder Claude Code keeps for the
-    session's working dir, ``~/.claude/projects/<slug of cwd>/memory``, when
-    it exists. The root (design doc section 5.1) is ``NOBLIVION_RECALL_ROOT``,
-    else the name of the memory folder's parent, else the slug of ``cwd``.
+    session's working dir (``hook_config.resolve_memory_dir``: the git
+    repository's main checkout, ``autoMemoryDirectory``, ``CLAUDE_CONFIG_DIR``),
+    when it exists. The root (design doc section 5.1) is
+    ``NOBLIVION_RECALL_ROOT``, else the name of the memory folder's parent,
+    else the slug of ``cwd``.
     """
     env = dict(environ)
     cfg = _sibling_module("hook_config")
@@ -719,19 +720,14 @@ def session_env(environ: Mapping[str, str], payload: Mapping[str, Any]) -> Dict[
     cwd = payload.get("cwd") if isinstance(payload, Mapping) else None
     cwd = cwd if isinstance(cwd, str) and os.path.isabs(cwd) else None
     folder = _memory_dir_env(env)
-    if not folder and cwd:
-        candidate = os.path.join(
-            str(Path.home()),
-            ".claude",
-            "projects",
-            cfg.project_slug(cwd.rstrip("/") or "/"),
-            "memory",
-        )
-        if os.path.isdir(candidate):
-            env[MEMORY_DIR_ENV] = folder = candidate
+    resolved = cfg.resolve_memory_dir(cwd, env) if not folder and cwd else None
+    if resolved is not None and os.path.isdir(resolved):
+        env[MEMORY_DIR_ENV] = folder = str(resolved)
     if not (env.get(ROOT_ENV) or "").strip():
         if folder:
             root = os.path.basename(os.path.dirname(os.path.normpath(os.path.expanduser(folder))))
+        elif resolved is not None:
+            root = resolved.parent.name
         elif cwd:
             root = cfg.project_slug(cwd.rstrip("/") or "/")
         else:
@@ -1983,6 +1979,25 @@ def session_lock(path: Optional[str]):
         fh.close()
 
 
+MEMORY_DIR_LOG = "memory-dir.log"
+
+
+def log_memory_dir_missing(cache: str, event: str, session_id: Any, root: Any) -> None:
+    """Append one line to ``<cache>/memory-dir.log``: the session has no
+    memory folder (NOBLIVION-30), so recall reads no memory files. A separate
+    file, so ``recall.log`` keeps one line per call. Never raises."""
+    sid = session_id if isinstance(session_id, str) and _SESSION_ID_RE.match(session_id) else "-"
+    ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    name = _sibling_module("hook_config").project_slug(root or "-")
+    line = f"{ts} event={event} session={sid} memory_dir_missing root={name}\n"
+    try:
+        _make_dirs(cache)
+        with open(os.path.join(cache, MEMORY_DIR_LOG), "a", encoding="utf-8") as fh:
+            fh.write(line)
+    except OSError:
+        pass
+
+
 def log_line(
     cache: str, event: str, session_id: Any, hits: int, chars: int, ms: int, status: str
 ) -> None:
@@ -2944,6 +2959,9 @@ def run(stdin_text: str, stdout, environ: Dict[str, str]) -> None:
     if recall_disabled(environ):
         log_line(cache, event, sid, 0, 0, 0, "skip:disabled")
         return
+    cwd = payload.get("cwd")
+    if isinstance(cwd, str) and os.path.isabs(cwd) and not _memory_dir_env(environ):
+        log_memory_dir_missing(cache, event, sid, environ.get(ROOT_ENV))
     # P2. The index path may take more of the prompt than the hit path. The hit
     # path is untouched: index_query_chars defaults to QUERY_MAX_CHARS anyway,
     # but the conditional says so, so no future default can leak into it.

@@ -27,6 +27,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Optional, Tuple
@@ -239,10 +241,43 @@ def evidence_stop(env: Optional[Mapping[str, str]] = None) -> FrozenSet[str]:
     return EVIDENCE_STOP_DEFAULT | frozenset(extra)
 
 
+# Claude Code cuts a project folder name at 200 characters and appends a
+# hash of the full path, so the name stays within file system limits.
+SLUG_MAX = 200
+
+
+def _java_hash(text: str) -> int:
+    """Claude Code's 32-bit string hash: ``h = h * 31 + unit``, over UTF-16
+    code units, kept to a signed 32-bit integer."""
+    h = 0
+    data = text.encode("utf-16-le", "surrogatepass")
+    for i in range(0, len(data), 2):
+        h = (h * 31 + int.from_bytes(data[i : i + 2], "little")) & 0xFFFFFFFF
+    return h - 0x100000000 if h & 0x80000000 else h
+
+
+def _base36(number: int) -> str:
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = ""
+    while True:
+        number, rest = divmod(number, 36)
+        out = digits[rest] + out
+        if not number:
+            return out
+
+
 def project_slug(path: Any) -> str:
     """The folder name Claude Code gives the project at ``path``: every
-    character that is not a letter or a digit becomes ``-``."""
-    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+    character that is not an ASCII letter or digit becomes ``-`` (one ``-``
+    per UTF-16 code unit, as in JavaScript). A name longer than 200
+    characters is cut to 200 and gets ``-<base 36 hash of the path>``."""
+    text = str(path)
+    slug = "".join(
+        c if c.isascii() and c.isalnum() else ("--" if ord(c) > 0xFFFF else "-") for c in text
+    )
+    if len(slug) <= SLUG_MAX:
+        return slug
+    return "%s-%s" % (slug[:SLUG_MAX], _base36(abs(_java_hash(text))))
 
 
 def default_memory_dir() -> Path:
@@ -250,3 +285,206 @@ def default_memory_dir() -> Path:
     ``~/.claude/projects/<slug of the home folder>/memory``."""
     home = Path.home()
     return home / ".claude" / "projects" / project_slug(home) / "memory"
+
+
+# ── the memory folder of a session (NOBLIVION-30) ─────────────────────────
+#
+# How Claude Code picks the auto-memory folder. Read from the Claude Code
+# 2.1.261 bundle (the ``defaultPath`` and ``resolveEntry`` code next to the
+# ``autoMemoryDirectory`` setting) and checked with a live run on Linux: a
+# session in ``repo/sub/deep`` and a session in a linked worktree of ``repo``
+# both reported ``<config dir>/projects/<slug of repo>/memory/``, while their
+# transcripts went to the slug of their own working directory. The docs say
+# the same ("derived from the git repository, so all worktrees and
+# subdirectories within the same repo share one auto memory directory"):
+# https://code.claude.com/docs/en/memory#storage-location
+#
+# 1. ``CLAUDE_COWORK_MEMORY_PATH_OVERRIDE``, when it is a valid absolute path.
+# 2. ``autoMemoryDirectory`` from the first settings source that has the key:
+#    managed (policy), ``--settings`` (a hook cannot see it), the project's
+#    ``.claude/settings.local.json`` and ``.claude/settings.json``, then the
+#    user's ``<config dir>/settings.json``. The value must be absolute or
+#    start with ``~/``. An invalid value does not fall through to the next
+#    source: Claude Code then uses the default folder (3).
+# 3. ``<base>/projects/<name>/memory``. The base is
+#    ``CLAUDE_CODE_REMOTE_MEMORY_DIR``, else the config dir
+#    (``CLAUDE_CONFIG_DIR``, else ``~/.claude``). The name is
+#    ``CLAUDE_CODE_PROJECT_DIR_NAME`` when the base is the config dir,
+#    ``CLAUDE_CONFIG_DIR`` is set and the name is valid; else the slug of the
+#    project folder. The project folder is the main checkout of the git
+#    repository that holds the working dir, else the working dir itself.
+#
+# Claude Code finds the repository with no ``git`` call: it walks up from the
+# working dir to the first folder with a ``.git`` entry. When ``.git`` is a
+# file (a linked worktree), it follows ``gitdir:`` and ``commondir`` and
+# checks that the worktree's ``gitdir`` file points back. Any check that fails
+# keeps the folder that holds ``.git``. This code does the same.
+
+COWORK_MEMORY_ENV = "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"
+REMOTE_MEMORY_ENV = "CLAUDE_CODE_REMOTE_MEMORY_DIR"
+CLAUDE_CONFIG_ENV = "CLAUDE_CONFIG_DIR"
+PROJECT_DIR_NAME_ENV = "CLAUDE_CODE_PROJECT_DIR_NAME"
+MEMORY_DIR_OVERRIDE_ENV = "NOBLIVION_MEMORY_DIR"
+AUTO_MEMORY_KEY = "autoMemoryDirectory"
+
+_DIR_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_DEVICE_NAME_RE = re.compile(r"^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$", re.IGNORECASE)
+
+
+def managed_settings_path() -> Path:
+    """The managed settings file (the policy scope) of this platform."""
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
+    if os.name == "nt":
+        return Path(r"C:\Program Files\ClaudeCode\managed-settings.json")
+    return Path("/etc/claude-code/managed-settings.json")
+
+
+def claude_config_dir(env: Optional[Mapping[str, str]] = None) -> Path:
+    """``CLAUDE_CONFIG_DIR``, else ``~/.claude``. Claude Code uses the value
+    as it is: no ``~`` expansion."""
+    raw = str(_env(env).get(CLAUDE_CONFIG_ENV) or "")
+    return Path(unicodedata.normalize("NFC", raw or str(Path.home() / ".claude")))
+
+
+def _check_dir(raw: Any, expand_home: bool) -> Optional[Path]:
+    """Claude Code's check of a memory folder setting: absolute, or ``~/...``
+    when ``expand_home``; no ``..`` above home; not a bare drive; no NUL."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    path = raw
+    if expand_home and (path.startswith("~/") or path.startswith("~\\")):
+        rest = path[2:]
+        norm = os.path.normpath(rest or ".")
+        if norm in (".", "..") or norm.startswith(".." + os.sep) or norm.startswith("../"):
+            return None
+        path = os.path.join(str(Path.home()), rest)
+    path = os.path.normpath(path).rstrip("/\\")
+    if (
+        not os.path.isabs(path)
+        or len(path) < 3
+        or re.fullmatch(r"[A-Za-z]:", path)
+        or "\x00" in path
+    ):
+        return None
+    return Path(unicodedata.normalize("NFC", path))
+
+
+def _settings_value(path: Path, key: str) -> Any:
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc.get(key) if isinstance(doc, dict) else None
+
+
+def auto_memory_setting(
+    cwd: Optional[str], env: Optional[Mapping[str, str]] = None
+) -> Tuple[Optional[Any], Optional[Path]]:
+    """``(value, file)`` of the first settings file that sets
+    ``autoMemoryDirectory``, in Claude Code's order; ``(None, None)`` when
+    none does. The project files are read from ``cwd``."""
+    files = [managed_settings_path()]
+    if cwd:
+        files += [
+            Path(cwd) / ".claude" / "settings.local.json",
+            Path(cwd) / ".claude" / "settings.json",
+        ]
+    files.append(claude_config_dir(env) / "settings.json")
+    for path in files:
+        value = _settings_value(path, AUTO_MEMORY_KEY)
+        if value is not None:
+            return value, path
+    return None, None
+
+
+def _is_entry(path: str) -> bool:
+    return os.path.isdir(path) or os.path.isfile(path)
+
+
+def git_root(cwd: str) -> Optional[str]:
+    """The first folder at or above ``cwd`` that holds a ``.git`` entry (a
+    folder or a file), or None outside git."""
+    here = os.path.abspath(cwd)
+    while True:
+        try:
+            if _is_entry(os.path.join(here, ".git")):
+                return here
+        except (OSError, ValueError):
+            return None
+        up = os.path.dirname(here)
+        if up == here:
+            return None
+        here = up
+
+
+def _read_line(path: str) -> str:
+    with open(path, encoding="utf-8") as fh:
+        return fh.read().strip()
+
+
+def canonical_git_root(root: str) -> str:
+    """The main checkout of the repository whose ``.git`` entry is in
+    ``root``. A linked worktree gives its main checkout (or the bare
+    repository folder); anything else, or any failed check, gives ``root``."""
+    try:
+        text = _read_line(os.path.join(root, ".git"))
+    except (OSError, ValueError):
+        return root  # a .git folder: root is the main checkout
+    try:
+        if not text.startswith("gitdir:"):
+            return root
+        gitdir = os.path.normpath(os.path.join(root, text[len("gitdir:") :].strip()))
+        common = os.path.normpath(
+            os.path.join(gitdir, _read_line(os.path.join(gitdir, "commondir")))
+        )
+        if os.path.normpath(os.path.dirname(gitdir)) != os.path.join(common, "worktrees"):
+            return root
+        back = os.path.normpath(os.path.join(gitdir, _read_line(os.path.join(gitdir, "gitdir"))))
+        if os.path.realpath(back) != os.path.join(os.path.realpath(root), ".git"):
+            return root
+        if os.path.basename(common) != ".git":
+            return common  # a bare repository
+        return os.path.dirname(common)
+    except (OSError, ValueError):
+        return root
+
+
+def project_folder(cwd: str) -> str:
+    """The folder Claude Code names the project after: the main checkout of
+    the git repository at ``cwd``, else ``cwd``."""
+    cwd = os.path.abspath(cwd)
+    root = git_root(cwd)
+    return canonical_git_root(root) if root else cwd
+
+
+def resolve_memory_dir(
+    cwd: Optional[str], env: Optional[Mapping[str, str]] = None
+) -> Optional[Path]:
+    """The memory folder of a session at ``cwd``: ``NOBLIVION_MEMORY_DIR``,
+    else the folder Claude Code uses (the rule above). None when there is no
+    override and ``cwd`` is not an absolute path. The folder may not exist."""
+    e = _env(env)
+    raw = str(e.get(MEMORY_DIR_OVERRIDE_ENV) or "").strip()
+    if raw:
+        return Path(os.path.expanduser(raw))
+    cowork = _check_dir(e.get(COWORK_MEMORY_ENV), expand_home=False)
+    if cowork:
+        return cowork
+    if not (isinstance(cwd, str) and os.path.isabs(cwd)):
+        return None
+    value, _ = auto_memory_setting(cwd, e)
+    custom = _check_dir(value, expand_home=True)
+    if custom:
+        return custom
+    config = claude_config_dir(e)
+    remote = str(e.get(REMOTE_MEMORY_ENV) or "")
+    base = Path(remote) if remote else config
+    name = None
+    if base == config and e.get(CLAUDE_CONFIG_ENV):
+        pinned = str(e.get(PROJECT_DIR_NAME_ENV) or "")
+        if _DIR_NAME_RE.match(pinned) and not _DEVICE_NAME_RE.match(pinned):
+            name = pinned
+    if name is None:
+        name = project_slug(project_folder(cwd))
+    return Path(unicodedata.normalize("NFC", str(base / "projects" / name / "memory")))

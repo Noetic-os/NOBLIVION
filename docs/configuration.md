@@ -57,6 +57,28 @@ Every on/off switch reads its value the same way. The Default column says
 `noblivion` command runs from the store venv, it also finds the data dir
 from the install stamp in that venv.
 
+### The session's memory folder
+
+The recall hooks use the folder Claude Code keeps auto memory in for the
+session. They find it the way Claude Code does:
+
+1. `NOBLIVION_MEMORY_DIR` (or `NOBLIVION_RECALL_MEMORY_DIR`), when set.
+2. `autoMemoryDirectory` from the first Claude Code settings file that sets
+   it: the managed settings, the project's `.claude/settings.local.json` and
+   `.claude/settings.json`, then the user's `settings.json`. The value must be
+   absolute or start with `~/`.
+3. `<config dir>/projects/<project>/memory`. The config dir is
+   `CLAUDE_CONFIG_DIR`, else `~/.claude`. The project is the main checkout of
+   the git repository that holds the working directory, so a subfolder and
+   every linked worktree share one folder. Outside git it is the working
+   directory. Its name has every character that is not a letter or a digit
+   replaced by `-`. `CLAUDE_CODE_PROJECT_DIR_NAME` replaces the name when
+   `CLAUDE_CONFIG_DIR` is set.
+
+When that folder does not exist, the recall hook writes one line to
+`<data dir>/cache/memory-dir.log` for the call, and recall reads no memory
+files.
+
 ### Shared Claude Code and Codex settings
 
 Use the same absolute `NOBLIVION_DATA_DIR` for both clients. Use the same
@@ -95,7 +117,7 @@ not a database namespace. It does not separate the two clients' searches.
 | none | `index.delete_grace_days` | `14` | Days a deleted note stays in the database before the store removes it. |
 | `NOBLIVION_LOG_LEVEL` | `log_level` | `info` | `debug`, `info`, `warning` or `error`. Only `debug` writes query text to the log. |
 | `NOBLIVION_PROJECT` | `namespace` | `claude_code` | The namespace of the notes. Lower-case letters, digits and `_`. |
-| `NOBLIVION_MEMORY_DIRS` | `memory_dirs` | every `~/.claude/projects/*/memory` folder | The folders the store indexes. The env var separates folders with `:`. The config key is a JSON list. The store also indexes `NOBLIVION_MEMORY_DIR` (see Guards) when it is set, so the hooks and the store always use the same folder. |
+| `NOBLIVION_MEMORY_DIRS` | `memory_dirs` | every `<config dir>/projects/*/memory` folder, plus the `autoMemoryDirectory` of the user and managed settings | The folders the store indexes. The env var separates folders with `:`. The config key is a JSON list. The store also indexes `NOBLIVION_MEMORY_DIR` (see Guards) when it is set, so the hooks and the store always use the same folder. |
 | `NOBLIVION_BIN` | `store.bin` | `<data dir>/venv/bin/noblivion` | The `noblivion` command the hooks run to start the store. |
 | `NOBLIVION_STORE_AUTOSTART` | none | on (switch) | When off, no hook starts the store. |
 
@@ -123,7 +145,7 @@ run `noblivion consent embeddings`. The `openrouter` backend also needs
 | `NOBLIVION_RECALL_TIMEOUT_S` | `recall.timeout_s` | `2.0` | The time budget of one recall, in seconds. |
 | `NOBLIVION_RECALL_MIN_SCORE` | `recall.min_score` | `0.3` | The lowest score a hit needs. The store sends a cosine score with each hit. A hit with no score (keyword-only mode) always passes. |
 | `NOBLIVION_RECALL_PROJECT` | `namespace` | `claude_code` | The namespace to search. `NOBLIVION_PROJECT` is read when this is not set. |
-| `NOBLIVION_RECALL_MEMORY_DIR` | none | the memory folder of the session's working directory | The memory folder of the session. It sets the root (see below) and the folder for local re-ranking and rule rows. `NOBLIVION_MEMORY_DIR` is read when this is not set. |
+| `NOBLIVION_RECALL_MEMORY_DIR` | none | the session's memory folder (see "The session's memory folder") | The memory folder of the session. It sets the root (see below) and the folder for local re-ranking and rule rows. `NOBLIVION_MEMORY_DIR` is read when this is not set. |
 | `NOBLIVION_RECALL_ROOT` | none | the name of the project folder that holds the memory folder | The root. Recall searches only the notes of this root, plus the shared roots. |
 | none | `recall.shared_roots` | `[]` | Roots whose notes every session can find. |
 | `NOBLIVION_RECALL_CACHE_DIR` | none | `<data dir>/cache` | Hook state: session files, logs and the trust event spool. |
@@ -192,7 +214,7 @@ that is set in the environment wins over `recall.env`.
 | `NOBLIVION_ERROR_RECALL_MIN_SCORE` | none | `0.60` | The lowest score of a store hit. |
 | `NOBLIVION_ERROR_RECALL_TIMEOUT_S` | none | `0.8` | The time budget of the store call, in seconds. |
 | `NOBLIVION_ERROR_RECALL_SESSION_CHARS` | none | `6000` | The most characters the hook adds per agent in one session. |
-| `NOBLIVION_ERROR_RECALL_MEMORY_DIR` | none | `NOBLIVION_RECALL_MEMORY_DIR`, else `NOBLIVION_MEMORY_DIR`, else the memory folder of the working directory | The memory folder to search. |
+| `NOBLIVION_ERROR_RECALL_MEMORY_DIR` | none | `NOBLIVION_RECALL_MEMORY_DIR`, else `NOBLIVION_MEMORY_DIR`, else the session's memory folder | The memory folder to search. |
 | `NOBLIVION_ERROR_RECALL_LOG` | none | `<data dir>/error-recall-log.jsonl` | The log file. |
 | `NOBLIVION_ERROR_RECALL_STATE_DIR` | none | `NOBLIVION_GUARD_STATE_DIR`, else `<data dir>/guard-state` | The state folder. |
 

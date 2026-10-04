@@ -165,13 +165,54 @@ def switch(
     return default
 
 
-def default_memory_dirs() -> list[Path]:
-    """Every folder that matches ``~/.claude/projects/*/memory``."""
-    projects = Path.home() / ".claude" / "projects"
+def claude_config_dir(env: Mapping[str, str] | None = None) -> Path:
+    """``CLAUDE_CONFIG_DIR``, else ``~/.claude``, as Claude Code reads it (no
+    ``~`` expansion). ``hooks/hook_config.py`` holds the same rule."""
+    env = os.environ if env is None else env
+    return Path(env.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+
+
+def _auto_memory_directory(path: Path) -> Path | None:
+    """The ``autoMemoryDirectory`` of one Claude Code settings file, when it
+    is absolute or ``~/...`` (the only forms Claude Code accepts)."""
     try:
-        return sorted(p for p in projects.glob("*/memory") if p.is_dir())
-    except OSError:
-        return []
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    raw = doc.get("autoMemoryDirectory") if isinstance(doc, dict) else None
+    if not isinstance(raw, str) or not (raw.startswith("~/") or os.path.isabs(raw)):
+        return None
+    return Path(os.path.expanduser(raw))
+
+
+def default_memory_dirs(env: Mapping[str, str] | None = None) -> list[Path]:
+    """Every folder Claude Code may keep auto memory in (NOBLIVION-30):
+    ``<config dir>/projects/*/memory`` (``CLAUDE_CONFIG_DIR``, else
+    ``~/.claude``), the same under ``CLAUDE_CODE_REMOTE_MEMORY_DIR``, and the
+    ``autoMemoryDirectory`` of the user and managed settings files. The
+    store has no working dir, so a project's own settings files are not
+    read; ``NOBLIVION_MEMORY_DIR`` covers that case."""
+    env = os.environ if env is None else env
+    config = claude_config_dir(env)
+    bases = [config]
+    if env.get("CLAUDE_CODE_REMOTE_MEMORY_DIR"):
+        bases.append(Path(env["CLAUDE_CODE_REMOTE_MEMORY_DIR"]))
+    found: set[Path] = set()
+    for base in bases:
+        try:
+            found.update(p for p in (base / "projects").glob("*/memory") if p.is_dir())
+        except OSError:
+            pass
+    managed = (
+        Path("/Library/Application Support/ClaudeCode/managed-settings.json")
+        if sys.platform == "darwin"
+        else Path("/etc/claude-code/managed-settings.json")
+    )
+    for settings in (managed, config / "settings.json"):
+        custom = _auto_memory_directory(settings)
+        if custom is not None and custom.is_dir():
+            found.add(custom)
+    return sorted(found)
 
 
 def _non_negative_int(value: object, default: int) -> int:
