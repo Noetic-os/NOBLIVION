@@ -8,7 +8,8 @@ store. The store indexes Markdown notes in SQLite. Each client can find
 project notes and rules. The store also tracks which notes help, and a hook
 can stop a tool call that breaks a rule.
 
-Status: in development. There is no release yet.
+Status: early release (v0.1.x). [CHANGELOG.md](CHANGELOG.md) lists every
+release.
 
 ## What it does
 

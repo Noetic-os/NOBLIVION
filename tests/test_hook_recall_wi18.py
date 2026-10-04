@@ -276,7 +276,7 @@ def test_the_drop_asks_the_store_for_the_deep_list(tmp_path, corpus, daemon):
 
 def test_a_row_with_a_summary_and_no_rule_is_kept(tmp_path, corpus, daemon):
     text = _serve(_env(tmp_path, corpus, **DROP))
-    by_name = dict(zip(_names(text), _rows(text), strict=False))
+    by_name = dict(zip(_names(text), _rows(text)))  # noqa: B905 - no strict= on 3.9
     assert "what the capture says" in by_name[S1], "no local file, a summary"
     assert "the state of project one" in by_name["project_p01"], "a file, no rule"
     assert "project_p02" not in by_name, "a file with no rule and no summary"

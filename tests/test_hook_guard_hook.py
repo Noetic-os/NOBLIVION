@@ -220,7 +220,7 @@ def test_budget_spent_retry_is_still_denied_and_escalates(env):
     assert [o.get("permissionDecision") for o in outs] == ["deny"] * 5
     reasons = [o["permissionDecisionReason"] for o in outs]
     assert all(r.startswith("Never force-push.") for r in reasons[:2])
-    for n, r in zip((3, 4, 5), reasons[2:], strict=False):
+    for n, r in enumerate(reasons[2:], start=3):
         assert r.startswith(f"Denied {n} times in this session by this rule.")
         assert "Never force-push." in r and r.endswith(OVERRIDE)
     assert all("additionalContext" not in o for o in outs)

@@ -52,8 +52,19 @@ machine first.
 | Forbidden names, tracked files | `python3 tools/check_forbidden_names.py` |
 | Forbidden names, full history | `python3 tools/check_forbidden_names.py --history` |
 | License headers | `python3 tools/check_spdx.py` |
+| CHANGELOG entry, no `<owner>` | `python3 tools/check_changelog.py --base origin/main` |
 
 A pull request merges only when all gates pass.
+
+CI runs the tests on Linux with Python 3.10 and 3.12, and on macOS with
+3.12. A second job runs the test files that do not import the package
+(the hooks, MCP and Codex adapter tests) on Python 3.9, on Linux and macOS.
+Keep code in `hooks/`, `mcp/` and `codex/` valid for 3.9: no `match`, no
+`zip(strict=...)`, no `X | Y` type outside an annotation.
+
+A pull request that changes `src/`, `hooks/`, `mcp/` or `codex/` must add a
+line under `## Unreleased` in `CHANGELOG.md`. For a change that a user
+cannot see, add the line `Changelog: none` to the commit message instead.
 
 The test suite includes multi-process store tests. They are marked
 `slow`. To skip them on your machine, run `uv run pytest -q -m "not slow"`.

@@ -69,6 +69,55 @@ jobs:
       - name: Threshold eval with the score gate
         run: uv run python tools/eval_thresholds.py --check
 
+  # The full suite on macOS: the docs name Linux and macOS as supported.
+  test-macos:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run pytest -q
+
+  # The hooks and the MCP server claim Python 3.9 (the macOS system python3).
+  # The package needs 3.10, so this job runs, without the package, every test
+  # file that does not import it: the hooks, MCP and Codex adapter tests.
+  test-py39:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Tests without the package on Python 3.9
+        run: |
+          set -euo pipefail
+          files=$(grep -L -E 'noblivion\.|from noblivion|import noblivion|src/noblivion' tests/test_*.py)
+          test -n "$files"
+          uv run --no-project --python 3.9 --with pytest pytest -q $files
+
+  changelog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: CHANGELOG entry for shipped code (pull requests only)
+        if: github.event_name == 'pull_request'
+        run: python tools/check_changelog.py --base "origin/${{ github.base_ref }}"
+      - name: No <owner> placeholder
+        if: github.event_name != 'pull_request'
+        run: python tools/check_changelog.py
+
   leaks:
     runs-on: ubuntu-latest
     timeout-minutes: 10

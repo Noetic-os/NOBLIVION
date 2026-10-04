@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for the two repository gate scripts in tools/.
+"""Tests for the repository gate scripts in tools/
 
 The tests use fictional pattern lists, so this file holds no forbidden name.
 """
@@ -27,6 +27,7 @@ def _load(name: str):
 
 names = _load("check_forbidden_names")
 spdx = _load("check_spdx")
+changelog = _load("check_changelog")
 
 
 @pytest.fixture()
@@ -175,3 +176,44 @@ def test_forbidden_shipped_example_list_parses_and_is_generic() -> None:
     patterns = names.load_patterns(path, private=False)
     assert patterns
     assert not (TOOLS / "forbidden_names.txt").exists()
+
+
+def _commit(repo: Path, files: dict[str, str], message: str = "change") -> None:
+    for name, text in files.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(text)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
+
+
+def test_changelog_product_change_without_entry_fails(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _commit(repo, {"hooks/a.py": "x = 1\n"})
+    assert changelog.main(["--base", "HEAD~1"]) == 1
+    assert "hooks/a.py changed, but CHANGELOG.md did not" in capsys.readouterr().out
+
+
+def test_changelog_product_change_with_entry_passes(repo: Path) -> None:
+    _commit(repo, {"src/p/a.py": "x = 1\n", "CHANGELOG.md": "## Unreleased\n- a\n"})
+    assert changelog.main(["--base", "HEAD~1"]) == 0
+
+
+def test_changelog_waiver_line_passes(repo: Path) -> None:
+    _commit(repo, {"mcp/a.py": "x = 1\n"}, "refactor\n\nChangelog: none\n")
+    assert changelog.main(["--base", "HEAD~1"]) == 0
+
+
+def test_changelog_change_outside_product_dirs_passes(repo: Path) -> None:
+    _commit(repo, {"tests/test_a.py": "x = 1\n", "docs/a.md": "text\n"})
+    assert changelog.main(["--base", "HEAD~1"]) == 0
+
+
+def test_changelog_owner_placeholder_fails_outside_changelog(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _commit(repo, {"CHANGELOG.md": "the `<owner>/x` short form\n"})
+    assert changelog.main([]) == 0
+    _commit(repo, {"docs/install.md": "one\ngit clone <owner>/x\n"})
+    assert changelog.main([]) == 1
+    assert "docs/install.md:2" in capsys.readouterr().out

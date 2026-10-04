@@ -1176,6 +1176,13 @@ def _imported_names(path: Path) -> set:
     return names
 
 
+# sys.stdlib_module_names is new in 3.10; the 3.10+ runs cover the 3.9 code
+NEEDS_STDLIB_NAMES = pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="sys.stdlib_module_names needs Python 3.10"
+)
+
+
+@NEEDS_STDLIB_NAMES
 @pytest.mark.parametrize(
     "name", ["recall_hook", "corpus", "store_client", "hook_config", "memory_text"]
 )
@@ -1184,6 +1191,7 @@ def test_hook_and_its_siblings_import_standard_library_only(name):
     assert names <= set(sys.stdlib_module_names), names - set(sys.stdlib_module_names)
 
 
+@NEEDS_STDLIB_NAMES
 def test_mcp_imports_standard_library_only():
     names = _imported_names(_MCP)
     assert names <= set(sys.stdlib_module_names)

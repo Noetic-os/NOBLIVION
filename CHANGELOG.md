@@ -6,7 +6,12 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.3 - 2026-10-04
+
+Makes the hooks correct for users other than the author: the memory folder,
+the per-project guards and the stop checks. After the plugin update, type
+`/noblivion:setup` in the next session: the store venv must be rebuilt for
+0.1.3.
 
 ### Changed
 
@@ -56,6 +61,20 @@ All notable changes to NOBLIVION. The format follows
   when the default model changes.
 - `noblivion stop report [--days N] [--json]` counts the stop check log rows
   per check: would block, blocked, and logged only.
+- An optional user-wide memory folder: `NOBLIVION_GLOBAL_MEMORY_DIR`, or the
+  config key `global_memory_dir` (NOBLIVION-31). Default: none. When it is
+  set, the store indexes it and searches it in every session, and recall, the
+  guard table and the stop checks read it after the project folder. A file of
+  the project folder wins over a file with the same name in the global folder,
+  in the store and in the hooks. A file of the session's root now also wins
+  over a file with the same name in a `recall.shared_roots` root.
+- A Codex adapter (`codex/adapter.py`, `scripts/install_codex.py`). Codex
+  uses the same store and the same memory files as Claude Code, with prompt
+  recall, guards and task continuity. See `docs/codex.md` and
+  `docs/shared-memory.md`.
+- The MCP tool `noblivion_remember` saves a verified, redacted Markdown note
+  in the memory folder. `NOBLIVION_SOURCE_CLIENT` names the client in the
+  note (`claude_code` or `codex`).
 
 ### Fixed
 
@@ -96,16 +115,6 @@ All notable changes to NOBLIVION. The format follows
   missing table once. `NOBLIVION_GUARD_TABLE` still names one fixed file.
 - The memory sync hook keeps its Bash stamp per project folder, and gives the
   indexer the project folder.
-
-### Added
-
-- An optional user-wide memory folder: `NOBLIVION_GLOBAL_MEMORY_DIR`, or the
-  config key `global_memory_dir` (NOBLIVION-31). Default: none. When it is
-  set, the store indexes it and searches it in every session, and recall, the
-  guard table and the stop checks read it after the project folder. A file of
-  the project folder wins over a file with the same name in the global folder,
-  in the store and in the hooks. A file of the session's root now also wins
-  over a file with the same name in a `recall.shared_roots` root.
 
 ## 0.1.2 - 2026-10-04
 
