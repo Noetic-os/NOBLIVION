@@ -9,7 +9,7 @@
       "name": "noblivion",
       "source": "./",
       "description": "Local memory recall, guards and a memory usage report for Claude Code.",
-      "version": "0.1.4"
+      "version": "0.1.5"
     }
   ]
 }

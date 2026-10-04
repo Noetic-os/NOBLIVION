@@ -6,7 +6,14 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.5 - 2026-10-04
+
+Adds the real-session trust results and the replay tool that produced
+them. On 521 real sessions the time-split test found no gain, and the
+citation signal had low precision, so trust ranking and both trust signals
+stay off by default. Also fixes three store and migration bugs. After the
+plugin update, type `/noblivion:setup` in the next session: the store venv
+must be rebuilt for 0.1.5.
 
 ### Added
 
