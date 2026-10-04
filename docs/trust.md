@@ -91,7 +91,16 @@ A reply cites a note when all of these hold:
   words of its rule in a row, with at least 4 content words among them;
 - that sentence does not set the note aside. Words such as "does not
   apply", "outdated", "ignore", "override", "could not", "missing",
-  "index" or "showed" exclude it.
+  "index" or "showed" exclude it;
+- the reply does not save or edit the note. A sentence with "saved",
+  "recorded", "updated", "wrote", "added", "created" or a similar word
+  counts no note name (a phrase of the rule still counts), and a note
+  that a tool call of the same turn writes (Write, Edit, MultiEdit,
+  NotebookEdit, or a `>`, `>>` or `tee` in a Bash command) is not cited in
+  that turn;
+- the reply is not a list of notes. No citation counts in a turn whose
+  prompt asks to list, show or print the rules, memories or notes, or in
+  a reply that names 5 or more shown notes at once.
 
 A tool call is not a reply: a note name in a command does not count.
 
@@ -369,6 +378,34 @@ Of the 33 false `use` events, 16 repeated a list of rules that the user
 had asked to see, 15 saved or edited the note itself, 1 called the note
 outdated, and 1 was a phrase match on a note that records the same work.
 
+#### After the fix in 0.1.6-dev (NOBLIVION-43)
+
+The citation rule now skips a note that the reply saves or edits, and a
+list of notes (see "Citation as `use`"). The replay ran again with the
+fixed rule, in a new scratch data dir, on the same transcripts.
+
+- New `use` events: 37 (143 before).
+- Tuning set: of the 40 events labelled for 0.1.5, 7 of the 7 true events
+  and 1 of the 33 false events are still recorded. The fix was designed on
+  these events, so this is not a test.
+- Fresh sample: every new `use` event that is not one of those 40 (same
+  session, note and prompt). The plan allowed up to 40, drawn with a fixed
+  seed; only 29 existed, so all 29 were labelled. An AI reviewer labelled
+  them by the 0.1.5 rule, not a human.
+
+| Sample | Labelled n | True | Precision | Wilson 95% lower bound |
+| --- | --- | --- | --- | --- |
+| fresh, 0.1.6-dev | 29 | 15 | 0.517 | 0.344 |
+
+Of the 14 false events, 5 were phrase matches on a fact that the note
+shares with other text, 3 restated the work item that the prompt named,
+3 saved or edited the note in a way the rule does not see, 2 were a list
+of notes that the reply said went unread, and 1 asked for the decision
+that the note records.
+
+Decision: n 29 < 30 and lower bound 0.344 < 0.70, so the rule fails and
+the citation signal stays off by default.
+
 ### Rules and resulting defaults
 
 The rules, fixed before the data was read:
@@ -380,7 +417,7 @@ The rules, fixed before the data was read:
 
 | Setting | Rule result | Default |
 | --- | --- | --- |
-| `NOBLIVION_TRUST_CITATION_USE` | n 40, lower bound 0.087 < 0.70 | off |
+| `NOBLIVION_TRUST_CITATION_USE` | n 40, lower bound 0.087 < 0.70; after NOBLIVION-43 n 29, lower bound 0.344 | off |
 | `NOBLIVION_TRUST_CORRECTION_CONTRADICT` | n 0 < 30 | off |
 | Trust ranking | verdict `no gain` | off |
 

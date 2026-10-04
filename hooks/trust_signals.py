@@ -6,7 +6,9 @@
    earlier in the session, or it repeats a long phrase of the note's rule
    word for word. Setting ``NOBLIVION_TRUST_CITATION_USE`` (config key
    ``trust.citation_use``). Off by default: on the labelled set its
-   precision was 6 of 9 at the first run (docs/trust.md).
+   precision was 6 of 9 at the first run, and on real sessions 7 of 40,
+   then 15 of 29 after the save and list-echo skips (NOBLIVION-43,
+   docs/trust.md).
 2. CORRECTION -> ``contradict``. The user corrects Claude Code, and the
    correction is about a note that was shown in the last prompts and that
    the reply cited. Setting ``NOBLIVION_TRUST_CORRECTION_CONTRADICT``
@@ -108,6 +110,30 @@ NEGATION_RE = re.compile(
     r"index|showed|listed)\b",
     re.I,
 )
+
+# Not a use either (NOBLIVION-43): a reply names a note because it saves or
+# edits it. A sentence with one of these words adds no note NAME (a verbatim
+# phrase of the rule still counts), and a note that a tool call of the same
+# turn writes is not cited in that turn.
+SAVE_RE = re.compile(
+    r"\b(?:saved|recorded|updated|wrote|written|rewrote|rewritten|added|created|"
+    r"stored|edited|appended)\b",
+    re.I,
+)
+WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
+_REDIRECT_RE = re.compile(r"(?:>>?|\btee\s+(?:-a\s+)?)\s*['\"]?([^\s'\";|&<>()]+)")
+WRITTEN_MAX = 200
+
+# A list echo is not a use (NOBLIVION-43): the user asked to see the notes,
+# or one reply names many shown notes at once. A reply that applies notes to
+# a task names a few of them. On the real-session set the replies labelled
+# true named at most 2 shown notes, the list echoes 24 and 38.
+ECHO_PROMPT_RE = re.compile(
+    r"\b(?:list|show|print|display|repeat|recite|quote|dump|enumerate)\b"
+    r"[^.?!\n]{0,60}?\b(?:rules?|memor(?:y|ies)|notes?)\b",
+    re.I,
+)
+ECHO_MIN_NOTES = 5
 
 # A correction that holds the user TO a note says the note is right.
 ENFORCE_RE = re.compile(
@@ -372,7 +398,7 @@ class _Reply:
             if NEGATION_RE.search(sent):
                 continue
             low = sent.lower()
-            for rx in _TOKEN_RES:
+            for rx in _TOKEN_RES if not SAVE_RE.search(sent) else ():
                 for tok in rx.findall(low):
                     tok = tok.strip(".")
                     self.tokens.add(tok)
@@ -471,6 +497,39 @@ def reply_text(rec: Mapping[str, Any]) -> Optional[str]:
     return "\n".join(parts)[:REPLY_MAX_CHARS] if parts else None
 
 
+def file_key(path: str) -> str:
+    """A note name or a file path -> its file name without ``.md``, lower
+    case, ``-`` as ``_``: the key that says the two are the same note."""
+    base = _stem(os.path.basename(str(path or "").rstrip("/\\")))
+    return base.replace("-", "_")
+
+
+def written_files(rec: Mapping[str, Any]) -> Set[str]:
+    """The ``file_key`` of each file that a tool call of this assistant
+    record writes: Write, Edit, MultiEdit, NotebookEdit, or a shell
+    redirect (``>``, ``>>``, ``tee``) in a Bash command."""
+    out: Set[str] = set()
+    if rec.get("type") != "assistant" or rec.get("isSidechain"):
+        return out
+    msg = rec.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    for block in content if isinstance(content, list) else ():
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        inp = block.get("input")
+        if not isinstance(inp, dict):
+            continue
+        name = block.get("name")
+        if name in WRITE_TOOLS:
+            for field in ("file_path", "notebook_path"):
+                if isinstance(inp.get(field), str) and inp[field]:
+                    out.add(file_key(inp[field]))
+        elif name == "Bash" and isinstance(inp.get("command"), str):
+            out.update(file_key(m) for m in _REDIRECT_RE.findall(inp["command"]))
+    out.discard("")
+    return out
+
+
 def _parse(ts: str) -> Optional[_dt.datetime]:
     try:
         return _dt.datetime.fromisoformat(ts)
@@ -511,7 +570,12 @@ def _state(raw: Any) -> Dict[str, Any]:
     cited = {str(k): v for k, v in cited_raw.items() if _mid(k) and isinstance(v, str)}
     used = [m for m in (_mid(x) for x in _list(doc.get("used"))) if m is not None]
     hit = [m for m in (_mid(x) for x in _list(doc.get("contradicted"))) if m is not None]
-    return {"prompts": prompts, "cited": cited, "used": used, "contradicted": hit}
+    turn_raw = doc.get("turn") if isinstance(doc.get("turn"), dict) else {}
+    turn = {
+        "echo": turn_raw.get("echo") is True,
+        "written": {w for w in _list(turn_raw.get("written")) if isinstance(w, str)},
+    }
+    return {"prompts": prompts, "cited": cited, "used": used, "contradicted": hit, "turn": turn}
 
 
 def scan(
@@ -528,18 +592,40 @@ def scan(
     the times it was shown. ``state`` carries what earlier calls saw (the
     last prompt times, the notes cited and when). A note gets at most one
     ``use`` and one ``contradict`` per session from these signals.
+
+    The citations of a turn (a prompt and the records up to the next one)
+    count when the turn ends, or at the end of ``records``: a citation of a
+    note that a tool call of the same turn writes does not count, and in a
+    turn whose prompt asks to see the notes (``ECHO_PROMPT_RE``) none does.
+    A turn split over two calls keeps what its first part wrote in
+    ``state``; a citation counted in the first part stays counted.
     """
     st = _state(state)
     used: Set[int] = set(st["used"])
     contradicted: Set[int] = set(st["contradicted"])
     events: List[Dict[str, Any]] = []
     notes: Dict[int, _Note] = {}
+    turn: Dict[str, Any] = st["turn"]
+    pending: List[Tuple[int, str]] = []
+
+    def settle() -> None:
+        for mid, at in pending:
+            if file_key(shown[mid].get("name", "")) in turn["written"]:
+                continue  # the turn saves or edits this note
+            st["cited"][str(mid)] = at
+            if citation and mid not in used:
+                used.add(mid)
+                events.append({"mv_id": mid, "kind": te().KIND_USE, "ts": at, "src": SRC_CITATION})
+        pending.clear()
+
     for rec in records:
         ts = te().norm_ts(rec.get("timestamp"))
         if ts is None:
             continue
         prompt = user_prompt(rec)
         if prompt is not None:
+            settle()
+            turn = {"echo": bool(ECHO_PROMPT_RE.search(prompt)), "written": set()}
             if correction:
                 mid = _correction_target(prompt, ts, shown, exposures, st)
                 if mid is not None and mid not in contradicted:
@@ -554,24 +640,27 @@ def scan(
                     )
             st["prompts"] = (st["prompts"] + [ts])[-CORRECTION_WINDOW:]
             continue
+        if len(turn["written"]) < WRITTEN_MAX:
+            turn["written"] |= written_files(rec)
         reply = reply_text(rec)
-        if reply is None:
+        if reply is None or turn["echo"]:
             continue
         prepared = _Reply(reply)
         if prepared.empty:
             continue
+        found: List[int] = []
         for mid, note in shown.items():
             times = exposures.get(mid) or ()
             if not times or min(times) > ts:
                 continue  # not shown yet
             if mid not in notes:
                 notes[mid] = _Note(note.get("name", ""), note.get("rule", ""))
-            if not prepared.cites(notes[mid]):
-                continue
-            st["cited"][str(mid)] = ts
-            if citation and mid not in used:
-                used.add(mid)
-                events.append({"mv_id": mid, "kind": te().KIND_USE, "ts": ts, "src": SRC_CITATION})
+            if prepared.cites(notes[mid]):
+                found.append(mid)
+        if len(found) < ECHO_MIN_NOTES:  # more is a list of the notes
+            pending.extend((mid, ts) for mid in found)
+    settle()
+    st["turn"] = {"echo": turn["echo"], "written": sorted(turn["written"])[:WRITTEN_MAX]}
     if len(st["cited"]) > CITED_MAX:
         keep = sorted(st["cited"].items(), key=lambda kv: kv[1])[-CITED_MAX:]
         st["cited"] = dict(keep)

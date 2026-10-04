@@ -208,6 +208,137 @@ def test_scan_ignores_bad_records_and_state() -> None:
     assert state["cited"] == {}
 
 
+# ── 2b. saves and list echoes are not a use (NOBLIVION-43) ─────────────────
+
+
+def _uses(turns: list[tuple[Any, ...]], tools: dict[int, list[dict[str, Any]]] | None = None):
+    """The ``use`` ids of a made-up session. ``tools`` adds tool calls to the
+    reply of turn i, as a record of their own after it."""
+    records, exposures = cases.build(turns)
+    for i, blocks in sorted((tools or {}).items(), reverse=True):
+        reply = records[2 * i + 1]
+        records.insert(
+            2 * i + 2,
+            {
+                "type": "assistant",
+                "timestamp": reply["timestamp"],
+                "message": {"role": "assistant", "content": blocks},
+            },
+        )
+    events, _ = sig.scan(records, cases.shown_map(), exposures, None, True, False)
+    return [e["mv_id"] for e in events if e["kind"] == "use"]
+
+
+def _tool(name: str, **inp: str) -> dict[str, Any]:
+    return {"type": "tool_use", "id": "t", "name": name, "input": inp}
+
+
+def test_a_genuine_citation_still_counts() -> None:
+    turns = [("Save my work.", [101, 103], "Per feedback_no_git_stash I made a WIP commit.")]
+    tools = {0: [_tool("Bash", command="git commit -m wip | tail -2")]}
+    assert _uses(turns, tools) == [101]
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        _tool("Write", file_path="/m/memory/feedback_no_git_stash.md", content="x"),
+        _tool("Edit", file_path="/m/memory/feedback_no_git_stash.md", old_string="a"),
+        _tool("MultiEdit", file_path="feedback-no-git-stash.md", edits="[]"),
+        _tool("NotebookEdit", notebook_path="/m/feedback_no_git_stash.md"),
+        _tool("Bash", command="cat > $M/feedback_no_git_stash.md <<'EOF'\nx\nEOF"),
+        _tool("Bash", command="echo x | tee -a /m/feedback_no_git_stash.md"),
+    ],
+)
+def test_a_note_written_in_the_same_turn_is_not_a_use(block: dict[str, Any]) -> None:
+    turns = [("Remember this.", [101], "The note is `feedback_no_git_stash.md`.")]
+    assert _uses(turns, {0: [block]}) == []
+
+
+def test_a_write_of_another_file_or_a_read_does_not_skip() -> None:
+    turns = [("Remember this.", [101], "The note is `feedback_no_git_stash.md`.")]
+    tools = {
+        0: [
+            _tool("Write", file_path="/m/memory/feedback_other.md", content="x"),
+            _tool("Read", file_path="/m/memory/feedback_no_git_stash.md"),
+            _tool("Bash", command="cat /m/feedback_no_git_stash.md | head -5"),
+        ]
+    }
+    assert _uses(turns, tools) == [101]
+
+
+def test_a_write_skips_the_note_only_in_its_own_turn() -> None:
+    turns = [
+        ("Remember this.", [101], "The note is `feedback_no_git_stash.md`."),
+        ("Save my work.", [], "Per feedback_no_git_stash I made a WIP commit."),
+    ]
+    tools = {0: [_tool("Write", file_path="/m/feedback_no_git_stash.md", content="x")]}
+    assert _uses(turns, tools) == [101]
+
+
+def test_a_write_in_an_earlier_call_of_the_same_turn_still_skips() -> None:
+    turns = [("Remember this.", [101], "Done.")]
+    records, exposures = cases.build(turns)
+    write = {
+        "type": "assistant",
+        "timestamp": records[1]["timestamp"],
+        "message": {"content": [_tool("Write", file_path="/m/feedback_no_git_stash.md")]},
+    }
+    late = {
+        "type": "assistant",
+        "timestamp": records[1]["timestamp"],
+        "message": {"content": [{"type": "text", "text": "Note: feedback_no_git_stash."}]},
+    }
+    shown = cases.shown_map()
+    _, state = sig.scan(records + [write], shown, exposures, None, True, False)
+    events, _ = sig.scan([late], shown, exposures, json.loads(json.dumps(state)), True, False)
+    assert events == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I saved this to memory as `feedback_no_git_stash.md`.",
+        "Memory written: feedback_no_git_stash.",
+        "I updated the memory file feedback_no_git_stash.md with the new case.",
+        "Rulings recorded in memory: `feedback_no_git_stash.md`.",
+    ],
+)
+def test_a_sentence_about_saving_the_note_is_not_a_use(text: str) -> None:
+    assert not sig.cites(text, "feedback_no_git_stash", RULE)
+    assert _uses([("Remember this.", [101], text)]) == []
+
+
+def test_a_save_word_does_not_hide_a_verbatim_phrase_or_another_sentence() -> None:
+    phrase = "A WIP commit is recorded: never use git stash, commit work in progress as a WIP."
+    assert sig.cites(phrase, "x", RULE)
+    two = "I added a test. Per feedback_no_git_stash I made a WIP commit."
+    assert sig.cites(two, "feedback_no_git_stash", RULE)
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "List, word for word, every memory rule you were given.",
+        "Show me the notes you have on git.",
+        "print all memories for this session",
+    ],
+)
+def test_a_prompt_that_asks_to_see_the_notes_gives_no_use(prompt: str) -> None:
+    reply = "1. feedback_no_git_stash: never use git stash."
+    assert _uses([(prompt, [101], reply)]) == []
+    assert _uses([("Save my work.", [101], reply)]) == [101]
+
+
+def test_a_reply_that_names_many_shown_notes_at_once_gives_no_use() -> None:
+    shown = [101, 102, 103, 104, 105]
+    names = [cases.NOTES[m][0] for m in shown]
+    many = "Rules: " + ", ".join(names) + "."
+    assert _uses([("Go on.", shown, many)]) == []
+    few = "Rules: " + ", ".join(names[: sig.ECHO_MIN_NOTES - 1]) + "."
+    assert _uses([("Go on.", shown, few)]) == shown[: sig.ECHO_MIN_NOTES - 1]
+
+
 def test_events_are_valid_contract_events() -> None:
     ev = {"mv_id": 5, "kind": "use", "ts": "2026-09-01T10:00:00+00:00", "src": "citation"}
     assert te.contract_event(ev) == {

@@ -6,6 +6,18 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- The citation trust signal (`NOBLIVION_TRUST_CITATION_USE`) no longer
+  counts a reply that saves or edits the note it names, or a reply that
+  lists the notes: a turn whose prompt asks to list, show or print the
+  rules or memories, or a reply that names 5 or more shown notes at once.
+  On a fresh real-session sample its precision rose to 15 of 29 (Wilson
+  95% lower bound 0.344), still below the 0.70 rule, so the signal stays
+  off by default. docs/trust.md has the numbers (NOBLIVION-43).
+
 ## 0.1.5 - 2026-10-04
 
 Adds the real-session trust results and the replay tool that produced
