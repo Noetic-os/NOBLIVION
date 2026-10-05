@@ -2285,8 +2285,10 @@ def test_a_rebuild_over_its_time_limit_keeps_the_old_table_in_force(folder_env, 
     assert doc["systemMessage"] == gh.REBUILD_LATE_LINE and len(calls) == 2
     assert "systemMessage" not in _main_doc(env, "git stash pop") and len(calls) == 2
 
-    # a rebuild that ends in time puts every rule in force and ends the late state
+    # a rebuild that ends in time puts every rule in force and ends the late state; the real
+    # rebuild probes each rule in a child process, so it gets the shipped limit, not 0.2 s
     monkeypatch.setattr(gh._gt(), "rebuild", real)
+    monkeypatch.setattr(gh, "REBUILD_LIMIT_S", 6.0)
     _rulefile(mem, "feedback_no_stash_apply", "apply")
     for word in ("pop", "drop", "clear", "apply"):
         doc = _main_doc(env, f"git stash {word}")
