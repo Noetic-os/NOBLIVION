@@ -168,18 +168,18 @@ All notable changes to NOBLIVION. The format follows
   The call is still allowed after 1.5 seconds, but one line now says that
   the deny rules were not checked for this call. Before, only the guard
   log recorded the timeout.
-- `noblivion consent embeddings --revoke` now stops a running store at
-  once. Before, the store read the consent only when it started, so every
-  prompt and every backfill text still went to the remote embedding
+- `noblivion consent embeddings --revoke` now takes effect on a running
+  store at once. Before, the store read the consent only when it started, so
+  every prompt and every backfill text still went to the remote embedding
   service until the store exited. The store now reads the consent before
   each remote call: each prompt embedding, each backfill batch and each
   single-row retry. Without the consent it sends nothing, and recall uses
-  keyword search only. The same rule applies to an Ollama server that is
-  not on this machine. A local backend does not pay for the check. A
-  prompt embedding that still waits when its 1 second limit ends is no
-  longer sent later. A new consent takes effect within seconds, without a
-  restart. The health answer has a new field `embedding.consent`:
-  `not_needed`, `given` or `missing` (NOBLIVION-51).
+  keyword search only. The same rule applies to an Ollama server that is not
+  on this machine. A local backend does not pay for the check. A prompt
+  embedding that still waits when its 1 second limit ends is no longer sent
+  later. A new consent takes effect within seconds, without a restart. The
+  health answer has a new field `embedding.consent`: `not_needed`, `given`
+  or `missing` (NOBLIVION-51).
 - A store whose embedding backend is `failed` no longer starts a thread
   and writes the line `embedding state: failed` to `store.log` every 0.5
   seconds (NOBLIVION-51). A failed model load and a start without the
