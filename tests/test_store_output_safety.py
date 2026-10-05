@@ -68,6 +68,19 @@ def test_index_names_the_model_also_with_no_rows(result):
     assert rest.index_answer(result, "claude_code", query="q", mode="keyword")["model"] is None
 
 
+@pytest.mark.parametrize("query", ["q", " "])
+def test_index_names_no_model_when_the_rows_are_ranked_by_keyword(query):
+    # The store is in hybrid mode, but this one query was ranked by keyword
+    # only: its embedding ran out of time, or the consent could not be read.
+    # No row has a cosine, so the answer names no model.
+    result = RankResult("keyword", [], 3)
+    answer = rest.index_answer(result, "claude_code", query=query, mode="hybrid", model="m/one")
+    assert (answer["mode"], answer["model"]) == ("keyword", None)
+    # A store in keyword mode that is given a model name: the same.
+    answer = rest.index_answer(None, "claude_code", query=query, mode="keyword", model="m/one")
+    assert (answer["mode"], answer["model"]) == ("keyword", None)
+
+
 @pytest.mark.parametrize(("mode", "named"), [("off", False), ("shadow", True), ("on", True)])
 def test_index_names_the_trust_ranking_mode(mode, named):
     row = _row(4, _content("n", "d", "b"))

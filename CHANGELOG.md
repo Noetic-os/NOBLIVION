@@ -21,7 +21,8 @@ All notable changes to NOBLIVION. The format follows
   hook, so a config file of an older release gets it too. The number 0.68
   was measured for the embedding model `BAAI/bge-small-en-v1.5`, so it is
   the default only for that model. The index answer of the store has a new
-  field `model`, and the hook reads it. With another embedding model the
+  field `model`, and the hook reads it. The field is `null` in every answer
+  whose `mode` is `keyword`. With another embedding model the
   default is no floor, because the scores of another model are on another
   scale and 0.68 could hide every row. The recall log then has the note
   `floor_off:model`. A store of an older version names no model: the hook

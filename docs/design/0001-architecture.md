@@ -518,7 +518,9 @@ Field rules:
 - `mode` (new): `hybrid` or `keyword` (section 8.4).
 - `model` (top level, NOBLIVION-48): the embedding model of the cosine
   leg, by its plain name (the value of `embedding.model`, with no backend
-  in front). `null` while the store has no usable model. The prompt hook
+  in front). `null` while the store has no usable model, and in every
+  answer whose `mode` is `keyword`: also when only this query was ranked
+  by keyword, because its embedding ran out of time. The prompt hook
   applies its default index floor only when this is the model that the
   floor was measured for (section 18). An answer with no `model` field
   comes from a store of an older version: the hook then applies no default

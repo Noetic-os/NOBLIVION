@@ -388,7 +388,35 @@ def test_index_names_the_model_while_the_store_ranks_with_it(tmp_path):
         assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
         body = run.get("/api/memories/index?q=alpha")[1]
         assert (body["mode"], body["model"]) == ("hybrid", embedding.DEFAULT_MODEL)
-        assert run.get("/api/memories/index?q=")[1]["model"] == embedding.DEFAULT_MODEL
+        # An empty query has no embedding, so its answer is in keyword mode.
+        body = run.get("/api/memories/index?q=")[1]
+        assert (body["mode"], body["model"]) == ("keyword", None)
+    finally:
+        run.stop()
+
+
+def test_index_names_no_model_for_a_query_whose_embedding_runs_out_of_time(tmp_path):
+    # The store is in hybrid mode, so ``model()`` names the model. The query
+    # embedding of this one request is too slow: its rows are ranked by
+    # keyword and have no cosine, so the answer must not name a model.
+    pytest.importorskip("numpy")
+
+    class Slow(FakeEmbedder):
+        def embed_query(self, text):
+            time.sleep(0.5)
+            return super().embed_query(text)
+
+    service = fake_service(Slow(model=embedding.DEFAULT_MODEL))
+    run = Running(make_store(tmp_path, embedding_service=service))
+    try:
+        with closing(db.connect(run.store.settings.db_path, create=True)) as conn:
+            add_memory(conn, "alpha rule", "alpha bravo charlie")
+        assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
+        run.store.ranker.query_timeout_s = 0.05
+        assert run.store.model() == embedding.DEFAULT_MODEL
+        body = run.get("/api/memories/index?q=alpha")[1]
+        assert (body["mode"], body["model"]) == ("keyword", None)
+        assert body["results"][0]["score"] is None
     finally:
         run.stop()
 

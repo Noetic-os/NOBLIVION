@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from noblivion import db, injection, redaction, trust
 from noblivion.launcher import NONCE_RE
+from noblivion.ranking import MODE_KEYWORD
 
 if TYPE_CHECKING:
     from noblivion.ranking import Hit, RankResult
@@ -211,22 +212,25 @@ def index_answer(
 ) -> dict:
     """Section 4.3. ``model`` is the embedding model of the row scores, or
     None while the store ranks by keyword only: the hook applies its measured
-    floor only to the model it was measured for (NOBLIVION-48). With
+    floor only to the model it was measured for (NOBLIVION-48). An answer
+    whose mode is ``keyword`` names no model, also when only this query was
+    ranked by keyword (its embedding ran out of time). With
     ``trust.ranking`` ``shadow`` or ``on`` the answer
     names the mode in ``trust_ranking``: in ``shadow`` the hook computes and
     logs the trust factor but never applies it (section 8.6)."""
+    if result is not None:
+        mode = result.mode
     answer: dict[str, object] = {
         "namespace": namespace,
         "reason": None,
         "mode": mode,
-        "model": model,
+        "model": None if mode == MODE_KEYWORD else model,
     }
     if trust_ranking in ("shadow", "on"):
         answer["trust_ranking"] = trust_ranking
     if result is None:
         answer.update(reason=INTERNAL_REASON, results=[])
         return answer
-    answer["mode"] = result.mode
     if not query.strip() or result.pool_size == 0:
         answer.update(reason=NO_MEMORIES, results=[])
         return answer
