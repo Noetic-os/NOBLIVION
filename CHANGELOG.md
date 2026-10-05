@@ -163,6 +163,11 @@ All notable changes to NOBLIVION. The format follows
   change, old notes that had nothing to do with the prompt reached the
   context. Now the keyword list holds only the notes that match, as in
   keyword-only mode, and a note with no vector and no match is not returned.
+  A note matches when it holds any word of the query, also a common word
+  such as "the": the store has no stop-word list. So a note with no vector
+  yet still comes back, with no score, when it shares only such a word with
+  the prompt. During a backfill fewer unrelated notes reach the context
+  than before, not none.
 - Recall no longer misses a note whose only matching word is in exactly
   half of the notes of its pool (NOBLIVION-49). Such a word has a keyword
   weight of 0, so the note had a keyword score of 0, and the store read a
