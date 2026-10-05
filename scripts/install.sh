@@ -17,7 +17,8 @@
 #                   CLAUDE_PLUGIN_DATA, else ${XDG_DATA_HOME:-~/.local/share}/noblivion.
 #                   The plugin hooks use CLAUDE_PLUGIN_DATA: the SessionStart
 #                   hook prints the exact command when the venv is missing.
-#   --no-embed      no numpy and fastembed: keyword search only.
+#   --no-embed      no numpy and fastembed: keyword search only
+#                   (sets embedding.backend to none in config.json).
 #   --no-model      do not download the embedding model now.
 #   --no-start      do not start the store now: the next session starts it.
 #   --dry-run       print the steps, change nothing.
@@ -52,6 +53,22 @@ run() {
     fi
 }
 
+# Set embedding.backend to none in config.json: keyword search only.
+backend_none() {
+    NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/python" - <<'PY'
+import json, os
+from noblivion import config
+
+path = config.data_dir() / "config.json"
+doc = json.loads(path.read_text()) if path.exists() else {}
+doc.setdefault("embedding", {})["backend"] = "none"
+tmp = path.with_suffix(".tmp")
+tmp.write_text(json.dumps(doc, indent=2) + "\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --data-dir)
@@ -64,7 +81,7 @@ while [ $# -gt 0 ]; do
         --no-start) START=0; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h | --help)
-            sed -n '4,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '4,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) die "unknown option $1 (see --help)" ;;
@@ -120,7 +137,16 @@ else
 fi
 
 # 4. The embedding model. A failure is not fatal: keyword search still works.
-if [ "$MODEL" = 1 ]; then
+#    Without fastembed the backend is none, else the store tries to load it,
+#    reports "degraded" and logs a warning every hour (NOBLIVION-57).
+if [ "$EMBED" = 0 ]; then
+    if [ "$DRY_RUN" = 1 ]; then
+        say "would set embedding.backend to none (keyword search only)"
+    else
+        say "--no-embed: setting embedding.backend to none (keyword search only)"
+        backend_none
+    fi
+elif [ "$MODEL" = 1 ]; then
     if [ "$DRY_RUN" = 1 ]; then
         say "would download the embedding model to $DATA_DIR/models"
     elif NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/python" - <<'PY'
@@ -137,18 +163,7 @@ PY
         say "embedding model ready"
     else
         say "the model download failed: setting embedding.backend to none (keyword search only)"
-        NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/python" - <<'PY'
-import json, os
-from noblivion import config
-
-path = config.data_dir() / "config.json"
-doc = json.loads(path.read_text()) if path.exists() else {}
-doc.setdefault("embedding", {})["backend"] = "none"
-tmp = path.with_suffix(".tmp")
-tmp.write_text(json.dumps(doc, indent=2) + "\n")
-os.chmod(tmp, 0o600)
-os.replace(tmp, path)
-PY
+        backend_none
     fi
 fi
 
@@ -178,12 +193,14 @@ run env NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/noblivion" migrate-from-legacy
 
 # 8. Start the store now (design doc section 3.2, ensure-running), so the
 #    session that ran this script has memory recall from its next prompt
-#    (NOBLIVION-29). The store runs detached; a failure is not fatal.
+#    (NOBLIVION-29). A running store is replaced: it reads the config and
+#    loads the model only at its start (NOBLIVION-57). The store runs
+#    detached; a failure is not fatal.
 if [ "$START" = 0 ]; then
     say "done. The store starts at the next Claude Code session."
 elif [ "$DRY_RUN" = 1 ]; then
-    run env NOBLIVION_DATA_DIR="$DATA_DIR" CLAUDE_PLUGIN_ROOT="$ROOT" "$VENV/bin/noblivion" ensure-running
-elif env NOBLIVION_DATA_DIR="$DATA_DIR" CLAUDE_PLUGIN_ROOT="$ROOT" "$VENV/bin/noblivion" ensure-running; then
+    run env NOBLIVION_DATA_DIR="$DATA_DIR" CLAUDE_PLUGIN_ROOT="$ROOT" "$VENV/bin/noblivion" ensure-running --restart
+elif env NOBLIVION_DATA_DIR="$DATA_DIR" CLAUDE_PLUGIN_ROOT="$ROOT" "$VENV/bin/noblivion" ensure-running --restart; then
     say "done. The store runs. Memory recall works from the next prompt in this session."
 else
     say "done, but the store did not start (reason above). The next Claude Code session tries again."

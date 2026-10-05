@@ -1133,6 +1133,45 @@ def test_ensure_running_replaces_a_store_of_another_version(tmp_path, monkeypatc
         run.stop()
 
 
+def test_ensure_running_restart_replaces_a_store_of_this_version(tmp_path, monkeypatch):
+    """The store reads its config once, at start. install.sh asks for a
+    restart, so a config or model change takes effect (NOBLIVION-57)."""
+    run = Running(make_store(tmp_path))
+    killed, spawned = [], []
+    monkeypatch.setattr(launcher.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    try:
+        env = {"NOBLIVION_DATA_DIR": str(run.store.data_dir)}
+        state = launcher.ensure_running(
+            env, spawn=lambda d, lock_wait_s=0.0: spawned.append(lock_wait_s), restart=True
+        )
+        assert state == "started"
+        assert killed == [(os.getpid(), signal.SIGTERM)]
+        assert spawned == [launcher.RESTART_LOCK_WAIT_S]
+    finally:
+        run.stop()
+
+
+def test_wait_until_up_does_not_take_the_replaced_store_for_the_new_one(tmp_path):
+    """After a restart the old store answers until it stops. It has the same
+    version, so only its pid tells it from the new store (NOBLIVION-57)."""
+    run = Running(make_store(tmp_path))
+    try:
+        env = {"NOBLIVION_DATA_DIR": str(run.store.data_dir)}
+        assert launcher.wait_until_up(env, since=time.time(), wait_s=3)[0] == "started"
+        ticks = iter(range(100))
+        state, reason = launcher.wait_until_up(
+            env,
+            since=time.time(),
+            wait_s=3,
+            replaced_pid=os.getpid(),
+            clock=lambda: next(ticks),
+            sleep=lambda _s: None,
+        )
+        assert state == "failed" and reason.startswith("no answer from the store after 3 s")
+    finally:
+        run.stop()
+
+
 def test_ensure_running_ignores_a_foreign_listener(tmp_path):
     data = tmp_path / "data"
     data.mkdir()

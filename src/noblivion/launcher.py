@@ -10,6 +10,8 @@ do not import the package (section 5.2); E4 copies the same steps:
    answer must hold ``proof = hex(HMAC-SHA256(token, "noblivion-health:" +
    nonce))``. Compare in constant time. No proof: the store is down.
 3. A store with another version gets ``SIGTERM``; a new one is started.
+   ``--restart`` (install.sh) replaces a store of this version too, so the
+   new store reads the config and the model again (NOBLIVION-57).
 4. ``spawn.stamp`` younger than 30 s: another caller starts the store.
 5. Else touch the stamp and start ``python -m noblivion.store`` detached.
    Steps 4 and 5 check and touch the stamp under ``flock`` on the stamp, so
@@ -181,6 +183,7 @@ def wait_until_up(
     since: float,
     wait_s: float = START_WAIT_S,
     pid: int | None = None,
+    replaced_pid: int | None = None,
     clock=time.monotonic,
     sleep=time.sleep,
 ) -> tuple[str, str | None]:
@@ -188,13 +191,15 @@ def wait_until_up(
     or ``(failed, reason)``. A failure is ``store.error`` written at or after
     ``since``, our child ``pid`` exiting with a non-zero code, or no proven
     store after ``wait_s``. On a failure with no ``store.error`` this writes
-    one, so the SessionStart hook can report it too."""
+    one, so the SessionStart hook can report it too. The store with the pid
+    ``replaced_pid`` does not count: a restart stopped it, but it answers
+    until it has stopped."""
     data_dir = config.data_dir(env)
     deadline = clock() + wait_s
     while True:
         info = read_store_json(data_dir)
         token = read_token(data_dir)
-        if info is not None and token is not None:
+        if info is not None and token is not None and info["pid"] != replaced_pid:
             answer = probe(info["port"], token)
             if answer is not None and answer.get("version") == __version__:
                 return STATE_STARTED, None
@@ -246,10 +251,16 @@ def spawn_store(data_dir: Path, *, lock_wait_s: float = 0.0) -> int:
 
 
 def ensure_running(
-    env: Mapping[str, str] | None = None, *, clock=time.time, spawn=spawn_store
+    env: Mapping[str, str] | None = None,
+    *,
+    clock=time.time,
+    spawn=spawn_store,
+    restart: bool = False,
 ) -> str:
     """Steps 1-5 of section 3.2. Returns ``running``, ``starting``, ``started``
-    or ``not_installed`` (no data dir; it is never made here, NOBLIVION-28)."""
+    or ``not_installed`` (no data dir; it is never made here, NOBLIVION-28).
+    ``restart`` replaces a proven store of this version too: the store reads
+    the config and loads the model only at its start (NOBLIVION-57)."""
     data_dir = config.data_dir(env)
     lock_wait = 0.0
     info = read_store_json(data_dir)
@@ -257,9 +268,10 @@ def ensure_running(
     if info is not None and token is not None:
         answer = probe(info["port"], token)
         if answer is not None:
-            if answer.get("version") == __version__:
+            if answer.get("version") == __version__ and not restart:
                 return STATE_RUNNING
-            # A proven store of another version may run an old redactor: replace it.
+            # A proven store of another version may run an old redactor, and
+            # a restart asks for the new config and model: replace it.
             try:
                 os.kill(info["pid"], signal.SIGTERM)
             except OSError:
@@ -320,8 +332,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="SECONDS",
         help=f"wait this long for the store to answer (default {START_WAIT_S:g}; 0: do not wait)",
     )
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="replace a running store of this version too, so it reads the config again",
+    )
     args = parser.parse_args(argv)
     since = time.time()
+    replaced = read_store_json(config.data_dir()) if args.restart else None
     spawned: list[tuple[int, float]] = []
 
     def spawn(data_dir: Path, *, lock_wait_s: float = 0.0) -> int:
@@ -329,7 +347,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         spawned.append((pid, lock_wait_s))
         return pid
 
-    state = ensure_running(spawn=spawn)
+    state = ensure_running(spawn=spawn, restart=args.restart)
     reason = None
     if state in (STATE_STARTED, STATE_STARTING) and args.wait > 0:
         if spawned:
@@ -340,7 +358,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 since = (config.data_dir() / config.SPAWN_STAMP_FILE).stat().st_mtime
             except OSError:
                 pass
-        up, reason = wait_until_up(since=since, wait_s=args.wait + lock_wait, pid=pid)
+        up, reason = wait_until_up(
+            since=since,
+            wait_s=args.wait + lock_wait,
+            pid=pid,
+            replaced_pid=replaced["pid"] if replaced else None,
+        )
         if up == STATE_FAILED:
             state = STATE_FAILED
     if args.json:

@@ -28,6 +28,16 @@ All notable changes to NOBLIVION. The format follows
   folder, and `noblivion index --json` shows the count per folder in the
   new key `deletes_held`. The other half of the report, a full rewrite on
   every scan after a redactor version change, was already fixed in 0.1.6.
+- `install.sh` (and `/noblivion:setup`) now restarts a store that runs
+  (NOBLIVION-57). Before, it kept a store of the same version, and the
+  store reads `config.json` and loads the model only at its start. So a
+  user who turned the embedding model on later, as docs/install.md says,
+  kept keyword search only, with no sign. New option
+  `noblivion ensure-running --restart`.
+- `install.sh --no-embed` sets `embedding.backend` to `none` in
+  `config.json` (NOBLIVION-57). Before, the default backend `fastembed`
+  stayed, but the package was not installed. The store then reported
+  `degraded` for good and logged a warning every hour.
 
 ## 0.1.6 - 2026-10-05
 

@@ -28,7 +28,7 @@ USAGE = (
     "       noblivion trust timesplit [--cut YYYY-MM-DD] [--train-share F] [--k N] [--json]\n"
     "       noblivion stop report [--days N] [--json]\n"
     "       noblivion serve [--port PORT] [--lock-wait SECONDS]\n"
-    "       noblivion ensure-running [--json] [--wait SECONDS]\n"
+    "       noblivion ensure-running [--json] [--wait SECONDS] [--restart]\n"
     "       noblivion mine [--since YYYY-MM-DD] [--max-seconds S] [--json]\n"
     "       noblivion migrate-from-legacy [--apply | --undo] [--json]"
 )

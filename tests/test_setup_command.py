@@ -112,12 +112,13 @@ args = sys.argv[1:]
 if args[:1] == ["venv"]:
     bin_dir = os.path.join(args[-1], "bin")
     os.makedirs(bin_dir, exist_ok=True)
-    if not os.path.exists(os.path.join(bin_dir, "python")):
-        os.symlink({py!r}, os.path.join(bin_dir, "python"))
-    exe = os.path.join(bin_dir, "noblivion")
-    with open(exe, "w") as fh:
-        fh.write("#!/bin/sh\\nexec {py} -m noblivion \\"$@\\"\\n")
-    os.chmod(exe, 0o755)
+    # Scripts, not a symlink: a python run through a symlink with no
+    # pyvenv.cfg next to it does not see the test venv, so not the package.
+    for name, tail in (("python", ""), ("noblivion", " -m noblivion")):
+        exe = os.path.join(bin_dir, name)
+        with open(exe, "w") as fh:
+            fh.write("#!/bin/sh\\nexec {py}" + tail + " \\"$@\\"\\n")
+        os.chmod(exe, 0o755)
 elif args[:1] == ["export"]:
     open(args[args.index("--output-file") + 1], "w").close()
 """,
@@ -126,11 +127,10 @@ elif args[:1] == ["export"]:
     (folder / "uv").chmod(0o755)
 
 
-@pytest.mark.skipif(BASH is None, reason="bash not found")
-def test_install_starts_the_store_so_the_next_prompt_has_recall(tmp_path):
+def _install_env(tmp_path: Path) -> dict[str, str]:
+    """A clean env with a temp HOME and the fake ``uv`` first on PATH."""
     home = tmp_path / "home"
     home.mkdir()
-    data = tmp_path / "plugin-data"
     _fake_uv(tmp_path / "bin")
     env = {k: v for k, v in os.environ.items() if not k.startswith(("NOBLIVION_", "CLAUDE_"))}
     env.update(
@@ -139,15 +139,44 @@ def test_install_starts_the_store_so_the_next_prompt_has_recall(tmp_path):
         NOBLIVION_PORT="0",
         NOBLIVION_IDLE_EXIT_S="120",
     )
+    return env
+
+
+def _install(env: dict[str, str], data: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [BASH, str(INSTALL), "--data-dir", str(data), *args],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+
+
+def _full_health(data: Path) -> dict:
+    """The health answer with the token: it names the embedding backend."""
+    info = launcher.read_store_json(data)
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{info['port']}/health",
+        headers={"Authorization": f"Bearer {launcher.read_token(data)}"},
+    )
+    with urllib.request.urlopen(request, timeout=5) as answer:  # noqa: S310 - loopback
+        return json.loads(answer.read().decode("utf-8"))
+
+
+def _stop_store(data: Path) -> None:
+    info = launcher.read_store_json(data)
+    if info is not None:
+        os.kill(info["pid"], signal.SIGTERM)
+        wait_for(lambda: launcher.read_store_json(data) is None, 30)
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not found")
+def test_install_starts_the_store_so_the_next_prompt_has_recall(tmp_path):
+    data = tmp_path / "plugin-data"
+    env = _install_env(tmp_path)
     pid = None
     try:
-        proc = subprocess.run(
-            [BASH, str(INSTALL), "--data-dir", str(data), "--no-embed"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=env,
-        )
+        proc = _install(env, data, "--no-embed")
         info = launcher.read_store_json(data)
         pid = info["pid"] if info else None
         assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -169,3 +198,51 @@ def test_install_starts_the_store_so_the_next_prompt_has_recall(tmp_path):
         if pid:
             os.kill(pid, signal.SIGTERM)
             wait_for(lambda: launcher.read_store_json(data) is None, 30)
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not found")
+def test_install_no_embed_sets_the_backend_to_none_so_the_store_is_not_degraded(tmp_path):
+    """--no-embed installs no fastembed. With the default backend the store
+    then fails to load it, reports "degraded" for good and logs a warning
+    every hour (NOBLIVION-57)."""
+    data = tmp_path / "plugin-data"
+    env = _install_env(tmp_path)
+    try:
+        proc = _install(env, data, "--no-embed")
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        doc = json.loads((data / "config.json").read_text(encoding="utf-8"))
+        assert doc["embedding"]["backend"] == "none"
+        assert doc["recall"]["index_k"] == 30  # the rest of the shipped config stays
+        health = _full_health(data)
+        assert health["status"] == "ok"
+        assert health["embedding"]["backend"] == "none"
+        assert health["embedding"]["state"] == "off"
+    finally:
+        _stop_store(data)
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not found")
+def test_install_again_restarts_the_store_so_it_reads_the_new_config(tmp_path):
+    """docs/install.md: to turn the model on later, set embedding.backend and
+    run /noblivion:setup again. The store reads its config once, at start, so
+    install.sh must replace a running store of the same version too
+    (NOBLIVION-57)."""
+    data = tmp_path / "plugin-data"
+    env = _install_env(tmp_path)
+    data.mkdir(mode=0o700)
+    # The state after a first install without network: keyword search only.
+    (data / "config.json").write_text(json.dumps({"embedding": {"backend": "none"}}))
+    try:
+        proc = _install(env, data, "--no-model")
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        old_pid = launcher.read_store_json(data)["pid"]
+        assert _full_health(data)["embedding"]["backend"] == "none"
+        (data / "config.json").write_text(json.dumps({"embedding": {"backend": "fastembed"}}))
+        proc = _install(env, data, "--no-model")
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "The store runs" in proc.stdout, proc.stdout + proc.stderr
+        info = launcher.read_store_json(data)
+        assert info is not None and info["pid"] != old_pid
+        assert _full_health(data)["embedding"]["backend"] == "fastembed"
+    finally:
+        _stop_store(data)

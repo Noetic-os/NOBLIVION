@@ -168,24 +168,27 @@ So the plugin install needs at most two sessions: the one where you ran
    overwrites a `config.json` that exists.
 5. It downloads the default embedding model to `<data dir>/models/`.
    When the download fails, it sets `embedding.backend` to `none` in
-   `config.json`. Recall then works with keyword search only.
+   `config.json`. Recall then works with keyword search only. With
+   `--no-embed`, it downloads nothing and sets `embedding.backend` to
+   `none`.
 6. It writes the `token` file with mode 0600, unless one exists.
 7. It writes an install stamp in the venv with the plugin version.
 8. It indexes your memory files once with `noblivion index`.
 9. It checks for old hand-installed hooks. This is a dry run. It only
    prints what the migration would remove. See
    [Migrate from hand-installed hooks](#migrate-from-hand-installed-hooks).
-10. It starts the store with `noblivion ensure-running`, unless you give
-    `--no-start`. A store of an older version is stopped and replaced. When
-    the start fails, the script prints the reason and still exits 0; the
-    next session tries again.
+10. It starts the store with `noblivion ensure-running --restart`, unless
+    you give `--no-start`. A store that runs is stopped and replaced, so
+    the new store reads `config.json` and loads the model. When the start
+    fails, the script prints the reason and still exits 0; the next
+    session tries again.
 
 ### Options
 
 | Option | Effect |
 | --- | --- |
 | `--data-dir DIR` | Use `DIR` as the data dir. |
-| `--no-embed` | Do not install `numpy` and `fastembed`. Recall uses keyword search only. No model is downloaded. |
+| `--no-embed` | Do not install `numpy` and `fastembed`. Set `embedding.backend` to `none` in `config.json`. Recall uses keyword search only. No model is downloaded. |
 | `--no-model` | Install the packages, but do not download the model now. |
 | `--no-start` | Do not start the store now. The next session starts it. |
 | `--dry-run` | Print the steps. Change nothing. |
@@ -204,8 +207,8 @@ To download the model later:
 2. If `embedding.backend` is `none`, set it to `fastembed`, or remove the
    key.
 3. Run `/noblivion:setup` again, or `install.sh` without `--no-model` and
-   without `--no-embed`. It restarts the store. The store computes the
-   vectors for your notes in the background.
+   without `--no-embed`. It downloads the model and restarts the store.
+   The new store computes the vectors for your notes in the background.
 
 Other backends (a local Ollama server, or a hosted service) are in
 [configuration.md](configuration.md). A hosted backend sends note text off

@@ -169,9 +169,12 @@ Entry points (E3c):
 
 - `noblivion serve [--port N] [--lock-wait S]` and
   `python -m noblivion.store` run steps 5 to 7 in the foreground.
-- `noblivion ensure-running [--json] [--wait S]` runs steps 1 to 4. When
-  it started a store (or another caller is starting one), it then waits up
-  to `S` seconds (default 10) for a proven store of its version. It prints
+- `noblivion ensure-running [--json] [--wait S] [--restart]` runs steps 1
+  to 4. `--restart` replaces a proven store of its own version too, because
+  a store reads the config and loads the model only at its start
+  (NOBLIVION-57). When it started a store (or another caller is starting
+  one), it then waits up to `S` seconds (default 10) for a proven store of
+  its version, and not for the store that it replaced. It prints
   `running`, `starting`, `started` or `failed` with the reason, and exits
   1 on `failed` (NOBLIVION-25). A failure is `store.error`, the child store
   exiting with a code other than 0, or no proven store in time; the
@@ -1920,7 +1923,8 @@ docs/
 2. `uv venv` in `<data dir>/venv` with python 3.11+, then install the locked
    store dependencies (`uv export --frozen --extra embed` from `uv.lock`),
    then the package itself with `--no-deps`. `--no-embed` leaves out numpy
-   and fastembed: keyword search only.
+   and fastembed: keyword search only. It sets `embedding.backend = none`
+   in the config, else the store reports `degraded` (NOBLIVION-57).
 3. Copy `config/config.default.json` to `<data dir>/config.json` when that
    file is missing. It ships the reference recall tuning in `recall.env`
    (the ranked index, apply lines, hygiene, re-rank, rule rows, row dedupe,
@@ -1938,10 +1942,11 @@ docs/
 6. Write `venv/noblivion-install.json` (plugin version and root).
 7. Run `noblivion index` once and `noblivion migrate-from-legacy` as a dry
    run, so the user sees any old hooks to remove.
-8. Run `noblivion ensure-running` (section 3.2), unless `--no-start`. The
-   store then runs in the session that ran the script, and the next
-   prompt's hooks find it through `store.json`. A failed start prints the
-   reason and is not fatal.
+8. Run `noblivion ensure-running --restart` (section 3.2), unless
+   `--no-start`. A store that runs is replaced, so a config or model
+   change takes effect. The store then runs in the session that ran the
+   script, and the next prompt's hooks find it through `store.json`. A
+   failed start prints the reason and is not fatal.
 
 The data dir is `--data-dir`, else `NOBLIVION_DATA_DIR`, else
 `CLAUDE_PLUGIN_DATA`, else `${XDG_DATA_HOME:-~/.local/share}/noblivion`. A

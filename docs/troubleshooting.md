@@ -173,10 +173,9 @@ To fix it:
 1. Check your network connection and your proxy settings.
 2. In `<data dir>/config.json`, set `embedding.backend` to `fastembed`, or
    remove the key.
-3. Run `install.sh` again.
-4. Stop the store (SIGTERM to the process id in `store.json`). The next
-   session starts it with the model. The store retries a failed model
-   load only once per hour, so a restart is faster.
+3. Run `install.sh` again. It restarts the store, so the store loads
+   the model at once. Without a restart, the store retries a failed
+   model load only once per hour.
 
 On a machine with no network, copy the model cache from another machine
 to `<data dir>/models/`. The store does not download a model by itself
