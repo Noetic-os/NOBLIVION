@@ -114,20 +114,32 @@ All notable changes to NOBLIVION. The format follows
   `for f in $(git diff --name-only); do head -5 "$f"; done`. The README
   now says what the guard covers: git URLs, not every credential.
   docs/guards.md lists the limits (NOBLIVION-47).
-- The path search of the credential guard no longer needs seconds for a
-  Bash command with one very long word (NOBLIVION-47). The search for a
-  `.git/config` path inside a word read the word again from each of its
-  characters: one word of 100 KB took about 10 seconds. The guard hook
-  allows a call that it cannot decide in 1.5 seconds, so such a word let a
-  read of a git config pass. Now the search reads a word once and needs
-  under 0.1 seconds for the same command. The paths that the search finds
-  are the same. One limit stays. Before the guard hook prints a deny, it
-  removes secrets and URL credentials from the command text for its log,
-  and that step still needs seconds for some long words: a word of letters
-  with no digit (from about 30 KB), or a word of parts joined by `-` or
-  `.` (from about 50 KB). So `cat <word> .git/config` with such a word
-  still passes after 1.5 seconds, with the line that says the deny rules
-  were not checked. docs/guards.md lists this limit.
+- A Bash command with one very long word no longer passes the credential
+  guard (NOBLIVION-47). The guard hook allows a call that it cannot decide
+  in 1.5 seconds, and three steps needed more time than that for one long
+  word. The search for a `.git/config` path inside a word read the word
+  again from each of its characters: one word of 100 KB took about 10
+  seconds. The hook made the text of its log line before it printed the
+  deny: that text took 2 seconds for a word of 30 KB. The lexer added one
+  character at a time to a word: one word of 500 KB took about 1 second.
+  Now the path search reads a word once. The hook prints the deny first
+  and makes the log text after that, from the first 4 KB of the command.
+  A long run of plain characters is taken out of the text before the lexer
+  reads it. `cat <word> .git/config` with a word of 500 KB is denied in 0.2
+  seconds. Before, it passed from 30 KB. The paths that the search finds
+  are the same.
+- A deny of a rule from the guard table is no longer lost for a long
+  command (NOBLIVION-47). A refused override (`# guard-ok:`) with a reason
+  of 30 KB passed, because the hook read the reason for its log before it
+  printed the deny. A command with one word of 500 KB that broke a rule
+  passed, because the credential guard reads each command first and its
+  lexer needed over 1 second for that word. A deny of a shorter long
+  command was printed, but its log line was lost. Now the reason and the
+  command are read for the log after the print, and a denied call does not
+  search the rows before it. The log text of a command or a reason over
+  4 KB is made from its first 4 KB, with a note of the full length. The
+  time limit stays: docs/guards.md names the commands that can still run
+  out of it.
 - Hybrid ranking no longer gives a keyword rank to a note that matches no
   word of the query (NOBLIVION-49). Before, the keyword list held the whole
   pool, and the notes with a keyword score of 0 were ordered by id. So the

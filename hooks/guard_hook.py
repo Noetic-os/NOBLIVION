@@ -204,7 +204,7 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _TOOLS = Path(__file__).resolve().parent
 
@@ -1256,7 +1256,9 @@ _SECRET_RX = [
 
 
 def redact(text: str) -> str:
-    """``text`` with secret-like values replaced by ``[redacted]``."""
+    """``text`` with secret-like values replaced by ``[redacted]``. The cost
+    grows with the square of the length of one long word, so a text from a
+    tool call goes through ``log_head`` first."""
     text = str(text or "")
     for rx in _SECRET_RX[:2]:
         text = rx.sub(lambda m: m.group(1) + m.group(2) + "[redacted]", text)
@@ -1265,10 +1267,32 @@ def redact(text: str) -> str:
     return text
 
 
+# The log keeps LOG_TEXT_CHARS of a text. ``redact`` and the URL scrub of the
+# credential guard read only the first LOG_SCAN_CHARS of it, so the log text
+# of a call costs the same at any command size (NOBLIVION-47: on a 30 KB word
+# it took longer than TIME_LIMIT_S, and it ran before the deny was printed).
+LOG_SCAN_CHARS = 4096
+
+
+def log_head(text: object) -> str:
+    """``text`` for ``redact``: unchanged up to ``LOG_SCAN_CHARS`` characters,
+    else its start and a note of the full length. A word that the cut splits
+    is dropped whole, so the cut leaves no start of a secret that ``redact``
+    would not know."""
+    text = str(text or "")
+    if len(text) <= LOG_SCAN_CHARS:
+        return text
+    head = text[:LOG_SCAN_CHARS]
+    if not head[-1].isspace() and not text[LOG_SCAN_CHARS].isspace():
+        kept = head.rsplit(None, 1)
+        head = kept[0] if len(kept) > 1 else ""
+    return f"{head.rstrip()} [cut: {len(text)} characters]".lstrip()
+
+
 def redact_reason(text: str) -> str:
     """The override reason for the log: blanks folded, secret-like values
     replaced by ``[redacted]``, cut to ``REASON_CHARS``."""
-    return _short(redact(" ".join(str(text or "").split())), REASON_CHARS)
+    return _short(redact(" ".join(log_head(text).split())), REASON_CHARS)
 
 
 # --------------------------------------------------------------------------
@@ -1365,11 +1389,14 @@ class Decision:
         charge=None,
         log: Optional[Tuple[str, List[str]]] = None,
         extra: Optional[Dict[str, object]] = None,
-        log_text: Optional[str] = None,
+        log_text: Optional[Callable[[], str]] = None,
     ):
         self.out, self.state, self._charge, self.log = out, state, charge, log
         self.extra: Dict[str, object] = dict(extra or {})
-        self.log_text = log_text  # None: the command or the file path
+        # None: the command or the file path. Else a function that makes the
+        # text: ``main`` calls it after the print, so a slow text never costs
+        # a decision.
+        self.log_text = log_text
 
     def commit(self) -> None:
         if self.state is None:
@@ -1459,7 +1486,7 @@ def _credential_check(
         None,
         ("credential-deny", ["credential-url"]),
         extra={"what": got[1]},
-        log_text=cg.scrub(redact(str(text or ""))),
+        log_text=lambda: cg.scrub(redact(log_head(text))),
     )
 
 
@@ -1535,7 +1562,9 @@ def decide(
         if not hits:
             _settled(pending)
         marker, marker_seen = override_marker(command) if hits else (None, False)
-        cands = command_rows(command, table)
+        # A call with a hit is denied or overridden: it shows no rows, so
+        # nothing reads the command again before the deny is printed.
+        cands = [] if hits else command_rows(command, table)
         query, subject = command, "command"
         label_q, label_s = query, subject
     elif tool in READ_TOOLS and file_q is not None:
@@ -1596,23 +1625,20 @@ def decide(
                 return Decision(
                     log=("override", ids),
                     extra={"reason": redact_reason(marker), "evidence": evidence},
-                    log_text=redact(command),
                 )
             shown = sorted(hits, key=lambda h: state.denies.get(str(h["id"]), 0))
             count = state.denies.get(str(shown[0]["id"]), 0) + 1
             run_first = list(dict.fromkeys(str(h["run_first"]) for h in need))
             refused = marker is not None
-            extra: Dict[str, object] = {}
-            if refused:
-                extra = {
-                    "override_refused": [str(h["id"]) for h in need],
-                    "reason": redact_reason(marker or ""),
-                }
 
             def charge_deny(st: SessionState) -> Dict[str, object]:
                 for i in ids:
                     st.denies[i] = st.denies.get(i, 0) + 1
-                return dict({"counts": {i: st.denies.get(i, 0) for i in ids}}, **extra)
+                extra: Dict[str, object] = {"counts": {i: st.denies.get(i, 0) for i in ids}}
+                if refused:  # the reason is read here, after the deny is printed
+                    extra["override_refused"] = [str(h["id"]) for h in need]
+                    extra["reason"] = redact_reason(marker or "")
+                return extra
 
             bad_marker = marker_seen and marker is None
             return Decision(
@@ -1639,7 +1665,7 @@ def decide(
                 state,
                 lab.charge,
                 ("labels", lab.ids),
-                log_text=redact(query) if subject == "read" else None,
+                log_text=(lambda: redact(log_head(query))) if subject == "read" else None,
             )
         # What a row says (WI-3f): the full text while this agent of the
         # session has shown under ROWS_FULL_SESSION_CHARS of row text, then
@@ -1741,11 +1767,12 @@ def _record_failure(event: Mapping[str, object], env: Mapping[str, str]) -> Deci
             st.failed[i] = st.failed.get(i, 0) + 1
         return {
             "error": _short(
-                redact(error.strip().splitlines()[0] if error.strip() else ""), ERROR_CHARS
+                redact(log_head(error.strip().splitlines()[0] if error.strip() else "")),
+                ERROR_CHARS,
             )
         }
 
-    return Decision("", state, charge_failed, ("apply-failed", ids), log_text=redact(command))
+    return Decision("", state, charge_failed, ("apply-failed", ids))
 
 
 def _log_text(event: object) -> str:
@@ -1755,7 +1782,7 @@ def _log_text(event: object) -> str:
         return ""
     ti = event["tool_input"]
     if isinstance(ti.get("command"), str):
-        return redact(ti["command"])
+        return redact(log_head(ti["command"]))
     raw = ti.get("file_path")
     if not isinstance(raw, str) or not raw:
         return ""
@@ -1852,7 +1879,7 @@ def main(
         armed = _arm(time_limit)  # charge and log get their own time limit
         d.commit()
         if d.log:
-            text = d.log_text if d.log_text is not None else _log_text(event)
+            text = d.log_text() if d.log_text is not None else _log_text(event)
             log_line(env, sid, tool, d.log[0], d.log[1], text, agent, **d.extra)
             _trust_use(env, sid, d.log[0], d.log[1])
         if notes:

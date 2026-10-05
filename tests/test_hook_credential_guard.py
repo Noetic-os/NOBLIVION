@@ -1524,6 +1524,138 @@ def test_a_100kb_word_does_not_hide_a_config_read(work):
         assert time.perf_counter() - t0 < 1.0
 
 
+def _long_word(unit: str, size: int) -> str:
+    return unit * (size // len(unit))
+
+
+def _last_log(env) -> dict:
+    return json.loads(Path(env["NOBLIVION_GUARD_LOG"]).read_text().splitlines()[-1])
+
+
+#: The units of one long word: letters, and parts joined by ``-`` and by ``.``.
+WORD_UNITS = ["a", "a-b", "a.b"]
+WORD_SIZES = [30_000, 50_000, 100_000, 500_000]
+
+
+@pytest.mark.parametrize("size", WORD_SIZES)
+@pytest.mark.parametrize("unit", WORD_UNITS)
+def test_the_hook_denies_a_config_read_with_one_long_word(call, env, work, unit, size):
+    """The whole hook with its time limit, not only ``decide``: the deny is printed before the
+    log text is made, and the log text is made from the start of the command."""
+    command = f"cat {_long_word(unit, size)} .git/config"
+    t0 = time.perf_counter()
+    hso, raw = call(env, ev("Bash", {"command": command}, work))
+    assert time.perf_counter() - t0 < 0.75  # the limit of the hook is 1.5 seconds
+    assert hso is not None and hso["permissionDecision"] == "deny"
+    assert hso["permissionDecisionReason"].startswith("Credential guard:")
+    assert len(raw) < 2000 and SECRET not in raw and USER not in raw
+    rec = _last_log(env)
+    assert rec["decision"] == "credential-deny"
+    assert rec["text"] == f"cat [cut: {len(command)} characters]"
+
+
+@pytest.mark.parametrize("unit", WORD_UNITS)
+def test_the_hook_process_denies_a_config_read_with_a_500kb_word(env, work, unit):
+    command = f"cat {_long_word(unit, 500_000)} .git/config"
+    t0 = time.perf_counter()
+    r = subprocess.run(
+        [sys.executable, str(HOOKS / "guard_hook.py")],
+        input=json.dumps(ev("Bash", {"command": command}, work)),
+        capture_output=True,
+        text=True,
+        env=dict(env, PATH="/usr/bin:/bin"),
+        timeout=30,
+    )
+    assert time.perf_counter() - t0 < 1.5
+    assert r.returncode == 0
+    assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert SECRET not in r.stdout and SECRET not in r.stderr
+    log_file = Path(env["NOBLIVION_GUARD_LOG"]).read_text()
+    assert f"cat [cut: {len(command)} characters]" in log_file and SECRET not in log_file
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo " + "word " * 100_000,
+        "echo " + "git config word " * 31_250,  # the words of the hint: the guard reads it all
+        "cat " + "a" * 500_000 + " README.md",
+    ],
+    ids=["plain words", "hint words", "one long word"],
+)
+def test_the_hook_allows_an_ordinary_500kb_command_in_time(gh, call, env, work, command):
+    assert len(command) >= 500_000
+    t0 = time.perf_counter()
+    hso, raw = call(env, ev("Bash", {"command": command}, work))
+    assert time.perf_counter() - t0 < gh.TIME_LIMIT_S
+    assert hso is None and raw == ""  # no deny, and no line that the time ran out
+
+
+def test_the_log_of_a_denied_long_command_holds_the_cut_text_and_no_token(call, env, work):
+    """The log text is the start of the command with the secrets removed. A word that the cut
+    splits is not in it, so the cut leaves no start of a token."""
+    url = f"https://{USER}:{SECRET}@example.invalid/owner/repo.git"
+    start = f"cat .git/config {url} token={TOKEN_USER} "
+    words = "word " * 700
+    split = "x" * (4096 - len(start) - len(words) - 12) + TOKEN_USER  # the cut is inside the token
+    command = start + words + split + " " + _long_word("a-b", 100_000)
+    assert command[:4096].endswith(TOKEN_USER[:12]) and len(command) > 100_000
+    hso, raw = call(env, ev("Bash", {"command": command}, work))
+    assert hso is not None and hso["permissionDecision"] == "deny"
+    log_file = Path(env["NOBLIVION_GUARD_LOG"]).read_text()
+    for part in (SECRET, USER, TOKEN_USER, TOKEN_USER[:12]):
+        assert part not in raw and part not in log_file
+    text = _last_log(env)["text"]
+    assert text.startswith("cat .git/config https://[redacted]@example.invalid/owner/repo.git")
+    assert "token=[redacted] word word" in text and len(text) == 300
+
+
+#: One 500 KB word for ``tokens``: plain runs, and runs with marks or other blanks in them.
+LONG_WORDS = {
+    "letters": "a" * 500_000,
+    "hyphens": "a-b" * 166_667,
+    "dots": "a.b" * 166_667,
+    "path parts": "./" * 250_000,
+    "variables": "$a" * 250_000,
+    "vertical tabs": "a\x0b" * 250_000,
+    "holds": "a" + cg.HOLD * 500_000,
+}
+
+
+@pytest.mark.parametrize("name", sorted(LONG_WORDS))
+def test_tokens_reads_one_500kb_word_fast(name):
+    word = LONG_WORDS[name]
+    t0 = time.perf_counter()
+    toks = cg.tokens(f"cat {word} .git/config")
+    assert time.perf_counter() - t0 < 1.0
+    assert len(toks) == 3 and toks[0] == "cat" and toks[2] == ".git/config"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat {w} .git/config",
+        "cat '{w}' \"{w}\" x\\{w}",
+        "cat pre'{w}'post{w}\"{w} {w}\"",
+        "cat {w}$(echo {w} '{w}'){w} `echo {w}`{w}",
+        "cat $(a){w}$(b)$(c){w}",
+        'cat "$(echo {w})"{w};echo {w}|grep {w}>{w}',
+        "cat {w}\x0b{w}\x0c{w}\xa0{w}",
+        "x={w}; cat ${{x}}{w} $x{w}",
+        "cat '{w} unclosed",  # the lexer fails: the split on blanks reads the text
+        'cat "{w}\x0b{w} unclosed | grep {w};echo {w}\x0b{w}',
+        "cat {w}\\",
+    ],
+)
+@pytest.mark.parametrize("unit", ["a", "a-b", "./", "$a", "a\x0b", "$(a)", "a=b,"])
+def test_tokens_with_a_long_run_are_the_tokens_without_it(monkeypatch, command, unit):
+    """A long run is taken out for the lexer and put back: the words are the same as before."""
+    text = command.format(w=_long_word(unit, 3000))
+    got = cg.tokens(text)
+    monkeypatch.setattr(cg, "LONG_RUN", 10**9)  # no run is taken out
+    assert got == cg.tokens(text)
+
+
 @pytest.mark.parametrize(
     "word, found",
     [

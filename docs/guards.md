@@ -253,12 +253,14 @@ The guard has these limits:
   it cannot resolve.
 - It does not follow a file name that the command reads when it runs.
   `find . -name config | while read f; do cat "$f"; done` is not blocked.
-- A command with one very long word can run out of the time limit of the
-  hook (1.5 seconds). Before the hook prints a deny, it removes secrets
-  and URL credentials from the command text for the guard log. That step
-  is slow for a word of letters with no digit (from about 30 KB) and for a
-  word of parts joined by `-` or `.` (from about 50 KB). The hook then
-  allows the call and prints the line that the deny rules were not checked.
+- The check must end inside the time limit of the hook (1.5 seconds). A
+  very long command of some forms can still run out of it, and the hook
+  then allows the call with the line that the deny rules were not checked.
+  In a test this occurred with 60,000 `$( )` substitutions in one command
+  (250 KB), with one word of 750 KB that has a backslash in each part, with
+  one word of 1.5 MB that has quotes in each part, and with 2 MB of short
+  words. One word of letters, also with `-` or `.` between its parts, was
+  denied up to 4 MB.
 
 ## The memory fields hook
 

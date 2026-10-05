@@ -437,13 +437,32 @@ def _split_punct(tok: str) -> List[str]:
     return out
 
 
+# A run of characters that the lexer reads as plain word characters: no blank, quote, backslash or operator.
+# ``tokens`` takes a run of LONG_RUN characters or more out of the text before the lexer reads it, as
+# ``_prepare`` does for ``$( )``. The lexer adds one character at a time to a word, so one word of 500 KB
+# cost it about 1 second, and the guard hook allows a call that it cannot decide in time.
+_PLAIN_RUN = re.compile(r"""[^ \t\r\n'"\\;&|()<>]+""")
+LONG_RUN = 1024
+
+
 def tokens(command: str) -> List[str]:
     """The words and operators of ``command``, marked (LIVE, TICK). A ``$( ... )`` or a backtick pair is a
     part of one word, as in the shell: ``$(git rev-parse --git-dir)/config`` is one word."""
     held: List[str] = []
     text = _prepare(command.replace(HOLD, ""), held)
+
+    def hold(m: re.Match[str]) -> str:
+        if m.end() - m.start() < LONG_RUN:
+            return m.group(0)
+        held.append(m.group(0))
+        return f"{HOLD}{len(held) - 1}{HOLD}"
+
+    def back(m: re.Match[str]) -> str:
+        return held[int(m.group(1))]
+
     try:
-        lex = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>")
+        short = _PLAIN_RUN.sub(hold, text) if len(text) >= LONG_RUN else text
+        lex = shlex.shlex(short, posix=True, punctuation_chars=";&|()<>")
         lex.whitespace_split = True
         lex.commenters = ""
         raw = list(lex)
@@ -454,7 +473,9 @@ def tokens(command: str) -> List[str]:
         if t and set(t) <= _PUNCT:
             out.extend(_split_punct(t))
         elif HOLD in t:
-            out.append(_HELD.sub(lambda m: held[int(m.group(1))], t))
+            t = _HELD.sub(back, t)
+            # A long run can hold the marks of ``$( )`` texts: these come back now.
+            out.append(_HELD.sub(back, t) if HOLD in t else t)
         else:
             out.append(t)
     return out

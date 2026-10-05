@@ -1071,6 +1071,107 @@ def test_override_without_a_failed_run_is_refused(genv):
     assert rec["counts"] == {"feedback_gate": 1}
 
 
+# One long word in a command. The log text of a call is made after the decision
+# is printed, and from the start of the command only (``log_head``), so a slow
+# text never turns a deny into a call that ran out of time (NOBLIVION-47).
+LONG_UNITS = ["a", "a-b", "a.b"]
+
+
+def _timed(env, event):
+    t0 = time.perf_counter()
+    out = call(env, event)
+    return out, time.perf_counter() - t0
+
+
+@pytest.mark.parametrize("size", [30_000, 100_000, 500_000])
+@pytest.mark.parametrize("unit", LONG_UNITS)
+def test_a_rule_deny_with_one_long_word_is_printed_and_logged(env, unit, size):
+    cmd = "git push --force o x " + unit * (size // len(unit))
+    out, took = _timed(env, bash(cmd))
+    assert took < 0.75  # the limit of the hook is 1.5 seconds
+    assert out["permissionDecision"] == "deny"
+    rec = log(env)[-1]
+    assert rec["decision"] == "deny" and rec["ids"] == ["feedback_no_force"]
+    assert rec["text"] == f"git push --force o x [cut: {len(cmd)} characters]"
+
+
+@pytest.mark.parametrize("size", [30_000, 100_000, 500_000])
+@pytest.mark.parametrize("unit", LONG_UNITS)
+def test_a_refused_override_with_a_long_reason_is_still_denied(genv, unit, size):
+    """The reason of the marker goes to the log only: it is read after the print."""
+    cmd = GATE_CMD + " # guard-ok: " + unit * (size // len(unit))
+    out, took = _timed(genv, bash(cmd))
+    assert took < 0.75
+    assert out["permissionDecision"] == "deny"
+    assert "override is refused" in out["permissionDecisionReason"]
+    rec = log(genv)[-1]
+    assert rec["decision"] == "deny" and rec["override_refused"] == ["feedback_gate"]
+    assert rec["reason"] == f"[cut: {size // len(unit) * len(unit)} characters]"
+    assert rec["text"] == f"{GATE_CMD} # guard-ok: [cut: {len(cmd)} characters]"
+
+
+@pytest.mark.parametrize("unit", LONG_UNITS)
+def test_an_override_with_a_long_reason_is_logged_in_time(genv, unit):
+    assert call(genv, failed(RUN_FIRST)) is None  # the compliant form failed: the override is open
+    cmd = GATE_CMD + " # guard-ok: " + unit * (500_000 // len(unit))
+    out, took = _timed(genv, bash(cmd))
+    assert out is None and took < 0.75  # allowed, and no line that the time ran out
+    rec = log(genv)[-1]
+    assert rec["decision"] == "override" and rec["reason"].startswith("[cut: ")
+
+
+@pytest.mark.parametrize("unit", LONG_UNITS)
+def test_a_failed_run_with_a_long_word_is_recorded_in_time(genv, unit):
+    cmd = RUN_FIRST + " " + unit * (500_000 // len(unit))
+    out, took = _timed(genv, failed(cmd, error="Exit code 128\n" + "b" * 500_000))
+    assert out is None and took < 0.75
+    rec = log(genv)[-1]
+    assert rec["decision"] == "apply-failed"
+    assert rec["text"] == f"{RUN_FIRST} [cut: {len(cmd)} characters]"
+
+
+def test_log_head_keeps_a_short_text_and_cuts_a_long_text_at_a_word():
+    short = "git status " * 300
+    assert len(short) <= gh.LOG_SCAN_CHARS and gh.log_head(short) == short
+    exact = "a" * gh.LOG_SCAN_CHARS
+    assert gh.log_head(exact) == exact
+    long = "word " * 2000
+    head = gh.log_head(long)
+    assert head == "word " * 818 + f"word [cut: {len(long)} characters]"
+    assert len(head) < gh.LOG_SCAN_CHARS + 40
+    assert gh.log_head("a" * 5000) == "[cut: 5000 characters]"  # one word: nothing of it stays
+    assert gh.log_head(None) == "" and gh.log_head("") == ""
+
+
+def test_log_head_drops_the_word_that_the_cut_splits():
+    """The start of a token that ``redact`` would not know must not reach the log."""
+    token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0"
+    filler = ("key=" + "v" * 400 + " ") * 10  # ``redact`` makes this short
+    text = filler + "x" * (gh.LOG_SCAN_CHARS - len(filler) - 6) + token + " tail " * 100
+    assert text[: gh.LOG_SCAN_CHARS].endswith("ghp_A1")
+    logged = gh.redact(gh.log_head(text))
+    assert logged == "key=[redacted] " * 9 + f"key=[redacted] [cut: {len(text)} characters]"
+    assert len(logged) < gh.LOG_TEXT_CHARS  # so the end of the text would be in the log line
+    # a word that starts at the cut, or ends at it, is not split: nothing more is dropped
+    text = "word " * 819 + " " + "next " * 100
+    assert text[gh.LOG_SCAN_CHARS - 1] == " "
+    assert gh.log_head(text).startswith("word " * 818 + "word [cut: ")
+    text = "word " * 818 + "wordss" + " next" * 100
+    assert text[gh.LOG_SCAN_CHARS - 1] == "s" and text[gh.LOG_SCAN_CHARS] == " "
+    assert gh.log_head(text).startswith("word " * 818 + "wordss [cut: ")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["a" * 500_000, "a-b" * 166_667, "a.b" * 166_667, "key=" + "v" * 500_000, "word " * 100_000],
+)
+def test_the_log_text_of_a_500kb_text_costs_a_fixed_time(text):
+    t0 = time.perf_counter()
+    gh.redact(gh.log_head(text))
+    gh.redact_reason(text)
+    assert time.perf_counter() - t0 < 0.5
+
+
 def test_a_compliant_run_that_succeeded_does_not_unlock_the_override(genv):
     assert call(genv, bash(RUN_FIRST)) is None  # it ran; no failure event came
     assert call(genv, bash(GATE_CMD + MARK))["permissionDecision"] == "deny"
