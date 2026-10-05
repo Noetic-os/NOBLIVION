@@ -161,14 +161,18 @@ def bash(cmd, sid="s1", agent=None):
     return ev
 
 
-def call(env, event, raw=None, mod=None) -> Any:
+def call(env, event, raw=None, mod=None, time_limit=None) -> Any:
     """In process: the parsed output, or None when the hook printed nothing.
     Typed Any: a test that expects output subscripts it directly, and a None
     there fails the test just as an assert would. ``mod`` is another loaded
-    copy of the hook (default ``gh``)."""
+    copy of the hook (default ``gh``). ``time_limit`` replaces the time limit
+    of the hook for this call."""
     out = io.StringIO()
     rc = (mod or gh).main(
-        stdin=io.StringIO(raw if raw is not None else json.dumps(event)), stdout=out, environ=env
+        stdin=io.StringIO(raw if raw is not None else json.dumps(event)),
+        stdout=out,
+        environ=env,
+        **({} if time_limit is None else {"time_limit": time_limit}),
     )
     assert rc == 0
     text = out.getvalue().strip()
@@ -1076,60 +1080,89 @@ def test_override_without_a_failed_run_is_refused(genv):
 # text never turns a deny into a call that ran out of time (NOBLIVION-47).
 LONG_UNITS = ["a", "a-b", "a.b"]
 
+#: A call with one long word may take this many times the time of the same call
+#: with short words of the same length. The bound is a ratio on one machine, not
+#: a number of seconds: the time of a call grows with the length of the command
+#: for any text, and on a slow CI machine a rule deny for a command of 500 KB
+#: took over 1.5 s, so a bound in seconds fails there with no defect in the
+#: code. The log text of the earlier code cost the square of the length of a
+#: word: one word of letters took over 15 times the time of short words.
+LONG_WORD_FACTOR = 5
 
-def _timed(env, event):
+
+def _timed(env, event, time_limit=None):
     t0 = time.perf_counter()
-    out = call(env, event)
+    out = call(env, event, time_limit=time_limit)
     return out, time.perf_counter() - t0
+
+
+def _long_word_call(env, event_for, word):
+    """The output of the hook for ``event_for(word, "s1")``, a call with one long
+    word. ``event_for(text, sid)`` makes the event for a text in a session.
+    First the same call runs with short words of the same length, in another
+    session and with a time limit that it cannot reach. The call with the
+    long word then gets ``LONG_WORD_FACTOR`` times that time as the time limit
+    of the hook, and not less than the limit that the hook ships with. So on a
+    fast machine this is the hook as it ships, and a slow machine gives both
+    calls more time."""
+    words = "word " * (len(word) // 5)
+    _, base = _timed(env, event_for(words, "words"), time_limit=120.0)
+    limit = max(gh.TIME_LIMIT_S, LONG_WORD_FACTOR * base)
+    out, took = _timed(env, event_for(word, "s1"), time_limit=limit)
+    assert took < limit, f"{took:.2f} s with one long word, {base:.2f} s with short words"
+    return out
 
 
 @pytest.mark.parametrize("size", [30_000, 100_000, 500_000])
 @pytest.mark.parametrize("unit", LONG_UNITS)
 def test_a_rule_deny_with_one_long_word_is_printed_and_logged(env, unit, size):
-    cmd = "git push --force o x " + unit * (size // len(unit))
-    out, took = _timed(env, bash(cmd))
-    # The limit of the hook, not half of it: 500 KB of parts took 0.38 s on a
-    # fast machine, and a CI machine can be 3 times slower.
-    assert took < gh.TIME_LIMIT_S
+    start = "git push --force o x "
+    word = unit * (size // len(unit))
+    out = _long_word_call(env, lambda text, sid: bash(start + text, sid=sid), word)
     assert out["permissionDecision"] == "deny"
     rec = log(env)[-1]
     assert rec["decision"] == "deny" and rec["ids"] == ["feedback_no_force"]
-    assert rec["text"] == f"git push --force o x [cut: {len(cmd)} characters]"
+    assert rec["text"] == f"git push --force o x [cut: {len(start + word)} characters]"
 
 
 @pytest.mark.parametrize("size", [30_000, 100_000, 500_000])
 @pytest.mark.parametrize("unit", LONG_UNITS)
 def test_a_refused_override_with_a_long_reason_is_still_denied(genv, unit, size):
     """The reason of the marker goes to the log only: it is read after the print."""
-    cmd = GATE_CMD + " # guard-ok: " + unit * (size // len(unit))
-    out, took = _timed(genv, bash(cmd))
-    assert took < 0.75
+    start = GATE_CMD + " # guard-ok: "
+    word = unit * (size // len(unit))
+    out = _long_word_call(genv, lambda text, sid: bash(start + text, sid=sid), word)
     assert out["permissionDecision"] == "deny"
     assert "override is refused" in out["permissionDecisionReason"]
     rec = log(genv)[-1]
     assert rec["decision"] == "deny" and rec["override_refused"] == ["feedback_gate"]
-    assert rec["reason"] == f"[cut: {size // len(unit) * len(unit)} characters]"
-    assert rec["text"] == f"{GATE_CMD} # guard-ok: [cut: {len(cmd)} characters]"
+    assert rec["reason"] == f"[cut: {len(word)} characters]"
+    assert rec["text"] == f"{GATE_CMD} # guard-ok: [cut: {len(start + word)} characters]"
 
 
 @pytest.mark.parametrize("unit", LONG_UNITS)
 def test_an_override_with_a_long_reason_is_logged_in_time(genv, unit):
-    assert call(genv, failed(RUN_FIRST)) is None  # the compliant form failed: the override is open
-    cmd = GATE_CMD + " # guard-ok: " + unit * (500_000 // len(unit))
-    out, took = _timed(genv, bash(cmd))
-    assert out is None and took < 0.75  # allowed, and no line that the time ran out
+    for sid in ("words", "s1"):  # the compliant form failed: the override is open
+        assert call(genv, failed(RUN_FIRST, sid=sid)) is None
+    start = GATE_CMD + " # guard-ok: "
+    word = unit * (500_000 // len(unit))
+    out = _long_word_call(genv, lambda text, sid: bash(start + text, sid=sid), word)
+    assert out is None  # allowed, and no line that the time ran out
     rec = log(genv)[-1]
     assert rec["decision"] == "override" and rec["reason"].startswith("[cut: ")
 
 
 @pytest.mark.parametrize("unit", LONG_UNITS)
 def test_a_failed_run_with_a_long_word_is_recorded_in_time(genv, unit):
-    cmd = RUN_FIRST + " " + unit * (500_000 // len(unit))
-    out, took = _timed(genv, failed(cmd, error="Exit code 128\n" + "b" * 500_000))
-    assert out is None and took < gh.TIME_LIMIT_S  # 0.21 s on a fast machine
+    word = unit * (500_000 // len(unit))
+
+    def event_for(text, sid):  # the long word is in the command and in the error text
+        return failed(RUN_FIRST + " " + text, error="Exit code 128\n" + text, sid=sid)
+
+    assert _long_word_call(genv, event_for, word) is None
     rec = log(genv)[-1]
     assert rec["decision"] == "apply-failed"
-    assert rec["text"] == f"{RUN_FIRST} [cut: {len(cmd)} characters]"
+    assert rec["text"] == f"{RUN_FIRST} [cut: {len(RUN_FIRST) + 1 + len(word)} characters]"
 
 
 def test_log_head_keeps_a_short_text_and_cuts_a_long_text_at_a_word():

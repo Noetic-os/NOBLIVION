@@ -375,9 +375,11 @@ def env(gh, tmp_path, monkeypatch):
 
 @pytest.fixture
 def call(gh):
-    def _call(env, event) -> Any:
+    def _call(env, event, time_limit=None) -> Any:
+        """``time_limit`` replaces the time limit of the hook for this call."""
         out = io.StringIO()
-        assert gh.main(stdin=io.StringIO(json.dumps(event)), stdout=out, environ=env) == 0
+        limit = {} if time_limit is None else {"time_limit": time_limit}
+        assert gh.main(stdin=io.StringIO(json.dumps(event)), stdout=out, environ=env, **limit) == 0
         text = out.getvalue().strip()
         return (json.loads(text)["hookSpecificOutput"] if text else None), text
 
@@ -1352,15 +1354,34 @@ HOSTILE = {
 }
 
 
-@pytest.mark.parametrize("name", sorted(HOSTILE))
-def test_hostile_100kb_command_is_decided_fast(gh, work, name):
-    cmd = HOSTILE[name]
-    assert len(cmd) >= 100_000
+def _decide_time(gh, work, cmd: str) -> float:
     t0 = time.perf_counter()
     cg.decide("Bash", {"command": cmd}, str(work))
     gh._CRED_BASH_HINT.search(cmd)
     cg._MKTEMP.sub("x", cmd)
-    assert time.perf_counter() - t0 < 5.0
+    return time.perf_counter() - t0
+
+
+#: 100 KB of plain words, and a time for it. On the machine that the bounds in seconds of the
+#: time tests are from, ``_decide_time`` of this text takes 0.08 s (Python 3.12) to 0.14 s
+#: (Python 3.9).
+PLAIN = "cat git " + "word " * 20_000
+PLAIN_S = 0.17
+
+
+def _bound(gh, work, seconds: float) -> float:
+    """``seconds``, and more on a machine that needs more than ``PLAIN_S`` for ``PLAIN``, in
+    proportion to its time. A bound near the measured time fails on a slow CI machine with
+    no defect in the code: the slowest hostile form takes 8 times the time of ``PLAIN``."""
+    return seconds * max(1.0, _decide_time(gh, work, PLAIN) / PLAIN_S)
+
+
+@pytest.mark.parametrize("name", sorted(HOSTILE))
+def test_hostile_100kb_command_is_decided_fast(gh, work, name):
+    cmd = HOSTILE[name]
+    assert len(cmd) >= 100_000
+    bound = _bound(gh, work, 5.0)
+    assert _decide_time(gh, work, cmd) < bound
 
 
 #: One 100 KB word for each new scan: the marks, the variable and brace-list regexes, the glob test.
@@ -1413,9 +1434,10 @@ SUBSTITUTION_WORDS = {
 
 
 @pytest.mark.parametrize("name", sorted(SUBSTITUTION_WORDS))
-def test_substitution_words_are_read_in_linear_time(name):
+def test_substitution_words_are_read_in_linear_time(gh, work, name):
     word = SUBSTITUTION_WORDS[name]
     assert len(word) >= 100_000
+    bound = _bound(gh, work, 2.0)
     t0 = time.perf_counter()
     toks = cg.tokens(word)
     assert len(toks) == 1  # one word
@@ -1423,7 +1445,7 @@ def test_substitution_words_are_read_in_linear_time(name):
     words, _, opened, _ = cg._expand(toks, cg._Shell(a=["x" * 4000]))
     assert words[0] in opened and words[0] == word.strip('"')  # the text inside is kept as it is
     assert cg._open_parts(toks[0]) == ("", "")
-    assert time.perf_counter() - t0 < 2.0
+    assert time.perf_counter() - t0 < bound
 
 
 @pytest.mark.parametrize("unit", ["\x04", "\x041", "1\x04", "11"])
@@ -1537,15 +1559,41 @@ WORD_UNITS = ["a", "a-b", "a.b"]
 WORD_SIZES = [30_000, 50_000, 100_000, 500_000]
 
 
+#: A call with one long word may take this many times the time of the same call with short
+#: words of the same length. The bound is a ratio on one machine, not a number of seconds:
+#: on a slow CI machine an ordinary command of 500 KB took over 1.5 s, so a bound in seconds
+#: fails there with no defect in the code. With the earlier log text and lexer, whose cost
+#: was the square of the length of a word, the long word took over 15 times that time.
+LONG_WORD_FACTOR = 5
+
+#: A command of 5 times the length may take this many times the time. The time grows with
+#: the length (5 times); a scan whose cost is the square of the length takes 25 times.
+GROWTH_FACTOR = 15
+
+
+def _timed_call(call, env, event, time_limit: float):
+    t0 = time.perf_counter()
+    hso, raw = call(env, event, time_limit=time_limit)
+    return hso, raw, time.perf_counter() - t0
+
+
 @pytest.mark.parametrize("size", WORD_SIZES)
 @pytest.mark.parametrize("unit", WORD_UNITS)
-def test_the_hook_denies_a_config_read_with_one_long_word(call, env, work, unit, size):
+def test_the_hook_denies_a_config_read_with_one_long_word(gh, call, env, work, unit, size):
     """The whole hook with its time limit, not only ``decide``: the deny is printed before the
-    log text is made, and the log text is made from the start of the command."""
+    log text is made, and the log text is made from the start of the command. The same read
+    with short words of the same length runs first. The long word gets ``LONG_WORD_FACTOR``
+    times that time as the time limit of the hook, and not less than the limit that the hook
+    ships with."""
+    words = "word " * (size // 5)
+    hso, _, base = _timed_call(
+        call, env, ev("Bash", {"command": f"cat {words}.git/config"}, work), 120.0
+    )
+    assert hso is not None and hso["permissionDecision"] == "deny"
+    limit = max(gh.TIME_LIMIT_S, LONG_WORD_FACTOR * base)
     command = f"cat {_long_word(unit, size)} .git/config"
-    t0 = time.perf_counter()
-    hso, raw = call(env, ev("Bash", {"command": command}, work))
-    assert time.perf_counter() - t0 < 0.75  # the limit of the hook is 1.5 seconds
+    hso, raw, took = _timed_call(call, env, ev("Bash", {"command": command}, work), limit)
+    assert took < limit, f"{took:.2f} s with one long word, {base:.2f} s with short words"
     assert hso is not None and hso["permissionDecision"] == "deny"
     assert hso["permissionDecisionReason"].startswith("Credential guard:")
     assert len(raw) < 2000 and SECRET not in raw and USER not in raw
@@ -1555,9 +1603,11 @@ def test_the_hook_denies_a_config_read_with_one_long_word(call, env, work, unit,
 
 
 @pytest.mark.parametrize("unit", WORD_UNITS)
-def test_the_hook_process_denies_a_config_read_with_a_500kb_word(env, work, unit):
-    command = f"cat {_long_word(unit, 500_000)} .git/config"
-    t0 = time.perf_counter()
+def test_the_hook_process_denies_a_config_read_with_a_100kb_word(env, work, unit):
+    """The hook as a process, with the time limit that it ships with: it prints a deny only
+    when the check ended inside that limit, so the deny is the time bound of this test. The
+    word is 100 KB, not 500 KB: a slow machine also reads that inside the limit."""
+    command = f"cat {_long_word(unit, 100_000)} .git/config"
     r = subprocess.run(
         [sys.executable, str(HOOKS / "guard_hook.py")],
         input=json.dumps(ev("Bash", {"command": command}, work)),
@@ -1566,7 +1616,6 @@ def test_the_hook_process_denies_a_config_read_with_a_500kb_word(env, work, unit
         env=dict(env, PATH="/usr/bin:/bin"),
         timeout=30,
     )
-    assert time.perf_counter() - t0 < 1.5
     assert r.returncode == 0
     assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert SECRET not in r.stdout and SECRET not in r.stderr
@@ -1574,20 +1623,27 @@ def test_the_hook_process_denies_a_config_read_with_a_500kb_word(env, work, unit
     assert f"cat [cut: {len(command)} characters]" in log_file and SECRET not in log_file
 
 
-@pytest.mark.parametrize(
-    "command",
-    [
-        "echo " + "word " * 100_000,
-        "echo " + "git config word " * 31_250,  # the words of the hint: the guard reads it all
-        "cat " + "a" * 500_000 + " README.md",
-    ],
-    ids=["plain words", "hint words", "one long word"],
-)
-def test_the_hook_allows_an_ordinary_500kb_command_in_time(gh, call, env, work, command):
+#: Ordinary commands of a given length.
+ORDINARY = {
+    "plain words": lambda size: "echo " + "word " * (size // 5),
+    # the words of the hint: the guard reads it all
+    "hint words": lambda size: "echo " + "git config word " * (size // 16),
+    "one long word": lambda size: "cat " + "a" * size + " README.md",
+}
+
+
+@pytest.mark.parametrize("name", sorted(ORDINARY))
+def test_the_hook_allows_an_ordinary_500kb_command_in_time(gh, call, env, work, name):
+    """The command of 500 KB gets ``GROWTH_FACTOR`` times the time of the same command of
+    100 KB as the time limit of the hook, and not less than the limit that the hook ships
+    with."""
+    small, command = ORDINARY[name](100_000), ORDINARY[name](500_000)
     assert len(command) >= 500_000
-    t0 = time.perf_counter()
-    hso, raw = call(env, ev("Bash", {"command": command}, work))
-    assert time.perf_counter() - t0 < gh.TIME_LIMIT_S
+    hso, raw, base = _timed_call(call, env, ev("Bash", {"command": small}, work), 120.0)
+    assert hso is None and raw == ""
+    limit = max(gh.TIME_LIMIT_S, GROWTH_FACTOR * base)
+    hso, raw, took = _timed_call(call, env, ev("Bash", {"command": command}, work), limit)
+    assert took < limit, f"{took:.2f} s for 500 KB, {base:.2f} s for 100 KB"
     assert hso is None and raw == ""  # no deny, and no line that the time ran out
 
 
@@ -1623,11 +1679,12 @@ LONG_WORDS = {
 
 
 @pytest.mark.parametrize("name", sorted(LONG_WORDS))
-def test_tokens_reads_one_500kb_word_fast(name):
+def test_tokens_reads_one_500kb_word_fast(gh, work, name):
     word = LONG_WORDS[name]
+    bound = _bound(gh, work, 1.0)
     t0 = time.perf_counter()
     toks = cg.tokens(f"cat {word} .git/config")
-    assert time.perf_counter() - t0 < 1.0
+    assert time.perf_counter() - t0 < bound
     assert len(toks) == 3 and toks[0] == "cat" and toks[2] == ".git/config"
 
 

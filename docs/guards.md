@@ -267,7 +267,10 @@ The guard has these limits:
   (250 KB), with one word of 750 KB that has a backslash in each part, with
   one word of 1.5 MB that has quotes in each part, and with 2 MB of short
   words. One word of letters, also with `-` or `.` between its parts, was
-  denied up to 4 MB.
+  denied up to 4 MB. These sizes are from one machine. The time of the
+  check grows with the length of the command, so a slower machine reaches
+  the limit at a smaller size: on a slow CI machine with Python 3.9 the
+  check of a command of 500 KB took more than 1.5 seconds.
 
 ## The memory fields hook
 
