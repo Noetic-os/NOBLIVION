@@ -3128,11 +3128,17 @@ def label_rows(stdin_text: str, stdout, environ: Dict[str, str]) -> None:
     """: the subject label rows of a ``UserPromptSubmit`` prompt
     (``label_rows.prompt_leg``, from this file's folder), after
     this hook's own output. Off unless ``NOBLIVION_RECALL_LABELS`` is set, so a
-    run without it prints what it printed before. Local only, no store call.
+    run without it prints what it printed before. The switches come from the
+    env with the config file's ``recall.env`` defaults (``session_env``), as
+    in ``run`` (NOBLIVION-55). Local only, no store call.
     Fails open: a missing module or any error adds nothing."""
-    if not switch_on(environ, "NOBLIVION_RECALL_LABELS"):
-        return
     try:
+        payload = json.loads(stdin_text)
+        if not isinstance(payload, dict) or payload.get("hook_event_name") != "UserPromptSubmit":
+            return
+        environ = session_env(environ, payload)
+        if not switch_on(environ, "NOBLIVION_RECALL_LABELS"):
+            return
         _sibling_module("label_rows").prompt_leg(stdin_text, stdout, environ)
     except Exception:  # noqa: BLE001 - label rows fail open
         return

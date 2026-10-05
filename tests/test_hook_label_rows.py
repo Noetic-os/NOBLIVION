@@ -20,7 +20,8 @@ What these tests hold:
    ``row_chars``; a spent label budget stops label rows, not trigger rows.
 7. THE PROMPT LEG is off unless NOBLIVION_RECALL_LABELS is set; it shares the
    state of agent ``main``, so a memory shown at the prompt is not shown again
-   at tool time.
+   at tool time. The recall hook reads its switches from the env and from the
+   ``recall.env`` block of the config file (NOBLIVION-55).
 8. THE GUARD TABLE is version 2 and its label index covers every memory file,
    rule fields or not; a labeller failure keeps the guard entries.
 Every path is a tmp path: no test reads or writes a live file.
@@ -43,6 +44,7 @@ gh = load_hook("guard_hook", "guard_hook_t_label_rows")
 gt = load_hook("guard_table", "guard_table_t_label_rows")
 lr = load_hook("label_rows", "label_rows_t_label_rows")
 corpus = load_hook("corpus", "corpus_t_label_rows")
+rh = load_hook("recall_hook", "recall_hook_t_label_rows")
 
 HEADER = "Memory rows by subject (label rows)"
 
@@ -433,6 +435,51 @@ def test_prompt_leg_ignores_other_events_and_bad_input(env):
     assert lr.prompt_leg("{not json", out, e) == 0
     assert lr.prompt_leg(_prompt(text="nothing specific here"), out, e) == 0
     assert out.getvalue() == ""
+
+
+SHIPPED_CONFIG = HOOKS.parent / "config" / "config.default.json"
+
+
+def _config_env(env, hook_env, tmp_path, recall_env=None):
+    """``env`` plus a config file: the shipped one, or one whose ``recall.env``
+    block is ``recall_env``. No store runs and none is started, so the recall
+    hook's own leg prints nothing."""
+    path = SHIPPED_CONFIG
+    if recall_env is not None:
+        path = tmp_path / "config-labels.json"
+        path.write_text(json.dumps({"recall": {"env": recall_env}}))
+    return dict(
+        env,
+        NOBLIVION_CONFIG=str(path),
+        NOBLIVION_DATA_DIR=str(hook_env["data"]),
+        NOBLIVION_STORE_AUTOSTART="0",
+    )
+
+
+def _recall_main(env, stdin_text: str) -> str:
+    out = io.StringIO()
+    assert rh.main(stdin=io.StringIO(stdin_text), stdout=out, environ=env) == 0
+    return out.getvalue()
+
+
+def test_recall_hook_takes_the_labels_switch_from_the_shipped_config_file(env, hook_env, tmp_path):
+    """NOBLIVION-55: the shipped config file turns the prompt leg on, and no
+    env var is set. An env var that is set still wins over the file."""
+    shipped = json.loads(SHIPPED_CONFIG.read_text())["recall"]["env"]
+    assert shipped["NOBLIVION_RECALL_LABELS"] == "1"
+    e = _config_env(env, hook_env, tmp_path)
+    assert "NOBLIVION_RECALL_LABELS" not in e
+    assert label_ids(_recall_main(e, _prompt("c1"))) == ["project_host_alpha"]
+    assert _recall_main(dict(e, NOBLIVION_RECALL_LABELS="0"), _prompt("c2")) == ""
+
+
+def test_recall_hook_label_rows_stop_on_the_config_files_disable_switch(env, hook_env, tmp_path):
+    """NOBLIVION-55: ``NOBLIVION_RECALL_DISABLE`` in ``recall.env`` stops the
+    label rows too, also when the env turns them on."""
+    e = _config_env(env, hook_env, tmp_path, {"NOBLIVION_RECALL_DISABLE": "1"})
+    assert _recall_main(dict(e, NOBLIVION_RECALL_LABELS="1"), _prompt("c3")) == ""
+    e = _config_env(env, hook_env, tmp_path, {"NOBLIVION_RECALL_LABELS": "1"})
+    assert label_ids(_recall_main(e, _prompt("c4"))) == ["project_host_alpha"]
 
 
 # 8. the guard table -------------------------------------------------------------

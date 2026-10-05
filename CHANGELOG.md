@@ -6,6 +6,21 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- The label rows at prompt time now read their switches from the
+  `recall.env` block of the config file, like the rest of the recall hook
+  (NOBLIVION-55). Before, they read the environment only, so the shipped
+  config file, which sets `NOBLIVION_RECALL_LABELS=1`, did not turn them
+  on, and `NOBLIVION_RECALL_DISABLE` in the config file did not stop them.
+  Behaviour change: with the shipped config file, a prompt that names a
+  file, a tool, a ticket or a service of a memory now gets up to 3 label
+  rows (at most 2400 characters per prompt and 4000 per session). To turn
+  them off, set `NOBLIVION_RECALL_LABELS` to `0` in `recall.env` or in the
+  environment.
+
 ## 0.1.6 - 2026-10-05
 
 Changes three defaults and the redactor version. The transcript miner is

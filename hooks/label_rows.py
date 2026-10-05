@@ -14,7 +14,8 @@ file; ``memory_labels``). No daemon call, no network.
     ``UserPromptSubmit``) calls ``prompt_leg`` after its own output. This leg
     is off unless ``NOBLIVION_RECALL_LABELS=1`` (the recall hook's rule: each
     leg behind its own variable), so a recall hook run without it prints
-    what it printed before. Install: set it in the hook's environment.
+    what it printed before. Install: set it in the hook's environment or in
+    the ``recall.env`` block of the config file (the shipped file sets it).
 
 The rules:
   * A label held by more than the index cutoff (8) memories never matches
