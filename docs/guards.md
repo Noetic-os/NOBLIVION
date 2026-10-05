@@ -199,21 +199,24 @@ command that would print a git URL with a password or a token in it.
 - It has no override. The reason lists safe forms of the command.
 
 Sometimes the guard cannot know the file before the command runs. The path
-is a variable that the command does not set, `$( )` or backticks, for
+holds a variable that the command does not set, `$( )` or backticks, for
 example `cat "$f"` or `cat $(git rev-parse --git-dir)/config`. The guard
 then uses this rule for `cat`, `tac`, `nl`, `head`, `tail`, `less`, `more`,
 `bat`, `grep`, `rg`, `sed` and `awk`:
 
-1. If no git config that git reads in that folder holds a credential, the
+1. If the fixed text at the end of the path is not the name of a git config
+   file, the guard allows the command. It cannot show that such a command
+   reads the git config. `cat "$f"`, `cat docs/$name`,
+   `cat $(git rev-parse --show-toplevel)/README.md`,
+   `for f in $(git diff --name-only); do head -5 "$f"; done` and
+   `git ls-files | xargs wc -l` pass.
+2. If no git config that git reads in that folder holds a credential, the
    guard allows the command.
-2. If the fixed text of the path cannot fit the config file, the guard
-   allows the command. `cat "$HOME/notes.txt"` and `cat docs/$name` pass.
-3. If not, the guard blocks the command. Write the path in the command.
-   Then the guard can see that the file is not the git config.
+3. If not, the guard blocks the command, for example `cat "$d/config"`.
+   Write the path in the command. Then the guard can see that the file is
+   not the git config.
 
-`$(mktemp)` always passes, because it names a new file. For `$( )` with no
-quotes, the guard does not see the text after it. Put the word in double
-quotes: `cat "$(git rev-parse --show-toplevel)/README.md"` passes.
+`$(mktemp)` always passes, because it names a new file.
 
 The guard has these limits:
 
@@ -227,6 +230,8 @@ The guard has these limits:
 - It does not follow a file descriptor that an earlier `exec` opened, a
   positional parameter (`$1`), or a loop that reads lines from a file that
   it cannot resolve.
+- It does not follow a file name that the command reads when it runs.
+  `find . -name config | while read f; do cat "$f"; done` is not blocked.
 
 ## The memory fields hook
 

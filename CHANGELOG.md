@@ -70,9 +70,12 @@ All notable changes to NOBLIVION. The format follows
   (`f=.git/config; cat $f`), `git var -l`, and a `GIT_TRACE*` variable on a
   git command that talks to the remote. A path that the guard cannot
   resolve is blocked only when the git config holds a credential and the
-  path can be that file. The README now says what the guard covers: git
-  URLs, not every credential. docs/guards.md lists the limits
-  (NOBLIVION-47).
+  fixed end of the path is the name of that file (`cat "$d/config"`,
+  `cat $(git rev-parse --git-dir)/config`). A read through a loop
+  variable, a `read` variable, `xargs` or `$(git ls-files)` passes, as
+  before: `for f in $(git diff --name-only); do head -5 "$f"; done`. The
+  README now says what the guard covers: git URLs, not every credential.
+  docs/guards.md lists the limits (NOBLIVION-47).
 - The credential guard no longer needs seconds for a Bash command with one
   very long word (NOBLIVION-47). The search for a `.git/config` path inside
   a word read the word again from each of its characters: one word of

@@ -43,10 +43,12 @@ What the guard denies, and only when the probe finds a credential URL:
 * A print command (``cat``, ``head``, ``tail``, ``less``, ``grep``, ``sed``,
   ``awk`` ...) whose file is set when the command runs: a variable with no
   known value, ``$( )``, backticks. The path cannot be resolved here, so the
-  call is denied when a config file that git reads in that folder holds a
-  credential URL and the fixed text around the variable fits its path
-  (``$d/config`` fits, ``$HOME/notes.txt`` and ``docs/$name`` do not).
-  ``$(mktemp)`` is a new file and never fits.
+  call is denied only when the fixed text after that part is the name of a
+  config file that git reads in that folder and that holds a credential URL
+  (``$d/config``, ``$(git rev-parse --git-dir)/config``). A word that does
+  not end in such a name says nothing about the file, so it is never denied:
+  ``$f``, a ``for`` or ``read`` variable, ``$(git ls-files)``,
+  ``$HOME/notes.txt``, ``.git/$name``. ``$(mktemp)`` is a new file.
 * Read of a git config file; Grep in ``content`` mode over a git config file or
   a tree that holds one, when the pattern can print a credential line.
 
@@ -58,8 +60,9 @@ A clone with no credential URL: everything is allowed (the probe finds none).
 
 Not covered (design limits): a path that a program builds (``python3 -c`` with
 ``os.path.join``), a file descriptor opened by an earlier ``exec``, a loop that
-reads lines from an unresolved file, positional parameters (``$1``). The guard
-reads the command text; it does not run it.
+reads lines from an unresolved file, positional parameters (``$1``), a file
+name that the command reads when it runs (``find . -name config | while read
+f; do cat "$f"; done``). The guard reads the command text; it does not run it.
 
 The deny reason never holds the URL, the user name or the secret, and there is
 no override marker: a scrubbed form always exists. Every error fails open
@@ -354,19 +357,46 @@ _PUNCT = set(";&|()<>")
 
 LIVE = "\x01"  # stands for a ``$`` that starts ``$name``, ``${`` or ``$(`` outside single quotes
 TICK = "\x02"  # stands for a backtick outside single quotes
+END = "\x03"  # stands for the ``)`` that closes a ``$(`` which is not inside another ``$( )`` or backticks
+HOLD = "\x04"  # before and after the number of a text that ``_prepare`` took out of the command
+_HELD = re.compile(HOLD + r"(\d{1,9})" + HOLD)
 _NAME_START = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_{(")
 
 
-def _prepare(command: str) -> str:
+def _prepare(command: str, held: Optional[List[str]] = None) -> str:
     """Unquoted newlines become ``;``; unquoted ``#`` comments are dropped. Outside single quotes, a ``$``
-    that starts ``$name``, ``${`` or ``$(`` becomes LIVE and a backtick becomes TICK (``_expand`` reads them)."""
+    that starts ``$name``, ``${`` or ``$(`` becomes LIVE and a backtick becomes TICK (``_expand`` reads them).
+    With ``held``: a closed ``$( ... )`` or backtick pair that is not inside another one is taken out and put
+    in ``held``, with its ``)`` as END. Its number between two HOLD stays in its place, so ``tokens`` reads
+    it as a part of one word. The text inside has its own quotes, as in the shell."""
     out: List[str] = []
     q: Optional[str] = None
+    # the ``$(`` and backticks not closed yet: the mark, the place in ``out``, the quote and the open ``(`` around it
+    subs: List[Tuple[str, int, Optional[str], int]] = []
+    parens = 0
     i, n = 0, len(command)
     while i < n:
         c = command[i]
         if q != "'" and (c == "`" or (c == "$" and command[i + 1 : i + 2] in _NAME_START)):
             c = TICK if c == "`" else LIVE
+        if held is not None and (subs or c == TICK or (c == LIVE and command[i + 1] == "(")):
+            top = subs[-1][0] if subs else ""
+            if (top == TICK and c == TICK) or (top == LIVE and c == ")" and not q and not parens):
+                at, q, parens = subs.pop()[1:]
+                out.append(END if c == ")" and not subs else c)
+                if not subs:
+                    held.append("".join(out[at:]))
+                    out[at:] = [f"{HOLD}{len(held) - 1}{HOLD}"]
+                i += 1
+                continue
+            if c == TICK or (c == LIVE and command[i + 1] == "("):
+                subs.append((c, len(out), q, parens))
+                out.append(c if c == TICK else c + "(")
+                q, parens = None, 0
+                i += len(out[-1])
+                continue
+            if not q and c in "()":
+                parens += 1 if c == "(" else -1
         if q:
             out.append(c)
             if c == "\\" and q == '"' and i + 1 < n:
@@ -407,7 +437,10 @@ def _split_punct(tok: str) -> List[str]:
 
 
 def tokens(command: str) -> List[str]:
-    text = _prepare(command)
+    """The words and operators of ``command``, marked (LIVE, TICK). A ``$( ... )`` or a backtick pair is a
+    part of one word, as in the shell: ``$(git rev-parse --git-dir)/config`` is one word."""
+    held: List[str] = []
+    text = _prepare(command.replace(HOLD, ""), held)
     try:
         lex = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>")
         lex.whitespace_split = True
@@ -419,6 +452,8 @@ def tokens(command: str) -> List[str]:
     for t in raw:
         if t and set(t) <= _PUNCT:
             out.extend(_split_punct(t))
+        elif HOLD in t:
+            out.append(_HELD.sub(lambda m: held[int(m.group(1))], t))
         else:
             out.append(t)
     return out
@@ -582,7 +617,7 @@ def _open_parts(word: str) -> Tuple[str, str]:
     """``(head, tail)`` of a marked word: its fixed text before the first and after the last part that is
     set when the command runs. A ``$(``, ``${`` or backtick that the word does not close: no tail is known."""
     first = min(i for i in (word.find(LIVE), word.find(TICK)) if i >= 0)
-    last = max(word.rfind(c) for c in (LIVE, TICK, ")", "}", "*", "?", "]"))
+    last = max(word.rfind(c) for c in (LIVE, TICK, END, "}", "*", "?", "]"))
     tail = word[last + 1 :]
     if word[last] == LIVE:
         tail = "" if tail[:1] in ("(", "{") else tail.lstrip(_NAME_CHARS)
@@ -594,11 +629,51 @@ def _open_parts(word: str) -> Tuple[str, str]:
     return head, tail
 
 
+def _unmark(text: str) -> str:
+    return text.replace(LIVE, "$").replace(TICK, "`").replace(END, ")")
+
+
+def _in_order(command: str, depth: int = 0) -> Iterable[Any]:
+    """The pipelines of ``command`` (marked words) in the order the shell runs them: the commands of a
+    ``$( ... )`` come before the pipeline that holds it. True comes before the pipelines of a ``$( ... )``
+    and False after them: it runs in a shell of its own. Deeper than EXEC_DEPTH, a ``$( ... )`` is a word only."""
+    for pipe in pipelines(tokens(command)):
+        for word in (w for stage in pipe for w in stage) if depth < EXEC_DEPTH else ():
+            at = word.find(LIVE + "(")
+            while at >= 0:
+                end = word.find(END, at)
+                if end < 0:
+                    break
+                yield True
+                yield from _in_order(_unmark(word[at + 2 : end]), depth + 1)
+                yield False
+                at = word.find(LIVE + "(", end)
+        yield pipe
+
+
 class _Shell(dict):
     """The variables a command has set so far: their values, None when not known. ``room``: the characters
-    their values may still add to the words (the bound for a hostile command)."""
+    their values may still add to the words (the bound for a hostile command). ``log``: what each change
+    replaced, so that ``back`` can undo the changes of a ``$( ... )``, which runs in a shell of its own."""
 
     room = 4 * EXPAND_MAX
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.log: List[Tuple[str, bool, Any]] = []
+
+    def __setitem__(self, name: str, value: Any) -> None:
+        self.log.append((name, name in self, self.get(name)))
+        super().__setitem__(name, value)
+
+    def back(self, length: int) -> None:
+        """Undo the changes made since the log had ``length`` entries."""
+        while len(self.log) > length:
+            name, known, value = self.log.pop()
+            if known:
+                super().__setitem__(name, value)
+            else:
+                del self[name]
 
 
 def _expand(words: Sequence[str], shell: _Shell) -> Tuple[List[str], List[str], dict, List[str]]:
@@ -633,7 +708,7 @@ def _expand(words: Sequence[str], shell: _Shell) -> Tuple[List[str], List[str], 
         else:
             shell.room -= cost
         forms = ["".join(x) for x in itertools.islice(itertools.product(*parts), GLOB_MAX + 1)]
-        plain = (forms[0] if len(forms) == 1 else word).replace(LIVE, "$").replace(TICK, "`")
+        plain = _unmark(forms[0] if len(forms) == 1 else word)
         if LIVE in forms[0] or TICK in forms[0] or len(forms) > GLOB_MAX:
             opened[plain] = _open_parts(forms[0] if len(forms) == 1 else word)
         elif len(forms) > 1:
@@ -1575,7 +1650,8 @@ def _open_read(
     opened: Mapping[str, Tuple[str, str]],
 ) -> Optional[Finding]:
     """A print command whose file is set when the command runs (a variable, ``$( )``, backticks): a finding
-    when that word can stand for a config file that git reads in ``cwd`` and that holds a credential URL."""
+    when the fixed end of that word is the name of a config file that git reads in ``cwd`` and that holds a
+    credential URL."""
     while len(w) > 1 and w[0] in _KEYWORDS:
         w = w[1:]
     name = os.path.basename(w[0])
@@ -1593,7 +1669,13 @@ def _open_read(
             words = words[1:]  # the first one is the program
     else:
         return None
-    parts = [opened[a] for a in [*words, *files] if a in opened]
+    # only a word whose fixed tail is a config file name: ``$d/config`` can be the git config, ``$f`` and
+    # ``$(git ls-files)`` say nothing about the file, so they are never a finding
+    parts = [
+        opened[a]
+        for a in [*words, *files]
+        if a in opened and "/" in opened[a][1] and os.path.basename(opened[a][1]) in _CFG_NAMES
+    ]
     for cfg in probe.cred_configs(cwd) if parts else ():
         if not any(
             cfg.endswith(tail) and (not head or cfg.startswith(_resolve(cwd, head)))
@@ -1624,14 +1706,24 @@ def check_bash(
     if depth > EXEC_DEPTH or not command.strip():
         return None
     here = cwd
-    exported: dict = {}
+    exported = _Shell()
     shell = _Shell()
     for m in _SUBST.finditer(command):  # $( ) and backticks, also inside double quotes
         inner = m.group(1) if m.group(1) is not None else m.group(2)
         f = check_bash(inner or "", cwd, probe, depth + 1)
         if f is not None:
             return f
-    for marked in pipelines(tokens(_MKTEMP.sub(NEW_FILE, command))):
+    # the folder and the two log lengths before each ``$( )`` that is open
+    outer: List[Tuple[str, int, int]] = []
+    for marked in _in_order(_MKTEMP.sub(NEW_FILE, command)):
+        if marked is True:
+            outer.append((here, len(shell.log), len(exported.log)))
+            continue
+        if marked is False:  # a ``cd`` or a variable set inside ``$( )`` ends with it
+            here, n_shell, n_exported = outer.pop()
+            shell.back(n_shell)
+            exported.back(n_exported)
+            continue
         stages = [_expand(words, shell) for words in marked]
         pipe = [st[0] for st in stages]
         for words in pipe:

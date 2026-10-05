@@ -24,7 +24,9 @@ What these tests hold:
    (``cat < .git/config``), a glob, a brace list, a variable, ``$( )``,
    ``git var -l``, a ``GIT_TRACE*`` variable on a git command that talks to
    the remote. A path that is set when the command runs is denied only when
-   the git config holds a credential. Ordinary commands stay allowed.
+   its fixed end names a config file that holds a credential (``$d/config``).
+   A read through a loop variable, a ``read`` variable, ``xargs`` or
+   ``$(git ls-files)`` is allowed. Ordinary commands stay allowed.
 
 No test reads a live file: tmp repos, tmp table, tmp state, tmp log, a tmp home
 and data dir, and the global and system git config are switched off.
@@ -892,7 +894,6 @@ HIDDEN_READS = [
     "git var -l | grep url",
     "f=.git/config; cat $f",
     'f=.git/config; cat "$f"',
-    'f=README.md; read f < list.txt; cat "$f"',
     "f=.git/config && head -3 ${f}",
     "d=.git; cat $d/config",
     "for d in .git src; do cat $d/config; done",
@@ -901,14 +902,23 @@ HIDDEN_READS = [
     'cat "$(git rev-parse --git-dir)/config"',
     "cat `git rev-parse --git-dir`/config",
     'd=$(git rev-parse --git-dir); cat "$d/config"',
-    'cat "$f"',
-    'cat < "$f"',
-    'tail -n 3 "$cfg"',
-    'grep url "$f"',
-    'grep "$pattern" "$f"',
-    'sed -n 1,9p "$f"',
-    "awk '{print}' $f",
-    'find . -name config | while read f; do cat "$f"; done',
+    "cat $(git rev-parse --show-toplevel)/.git/config",
+    'cat "$(git rev-parse --git-dir)"/config',
+    "cat $(dirname $(git rev-parse --git-dir))/.git/config",
+    'cat "$d/config"',
+    'cat < "$d/config"',
+    'tail -n 3 "$GIT_DIR/config"',
+    'grep url "$d/config"',
+    'grep "$pattern" "$d/config"',
+    'sed -n 1,9p "${d}/config"',
+    "awk '{print}' $d/config",
+    'for d in $(ls -d .g*); do cat "$d/config"; done',
+    'git rev-parse --git-dir | while read d; do cat "$d/config"; done',
+    "echo $(git remote -v)",
+    "cd src && echo $(cat ../.git/config)",
+    "f=.git/config; echo $(cat $f)",
+    'export GIT_TRACE=1; x=$(git fetch origin 2>&1); echo "$x"',
+    'echo $(cat .git/config | grep "(")',
     "GIT_TRACE=1 git ls-remote origin",
     "GIT_TRACE=1 git fetch origin",
     "GIT_TRACE=true git -C . pull",
@@ -1032,16 +1042,136 @@ def test_ordinary_commands_pass_in_a_credential_clone(call, env, work, cmd):
     assert hso is None
 
 
+#: Everyday reads of a file whose name is set when the command runs: a loop variable, a
+#: ``read`` variable, ``xargs``, ``$( )``, backticks. The guard cannot show that the file is
+#: the git config, so it stays quiet in a clone with a token. The first five are the
+#: commands of the review finding.
+RUNTIME_NAMES = [
+    'for f in $(git diff --name-only); do head -5 "$f"; done',
+    'git diff --name-only | while read f; do cat "$f"; done',
+    "cat $(git rev-parse --show-toplevel)/README.md",
+    "head -n 5 $(find src -name '*.py')",
+    "sed -n 1,40p $(git ls-files src | head -1)",
+    'for f in $(git ls-files "*.py"); do wc -l "$f"; cat "$f"; done',
+    'for f in $(ls src); do tail -n 2 "src/$f"; done',
+    'git ls-files | while read -r f; do head -1 "$f"; done',
+    'while IFS= read -r f; do cat "$f"; done < input.txt',
+    'f=README.md; read f < input.txt; cat "$f"',
+    "find . -name '*.md' | while read f; do cat \"$f\"; done",
+    "cat $(git ls-files | head -1)",
+    'cat "$(ls src/*.py | head -1)"',
+    'head -20 "$(git diff --name-only HEAD~1 | head -1)"',
+    "tail -n 5 $(ls -t *.txt | head -1)",
+    "awk 'NR<3' $(git ls-files src)",
+    "grep -n url $(git ls-files)",
+    'grep -n "$pattern" "$f"',
+    "cat `git ls-files | head -1`",
+    "cat `git rev-parse --show-toplevel`/README.md",
+    'f=$(git ls-files | head -1); cat "$f"',
+    "files=$(git diff --name-only); cat $files",
+    "cat $(dirname $(git rev-parse --git-dir))/README.md",
+    "cat $(git rev-parse --git-dir)/HEAD",
+    'less "$(git rev-parse --show-toplevel)/docs/config.md"',
+    'cat "$f"',
+    'cat < "$f"',
+    'cat "${f}"',
+    "cat ${f:-README.md}",
+    'cat "$dir/$name"',
+    'cat ".git/$name"',
+    'tail -n 3 "$cfg"',
+    'head -3 "$f"',
+    'less "$LOG"',
+    'grep url "$f"',
+    'sed -n 1,9p "$f"',
+    "awk '{print}' $f",
+    "nl $file | head",
+    'diff <(cat "$a") <(cat "$b")',
+    "head -n $((n + 1)) README.md",
+    "git ls-files | xargs wc -l",
+    "git ls-files '*.py' | xargs cat",
+    "git diff --name-only | xargs head -3",
+    "git diff --name-only | xargs grep -n foo",
+    "ls src/*.py | xargs cat",
+    "find src -name '*.py' | xargs cat",
+    "echo README.md | xargs cat",
+    "xargs cat < input.txt",
+]
+
+
+@pytest.mark.parametrize("cmd", RUNTIME_NAMES)
+def test_reads_of_a_runtime_name_pass_in_a_credential_clone(call, env, work, cmd):
+    assert not bash_deny(cmd, work)
+    hso, _ = call(env, ev("Bash", {"command": cmd}, work))
+    assert hso is None
+
+
+@pytest.mark.parametrize(
+    "cmd,words",
+    [
+        ("cat $(git rev-parse --git-dir)/config", 2),
+        ('cat "$(git rev-parse --git-dir)/config"', 2),
+        ("cat $(dirname $(git rev-parse --git-dir))/.git/config", 2),
+        ("cat `git rev-parse --git-dir`/config", 2),
+        ("cat $(echo \"a b\" 'c)')/config", 2),
+        ("cat pre$(echo a)mid$(echo b)/config x", 3),
+        ("head -n $((n + 1)) README.md", 4),
+        ("cat $(echo a) $(echo b)", 3),
+    ],
+)
+def test_a_substitution_is_one_word(cmd, words):
+    toks = cg.tokens(cmd)
+    assert len(toks) == words
+    if cmd.endswith("/config"):
+        assert cg._open_parts(toks[-1])[1].endswith("/config")
+
+
+def test_the_commands_of_a_substitution_run_first(work):
+    # the pipelines come in the order the shell runs them: a ``$( )`` before the word that holds it
+    order = cg._in_order("cd src && cat $(git rev-parse --git-dir)/config; ls")
+    assert [p if isinstance(p, bool) else p[0][0] for p in order] == [
+        "cd",
+        True,
+        "git",
+        False,
+        "cat",
+        "ls",
+    ]
+    nested = "echo " + "$(echo " * 9 + "x" + ")" * 9
+    assert len([p for p in cg._in_order(nested) if not isinstance(p, bool)]) == cg.EXEC_DEPTH + 1
+    # ``$( )`` runs in a shell of its own: its ``cd`` and its variables end with it
+    assert bash_deny("x=$(cd src && pwd); cat .git/config", work)
+    assert bash_deny('x="$(cd src && pwd)"; cat .git/config', work)
+    assert bash_deny("f=.git/config; echo $(f=README.md); cat $f", work)
+    assert bash_deny("echo $(export GIT_TRACE=0); export GIT_TRACE=1; git fetch origin", work)
+    assert not bash_deny('echo "$(cd .git && ls)"; cat config', work)
+    assert not bash_deny("echo $(export GIT_TRACE=1); git fetch origin", work)
+
+
+def test_open_parts_tail():
+    def tail(word):
+        return cg._open_parts(cg.tokens(word)[0])[1]
+
+    assert tail("$d/config") == "/config"
+    assert tail('"${d}/config"') == "/config"
+    assert tail("$(git rev-parse --git-dir)/config") == "/config"
+    assert tail("`git rev-parse --git-dir`/config") == "/config"
+    assert tail('"$f"') == "" and tail("$(git ls-files)") == "" and tail("$d/conf*") == ""
+    assert tail('"$(echo a') == "" and tail('"`echo a"') == ""
+
+
 @pytest.mark.parametrize(
     "cmd",
     [
+        "cat .git/config",
         "cat < .git/config",
         "cat .g*/conf*",
         "git var -l",
+        "f=.git/config; cat $f",
         'f=.git/config; cat "$f"',
         "cat $(git rev-parse --git-dir)/config",
         "cat .git/{config,HEAD}",
         "GIT_TRACE=1 git ls-remote origin",
+        "git remote -v",
     ],
 )
 def test_hook_denies_hidden_reads(call, env, work, cmd):
@@ -1051,14 +1181,15 @@ def test_hook_denies_hidden_reads(call, env, work, cmd):
 
 
 def test_open_path_reason_and_global_config(work, home_store, monkeypatch):
-    got = cg.decide("Bash", {"command": 'cat "$f"'}, str(work))
+    got = cg.decide("Bash", {"command": 'cat "$d/config"'}, str(work))
     assert got is not None and "set when the command runs" in got[1]
     assert "write the path in the command" in got[0]
     got = cg.decide("Bash", {"command": "cat .git/config"}, str(work))
     assert got is not None and "write the path in the command" not in got[0]
     # from a folder below the clone, the path can still be the config of the clone
-    assert bash_deny('cat "$f"', work / "src")
+    assert bash_deny('cat "$d/config"', work / "src")
     assert not bash_deny('cat "$f".py', work / "src")
+    assert not bash_deny('cat "$d/config.py"', work / "src")
     # a credential in the global config only: a path that can be that file is denied
     free = make_repo(work.parent, "free", "https://example.invalid/owner/repo.git")
     gc = home_store / ".gitconfig"
@@ -1089,6 +1220,16 @@ HOSTILE = {
     "trace with variables": "GIT_TRACE=1 git fetch " + "$a " * 34_000,
     "open mktemp": "cat " + "$(mktemp " * 12_000,
     "long mktemp": "cat $(mktemp" + " a" * 50_000,
+    "closed substitutions": "cat " + "$(a) " * 20_000,
+    "nested substitutions": "cat " + "$(" * 34_000 + ")" * 34_000,
+    "substitutions in one": "cat $(" + "$(a) " * 20_000 + ")",
+    "substitutions with tails": "cat " + "$(a)/config " * 9_000,
+    "variables with tails": "cat " + "$a/config " * 10_000,
+    "quotes in substitutions": "cat " + "$(echo \"a\" 'b') " * 6_500,
+    "parens in substitutions": "cat " + "$(((((a))))) " * 8_000,
+    "globs in a substitution": "cat $(" + "cat .git/* " * 10_000 + ")",
+    "backtick pairs": "cat " + "`a` " * 25_000,
+    "backticks in a substitution": "cat $(" + "`a` " * 25_000 + ")",
 }
 
 
@@ -1137,6 +1278,45 @@ def test_new_word_scans_are_linear(name):
     assert cg._glob_configs("/no-such-folder/" + word) == []
     assert cg._glob_configs("/no-such-folder/" + word[:250]) == []
     assert time.perf_counter() - t0 < 2.0
+
+
+#: One 100 KB word made of ``$( )`` and backtick pairs: ``tokens`` keeps each as a part of the word.
+SUBSTITUTION_WORDS = {
+    "closed substitutions": "$(a)" * 25_000,
+    "nested substitutions": "$(" * 34_000 + ")" * 34_000,
+    "quoted substitutions": '"' + "$(a)" * 25_000 + '"',
+    "quotes in a substitution": "$(" + "\"a\" 'b' " * 13_000 + ")",
+    "backslashes in a substitution": "$(" + "\\" * 100_000 + ")",
+    "backtick pairs": "`a`" * 34_000,
+    "backticks in a substitution": "$(" + "`a`" * 34_000 + ")",
+    "substitutions in backticks": "`" + "$(a)" * 25_000 + "`",
+}
+
+
+@pytest.mark.parametrize("name", sorted(SUBSTITUTION_WORDS))
+def test_substitution_words_are_read_in_linear_time(name):
+    word = SUBSTITUTION_WORDS[name]
+    assert len(word) >= 100_000
+    t0 = time.perf_counter()
+    toks = cg.tokens(word)
+    assert len(toks) == 1  # one word
+    assert len(list(cg._in_order(word))) >= 1
+    words, _, opened, _ = cg._expand(toks, cg._Shell(a=["x" * 4000]))
+    assert words[0] in opened and words[0] == word.strip('"')  # the text inside is kept as it is
+    assert cg._open_parts(toks[0]) == ("", "")
+    assert time.perf_counter() - t0 < 2.0
+
+
+@pytest.mark.parametrize("unit", ["\x04", "\x041", "1\x04", "11"])
+def test_held_text_number_regex_is_linear(unit):
+    assert cg.HOLD == "\x04"
+    text = cg.HOLD + unit * (100_000 // len(unit))
+    t0 = time.perf_counter()
+    cg._HELD.sub("", text)
+    # a HOLD in the command is not a number of ``tokens``: it is dropped, so no text comes twice
+    rest = "x" + text.replace(cg.HOLD, "")
+    assert cg.tokens("cat $(a) x" + text) == ["cat", cg.LIVE + "(a" + cg.END, rest]
+    assert time.perf_counter() - t0 < 1.0
 
 
 @pytest.mark.parametrize("unit", ["=.", " .", "/.", ".."])
