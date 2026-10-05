@@ -122,11 +122,12 @@ All notable changes to NOBLIVION. The format follows
   read of a git config pass. Now the search reads a word once and needs
   under 0.1 seconds for the same command. The paths that the search finds
   are the same. One limit stays. Before the guard hook prints a deny, it
-  removes secrets from the command text for its log, and that step still
-  needs seconds for one long word of letters with no digit. So
-  `cat <word> .git/config` with such a word of about 30 KB or more still
-  passes after 1.5 seconds, with the line that says the deny rules were
-  not checked. docs/guards.md lists this limit.
+  removes secrets and URL credentials from the command text for its log,
+  and that step still needs seconds for some long words: a word of letters
+  with no digit (from about 30 KB), or a word of parts joined by `-` or
+  `.` (from about 50 KB). So `cat <word> .git/config` with such a word
+  still passes after 1.5 seconds, with the line that says the deny rules
+  were not checked. docs/guards.md lists this limit.
 - Hybrid ranking no longer gives a keyword rank to a note that matches no
   word of the query (NOBLIVION-49). Before, the keyword list held the whole
   pool, and the notes with a keyword score of 0 were ordered by id. So the
