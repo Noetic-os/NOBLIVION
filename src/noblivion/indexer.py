@@ -87,6 +87,10 @@ StatCache = dict[str, tuple[int, int, "str | None"]]
 # the old mtime, so a cached entry would hide the new text until the next
 # change ("racy" entries, as in git). Two seconds covers coarse clocks too.
 STAT_CACHE_MIN_AGE_NS = 2_000_000_000
+# A file longer than this is stored by its head (``_head``), so a row fits in
+# a search answer (512 KB) and costs the redactor a bounded time. The hash
+# stays the hash of the whole file.
+MAX_FILE_BYTES = 256 * 1024
 
 # -- frontmatter and content ---------------------------------------------------
 
@@ -448,6 +452,20 @@ class ScanResult:
         return lines
 
 
+def _head(raw: bytes) -> bytes:
+    """The bytes of a file that the indexer stores: all of them up to
+    ``MAX_FILE_BYTES``, else the head up to its last line end, or up to its
+    last space when the second half of the head holds no line end. So a cut
+    does not split a line or a word that holds a secret."""
+    if len(raw) <= MAX_FILE_BYTES:
+        return raw
+    head = raw[:MAX_FILE_BYTES]
+    cut = head.rfind(b"\n", MAX_FILE_BYTES // 2)
+    if cut == -1:
+        cut = head.rfind(b" ", MAX_FILE_BYTES // 2)
+    return head[:cut] if cut != -1 else head
+
+
 @dataclass(frozen=True)
 class _Prepared:
     entry: FileEntry
@@ -466,7 +484,7 @@ def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
         return None
     # The file may have changed since it was listed; store what is on disk now.
     entry = FileEntry(entry.root, entry.path, entry.abspath, hashlib.sha256(raw).hexdigest())
-    text = raw.decode("utf-8", errors="replace")
+    text = _head(raw).decode("utf-8", errors="replace")
     parsed = parse_file(entry.path, text)
     content = redaction.redact_at_rest(build_content(entry.path, parsed))
     if content == redaction.REDACTION_FAILED_TOKEN:

@@ -197,6 +197,8 @@ unless `embedding.allow_download` is `true`.
   keyword-only answer.
 - A large memory folder takes longer to index the first time. Run
   `noblivion index` once by hand.
+- A note larger than 256 KB is stored by its first 256 KB only. Split it
+  into smaller notes.
 
 ## The index does not delete removed files
 

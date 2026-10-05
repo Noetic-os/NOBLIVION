@@ -577,6 +577,62 @@ def test_search_answer_stays_below_the_cap():
     assert answer["results"][0].count(rest.ENTRY_SEPARATOR) == 1  # 2 of 10 entries fit
 
 
+def _note_row(mid: int, body: str):
+    from noblivion.ranking import PoolRow
+
+    content = f"# n{mid}\n\n[claude_code_md: n{mid}.md]\n\n{body}"
+    return PoolRow(mid, "claude_code", "r", f"n{mid}.md", "claude_code_md", content, 1.0, ())
+
+
+def test_search_answer_keeps_a_small_entry_after_one_that_does_not_fit():
+    # NOBLIVION-62: a top hit larger than the cap gave "No memories available."
+    from noblivion.ranking import Hit, RankResult
+
+    big, small = _note_row(1, "word " * 120_000), _note_row(2, "Use the venv python.")
+    hits = [Hit(1, big, 0.9, 0.2, 1.0), Hit(2, small, 0.7, 0.1, 1.0)]
+    answer = rest.search_answer(RankResult("hybrid", hits, 2), "claude_code")
+    assert answer["results"] == [small.content] and answer["scores"] == [0.7]
+
+
+def test_search_answer_does_not_redact_a_text_too_large_to_fit(monkeypatch):
+    from noblivion.ranking import Hit, RankResult
+
+    redacted: list[str] = []
+    real = rest.safe_text
+    monkeypatch.setattr(rest, "safe_text", lambda text: redacted.append(text) or real(text))
+    big, small = _note_row(1, "word " * 120_000), _note_row(2, "Use the venv python.")
+    hits = [Hit(1, big, 0.9, 0.2, 1.0), Hit(2, small, 0.7, 0.1, 1.0)]
+    rest.search_answer(RankResult("hybrid", hits, 2), "claude_code")
+    assert redacted == [small.content]
+
+
+def test_fetch_answer_stays_below_the_cap(tmp_path):
+    # A row the indexer did not cap (a row of an older release, for example).
+    body = "line of a long note\n" * 40_000
+    content = f"# big\n\n[claude_code_md: big.md]\n\n{body}"
+    with closing(db.open_db(tmp_path / "noblivion.db", create=True)) as conn:
+        with db.write_tx(conn):
+            mid = db.insert_memory(
+                conn,
+                project="claude_code",
+                root="r",
+                path="big.md",
+                source_type="claude_code_md",
+                category="reference",
+                content=content,
+                content_hash="0" * 64,
+                labels="[]",
+                rev=db.bump_rev(conn),
+                now=db.utc_now(),
+            )
+        answer = rest.fetch_answer(conn, str(mid), "claude_code")
+    size = len(json.dumps(answer, ensure_ascii=False, separators=(",", ":")).encode())
+    assert size < rest.ANSWER_CAP_BYTES
+    assert answer["reason"] is None and answer["title"] == "big" and answer["source"] == "big.md"
+    assert answer["text"].endswith("…") and content.startswith(answer["text"][:-1])
+    assert size > rest.ANSWER_CAP_BYTES - 1024  # cut near the cap, not far below
+
+
 def test_title_rules():
     content = "# " + "x" * 200 + "\n\n[claude_code_md: a.md]\n\nsecond   line\n"
     title, summary = rest.title_and_summary(content, 7)

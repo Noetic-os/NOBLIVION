@@ -230,49 +230,73 @@ _BEARER_FIELD_RE = re.compile(
 _K8S_SECRET_DATA_RE = re.compile(r"^(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})$", re.MULTILINE)
 _K8S_KIND_RE = re.compile(r"kind:\s*secret\b", re.IGNORECASE)
 
-# -- Connection URL password. The span runs to the next whitespace. The match
-# is anchored right after each "://", so a "user:pass@" shape inside a URL path
-# (a timestamp, for example) is not a credential. The user part is strict: it
-# cannot hold ":", "@", "/", "?", "#". The password part may hold "/", "?", "#"
-# because real base64 passwords do. The scheme is optional, so a cut-off
-# "://user:pass@host" is still masked.
-_URL_SPAN_RE = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.\-]*)?://[^\s]*")
+# -- Connection URL password. The match is anchored right after each "://",
+# so a "user:pass@" shape inside a URL path (a timestamp, for example) is not
+# a credential. The user part is strict: it cannot hold ":", "@", "/", "?",
+# "#". The password part may hold "/", "?", "#" because real base64 passwords
+# do. It runs to the first "@" and cannot cross whitespace. The scheme is not
+# read, so a cut-off "://user:pass@host" is still masked.
 _CONN_STR_AUTH_RE = re.compile(r"([^:@/?#\s]+):([^@\s]+)@")
+_AT_OR_SPACE_RE = re.compile(r"[@\s]")
 
-_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+# -- Email address. The search starts at each "@" and reads the name in front
+# of it backwards, so a long run of name characters with no "@" is read once.
+_EMAIL_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._%+-")
+_EMAIL_DOMAIN_RE = re.compile(r"[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 
 
 def _redact_conn_str_urls(text: str) -> str:
     """Mask ``scheme://user:PASSWORD@host`` credentials.
 
-    Walks every "://" in a span, not only the first, so a credential in a
-    nested URL (a redirect parameter) or in the second URL of a comma-joined
-    list is masked too. A loop, not recursion, so a long list cannot overflow
-    the stack.
+    Walks every "://" in the text, so a credential in a nested URL (a redirect
+    parameter) or in the second URL of a comma-joined list is masked too. A
+    loop, not recursion, so a long list cannot overflow the stack. The first
+    "@" or whitespace after a "://" is found once for all the "://" in front
+    of it, so the time is linear in the length of the text.
     """
+    pieces: list[str] = []
+    pos = 0
+    search_from = 0
+    stop = -1  # the first "@" or whitespace at or after the last authority
+    while True:
+        idx = text.find("://", search_from)
+        if idx == -1:
+            break
+        authority = search_from = idx + 3
+        if stop < authority:
+            found = _AT_OR_SPACE_RE.search(text, authority)
+            stop = found.start() if found else len(text)
+        if stop == len(text) or text[stop] != "@":
+            continue  # no "@" before the next whitespace: no credential
+        cred = _CONN_STR_AUTH_RE.match(text, authority, stop + 1)
+        if not cred or cred.group(2) == FIELD_TOKEN:
+            continue
+        pieces.append(text[pos:authority])
+        pieces.append(f"{cred.group(1)}:{FIELD_TOKEN}@")
+        pos = search_from = cred.end()
+    pieces.append(text[pos:])
+    return "".join(pieces)
 
-    def _sub(m: re.Match[str]) -> str:
-        span = m.group(0)
-        pieces: list[str] = []
-        pos = 0
-        search_from = 0
-        while True:
-            idx = span.find("://", search_from)
-            if idx == -1:
-                pieces.append(span[pos:])
-                break
-            authority = idx + 3
-            cred = _CONN_STR_AUTH_RE.match(span, authority)
-            if not cred or cred.group(2) == FIELD_TOKEN:
-                search_from = authority
-                continue
-            pieces.append(span[pos:authority])
-            pieces.append(f"{cred.group(1)}:{FIELD_TOKEN}@")
-            pos = cred.end()
-            search_from = pos
-        return "".join(pieces)
 
-    return _URL_SPAN_RE.sub(_sub, text)
+def _redact_emails(text: str) -> str:
+    """Mask email addresses: the matches of
+    ``[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}``, left to right, in
+    linear time."""
+    pieces: list[str] = []
+    pos = 0
+    at = text.find("@")
+    while at != -1:
+        start = at
+        while start > pos and text[start - 1] in _EMAIL_NAME_CHARS:
+            start -= 1
+        domain = _EMAIL_DOMAIN_RE.match(text, at + 1) if start < at else None
+        if domain:
+            pieces.append(text[pos:start])
+            pieces.append(EMAIL_TOKEN)
+            pos = domain.end()
+        at = text.find("@", max(at + 1, pos))
+    pieces.append(text[pos:])
+    return "".join(pieces)
 
 
 def _mask_field(m: re.Match[str]) -> str:
@@ -291,7 +315,7 @@ def _redact_once(text: str) -> str:
     out = _redact_conn_str_urls(out)
     if _K8S_KIND_RE.search(out):
         out = _K8S_SECRET_DATA_RE.sub(lambda m: m.group(1) + FIELD_TOKEN, out)
-    return _EMAIL_RE.sub(EMAIL_TOKEN, out)
+    return _redact_emails(out)
 
 
 def redact_at_rest(text: str) -> str:

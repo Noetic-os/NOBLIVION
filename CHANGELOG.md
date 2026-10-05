@@ -53,6 +53,22 @@ All notable changes to NOBLIVION. The format follows
   (NOBLIVION-69). Before, they grew without a limit. `memory-dir.log` gets
   one line per prompt in a project with no memory folder, and the guard
   log holds command text.
+- One large or odd note no longer turns recall off (NOBLIVION-62):
+  - `/api/memories/search` left out every entry after the first one that
+    did not fit in the 512 KB answer. A top hit larger than that gave
+    "No memories available." with smaller hits in the pool. Now only the
+    entry that does not fit is left out, and a stored text too large to
+    fit is left out before it is redacted.
+  - The indexer stores the first 256 KB of a larger memory file, up to its
+    last whole line. Before, it stored the whole file.
+  - `/api/memories/fetch/{id}` cuts a text that would make the answer
+    larger than 512 KB, with `…` at the cut. Before, it had no limit.
+  - The connection URL rule and the email rule of the store redactor now
+    start at each `://` and `@`. Before, they read a long run of letters,
+    digits or dashes again from each character, so 40 KB cost 9.7 s on
+    each search that hit the note, and 100 KB of letters cost minutes. Now
+    100 KB costs less than 0.1 s. The rules mask the same text as before,
+    so the redactor version stays 2.
 
 ## 0.1.6 - 2026-10-05
 

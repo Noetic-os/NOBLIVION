@@ -239,14 +239,45 @@ def test_the_hook_redactor_holds_the_same_shared_shapes():
 )
 def test_new_rules_run_in_linear_time(text):
     # Each new or changed rule alone, on 100 KB: a quadratic rule needs many
-    # seconds. The whole redactor is not timed here: its URL rule is slow on a
-    # long run of letters.
+    # seconds. The next test times the whole redactor.
     rules = [re.compile(shape, flags) for shape, flags in redaction.SHARED_SHAPES]
     rules.append(redaction._SECRET_FIELD_RE)
     rules.append(redaction._KEYVALUE_PATTERNS[0][0])
     start = time.perf_counter()
     for rule in rules:
         rule.sub("", text)
+    assert time.perf_counter() - start < 1.0
+
+
+# 100 KB runs of the characters of a URL scheme, a URL user or a mail name,
+# with and without the "://" or "@" where a match starts. The URL rule and the
+# email rule read each such run once (NOBLIVION-62).
+_URL_AND_EMAIL_HOSTILE = [
+    ("letters", "a" * secret_forms.SIZE),
+    ("dashes", "-" * secret_forms.SIZE),
+    ("digits", "1" * secret_forms.SIZE),
+    ("letters and dashes", "a-" * (secret_forms.SIZE // 2)),
+    ("-p words", "-p" * (secret_forms.SIZE // 2)),
+    ("pass- words", "pass-" * (secret_forms.SIZE // 5)),
+    ("letters and dots", "a." * (secret_forms.SIZE // 2)),
+    ("scheme characters", "ab+c.d-" * (secret_forms.SIZE // 7)),
+    ("a BEGIN word and capitals", "-----BEGIN " + "A" * secret_forms.SIZE),
+    ("URLs with a colon and no @", "x://a:b" * (secret_forms.SIZE // 7)),
+    ("authorities with a colon", "://a:" * (secret_forms.SIZE // 5)),
+    ("a long name and one @ at the end", "a" * secret_forms.SIZE + "@"),
+]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [text for _name, text in _URL_AND_EMAIL_HOSTILE],
+    ids=[name for name, _text in _URL_AND_EMAIL_HOSTILE],
+)
+def test_the_whole_redactor_runs_in_linear_time(text):
+    # The store runs the redactor at index time and on each hit of a search,
+    # so a slow note held back recall (NOBLIVION-62).
+    start = time.perf_counter()
+    redact_at_rest(text)
     assert time.perf_counter() - start < 1.0
 
 

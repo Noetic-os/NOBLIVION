@@ -468,8 +468,10 @@ Notes:
   always sends it, with the value the client expects.
 - Rows with `source_type = 'transcript_mined'` and archived rows are never
   in this answer.
-- The answer stays below 512 KB. Entries that do not fit are left out from
-  the end.
+- The answer stays below 512 KB. An entry that does not fit is left out,
+  and a smaller entry after it still goes in. An entry whose stored text
+  alone does not fit is left out before it is redacted, so it costs no
+  redaction time (NOBLIVION-62).
 - A fault inside the ranker gives the "no hits" answer plus
   `"reason": "index or fetch failed; see the store log"` (section 4).
 
@@ -572,6 +574,8 @@ Id not a number: same shape with `"id": "<as sent>"` and
 
 - The fetch is limited to the namespace, as in the reference
   implementation. An id from another namespace is "not found".
+- The answer stays below 512 KB. A longer `text` is cut, with `…` at the
+  cut.
 - A fetch is the point where a memory counts as read. The store does not
   write a trust event for it; the trust hooks do that (section 9).
 - A fetch can return a `transcript_mined` row. That is the "on request"
@@ -736,6 +740,10 @@ the source of truth. The indexer never writes a memory file.
   matches `~/.claude/projects/*/memory`.
 - In each folder: only top-level `*.md` files, sorted by name. It skips
   `.archive/`, backup files, and files that are empty or only whitespace.
+- A file larger than 256 KB is stored by its head: up to its last line end
+  inside 256 KB, or up to its last space when the second half of the head
+  holds no line end. So a row fits in a search answer, and the redactor
+  time stays bounded. The hash stays the hash of the whole file.
 - `root` is the key of the folder: the name of its parent folder (the
   Claude Code project folder name). `path` is the file name relative to the
   folder.
@@ -886,6 +894,9 @@ with the key in quotes, as in JSON), the password in a connection URL,
 cluster secret data and email addresses. It runs up to 5 passes until the
 text is stable. If it does not settle or raises, it returns its fail
 token. It runs before the content is stored, embedded, or sent anywhere.
+The connection URL rule starts at each `://` and the email rule at each
+`@`, so a long run of letters or digits is read once, not once for each of
+its characters (NOBLIVION-62).
 
 Three rules keep the text of a note that is not a secret:
 

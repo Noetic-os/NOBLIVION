@@ -139,11 +139,30 @@ def _json_len(text: str) -> int:
     return len(json.dumps(text, ensure_ascii=False).encode("utf-8")) - 2
 
 
+def _cut_to_json_len(text: str, limit: int) -> str:
+    """``text`` whole when its JSON form fits in ``limit`` bytes, else its
+    longest head that fits with ``…`` at the cut."""
+    if _json_len(text) <= limit:
+        return text
+    mark = "…"
+    low, high = 0, max(0, min(len(text), limit))
+    while low < high:
+        mid = (low + high + 1) // 2
+        if _json_len(text[:mid] + mark) <= limit:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low] + mark if low else ""
+
+
 # -- answers ----------------------------------------------------------------------
 
 
 def search_answer(result: RankResult | None, namespace: str) -> dict:
     """Section 4.2: one joined text, each entry redacted on its own, below 512 KB.
+    An entry that does not fit is left out, and a smaller entry after it still
+    goes in. A stored text that is too large by itself is left out before it
+    is redacted, so it costs no redaction time.
     ``scores`` holds the score of each entry (section 4.3 rules; ``null`` in
     keyword-only mode), in entry order, so the hook can apply
     ``recall.min_score``."""
@@ -153,12 +172,15 @@ def search_answer(result: RankResult | None, namespace: str) -> dict:
     used = 0
     sep_len = _json_len(ENTRY_SEPARATOR)
     for hit in result.hits if result is not None else []:
+        sep = sep_len if entries else 0
+        if used + sep + _json_len(hit.row.content) > budget:
+            continue  # too large as stored: not redacted, a smaller entry after it can fit
         text = safe_text(hit.row.content)
         if text == redaction.REDACTION_FAILED_TOKEN:
             continue
-        size = _json_len(text) + (sep_len if entries else 0)
+        size = _json_len(text) + sep
         if used + size > budget:
-            break  # entries that do not fit are left out from the end
+            continue
         entries.append(text)
         scores.append(hit.score)
         used += size
@@ -239,7 +261,8 @@ def index_answer(
 
 
 def fetch_answer(conn: sqlite3.Connection | None, raw_id: str, namespace: str) -> dict:
-    """Section 4.4. Archived, deleted and other-namespace rows are not found."""
+    """Section 4.4. Archived, deleted and other-namespace rows are not found.
+    The answer stays below 512 KB: a longer text is cut, with ``…`` at the cut."""
     if not _ID_RE.fullmatch(raw_id):
         return {
             "namespace": namespace,
@@ -270,16 +293,18 @@ def fetch_answer(conn: sqlite3.Connection | None, raw_id: str, namespace: str) -
     if row is None:
         return missing
     content = str(row["content"])
-    text = safe_text(content)
     title, _ = title_and_summary(content, memory_id)
-    return {
+    answer = {
         "namespace": namespace,
         "id": memory_id,
         "title": title,
         "source": source_of(content),
-        "text": text,
+        "text": "",
         "reason": None,
     }
+    room = ANSWER_CAP_BYTES - 1 - len(json.dumps(answer, ensure_ascii=False).encode("utf-8"))
+    answer["text"] = _cut_to_json_len(safe_text(content), room)
+    return answer
 
 
 # -- the handler ------------------------------------------------------------------

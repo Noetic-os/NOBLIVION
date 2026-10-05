@@ -195,6 +195,37 @@ def test_scan_inserts_files_and_skips_the_rest(conn, tmp_path):
     assert version_mark(conn) == redaction.REDACTOR_VERSION
 
 
+def test_a_large_file_is_stored_by_its_head(conn, tmp_path):
+    # NOBLIVION-62: a note over the search answer cap turned recall off.
+    import hashlib
+
+    lines = [f"line {i}: run the tests with the venv python\n" for i in range(30_000)]
+    text = "---\nname: big note\n---\n" + "".join(lines)
+    folder = make_folder(tmp_path, "proj-demo", {"reference_big.md": text})
+    assert indexer.scan(conn, [folder]).inserted == 1
+    row = rows(conn)[("proj-demo", "reference_big.md")]
+    assert row["hash"] == hashlib.sha256(text.encode()).hexdigest()  # the whole file
+    head = "# big note\n\n[claude_code_md: reference_big.md]\n\n"
+    assert row["content"].startswith(head)
+    body = row["content"][len(head) :]
+    assert text.startswith(f"---\nname: big note\n---\n{body}\n")  # whole lines only
+    assert indexer.MAX_FILE_BYTES - 100 < len(body.encode()) < indexer.MAX_FILE_BYTES
+
+
+@pytest.mark.parametrize(
+    ("raw", "head"),
+    [
+        (b"a" * 200_000 + b"\n" + b"b" * 200_000, b"a" * 200_000),  # the last line end
+        (b"a\n" + b"word " * 80_000, b"a\n" + b"word " * 52_427 + b"word"),  # else the last space
+        (b"x" * 400_000, b"x" * 262_144),  # else the limit
+    ],
+    ids=["line end", "space", "limit"],
+)
+def test_the_head_of_a_large_file_ends_at_a_line_or_a_word(raw, head):
+    assert indexer._head(raw) == head
+    assert indexer._head(b"short\n") == b"short\n"
+
+
 def test_hash_skip_and_update_in_place(conn, tmp_path):
     folder = make_folder(tmp_path, "proj-demo", {"user_alice.md": "likes tea\n"})
     first = indexer.scan(conn, [folder])
