@@ -118,9 +118,14 @@ All notable changes to NOBLIVION. The format follows
   cannot resolve is blocked only when the git config holds a credential
   and the fixed end of the path is the name of that file
   (`cat "$d/config"`, `cat $(git rev-parse --git-dir)/config`). A read
-  through a loop variable, a `read` variable, `xargs` or
-  `$(git ls-files)` passes, as before:
-  `for f in $(git diff --name-only); do head -5 "$f"; done`. The README
+  through a loop variable, a `read` variable or `$(git ls-files)` passes,
+  as before: `for f in $(git diff --name-only); do head -5 "$f"; done`. A
+  `find` that starts in the folder of the clone and gives its files to a
+  reading command, with `| xargs` or with `-exec`, is denied in a clone
+  whose config holds a credential, also when it names no config file:
+  `find . -name "*.py" | xargs grep -c TODO`,
+  `find . -name '*.py' -exec head -3 {} \;`. That is an older limit, not a
+  change of this release. The README
   now says what the guard covers: git URLs, not every credential.
   docs/guards.md lists the limits (NOBLIVION-47).
 - A Bash command with one very long word no longer passes the credential

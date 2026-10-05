@@ -228,9 +228,8 @@ then uses this rule for `cat`, `tac`, `nl`, `head`, `tail`, `less`, `more`,
 1. If the fixed text at the end of the path is not the name of a git config
    file, the guard allows the command. It cannot show that such a command
    reads the git config. `cat "$f"`, `cat docs/$name`,
-   `cat $(git rev-parse --show-toplevel)/README.md`,
-   `for f in $(git diff --name-only); do head -5 "$f"; done` and
-   `git ls-files | xargs wc -l` pass.
+   `cat $(git rev-parse --show-toplevel)/README.md` and
+   `for f in $(git diff --name-only); do head -5 "$f"; done` pass.
 2. If no git config that git reads in that folder holds a credential, the
    guard allows the command.
 3. If not, the guard blocks the command, for example `cat "$d/config"`.
@@ -253,6 +252,14 @@ The guard has these limits:
   it cannot resolve.
 - It does not follow a file name that the command reads when it runs.
   `find . -name config | while read f; do cat "$f"; done` is not blocked.
+- It blocks a `find` that starts in the folder of the clone and gives its
+  files to a reading command, with `| xargs` or with `-exec`, when the git
+  config holds a credential. It blocks such a command also when the `find`
+  cannot name the config file: `find . -name "*.py" | xargs grep -c TODO`
+  and `find . -name '*.py' -exec head -3 {} \;`. This limit is not new:
+  earlier versions have it too. Start the `find` in a subfolder
+  (`find src -name '*.py' | xargs grep -c TODO`), or use `git grep` or
+  `git ls-files` for the list of files.
 - The check must end inside the time limit of the hook (1.5 seconds). A
   very long command of some forms can still run out of it, and the hook
   then allows the call with the line that the deny rules were not checked.
