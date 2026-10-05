@@ -795,6 +795,14 @@ description is left out with its blank line.
 - A database of an older release holds one mark for all namespaces (key
   `redactor_version`). A namespace with no mark of its own reads that mark.
   The indexer does not write it.
+- A store process that started before an update still runs the older
+  release. It finds its own version in the single mark, so it indexes a new
+  or changed note with its old rules, and the hash of that row is then the
+  hash of the file. So each scan keeps the content revision of its last
+  write (key `redactor_rev:<namespace>`), and the next scan writes a live
+  row with a later revision again. Only such rows: the indexer leaves the
+  single mark as it is, because an older release that finds another version
+  there writes all its rows again with its old rules on each scan.
 - New file: insert. Changed hash, or `--force`: update the row in place
   (same id). Same hash: skip.
 - A new file whose hash equals the hash of a row deleted in the grace

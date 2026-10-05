@@ -101,7 +101,11 @@ All notable changes to NOBLIVION. The format follows
   read. The row of a note whose file is deleted is not written again: it
   keeps its old text until the store removes the row at the end of the
   delete grace time (14 days by default). Notes that the transcript miner
-  stored before the update are not written again.
+  stored before the update are not written again. A store process that
+  started before the update runs the old code until it stops. A note that
+  it indexes in that time gets the old rules. The next scan of the new
+  code writes that row again: a scan keeps the revision of its last write
+  for each namespace and redoes a row with a later revision.
 - The credential guard now also blocks these reads of a git config that
   holds a credential URL: the file as standard input (`cat < .git/config`,
   `echo "$(< .git/config)"`), a glob on a folder name (`cat .g*/conf*`), a

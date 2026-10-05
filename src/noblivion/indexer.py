@@ -28,7 +28,10 @@ A new redactor version redoes every row of a namespace once (section 5.4). The
 version mark is per namespace (``meta`` key ``redactor_version:<namespace>``).
 A row that this one scan could not redo, because its file was skipped or its
 folder was gone, goes on a list (``redactor_redo:<namespace>``). A later scan
-redoes only the rows on the list, each when its file can be read again.
+redoes only the rows on the list, each when its file can be read again. A
+scan also keeps the revision of its last write (``redactor_rev:<namespace>``)
+and redoes a row with a later revision: a store process that still runs an
+older release wrote that row, with its rules.
 
 CLI: ``python -m noblivion.indexer [--force] [--allow-shrink]`` (also
 ``noblivion index``). Exit codes: 0 done; 1 some files were skipped (not
@@ -538,6 +541,23 @@ def _read_redo(raw: str | None) -> set[int] | None:
         return None
 
 
+def _rev_key(project: str) -> str:
+    """The ``meta`` key of the revision mark: the content revision at the end
+    of the last scan of a namespace that wrote a row. Only this code sets it.
+    A store process that still runs a release with the single mark does not,
+    so a live row with a later revision holds text of the rules of that
+    release."""
+    return f"redactor_rev:{project}"
+
+
+def _read_rev(raw: str | None) -> int | None:
+    """The stored revision mark. ``None`` when it is missing or not a number."""
+    try:
+        return int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def scan(
     conn: sqlite3.Connection,
     memory_dirs: Sequence[Path],
@@ -557,13 +577,17 @@ def scan(
         if stored_version is None:
             stored_version = db.get_meta(conn, LEGACY_VERSION_KEY)
         stored_redo = _read_redo(db.get_meta(conn, _redo_key(project)))
+        stored_rev = _read_rev(db.get_meta(conn, _rev_key(project)))
         content_rev = db.revisions(conn)[0]
     # The live rows that hold text of another redactor version: all of them
-    # after a version change, else the ones an earlier scan could not redo.
+    # after a version change, else the ones an earlier scan could not redo
+    # and the ones that a store process of an older release wrote after the
+    # last scan of this code.
     redo = {r.id for r in rows if r.live}
     stale = stored_version != redaction.REDACTOR_VERSION or stored_redo is None
     if not stale:
-        redo &= stored_redo
+        newer = {r.id for r in rows if stored_rev is not None and r.rev > stored_rev}
+        redo &= stored_redo | newer
     cutoff = db.format_ts(datetime.now(timezone.utc) - timedelta(days=delete_grace_days))
     plan = compute_plan(
         folders, rows, force=force, redo=redo, allow_shrink=allow_shrink, grace_cutoff=cutoff
@@ -608,10 +632,11 @@ def scan(
     # text, so it stays on the redo list. The version mark is set also then:
     # the next scan redoes the list, not every row again.
     left = redo - {op.row_id for op, _ in work}
-    if stale or left != stored_redo:
+    if stale or left != stored_redo or work or stored_rev is None:
         with db.write_tx(conn):
             db.set_meta(conn, _version_key(project), redaction.REDACTOR_VERSION)
             db.set_meta(conn, _redo_key(project), json.dumps(sorted(left)))
+            db.set_meta(conn, _rev_key(project), str(result.content_rev))
     return result
 
 

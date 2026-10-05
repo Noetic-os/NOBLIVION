@@ -390,6 +390,7 @@ class MemoryRow:
     category: str
     archived_at: str | None
     deleted_at: str | None
+    rev: int
 
     @property
     def live(self) -> bool:
@@ -399,7 +400,7 @@ class MemoryRow:
 def md_rows(conn: sqlite3.Connection, project: str) -> list[MemoryRow]:
     """Every ``claude_code_md`` row of a namespace, live or not."""
     cur = conn.execute(
-        "SELECT id, root, path, hash, category, archived_at, deleted_at FROM memories "
+        "SELECT id, root, path, hash, category, archived_at, deleted_at, rev FROM memories "
         "WHERE project = ? AND source_type = ? ORDER BY root, path",
         (project, SOURCE_MD),
     )
@@ -408,7 +409,7 @@ def md_rows(conn: sqlite3.Connection, project: str) -> list[MemoryRow]:
 
 def row_at(conn: sqlite3.Connection, project: str, root: str, path: str) -> MemoryRow | None:
     r = conn.execute(
-        "SELECT id, root, path, hash, category, archived_at, deleted_at FROM memories "
+        "SELECT id, root, path, hash, category, archived_at, deleted_at, rev FROM memories "
         "WHERE project = ? AND root = ? AND path = ?",
         (project, root, path),
     ).fetchone()

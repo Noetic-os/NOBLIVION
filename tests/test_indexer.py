@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import secret_forms
 from noblivion import config, db, indexer, redaction
 
 
@@ -57,6 +58,31 @@ def scan_as_version_1(monkeypatch, conn, folder: Path, project: str = config.DEF
         old.setattr(redaction, "REDACTOR_VERSION", "1")
         old.setattr(redaction, "redact_at_rest", lambda text: text)
         return indexer.scan(conn, [folder], project=project)
+
+
+def scan_as_a_store_of_the_last_release(
+    monkeypatch, conn, folder: Path, project: str = config.DEFAULT_NAMESPACE
+):
+    """Index ``folder`` the way a store process that still runs the last
+    release does: with the rules of redactor version 1. That code knows the
+    single mark only. It writes every row again when the single mark is not
+    its version, and then it sets the mark."""
+    keys = [f"redactor_{name}:{project}" for name in ("version", "redo", "rev")]
+    kept = {key: db.get_meta(conn, key) for key in keys}
+    single = db.get_meta(conn, "redactor_version")
+    with db.write_tx(conn):
+        conn.execute("DELETE FROM meta WHERE key IN (?, ?, ?)", keys)
+        if single is not None:
+            db.set_meta(conn, keys[0], single)  # the stored version that the old code reads
+    result = scan_as_version_1(monkeypatch, conn, folder, project)
+    with db.write_tx(conn):
+        conn.execute("DELETE FROM meta WHERE key IN (?, ?, ?)", keys)
+        for key, value in kept.items():  # the old code does not know these keys
+            if value is not None:
+                db.set_meta(conn, key, value)
+        if single != "1" and not result.skipped:
+            db.set_meta(conn, "redactor_version", "1")
+    return result
 
 
 def contents(conn, project: str) -> list[str]:
@@ -250,6 +276,109 @@ def test_the_single_mark_of_an_older_release_serves_a_namespace_with_no_mark(
         conn.execute("DELETE FROM meta WHERE key LIKE 'redactor_%'")
         db.set_meta(conn, "redactor_version", redaction.REDACTOR_VERSION)
     assert indexer.scan(conn, [folder], project="ns-one").updated == 0
+
+
+def _updated_database_with_a_store_of_the_last_release(monkeypatch, conn, tmp_path) -> Path:
+    """A database of the last release after the first scan of this code."""
+    folder = make_folder(tmp_path, "proj-demo", {"reference_db.md": SECRET_NOTE + "\n"})
+    scan_as_a_store_of_the_last_release(monkeypatch, conn, folder)
+    assert db.get_meta(conn, "redactor_version") == "1" and version_mark(conn) is None
+    assert indexer.scan(conn, [folder]).updated == 1
+    assert "hunter2hunter2" not in "".join(contents(conn, config.DEFAULT_NAMESPACE))
+    return folder
+
+
+def test_a_note_that_a_store_of_the_last_release_indexes_after_the_update_is_redone(
+    conn, tmp_path, monkeypatch
+):
+    # A store process that started before the update still runs the old code.
+    # It indexes a new note and a changed note with the old rules. The files
+    # do not change after that, so only the row revision says that this code
+    # did not write these rows.
+    token = secret_forms.GLPAT
+    folder = _updated_database_with_a_store_of_the_last_release(monkeypatch, conn, tmp_path)
+    (folder / "user_alice.md").write_text("likes tea\n", encoding="utf-8")
+    assert indexer.scan(conn, [folder]).inserted == 1
+    (folder / "reference_ci.md").write_text(f"The CI token is {token}\n", encoding="utf-8")
+    (folder / "reference_db.md").write_text(SECRET_NOTE + " is new\n", encoding="utf-8")
+    old = scan_as_a_store_of_the_last_release(monkeypatch, conn, folder)
+    assert (old.inserted, old.updated, old.unchanged) == (1, 1, 1)
+    assert token in rows(conn)[("proj-demo", "reference_ci.md")]["content"]
+    assert "hunter2hunter2" in rows(conn)[("proj-demo", "reference_db.md")]["content"]
+    # The next scan of this code redoes the two rows, and only them.
+    result = indexer.scan(conn, [folder])
+    assert (result.updated, result.unchanged) == (2, 1)
+    text = "".join(contents(conn, config.DEFAULT_NAMESPACE))
+    assert token not in text and "hunter2hunter2" not in text
+    rev = db.revisions(conn)[0]
+    for _ in range(2):
+        again = indexer.scan(conn, [folder])
+        assert (again.updated, again.unchanged) == (0, 3)
+    assert db.revisions(conn)[0] == rev  # no row was written again
+    assert db.get_meta(conn, "redactor_version") == "1"  # the old store finds its own mark
+
+
+def test_a_row_of_the_last_release_that_cannot_be_redone_goes_on_the_redo_list(
+    conn, tmp_path, monkeypatch
+):
+    token = secret_forms.GLPAT
+    folder = _updated_database_with_a_store_of_the_last_release(monkeypatch, conn, tmp_path)
+    (folder / "reference_ci.md").write_text(f"The CI token is {token}\n", encoding="utf-8")
+    scan_as_a_store_of_the_last_release(monkeypatch, conn, folder)
+    key = ("proj-demo", "reference_ci.md")
+    with monkeypatch.context() as broken:
+        _make_unreadable(broken, "reference_ci.md")
+        assert indexer.scan(conn, [folder]).updated == 0
+        assert redo_list(conn) == [rows(conn)[key]["id"]]
+        # Another file changes, so the scan moves its revision mark on. The
+        # row stays on the list.
+        (folder / "user_alice.md").write_text("likes tea\n", encoding="utf-8")
+        assert indexer.scan(conn, [folder]).inserted == 1
+        assert redo_list(conn) == [rows(conn)[key]["id"]]
+    assert indexer.scan(conn, [folder]).updated == 1
+    assert token not in rows(conn)[key]["content"]
+    assert redo_list(conn) == []
+    assert indexer.scan(conn, [folder]).updated == 0
+
+
+def test_a_row_of_the_last_release_is_redone_in_its_namespace_only(conn, tmp_path, monkeypatch):
+    folder = make_folder(tmp_path, "proj-demo", {"reference_db.md": "no secret\n"})
+    for project in ("ns-one", "ns-two"):
+        assert indexer.scan(conn, [folder], project=project).inserted == 1
+    (folder / "reference_db.md").write_text(SECRET_NOTE + "\n", encoding="utf-8")
+    assert indexer.scan(conn, [folder], project="ns-two").updated == 1
+    scan_as_a_store_of_the_last_release(monkeypatch, conn, folder, "ns-one")
+    assert "hunter2hunter2" in "".join(contents(conn, "ns-one"))
+    assert indexer.scan(conn, [folder], project="ns-two").updated == 0
+    assert indexer.scan(conn, [folder], project="ns-one").updated == 1
+    assert "hunter2hunter2" not in "".join(contents(conn, "ns-one"))
+    for project in ("ns-one", "ns-two"):
+        assert indexer.scan(conn, [folder], project=project).updated == 0
+
+
+def test_a_database_with_no_revision_mark_gets_it_and_no_row_is_written_again(
+    conn, tmp_path, monkeypatch
+):
+    # A revision mark that is missing or not a number: the scan sets it.
+    folder = make_folder(tmp_path, "proj-demo", {"user_alice.md": "x\n"})
+    indexer.scan(conn, [folder])
+    key = f"redactor_rev:{config.DEFAULT_NAMESPACE}"
+    rev = db.revisions(conn)[0]
+    assert db.get_meta(conn, key) == str(rev)
+    for broken in (None, "not a number"):
+        with db.write_tx(conn):
+            conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+            if broken is not None:
+                db.set_meta(conn, key, broken)
+        assert indexer.scan(conn, [folder]).updated == 0
+        assert db.get_meta(conn, key) == str(rev)
+    assert db.revisions(conn)[0] == rev
+    # With the mark back, the rows of a store of the last release are redone.
+    # That store finds no single mark here, so it writes both rows.
+    (folder / "reference_db.md").write_text(SECRET_NOTE + "\n", encoding="utf-8")
+    scan_as_a_store_of_the_last_release(monkeypatch, conn, folder)
+    assert indexer.scan(conn, [folder]).updated == 2
+    assert "hunter2hunter2" not in "".join(contents(conn, config.DEFAULT_NAMESPACE))
 
 
 def _fifty_secret_notes() -> dict[str, str]:
