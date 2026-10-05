@@ -713,8 +713,13 @@ def test_a_revoked_consent_stops_a_running_store_from_sending_text(tmp_path, mon
         emb = health()["embedding"]
         return emb["state"] == "ready" and emb["missing_vectors"] == 0
 
+    def embedded(phrase: str) -> bool:
+        # The text first: while the state changes, one health answer can say
+        # "ready" with no missing vector before the backfill ran.
+        return any(phrase in text for text in remote.texts) and in_sync()
+
     try:
-        assert wait_for(in_sync)
+        assert wait_for(lambda: embedded("Lantern before dusk."))
         assert run.get("/api/memories/index?q=lantern")[1]["mode"] == "hybrid"
         assert health()["embedding"]["consent"] == "given"
         sent = len(remote.requests)
@@ -737,9 +742,8 @@ def test_a_revoked_consent_stops_a_running_store_from_sending_text(tmp_path, mon
         assert answer["embedding"]["consent"] == "missing"
 
         assert consent() == 0
-        assert wait_for(in_sync)
+        assert wait_for(lambda: embedded("Kettle before tea."))
         assert health()["embedding"]["consent"] == "given"
-        assert any("Kettle before tea." in text for text in remote.texts)
         assert run.get("/api/memories/index?q=kettle")[1]["mode"] == "hybrid"
     finally:
         run.stop()
