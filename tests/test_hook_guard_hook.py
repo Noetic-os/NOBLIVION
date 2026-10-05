@@ -1088,7 +1088,9 @@ def _timed(env, event):
 def test_a_rule_deny_with_one_long_word_is_printed_and_logged(env, unit, size):
     cmd = "git push --force o x " + unit * (size // len(unit))
     out, took = _timed(env, bash(cmd))
-    assert took < 0.75  # the limit of the hook is 1.5 seconds
+    # The limit of the hook, not half of it: 500 KB of parts took 0.38 s on a
+    # fast machine, and a CI machine can be 3 times slower.
+    assert took < gh.TIME_LIMIT_S
     assert out["permissionDecision"] == "deny"
     rec = log(env)[-1]
     assert rec["decision"] == "deny" and rec["ids"] == ["feedback_no_force"]
@@ -1124,7 +1126,7 @@ def test_an_override_with_a_long_reason_is_logged_in_time(genv, unit):
 def test_a_failed_run_with_a_long_word_is_recorded_in_time(genv, unit):
     cmd = RUN_FIRST + " " + unit * (500_000 // len(unit))
     out, took = _timed(genv, failed(cmd, error="Exit code 128\n" + "b" * 500_000))
-    assert out is None and took < 0.75
+    assert out is None and took < gh.TIME_LIMIT_S  # 0.21 s on a fast machine
     rec = log(genv)[-1]
     assert rec["decision"] == "apply-failed"
     assert rec["text"] == f"{RUN_FIRST} [cut: {len(cmd)} characters]"
