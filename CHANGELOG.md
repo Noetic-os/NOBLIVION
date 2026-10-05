@@ -51,15 +51,30 @@ All notable changes to NOBLIVION. The format follows
   On a fresh real-session sample its precision rose to 15 of 29 (Wilson
   95% lower bound 0.344), still below the 0.70 rule, so the signal stays
   off by default. docs/trust.md has the numbers (NOBLIVION-43).
-- The secret redactor of the store now removes a private key block
-  (`-----BEGIN ... PRIVATE KEY-----`, also one with no END line), a secret
-  whose key is in quotes (JSON: `"password": "value"`), the value of a key
-  that ends in `pass` (`DB_PASS=value`) and the token prefixes `glpat-`,
-  `AIza`, `sk_live_`, `hf_` and `npm_` (NOBLIVION-46). Before, the indexer,
-  the transcript miner and the MCP tool `noblivion_remember` stored these
-  as written. The redactor of the hooks now removes the same forms: the
-  quoted key and the last 4 prefixes were missing there. One list of
-  secret forms is now tested against both redactors.
+- The secret redactor of the store now removes these forms too
+  (NOBLIVION-46): a private key block (`-----BEGIN ... PRIVATE KEY-----`,
+  also the PGP form `PRIVATE KEY BLOCK`), a secret whose key is in quotes
+  (JSON: `"password": "value"`), a value in quotes with a space in it
+  (`password="two words"`), the value of a key that ends in `pass` or
+  `pwd` in front of `=` and in the JSON form (`DB_PASS=value`,
+  `"db_pass": "value"`), the text of an XML `<password>` element, and the
+  token prefixes `glpat-`, `AIza`, `sk_live_`, `rk_live_`, `hf_` and
+  `npm_`. Before, the indexer, the transcript miner and the MCP tool
+  `noblivion_remember` stored these as written. A key block with no END
+  line is removed up to the end of its key text. The redactor of the hooks
+  removes every form in this entry too. The two redactors are still two
+  sets of rules: one list of secret forms (`tests/secret_forms.py`) is
+  tested against both, and a form that is not on the list can still pass
+  one of them.
+- The new rules keep the text of a note that is not a secret
+  (NOBLIVION-46). A line that only names the BEGIN line of a key block
+  stays, and so does the text after a key block with no END line. A key
+  that ends in `pass` with a colon stays (`first_pass: complete`,
+  `PASS: test_name`), so the value of a YAML line such as
+  `smtp-pass: value` is not removed. A number, `true`, `false` or `null`
+  after a colon stays (`"input_token": 12345678`). A list of 67 texts is
+  tested against the store redactor and against the redactor that the
+  hooks use for memory text.
 - The redactor version is 2, so the first index scan after the update
   writes every Markdown note again with the new rules (NOBLIVION-46). The
   indexer now keeps the version mark per namespace. Before, the mark was

@@ -127,6 +127,32 @@ def test_ordinary_text_is_not_changed(text: str) -> None:
     assert mt.redact_memory(text) == text
 
 
+@pytest.mark.parametrize("text", secret_forms.NOTES)
+def test_the_text_of_a_note_is_not_changed(text: str) -> None:
+    assert mt.redact_memory(text) == text
+
+
+def test_a_pass_key_in_memory_text_counts_only_before_an_equals_sign() -> None:
+    assert mt.redact_memory("DB_PASS=hunter2hunter2") == "DB_PASS=[REDACTED]"
+    assert mt.redact_memory("pass = hunter2hunter2") == "pass = [REDACTED]"
+    # the other keys of the rule stay as in the query set
+    for text in ("passphrase: correct-horse", "session_id=abc123def", "Cookie: sid=abc123def"):
+        assert "[REDACTED]" in mt.redact_memory(text), text
+    # the query set keeps the broad rule: a query is not shown as a note
+    assert mt.redact("smtp-pass: hunter2hunter2") == "smtp-pass: [REDACTED]"
+
+
+def test_a_value_in_quotes_is_removed_up_to_its_closing_quote() -> None:
+    for redact in (mt.redact, mt.redact_memory):
+        assert redact('password="correct horse battery" next') == "password=[REDACTED] next"
+        assert redact("SECRET_KEY='correct horse' next") == "SECRET_KEY=[REDACTED] next"
+        assert (
+            redact('{"db_pass": "a \\"quoted\\" word", "n": 1}')
+            == '{"db_pass": [REDACTED], "n": 1}'
+        )
+        assert redact("<password>hunter2hunter2</password>") == "<password>[REDACTED]</password>"
+
+
 @pytest.mark.parametrize(
     "text",
     [text for _name, text in secret_forms.HOSTILE],
@@ -134,7 +160,8 @@ def test_ordinary_text_is_not_changed(text: str) -> None:
 )
 def test_new_rules_run_in_linear_time(text: str) -> None:
     # Each new rule alone, on 100 KB: a quadratic rule needs many seconds.
-    rules = [re.compile(*rule) for rule in mt._SHARED_SHAPES + (mt._RX_QUOTED_KEY,)]
+    new = (mt._RX_QUOTED_KEY, mt._RX_QUOTED_VALUE, mt._RX_PASS_KEY_MEMORY)
+    rules = [re.compile(*rule) for rule in mt._SHARED_SHAPES + new]
     start = time.perf_counter()
     for rule in rules:
         rule.sub("", text)

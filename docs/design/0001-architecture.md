@@ -847,22 +847,37 @@ description is left out with its blank line.
 ### 5.7 Redaction
 
 The redactor is a port of the reference at-rest redactor, stdlib only. It
-covers private key blocks, auth headers (Basic, Bearer, JWT), API key
-shapes (`sk-`, GitHub token prefixes, Slack `xox`, chat bot tokens, cloud
-access key ids, and the token prefixes `glpat-`, `AIza`, `sk_live_`, `hf_`
-and `npm_`), CLI `key=value` and `--password=` forms, secret field names
-(also with the key in quotes, as in JSON), the password in a connection
-URL, cluster secret data and email addresses. It runs up to 5 passes until
-the text is stable. If it does not settle or raises, it returns its fail
+covers private key blocks (also the PGP form), auth headers (Basic, Bearer,
+JWT), API key shapes (`sk-`, GitHub token prefixes, Slack `xox`, chat bot
+tokens, cloud access key ids, and the token prefixes `glpat-`, `AIza`,
+`sk_live_`, `rk_live_`, `hf_` and `npm_`), the text of an XML `<password>`
+element, CLI `key=value` and `--password=` forms, secret field names (also
+with the key in quotes, as in JSON), the password in a connection URL,
+cluster secret data and email addresses. It runs up to 5 passes until the
+text is stable. If it does not settle or raises, it returns its fail
 token. It runs before the content is stored, embedded, or sent anywhere.
+
+Three rules keep the text of a note that is not a secret:
+
+- A line that only names the BEGIN line of a key block is prose. A block is
+  masked when it has an END line, or when key text follows the BEGIN line.
+  A block with no END line is masked up to the end of its key text, not up
+  to the end of the note.
+- `pass` and `pwd` are also words of prose and of a test report
+  (`first_pass: complete`, `PASS: test_name`). They count as a key only in
+  front of `=` (`DB_PASS=value`) and in the JSON form (`"db_pass": "value"`).
+  So the value of a YAML line such as `smtp-pass: value` stays.
+- After `:` a number, `true`, `false` or `null` is not a secret
+  (`"input_token": 12345678`).
 
 The hooks have a redactor of their own for the text that they show to the
 model (`hooks/memory_text.py`), because they run without the package. The
-rules for a private key block and for the token prefixes are one table
-(`SHARED_SHAPES`). Each of the two files holds a copy, and a test fails
-when the copies differ. A second test feeds one list of secret forms
-(`tests/secret_forms.py`) to both redactors, so a form that one of them
-misses fails the suite (NOBLIVION-46).
+rules for a private key block, for the token prefixes and for the
+`<password>` element are one table (`SHARED_SHAPES`). Each of the two files
+holds a copy, and a test fails when the copies differ. A second test feeds
+one list of secret forms and one list of note text (`tests/secret_forms.py`)
+to both redactors, so a form that one of them misses, or note text that one
+of them changes, fails the suite (NOBLIVION-46).
 
 ## 6. SQLite schema
 

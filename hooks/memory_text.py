@@ -33,7 +33,7 @@ Redaction
   Memory text is redacted (``redact_memory``) before it is made inert
   (``inert``: the prompt recall hook's ``_neutral``, kept in ``corpus.py``, so no line break and no
   angle bracket of a memory reaches the model). ``redact_memory`` is the query
-  set (``redact``) with three patterns made strict for prose (see the comments
+  set (``redact``) with four patterns made strict for prose (see the comments
   at the patterns).
 
 Standard library only. The sibling modules (``corpus``,
@@ -93,7 +93,8 @@ _RX_KEY_NAME = (
 # are words, not secrets (the query forms hit 356 times in 705 memory bodies,
 # 2026-09-30). In memory text a scheme value must hold a digit, a key name
 # needs ":" or "=" before its value and the value is not a bare number
-# (``MAX_TOKENS=16384``). Every other pattern is the same, except ``-p`` below.
+# (``MAX_TOKENS=16384``). Every other pattern is the same, except the ``pass``
+# key and ``-p`` below.
 _RX_SCHEME_MEMORY = (
     r"(?i)\b(bearer|basic|token)\s+(?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{8,}",
     0,
@@ -105,11 +106,41 @@ _RX_KEY_NAME_MEMORY = (
 )
 # A key in quotes, the JSON form ``"password": "value"``: the closing quote of
 # the key stops the two key name rules above. Only a key that ends in a secret
-# word counts, so ``"max_tokens": 4096`` and ``"author": "..."`` stay. The
-# same rule serves the query and the memory text.
+# word counts, so ``"max_tokens": 4096`` and ``"author": "..."`` stay. ``pass``
+# counts alone or as the last part of a name (``"DB_PASS"``, not ``"bypass"``).
+# A value in quotes runs to its closing quote, so a space in it does not end
+# it. A number, ``true``, ``false`` or ``null`` is not a secret
+# (``"input_token": 12345678``). The same rule serves the query and the memory
+# text.
 _RX_QUOTED_KEY = (
-    r"(?i)(['\"][\w-]*(?:password|passwd|pwd|secret|token|api[_-]?key|credential|private[_-]?key)['\"])"
-    r"(\s*:\s*)(['\"]?)(?!\[REDACTED\])[^\s'\"&,;]{4,}\3",
+    r"(?i)(['\"](?:[\w-]*(?:password|passwd|pwd|secret|token|credential|(?:api|private|access)[_-]?key)"
+    r"|(?:[\w.-]*[_.-])?pass)['\"])"
+    r"(\s*:\s*)(?:(['\"])(?:(?!\3)[^\\\n]|\\.){4,}\3"
+    r"|(?!\[REDACTED\])(?!(?:-?[\d.]+|true|false|null)(?:[\s'\"&,;}\]]|$))[^\s'\"&,;]{4,})",
+    0,
+)
+# A value in quotes with a space in it (``password="two words"``): the two key
+# name rules above stop at the space. The key ends in a secret word. The same
+# rule serves the query and the memory text.
+_RX_QUOTED_VALUE = (
+    r"(?i)((?:password|passwd|pwd|secret|token|credential|(?:api|private|access|secret)[_-]?key)['\"]?)"
+    r"(\s*[:=]\s*)(['\"])(?:(?!\3)[^\\\n]|\\.){4,}\3",
+    0,
+)
+# pass / session / cookie keys only with ":" or "=" ("3 passed" stays).
+_RX_PASS_KEY = (
+    r"(?i)\b([\w-]*(?:pass|session|cookie)[\w-]*)(\s*[:=]\s*)(['\"]?)[^\s'\"&,;]{3,}\3",
+    0,
+)
+# In memory text ``pass`` is a word of prose, of a compiler and of a test
+# report too (``first_pass: complete``, ``PASS: test_name``, ``passed: 12``).
+# There it is a key only in front of ``=`` and not after a letter
+# (``DB_PASS=value``, not ``bypass=off``). ``passphrase``, ``passcode``,
+# ``session`` and ``cookie`` keys stay as in the query set; the key is read
+# from that word on, at most 40 characters.
+_RX_PASS_KEY_MEMORY = (
+    r"(?i)((?<![a-z])pass(?=\s*=)|(?:passphrase|passcode|session|cookie)[\w-]{0,40})"
+    r"(\s*[:=]\s*)(['\"]?)[^\s'\"&,;]{3,}\3",
     0,
 )
 _RX_DASH_P = (
@@ -130,17 +161,40 @@ _RX_DASH_P_MEMORY = (
 # without the store package, so this table is a copy of ``SHARED_SHAPES`` in
 # ``src/noblivion/redaction.py``. A test fails when the two copies differ:
 # change both.
+_KEY_BEGIN = r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
+_KEY_END = r"-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
+_KEY_TEXT = r"[A-Za-z0-9+/=]{16,}"
 _SHARED_SHAPES = (
-    # A private key block. With no END line (a cut-off paste) it runs to the
-    # end of the text.
-    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S),
-    # Token prefixes: a code host, a cloud API, a payment API, a model hub, a
-    # package registry.
+    # A private key block, also the PGP form (``PRIVATE KEY BLOCK``). Prose
+    # that only names the BEGIN line stays: a block is masked when
+    # - it has an END line, and its BEGIN line ends the line or key text
+    #   follows it. The block holds no second BEGIN line, so a text of many
+    #   BEGIN lines is read once;
+    # - or it has no END line (a cut-off paste). Then the BEGIN line, up to 4
+    #   header lines (``Name: value``) and the runs of key text after them are
+    #   masked. The text after the key stays. A last run of fewer than 16
+    #   characters stays too.
+    (
+        _KEY_BEGIN
+        + r"(?:(?=[ \t]*(?:[\r\n]|\\[rn]|"
+        + _KEY_TEXT
+        + r"))(?:(?!-----BEGIN ).)*?"
+        + _KEY_END
+        + r"|(?:\r?\n[A-Za-z-]{1,20}: [^\r\n]{0,80}){0,4}(?:(?:\s|\\[rn])*"
+        + _KEY_TEXT
+        + r")+)",
+        re.S,
+    ),
+    # Token prefixes: a code host, a cloud API, a payment API (two key types),
+    # a model hub, a package registry.
     (r"\bglpat-[A-Za-z0-9_-]{16,}", 0),
     (r"\bAIza[A-Za-z0-9_-]{30,}", 0),
-    (r"\bsk_live_[A-Za-z0-9]{16,}", 0),
+    (r"\b[sr]k_live_[A-Za-z0-9]{16,}", 0),
     (r"\bhf_[A-Za-z0-9]{30,}", 0),
     (r"\bnpm_[A-Za-z0-9]{30,}", 0),
+    # The text of an XML ``<password>`` element. The tags stay. A placeholder
+    # (``...``, ``${name}``) is not a password.
+    (r"(?i)(?<=<password>)(?![.$])[^<]{4,}(?=</password>)", 0),
 )
 _SECRET_PATTERNS = _SHARED_SHAPES + (
     _RX_SCHEME,
@@ -153,10 +207,10 @@ _SECRET_PATTERNS = _SHARED_SHAPES + (
     # URL user info up to the LAST @ before the host: a token with no colon
     # (https://<token>@github.com) and a password that holds an @.
     (r"(?<=://)[^/\s]+(?=@[^@/\s]*(?:[/\s:?#]|$))", 0),
+    _RX_QUOTED_VALUE,
     _RX_KEY_NAME,
     _RX_QUOTED_KEY,
-    # pass / session / cookie keys only with ":" or "=" ("3 passed" stays).
-    (r"(?i)\b([\w-]*(?:pass|session|cookie)[\w-]*)(\s*[:=]\s*)(['\"]?)[^\s'\"&,;]{3,}\3", 0),
+    _RX_PASS_KEY,
     # -p / --password <value>; not a path, a port or a host:port (mkdir -p,
     # ssh -p 2222, docker -p 8080:80), and -print stays.
     _RX_DASH_P,
@@ -171,6 +225,7 @@ _SECRET_RX = [re.compile(p, f) for p, f in _SECRET_PATTERNS]
 _MEMORY_SWAP = {
     _RX_SCHEME: _RX_SCHEME_MEMORY,
     _RX_KEY_NAME: _RX_KEY_NAME_MEMORY,
+    _RX_PASS_KEY: _RX_PASS_KEY_MEMORY,
     _RX_DASH_P: _RX_DASH_P_MEMORY,
 }
 _MEMORY_SECRET_RX = [re.compile(*_MEMORY_SWAP.get(pf, pf)) for pf in _SECRET_PATTERNS]

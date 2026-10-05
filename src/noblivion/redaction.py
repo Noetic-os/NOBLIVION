@@ -6,15 +6,18 @@ before text is stored, embedded or sent anywhere.
 
 Covered shapes:
 
-- a private key block (``-----BEGIN ... PRIVATE KEY-----``);
+- a private key block (``-----BEGIN ... PRIVATE KEY-----``, also the PGP
+  form ``PRIVATE KEY BLOCK``);
 - HTTP auth headers (``Authorization``, ``Proxy-Authorization``), bare ``Basic``
   credentials, ``Bearer`` tokens and JWTs;
 - API key shapes: ``sk-`` keys, GitHub token prefixes, Slack ``xox`` tokens,
   chat bot tokens, cloud access key ids, and the token prefixes ``glpat-``,
-  ``AIza``, ``sk_live_``, ``hf_`` and ``npm_``;
+  ``AIza``, ``sk_live_``, ``rk_live_``, ``hf_`` and ``npm_``;
+- the text of an XML ``<password>`` element;
 - CLI ``key=value``, ``--token=``, ``--password=`` and ``-p VALUE`` forms;
 - secret field names in ``key: value`` and ``key=value`` form, also with the
-  key in quotes (JSON: ``"password": "value"``);
+  key in quotes (JSON: ``"password": "value"``). A key that ends in ``pass``
+  or ``pwd`` counts only in front of ``=`` and in the JSON form;
 - the password in a connection URL (``scheme://user:PASSWORD@host``);
 - the data block of a cluster ``kind: Secret`` manifest;
 - email addresses.
@@ -58,17 +61,40 @@ _Replacement = Callable[["re.Match[str]"], str]
 # hooks run on the user's python3 without this package, so
 # ``hooks/memory_text.py`` holds a copy of this table (``_SHARED_SHAPES``). A
 # test fails when the two copies differ: change both.
+_KEY_BEGIN = r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
+_KEY_END = r"-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
+_KEY_TEXT = r"[A-Za-z0-9+/=]{16,}"
 SHARED_SHAPES: tuple[tuple[str, int], ...] = (
-    # A private key block. With no END line (a cut-off paste) it runs to the
-    # end of the text.
-    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S),
-    # Token prefixes: a code host, a cloud API, a payment API, a model hub, a
-    # package registry.
+    # A private key block, also the PGP form (``PRIVATE KEY BLOCK``). Prose
+    # that only names the BEGIN line stays: a block is masked when
+    # - it has an END line, and its BEGIN line ends the line or key text
+    #   follows it. The block holds no second BEGIN line, so a text of many
+    #   BEGIN lines is read once;
+    # - or it has no END line (a cut-off paste). Then the BEGIN line, up to 4
+    #   header lines (``Name: value``) and the runs of key text after them are
+    #   masked. The text after the key stays. A last run of fewer than 16
+    #   characters stays too.
+    (
+        _KEY_BEGIN
+        + r"(?:(?=[ \t]*(?:[\r\n]|\\[rn]|"
+        + _KEY_TEXT
+        + r"))(?:(?!-----BEGIN ).)*?"
+        + _KEY_END
+        + r"|(?:\r?\n[A-Za-z-]{1,20}: [^\r\n]{0,80}){0,4}(?:(?:\s|\\[rn])*"
+        + _KEY_TEXT
+        + r")+)",
+        re.S,
+    ),
+    # Token prefixes: a code host, a cloud API, a payment API (two key types),
+    # a model hub, a package registry.
     (r"\bglpat-[A-Za-z0-9_-]{16,}", 0),
     (r"\bAIza[A-Za-z0-9_-]{30,}", 0),
-    (r"\bsk_live_[A-Za-z0-9]{16,}", 0),
+    (r"\b[sr]k_live_[A-Za-z0-9]{16,}", 0),
     (r"\bhf_[A-Za-z0-9]{30,}", 0),
     (r"\bnpm_[A-Za-z0-9]{30,}", 0),
+    # The text of an XML ``<password>`` element. The tags stay. A placeholder
+    # (``...``, ``${name}``) is not a password.
+    (r"(?i)(?<=<password>)(?![.$])[^<]{4,}(?=</password>)", 0),
 )
 
 # -- Credential shapes. Order matters: the key block first, so no later rule
@@ -118,10 +144,12 @@ _SHAPE_PATTERNS: list[tuple[re.Pattern[str], _Replacement]] = [
 # -- Broad CLI and key=value forms. At rest a false positive costs little and
 # a missed credential costs a lot, so these run too.
 _KEYVALUE_PATTERNS: list[tuple[re.Pattern[str], _Replacement]] = [
+    # A value in quotes runs to its closing quote on the same line, so a space
+    # in it does not end it (`password="two words"`).
     (
         re.compile(
             r"(token|secret|password|passwd|api_key|apikey|authorization|credential)"
-            r"\s*=\s*" + _NOT_A_MARKER + r"\S+",
+            r"\s*=\s*" + _NOT_A_MARKER + r"(?:(['\"])(?:(?!\2)[^\\\n]|\\.)*\2|\S+)",
             re.IGNORECASE,
         ),
         lambda m: f"{m.group(1)}={REDACTION_TOKEN}",
@@ -143,14 +171,23 @@ _KEYVALUE_PATTERNS: list[tuple[re.Pattern[str], _Replacement]] = [
 # to its closing quote on the same line, so a space in it does not end it and
 # the rest of a compact JSON line stays. Any other value is the run up to the
 # next whitespace.
-# `pass` is a key only as the last part of a name (`DB_PASS`, `db-pass`), or
-# alone in front of `=`. So "passed", "bypass", "the first pass: ..." and a
-# `PASS: test_name` line of a test report stay.
-_PASS_KEY = r"(?<=[_.\-])pass(?![a-z])|(?<![a-z])pass(?=['\"]?\s*=)"
+# After `:` a number, `true`, `false` or `null` is not a secret, so
+# `"input_token": 12345678,` stays with its comma.
+# `pass` and `pwd` are words of prose, of a compiler and of a test report
+# (`first_pass: complete`, `PASS: test_name`, `PWD=/tmp`). They are a key only
+# in front of `=` (`DB_PASS=value`, `pass=value`, `MYSQL_PWD=value`) and in
+# the JSON form with both sides in quotes (`"db_pass": "value"`). `pass` must
+# not follow a letter ("bypass") and `pwd` must be the last part of a name.
+_NOT_A_BARE_SCALAR = r"(?!\s*(?:-?[\d.]+|true|false|null)(?:[\s,;}\]]|$))"
+_FIELD_KEY = (
+    r"(?:password|passwd|secret|token|api[_-]?key|credential|private[_-]?key|access[_-]?key"
+    r"|secret[_-]?key|client[_-]?secret|jwt|\.dockerconfigjson|tls\.crt|tls\.key|ca\.crt)"
+    r"['\"]?\s*(?:=|:" + _NOT_A_BARE_SCALAR + r")\s*"
+    r"|(?:(?<![a-z])pass|(?<=[_.\-])pwd)['\"]?\s*=\s*"
+    r"|(?:(?<=['\"_.\-])pass|(?<=[_.\-])pwd)['\"]\s*:\s*(?=['\"])"
+)
 _SECRET_FIELD_RE = re.compile(
-    r"(?i)((?:password|passwd|" + _PASS_KEY + r"|secret|token|api[_-]?key|credential"
-    r"|private[_-]?key|access[_-]?key|secret[_-]?key|client[_-]?secret|jwt|\.dockerconfigjson"
-    r"|tls\.crt|tls\.key|ca\.crt)['\"]?\s*[=:]\s*)"
+    r"(?i)(" + _FIELD_KEY + r")"
     r"(?:(['\"])" + _NOT_A_MARKER + r"(?:(?!\2)[^\\\n]|\\.){6,}\2"
     r"|(?!['\"]?(?:\*\*\*REDACTED|\[REDACTED))[^\s]{6,})",
 )

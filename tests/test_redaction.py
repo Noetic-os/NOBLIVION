@@ -37,6 +37,7 @@ BEARER_VALUE = "abcd" + "efgh" + "1234" * 2
 KEY_BLOCK = secret_forms.key_block("RSA")
 KEY_BLOCK_CUT = secret_forms.key_block("EC", end=False)
 KEY_BLOCK_IN_JSON = secret_forms.key_block("").replace("\n", "\\n") + "\\n"
+KEY_BLOCK_PGP = secret_forms.key_block("PGP", headers=("Version: Example 1.0",))
 
 
 @pytest.mark.parametrize(
@@ -78,6 +79,8 @@ KEY_BLOCK_IN_JSON = secret_forms.key_block("").replace("\n", "\\n") + "\\n"
         ("mail alice@example.com now", f"mail {EMAIL_TOKEN} now"),
         (f"before\n{KEY_BLOCK}\nafter", f"before\n{REDACTION_TOKEN}\nafter"),
         (f"before\n{KEY_BLOCK_CUT}\n", f"before\n{REDACTION_TOKEN}\n"),
+        (f"before\n{KEY_BLOCK_CUT}\n\nafter\n", f"before\n{REDACTION_TOKEN}\n\nafter\n"),
+        (f"before\n{KEY_BLOCK_PGP}\nafter", f"before\n{REDACTION_TOKEN}\nafter"),
         (
             f'{{"private_key": "{KEY_BLOCK_IN_JSON}"}}',
             f'{{"private_key": "{REDACTION_TOKEN}\\n"}}',
@@ -85,6 +88,7 @@ KEY_BLOCK_IN_JSON = secret_forms.key_block("").replace("\n", "\\n") + "\\n"
         (f"use {secret_forms.GLPAT} here", f"use {REDACTION_TOKEN} here"),
         (f"use {secret_forms.GOOGLE_KEY} here", f"use {REDACTION_TOKEN} here"),
         (f"use {secret_forms.PAYMENT_KEY} here", f"use {REDACTION_TOKEN} here"),
+        (f"use {secret_forms.RESTRICTED_KEY} here", f"use {REDACTION_TOKEN} here"),
         (f"use {secret_forms.HF_TOKEN} here", f"use {REDACTION_TOKEN} here"),
         (f"use {secret_forms.NPM_TOKEN} here", f"use {REDACTION_TOKEN} here"),
         ('{"password": "hunter2hunter2"}', f'{{"password": "{FIELD_TOKEN}"}}'),
@@ -97,13 +101,36 @@ KEY_BLOCK_IN_JSON = secret_forms.key_block("").replace("\n", "\\n") + "\\n"
         (f"{{'api_key': '{secret_forms.API_KEY}'}}", f"{{'api_key': '{FIELD_TOKEN}'}}"),
         ('password: "hunter2hunter2', f"password: {FIELD_TOKEN}"),
         ("DB_PASS=hunter2hunter2", f"DB_PASS={FIELD_TOKEN}"),
-        ("smtp:\n  smtp-pass: hunter2hunter2\n", f"smtp:\n  smtp-pass: {FIELD_TOKEN}\n"),
+        ("pass = hunter2hunter2", f"pass = {FIELD_TOKEN}"),
         ('{"db_pass": "hunter2hunter2"}', f'{{"db_pass": "{FIELD_TOKEN}"}}'),
+        ('{"pass": "hunter2hunter2"}', f'{{"pass": "{FIELD_TOKEN}"}}'),
         ("login?user=bob&pass=hunter2hunter2", f"login?user=bob&pass={FIELD_TOKEN}"),
+        ("MYSQL_PWD=hunter2hunter2", f"MYSQL_PWD={FIELD_TOKEN}"),
+        ('{"mysql_pwd": "hunter2hunter2"}', f'{{"mysql_pwd": "{FIELD_TOKEN}"}}'),
+        ('password="correct horse battery"', f"password={REDACTION_TOKEN}"),
+        ("token='correct horse' next", f"token={REDACTION_TOKEN} next"),
+        ('password="a \\"quoted\\" word" next', f"password={REDACTION_TOKEN} next"),
+        ('secret="correct horse', f"secret={REDACTION_TOKEN} horse"),
+        (
+            "<password>hunter2hunter2</password>",
+            f"<password>{REDACTION_TOKEN}</password>",
+        ),
+        ("token: 12345678x", f"token: {FIELD_TOKEN}"),
+        ('{"token": "12345678"}', f'{{"token": "{FIELD_TOKEN}"}}'),
+        ("token=12345678", f"token={REDACTION_TOKEN}"),
     ],
 )
 def test_redacts(text, expected):
     assert redact_at_rest(text) == expected
+
+
+def test_a_pass_key_counts_only_before_an_equals_sign_and_in_json():
+    # `pass` is a word of prose too. After ":" with no quotes it is not a key,
+    # so the value of a YAML line with such a key stays.
+    for text in ("smtp:\n  smtp-pass: hunter2hunter2\n", "first_pass: complete", "pwd: /srv/app"):
+        assert redact_at_rest(text) == text
+    assert redact_at_rest("smtp-pass=hunter2hunter2") == f"smtp-pass={FIELD_TOKEN}"
+    assert redact_at_rest('"smtp-pass": "hunter2hunter2"') == f'"smtp-pass": "{FIELD_TOKEN}"'
 
 
 @pytest.mark.parametrize(
@@ -124,6 +151,11 @@ def test_redacts(text, expected):
     ],
 )
 def test_keeps_text_that_is_not_a_secret(text):
+    assert redact_at_rest(text) == text
+
+
+@pytest.mark.parametrize("text", secret_forms.NOTES)
+def test_keeps_the_text_of_a_note(text):
     assert redact_at_rest(text) == text
 
 
@@ -160,6 +192,7 @@ def test_new_rules_run_in_linear_time(text):
     # long run of letters.
     rules = [re.compile(shape, flags) for shape, flags in redaction.SHARED_SHAPES]
     rules.append(redaction._SECRET_FIELD_RE)
+    rules.append(redaction._KEYVALUE_PATTERNS[0][0])
     start = time.perf_counter()
     for rule in rules:
         rule.sub("", text)
@@ -167,14 +200,13 @@ def test_new_rules_run_in_linear_time(text):
 
 
 def test_cluster_secret_data_only_in_a_secret_manifest():
-    # The key is not a secret field name: a key that ends in "pass" is masked
-    # in any text (NOBLIVION-46).
+    # The key is not a secret field name: a field name is masked in any text.
     value = fake("", 24, "QWxhZGRpbjpvcGVuIHNlc2FtZQ")
     manifest = f"apiVersion: v1\nkind: Secret\ndata:\n  db-conn: {value}\n"
     assert f"  db-conn: {FIELD_TOKEN}" in redact_at_rest(manifest)
     config_map = f"apiVersion: v1\nkind: ConfigMap\ndata:\n  db-conn: {value}\n"
     assert redact_at_rest(config_map) == config_map
-    assert f"  db-pass: {FIELD_TOKEN}" in redact_at_rest(config_map.replace("db-conn", "db-pass"))
+    assert f"  db-token: {FIELD_TOKEN}" in redact_at_rest(config_map.replace("db-conn", "db-token"))
 
 
 def test_word_boundary_created_by_a_replacement_still_settles():
@@ -207,6 +239,11 @@ FRAGMENTS = [
     '"',
     KEY_BLOCK_CUT,
     secret_forms.GLPAT,
+    'password="',
+    "MYSQL_PWD=",
+    "<password>",
+    "</password>",
+    secret_forms.begin_line("PGP") + "\n",
 ]
 
 
