@@ -82,7 +82,9 @@ The store scans the memory folders at start and then every 30 seconds.
 - **Redaction.** The indexer removes secrets (keys, private key blocks,
   tokens, passwords) from the text before it stores the text. A file that
   cannot be redacted is not stored. When an update changes the redaction
-  rules, the next scan writes every note again with the new rules.
+  rules, the next scan writes every note again with the new rules. A note
+  that this scan cannot read is written again by the first later scan that
+  can read it.
 
 After Claude Code writes a memory file, the memory sync hook runs
 `noblivion index` at once. You do not have to wait for the next scan.

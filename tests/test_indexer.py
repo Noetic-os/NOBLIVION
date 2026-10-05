@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from noblivion import db, indexer, redaction
+from noblivion import config, db, indexer, redaction
 
 
 @pytest.fixture
@@ -38,6 +38,30 @@ def rows(conn) -> dict[tuple[str, str], dict]:
 
 def live(conn) -> set[tuple[str, str]]:
     return {k for k, r in rows(conn).items() if r["deleted_at"] is None and not r["archived_at"]}
+
+
+def version_mark(conn, project: str = config.DEFAULT_NAMESPACE) -> str | None:
+    return db.get_meta(conn, f"redactor_version:{project}")
+
+
+def redo_list(conn, project: str = config.DEFAULT_NAMESPACE) -> list[int]:
+    return json.loads(db.get_meta(conn, f"redactor_redo:{project}") or "[]")
+
+
+SECRET_NOTE = '{"password": "hunter2hunter2"}'
+
+
+def scan_as_version_1(monkeypatch, conn, folder: Path, project: str = config.DEFAULT_NAMESPACE):
+    """Index ``folder`` the way redactor version 1 did: it kept ``SECRET_NOTE``."""
+    with monkeypatch.context() as old:
+        old.setattr(redaction, "REDACTOR_VERSION", "1")
+        old.setattr(redaction, "redact_at_rest", lambda text: text)
+        return indexer.scan(conn, [folder], project=project)
+
+
+def contents(conn, project: str) -> list[str]:
+    cur = conn.execute("SELECT content FROM memories WHERE project = ?", (project,))
+    return [r[0] for r in cur.fetchall()]
 
 
 FEEDBACK = """---
@@ -142,7 +166,7 @@ def test_scan_inserts_files_and_skips_the_rest(conn, tmp_path):
 
     assert row["hash"] == hashlib.sha256(raw).hexdigest()
     assert rows(conn)[("proj-demo", "MEMORY.md")]["category"] == "index"
-    assert db.get_meta(conn, "redactor_version") == redaction.REDACTOR_VERSION
+    assert version_mark(conn) == redaction.REDACTOR_VERSION
 
 
 def test_hash_skip_and_update_in_place(conn, tmp_path):
@@ -171,28 +195,152 @@ def test_new_redactor_version_reindexes(conn, tmp_path):
     folder = make_folder(tmp_path, "proj-demo", {"user_alice.md": "x\n"})
     indexer.scan(conn, [folder])
     with db.write_tx(conn):
-        db.set_meta(conn, "redactor_version", "0-old")
+        db.set_meta(conn, f"redactor_version:{config.DEFAULT_NAMESPACE}", "0-old")
     assert indexer.scan(conn, [folder]).updated == 1
-    assert db.get_meta(conn, "redactor_version") == redaction.REDACTOR_VERSION
+    assert version_mark(conn) == redaction.REDACTOR_VERSION
     assert indexer.scan(conn, [folder]).updated == 0
 
 
 def test_rows_written_by_redactor_version_1_are_redone(conn, tmp_path, monkeypatch):
     # Version 1 kept a JSON-quoted password. The file does not change, so only
     # the new redactor version makes the scan write the row again.
-    folder = make_folder(
-        tmp_path, "proj-demo", {"reference_db.md": '{"password": "hunter2hunter2"}\n'}
-    )
-    with monkeypatch.context() as old:
-        old.setattr(redaction, "REDACTOR_VERSION", "1")
-        old.setattr(redaction, "redact_at_rest", lambda text: text)
-        indexer.scan(conn, [folder])
+    folder = make_folder(tmp_path, "proj-demo", {"reference_db.md": SECRET_NOTE + "\n"})
+    scan_as_version_1(monkeypatch, conn, folder)
     key = ("proj-demo", "reference_db.md")
     assert "hunter2hunter2" in rows(conn)[key]["content"]
-    assert db.get_meta(conn, "redactor_version") == "1"
+    assert version_mark(conn) == "1"
     assert indexer.scan(conn, [folder]).updated == 1
     assert "hunter2hunter2" not in rows(conn)[key]["content"]
-    assert db.get_meta(conn, "redactor_version") == redaction.REDACTOR_VERSION
+    assert version_mark(conn) == redaction.REDACTOR_VERSION
+    assert indexer.scan(conn, [folder]).updated == 0
+
+
+def test_a_new_redactor_version_redoes_the_rows_of_every_namespace(conn, tmp_path, monkeypatch):
+    # The scan reads the rows of one namespace, so the mark is per namespace:
+    # the redo of the first namespace must not hide the old rows of the second.
+    folder = make_folder(tmp_path, "proj-demo", {"reference_db.md": SECRET_NOTE + "\n"})
+    for project in ("ns-one", "ns-two"):
+        scan_as_version_1(monkeypatch, conn, folder, project)
+    for project in ("ns-one", "ns-two"):
+        assert indexer.scan(conn, [folder], project=project).updated == 1
+        assert "hunter2hunter2" not in "".join(contents(conn, project))
+        assert version_mark(conn, project) == redaction.REDACTOR_VERSION
+    for project in ("ns-one", "ns-two"):
+        assert indexer.scan(conn, [folder], project=project).updated == 0
+
+
+def test_the_single_mark_of_an_older_release_serves_a_namespace_with_no_mark(
+    conn, tmp_path, monkeypatch
+):
+    # A database of an older release holds one mark for all namespaces.
+    folder = make_folder(tmp_path, "proj-demo", {"reference_db.md": SECRET_NOTE + "\n"})
+    for project in ("ns-one", "ns-two"):
+        scan_as_version_1(monkeypatch, conn, folder, project)
+    with db.write_tx(conn):
+        conn.execute("DELETE FROM meta WHERE key LIKE 'redactor_%'")
+        db.set_meta(conn, "redactor_version", "1")
+    for project in ("ns-one", "ns-two"):
+        assert indexer.scan(conn, [folder], project=project).updated == 1
+        assert "hunter2hunter2" not in "".join(contents(conn, project))
+    assert db.get_meta(conn, "redactor_version") == "1"  # read only: it never hides a namespace
+    for project in ("ns-one", "ns-two"):
+        assert indexer.scan(conn, [folder], project=project).updated == 0
+    # The single mark with the current version: nothing to redo.
+    with db.write_tx(conn):
+        conn.execute("DELETE FROM meta WHERE key LIKE 'redactor_%'")
+        db.set_meta(conn, "redactor_version", redaction.REDACTOR_VERSION)
+    assert indexer.scan(conn, [folder], project="ns-one").updated == 0
+
+
+def _fifty_secret_notes() -> dict[str, str]:
+    return {f"user_{i:02d}.md": f"{SECRET_NOTE} of user {i}\n" for i in range(50)}
+
+
+def _make_unreadable(monkeypatch, name: str) -> None:
+    real = Path.read_bytes
+
+    def read_bytes(self):
+        if self.name == name:
+            raise PermissionError(13, "Permission denied")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+
+def _make_unredactable(monkeypatch, marker: str) -> None:
+    real = redaction.redact_at_rest
+
+    def redact(text: str) -> str:
+        return redaction.REDACTION_FAILED_TOKEN if marker in text else real(text)
+
+    monkeypatch.setattr(redaction, "redact_at_rest", redact)
+
+
+@pytest.mark.parametrize("fault", ["unreadable", "unredactable"])
+def test_a_skipped_file_does_not_make_every_scan_write_all_rows_again(
+    conn, tmp_path, monkeypatch, fault
+):
+    folder = make_folder(tmp_path, "proj-demo", _fifty_secret_notes())
+    scan_as_version_1(monkeypatch, conn, folder)
+    bad = ("proj-demo", "user_07.md")
+    with monkeypatch.context() as broken:
+        if fault == "unreadable":
+            _make_unreadable(broken, "user_07.md")
+        else:
+            _make_unredactable(broken, "of user 7")
+        first = indexer.scan(conn, [folder])
+        assert (first.updated, first.skipped) == (49, ["proj-demo/user_07.md"])
+        assert redo_list(conn) == [rows(conn)[bad]["id"]]
+        for _ in range(2):
+            again = indexer.scan(conn, [folder])
+            assert (again.updated, again.unchanged) == (0, 49)
+            assert again.skipped == ["proj-demo/user_07.md"]
+            assert db.revisions(conn)[0] == first.content_rev  # no row was written again
+        assert "hunter2hunter2" in rows(conn)[bad]["content"]
+        # Another file changes while the bad one is still skipped: one update.
+        (folder / "user_08.md").write_text("new text\n", encoding="utf-8")
+        assert indexer.scan(conn, [folder]).updated == 1
+        assert redo_list(conn) == [rows(conn)[bad]["id"]]
+    # The file did not change. The scan redoes it because it is on the list.
+    result = indexer.scan(conn, [folder])
+    assert (result.updated, result.skipped) == (1, [])
+    assert "hunter2hunter2" not in "".join(contents(conn, config.DEFAULT_NAMESPACE))
+    assert redo_list(conn) == []
+    assert indexer.scan(conn, [folder]).updated == 0
+
+
+def test_a_row_of_a_missing_folder_is_redone_when_the_folder_is_back(conn, tmp_path, monkeypatch):
+    folder = make_folder(tmp_path, "proj-demo", {"reference_db.md": SECRET_NOTE + "\n"})
+    scan_as_version_1(monkeypatch, conn, folder)
+    away = folder.with_name("memory-away")
+    folder.rename(away)
+    result = indexer.scan(conn, [folder])
+    assert (result.updated, result.deleted) == (0, 0)
+    assert version_mark(conn) == redaction.REDACTOR_VERSION
+    assert len(redo_list(conn)) == 1
+    away.rename(folder)
+    assert indexer.scan(conn, [folder]).updated == 1
+    assert "hunter2hunter2" not in rows(conn)[("proj-demo", "reference_db.md")]["content"]
+    assert redo_list(conn) == []
+
+
+def test_a_row_that_is_gone_leaves_the_redo_list(conn, tmp_path, monkeypatch):
+    folder = make_folder(tmp_path, "proj-demo", _fifty_secret_notes())
+    scan_as_version_1(monkeypatch, conn, folder)
+    with monkeypatch.context() as broken:
+        _make_unreadable(broken, "user_07.md")
+        indexer.scan(conn, [folder])
+    assert len(redo_list(conn)) == 1
+    (folder / "user_07.md").unlink()
+    result = indexer.scan(conn, [folder])
+    assert (result.updated, result.deleted) == (0, 1)
+    assert indexer.scan(conn, [folder]).changed == 0
+    assert redo_list(conn) == []
+    # A stored list that is not valid is read as "redo every row".
+    with db.write_tx(conn):
+        db.set_meta(conn, f"redactor_redo:{config.DEFAULT_NAMESPACE}", "not json")
+    assert indexer.scan(conn, [folder]).updated == 49
+    assert redo_list(conn) == []
     assert indexer.scan(conn, [folder]).updated == 0
 
 

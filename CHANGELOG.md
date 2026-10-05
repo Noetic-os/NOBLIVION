@@ -59,10 +59,15 @@ All notable changes to NOBLIVION. The format follows
   the transcript miner and the MCP tool `noblivion_remember` stored these
   as written. The redactor of the hooks now removes the same forms: the
   quoted key and the last 4 prefixes were missing there. One list of
-  secret forms is now tested against both redactors. The redactor version
-  is 2, so the first index scan after the update writes every Markdown
-  note again with the new rules. Notes that the transcript miner stored
-  before the update are not written again.
+  secret forms is now tested against both redactors.
+- The redactor version is 2, so the first index scan after the update
+  writes every Markdown note again with the new rules (NOBLIVION-46). The
+  indexer now keeps the version mark per namespace. Before, the mark was
+  one value for the database, so with two namespaces the second kept its
+  old rows. One file that the scan cannot read no longer makes every later
+  scan write all rows again: the scan sets the mark, and it writes the row
+  of that file again when the file can be read. Notes that the transcript
+  miner stored before the update are not written again.
 - The credential guard now also blocks these reads of a git config that
   holds a credential URL: the file as standard input (`cat < .git/config`,
   `echo "$(< .git/config)"`), a glob on a folder name (`cat .g*/conf*`), a

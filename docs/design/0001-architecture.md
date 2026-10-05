@@ -773,9 +773,20 @@ description is left out with its blank line.
 ### 5.4 Change detection and writes
 
 - `hash` is the sha256 of the raw file bytes. Redaction does not change the
-  hash. So `meta.redactor_version` records the redactor version that wrote
-  the rows. When the store starts with a different redactor version, it
-  re-indexes every row as if `--force` were given.
+  hash. So `meta` records the redactor version that wrote the rows. A scan
+  reads the rows of one namespace, so the mark is per namespace (key
+  `redactor_version:<namespace>`). When a scan finds a different redactor
+  version, it writes every live row of the namespace again as if `--force`
+  were given, and sets the mark.
+- A row that this scan cannot write again keeps its old text: its file is
+  not readable or not redactable, or its folder is gone. The id of such a
+  row goes on the redo list of the namespace (key
+  `redactor_redo:<namespace>`). A later scan writes only the rows on the
+  list again, each when its file can be read. So one bad file does not make
+  every scan write all rows again.
+- A database of an older release holds one mark for all namespaces (key
+  `redactor_version`). A namespace with no mark of its own reads that mark.
+  The indexer does not write it.
 - New file: insert. Changed hash, or `--force`: update the row in place
   (same id). Same hash: skip.
 - A new file whose hash equals the hash of a row deleted in the grace

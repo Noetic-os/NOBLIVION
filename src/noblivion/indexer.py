@@ -24,6 +24,12 @@ One scan:
 Content is redacted (``noblivion.redaction``) before it is stored. A file whose
 text cannot be redacted is never stored.
 
+A new redactor version redoes every row of a namespace once (section 5.4). The
+version mark is per namespace (``meta`` key ``redactor_version:<namespace>``).
+A row that this one scan could not redo, because its file was skipped or its
+folder was gone, goes on a list (``redactor_redo:<namespace>``). A later scan
+redoes only the rows on the list, each when its file can be read again.
+
 CLI: ``python -m noblivion.indexer [--force] [--allow-shrink]`` (also
 ``noblivion index``). Exit codes: 0 done; 1 some files were skipped (not
 readable or not redactable) so nothing was deleted; 2 the shrink guard blocked
@@ -45,7 +51,7 @@ import sqlite3
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -302,6 +308,7 @@ def compute_plan(
     rows: Sequence[db.MemoryRow],
     *,
     force: bool = False,
+    redo: Collection[int] = (),
     allow_shrink: bool = False,
     grace_cutoff: str | None = None,
 ) -> Plan:
@@ -340,7 +347,7 @@ def compute_plan(
                     plan.ops.append(Op("revive", entry, row.id))
                 elif row.archived_at is not None:
                     plan.ops.append(Op("unarchive", entry, row.id))
-                elif force or row.hash != entry.hash:
+                elif force or row.id in redo or row.hash != entry.hash:
                     plan.ops.append(Op("update", entry, row.id))
                 else:
                     plan.unchanged += 1
@@ -507,6 +514,30 @@ def _apply_batch(
         result.content_rev = rev
 
 
+# The redactor version that wrote the rows, per namespace. A release before
+# this key held one mark for the whole database (``LEGACY_VERSION_KEY``). It
+# is still read for a namespace with no mark of its own, and never written.
+LEGACY_VERSION_KEY = "redactor_version"
+
+
+def _version_key(project: str) -> str:
+    return f"redactor_version:{project}"
+
+
+def _redo_key(project: str) -> str:
+    """The ``meta`` key of the redo list: the ids of the live rows of a
+    namespace that still hold text of an older redactor version."""
+    return f"redactor_redo:{project}"
+
+
+def _read_redo(raw: str | None) -> set[int] | None:
+    """The stored redo list. ``None`` when it cannot be read."""
+    try:
+        return {int(row_id) for row_id in json.loads(raw or "[]")}
+    except (TypeError, ValueError):
+        return None
+
+
 def scan(
     conn: sqlite3.Connection,
     memory_dirs: Sequence[Path],
@@ -522,12 +553,21 @@ def scan(
     folders = discover(memory_dirs, stat_cache)
     with db.read_tx(conn):
         rows = db.md_rows(conn, project)
-        stored_version = db.get_meta(conn, "redactor_version")
+        stored_version = db.get_meta(conn, _version_key(project))
+        if stored_version is None:
+            stored_version = db.get_meta(conn, LEGACY_VERSION_KEY)
+        stored_redo = _read_redo(db.get_meta(conn, _redo_key(project)))
         content_rev = db.revisions(conn)[0]
-    if stored_version != redaction.REDACTOR_VERSION and rows:
-        force = True  # rows written by another redactor version: redo them all
+    # The live rows that hold text of another redactor version: all of them
+    # after a version change, else the ones an earlier scan could not redo.
+    redo = {r.id for r in rows if r.live}
+    stale = stored_version != redaction.REDACTOR_VERSION or stored_redo is None
+    if not stale:
+        redo &= stored_redo
     cutoff = db.format_ts(datetime.now(timezone.utc) - timedelta(days=delete_grace_days))
-    plan = compute_plan(folders, rows, force=force, allow_shrink=allow_shrink, grace_cutoff=cutoff)
+    plan = compute_plan(
+        folders, rows, force=force, redo=redo, allow_shrink=allow_shrink, grace_cutoff=cutoff
+    )
 
     result = ScanResult(
         unchanged=plan.unchanged,
@@ -560,11 +600,18 @@ def scan(
         work = [(op, prep) for op, prep in work if op.kind != "delete"]
 
     for start in range(0, len(work), db.BATCH_ROWS):
-        _apply_batch(conn, project, work[start : start + db.BATCH_ROWS], result, force=force)
+        batch = work[start : start + db.BATCH_ROWS]
+        _apply_batch(conn, project, batch, result, force=force or (stale and bool(rows)))
 
-    if stored_version != redaction.REDACTOR_VERSION and not result.skipped:
+    # The scan wrote or deleted every row that has an entry in ``work``. A row
+    # with no entry (its file was skipped, or its folder is gone) keeps its old
+    # text, so it stays on the redo list. The version mark is set also then:
+    # the next scan redoes the list, not every row again.
+    left = redo - {op.row_id for op, _ in work}
+    if stale or left != stored_redo:
         with db.write_tx(conn):
-            db.set_meta(conn, "redactor_version", redaction.REDACTOR_VERSION)
+            db.set_meta(conn, _version_key(project), redaction.REDACTOR_VERSION)
+            db.set_meta(conn, _redo_key(project), json.dumps(sorted(left)))
     return result
 
 

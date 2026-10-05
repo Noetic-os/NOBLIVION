@@ -30,7 +30,7 @@ Contract:
 - Fail closed: if the text does not settle, or a pattern raises, the result is
   ``REDACTION_FAILED_TOKEN``, never the raw text.
 - ``REDACTOR_VERSION`` changes when a rule changes. The indexer stores it in
-  ``meta.redactor_version`` and re-indexes every row when it differs.
+  ``meta`` for each namespace and writes every row again when it differs.
 """
 
 from __future__ import annotations
