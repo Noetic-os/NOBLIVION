@@ -113,11 +113,18 @@ def rank_pool(
 
     sem = {i: _q(c * pool[i].weight, SCORE_DECIMALS) for i, c in cosines.items()}
     lists = [sorted(sem, key=lambda i: (-sem[i], pool[i].id))]
-    if by_bm25:
+    if by_bm25 and bm[by_bm25[0]] >= 0:
         # Only the rows that match a query term, as in keyword mode above. A
         # row that matches none gets no fused score from this list, so a row
         # with no cosine and no match is in no list and is not returned.
         lists.append(by_bm25)
+    elif by_bm25:
+        # The best matched score is negative: every matched term has a
+        # negative idf, as in a pool of two rows that both hold it. The row
+        # with more uses of the term then has the lower score, so the BM25
+        # order is not used and the cosine order decides. A matched row with
+        # no cosine is in no other list: it keeps a keyword rank.
+        lists.append([i for i in by_bm25 if i not in sem])
     fused: dict[int, float] = {}
     for ranked in lists:
         for rank, i in enumerate(ranked, start=1):

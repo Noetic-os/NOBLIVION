@@ -1284,7 +1284,11 @@ Reciprocal rank fusion with `k = 60`, as in the reference implementation:
    so a row that holds only this term has a score of 0. The reference
    implementation ranked the whole pool here, so the tie of zeros broke by
    id and the oldest rows got a fused score for a query they do not match
-   (NOBLIVION-49).
+   (NOBLIVION-49). When the best BM25 score of the matched rows is below
+   0, every matched term has a negative idf, as in a pool of two rows that
+   both hold the term. The row with more uses of the term then has the
+   lower score. So this list then holds only the matched rows that have no
+   vector, and the cosine order of step 1 decides the rest.
 3. Fused score per row: the sum over lists of `1 / (60 + rank)`. A row
    that is in no list is not returned: it has no vector and it matches no
    query term.

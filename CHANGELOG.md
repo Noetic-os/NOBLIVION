@@ -164,7 +164,11 @@ All notable changes to NOBLIVION. The format follows
   the prompt `how do I deploy` found nothing in keyword-only mode. In
   hybrid mode, with the entry above, a matching note with no vector yet
   was not returned. The store now compares the words: a note matches when
-  it holds a word of the query. The keyword scores are unchanged.
+  it holds a word of the query. The keyword scores are unchanged. When
+  every matching note has a keyword score below 0, the keyword order is not
+  used in hybrid mode, as before: with two notes that both hold a word, the
+  note with more uses of it has the lower score. The vector order then
+  decides, and a matching note with no vector yet is still returned.
 - A rule that the guard table build skips no longer goes unnoticed
   (NOBLIVION-50). A rule whose `violates` matches the empty command or an
   everyday command, or is too slow, does not block. Before, only

@@ -155,6 +155,70 @@ def test_hybrid_ranks_a_matched_row_with_a_bm25_of_0_under_the_scored_rows():
     }
 
 
+def test_hybrid_ranks_by_cosine_when_every_matched_bm25_is_negative():
+    # NOBLIVION-49. In a pool of two rows a word that both hold has a negative
+    # idf, so the row with more uses of it has the lower BM25 score. The
+    # keyword order then says the opposite of the match and is not used.
+    pool = [row(1), row(2)]
+    scores, cosines = [-0.076, -0.123], {0: 0.70, 1: 0.80}
+    result = ranking.rank_pool(pool, scores, cosines, top_k=5, matched=[True, True])
+    assert result.mode == "hybrid"
+    assert [h.row.id for h in result.hits] == [2, 1]
+    assert [h.fusion_score for h in result.hits] == [round(1 / 61, 6), round(1 / 62, 6)]
+    assert [h.bm25 for h in result.hits] == [-0.123, -0.076]
+    top = ranking.rank_pool(pool, scores, cosines, top_k=1, matched=[True, True])
+    assert [h.row.id for h in top.hits] == [2]
+
+
+def test_hybrid_ranks_two_notes_that_share_a_query_word_by_cosine():
+    # The same with real BM25 scores: "docker" is in both notes, and note 2
+    # has it 5 times. Note 2 has the better cosine and is first.
+    texts = {
+        1: "python packaging uv docker",
+        2: "docker docker docker compose docker networking docker",
+    }
+    pool = [
+        ranking.PoolRow(i, "p", "", "x", "note", text, 1.0, tuple(bm25.tokenize(text)))
+        for i, text in texts.items()
+    ]
+    index = bm25.BM25([r.tokens for r in pool])
+    query = bm25.tokenize("docker networking")
+    scores = index.scores(query)
+    assert scores[1] < scores[0] < 0 and index.matches(query) == [True, True]
+    cosines = {0: 0.70, 1: 0.80}
+    result = ranking.rank_pool(pool, scores, cosines, top_k=5, matched=index.matches(query))
+    assert [h.row.id for h in result.hits] == [2, 1]
+
+
+@pytest.mark.parametrize("with_vector", [0, 1])
+def test_hybrid_returns_a_matched_row_with_no_vector_when_every_matched_bm25_is_negative(
+    with_vector,
+):
+    # The keyword list is not used for the order, but a matched row with no
+    # vector yet is in no other list: it still comes back, with a null score.
+    pool = [row(1), row(2)]
+    other = 1 - with_vector
+    result = ranking.rank_pool(
+        pool, [-0.076, -0.123], {with_vector: 0.7}, top_k=5, matched=[True, True]
+    )
+    assert result.mode == "hybrid"
+    by_id = {h.row.id: h for h in result.hits}
+    assert sorted(by_id) == [1, 2]
+    assert by_id[pool[with_vector].id].score == 0.7
+    assert by_id[pool[with_vector].id].fusion_score == round(1 / 61, 6)  # the cosine list only
+    assert by_id[pool[other].id].score is None
+    assert by_id[pool[other].id].fusion_score == round(
+        1 / 61, 6
+    )  # first of the rows with no vector
+
+
+def test_hybrid_does_not_return_an_unmatched_row_with_no_vector_when_bm25_is_negative():
+    pool = [row(1), row(2), row(3)]
+    matched = [True, True, False]
+    result = ranking.rank_pool(pool, [-0.076, -0.123, 0.0], {0: 0.7}, 5, matched)
+    assert [h.row.id for h in result.hits] == [1, 2]
+
+
 def test_no_matched_row_means_no_keyword_list():
     pool = [row(1), row(2)]
     result = ranking.rank_pool(pool, [0.0, 0.0], {0: 0.3, 1: 0.7}, 5, [False, False])
