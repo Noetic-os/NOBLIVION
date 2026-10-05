@@ -114,13 +114,19 @@ All notable changes to NOBLIVION. The format follows
   `for f in $(git diff --name-only); do head -5 "$f"; done`. The README
   now says what the guard covers: git URLs, not every credential.
   docs/guards.md lists the limits (NOBLIVION-47).
-- The credential guard no longer needs seconds for a Bash command with one
-  very long word (NOBLIVION-47). The search for a `.git/config` path inside
-  a word read the word again from each of its characters: one word of
-  100 KB took about 10 seconds. The guard hook allows a call that it cannot
-  decide in 1.5 seconds, so such a word let a read of a git config pass.
-  Now a word is read once, and the same command is decided in under 0.1
-  seconds. The paths that the search finds are the same.
+- The path search of the credential guard no longer needs seconds for a
+  Bash command with one very long word (NOBLIVION-47). The search for a
+  `.git/config` path inside a word read the word again from each of its
+  characters: one word of 100 KB took about 10 seconds. The guard hook
+  allows a call that it cannot decide in 1.5 seconds, so such a word let a
+  read of a git config pass. Now the search reads a word once and needs
+  under 0.1 seconds for the same command. The paths that the search finds
+  are the same. One limit stays. Before the guard hook prints a deny, it
+  removes secrets from the command text for its log, and that step still
+  needs seconds for one long word of letters with no digit. So
+  `cat <word> .git/config` with such a word of about 30 KB or more still
+  passes after 1.5 seconds, with the line that says the deny rules were
+  not checked. docs/guards.md lists this limit.
 - Hybrid ranking no longer gives a keyword rank to a note that matches no
   word of the query (NOBLIVION-49). Before, the keyword list held the whole
   pool, and the notes with a keyword score of 0 were ordered by id. So the
