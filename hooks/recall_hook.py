@@ -65,7 +65,10 @@ Fail open
   deadline the socket is shut down, so a peer that drips one byte per socket
   operation cannot hold the worker. A body over RESPONSE_MAX_BYTES (1 MiB) is
   ``fail:too_large``. At most WORKER_MAX (4) requests are in flight; past
-  that a call is ``fail:busy`` at once.
+  that a call is ``fail:busy`` at once. After a proof or a request timed out,
+  every call is ``fail:store_hung`` at once for 30 s (``store.hung`` in the
+  data dir, ``store_client.HUNG_BACKOFF_S``), so a store that accepts and
+  never answers does not cost each prompt the full budget.
 
 Transport
   Plain ``http://`` only to a loopback IP literal (``localhost`` is a name,
@@ -88,7 +91,8 @@ Dedupe and cap
 Log
   One line per call appended to ``<cache dir>/recall.log``:
   ``<iso ts> event=<name> session=<id> hits=<n> chars=<n> ms=<n> <ok|fail:<reason>|skip:<reason>>``
-  No query text and no memory body ever reach the log.
+  No query text and no memory body ever reach the log. Past LOG_MAX_BYTES
+  (5 MB) the log moves to ``recall.log.1``; ``memory-dir.log`` likewise.
 
 Environment (config file keys in design doc section 12.3)
   NOBLIVION_DATA_DIR            the data dir (store.json, token, cache)
@@ -860,14 +864,27 @@ def store_get(build: Any, environ: Optional[Mapping[str, str]], timeout_s: float
     unproven raises ``RecallError("store_down")``, ``("no_token")`` or
     ``("foreign_listener")`` and asks the launcher to start a store
     (``store_client.request_start``, detached, never waited for).
+
+    A proof or a request that times out writes the "down until" stamp
+    (``store_client.mark_hung``). While it is in force, this raises
+    ``RecallError("store_hung")`` at once and sends nothing.
     """
     env = os.environ if environ is None else environ
+    if _STORE.hung(env):
+        raise RecallError(_STORE.HUNG)
     t0 = time.monotonic()
     probe_s = min(timeout_s, max(_STORE.PROBE_TIMEOUT_S, timeout_s / 2.0))
+
+    def _probe(url: str, budget: float) -> Any:
+        try:
+            return http_get_json(url, "", budget)
+        except RecallError as exc:
+            if exc.reason == "timeout":
+                _STORE.mark_hung(env)
+            raise
+
     try:
-        base, token = _STORE.connect(
-            env, lambda url, budget: http_get_json(url, "", budget), probe_s
-        )
+        base, token = _STORE.connect(env, _probe, probe_s)
     except _STORE.StoreUnavailable as exc:
         _STORE.request_start(env)
         raise RecallError(exc.reason) from None
@@ -881,6 +898,8 @@ def store_get(build: Any, environ: Optional[Mapping[str, str]], timeout_s: float
     try:
         return http_get_json(url, token, left)
     except RecallError as exc:
+        if exc.reason == "timeout":
+            _STORE.mark_hung(env)
         if not exc.reason.startswith("http_"):
             _STORE.forget(env)  # no answer: prove again next time
         raise
@@ -2018,6 +2037,14 @@ def session_lock(path: Optional[str]):
 
 
 MEMORY_DIR_LOG = "memory-dir.log"
+LOG_MAX_BYTES = 5_000_000  # then a log moves to .1, as the stop check log does
+
+
+def _rotate(path: str) -> None:
+    """Move the log at ``path`` to ``<path>.1`` when it is past LOG_MAX_BYTES."""
+    with contextlib.suppress(OSError):
+        if os.path.getsize(path) > LOG_MAX_BYTES:
+            os.replace(path, path + ".1")
 
 
 def log_memory_dir_missing(cache: str, event: str, session_id: Any, root: Any) -> None:
@@ -2030,7 +2057,9 @@ def log_memory_dir_missing(cache: str, event: str, session_id: Any, root: Any) -
     line = f"{ts} event={event} session={sid} memory_dir_missing root={name}\n"
     try:
         _make_dirs(cache)
-        with open(os.path.join(cache, MEMORY_DIR_LOG), "a", encoding="utf-8") as fh:
+        path = os.path.join(cache, MEMORY_DIR_LOG)
+        _rotate(path)
+        with open(path, "a", encoding="utf-8") as fh:
             fh.write(line)
     except OSError:
         pass
@@ -2045,7 +2074,9 @@ def log_line(
     line = f"{ts} event={event} session={sid} hits={hits} chars={chars} ms={ms} {status}\n"
     try:
         _make_dirs(cache)
-        with open(os.path.join(cache, "recall.log"), "a", encoding="utf-8") as fh:
+        path = os.path.join(cache, "recall.log")
+        _rotate(path)
+        with open(path, "a", encoding="utf-8") as fh:
             fh.write(line)
     except OSError:
         pass

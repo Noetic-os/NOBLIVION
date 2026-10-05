@@ -335,12 +335,12 @@ tool, the check does not fire and the log row notes `notify_skipped`.
 
 | File | What it holds |
 | --- | --- |
-| `<data dir>/guard-log.jsonl` | One line per guard decision: rows, deny, override, label rows, credential deny, error. It holds command text. Mode 0600. |
+| `<data dir>/guard-log.jsonl` | One line per guard decision: rows, deny, override, label rows, credential deny, error. It holds command text. Mode 0600. Rotated at 5 MB. |
 | `<data dir>/guard-state/` | State per agent and session. Removed after 7 days. |
 | `<data dir>/guard-tables/<table>.probes` | The measured speed of each `violates` expression of that table. You can delete it: the next build measures again. |
 | `<data dir>/guard-tables/<table>.late` | The state of the memory folder whose rebuild ran out of time. While the folder has this state, the guard hook does not try the rebuild again. The guard hook removes the file when a rebuild that it starts itself, before a tool call, is done in time. The rebuild at the session start and the rebuild after a write of a memory file do not remove it. You can delete it: the next tool call then tries the rebuild again. |
 | `<data dir>/stop-check-log.jsonl` | One line per stop check decision. Rotated at 5 MB. |
-| `<data dir>/cache/memory_sync.log` | The memory sync runs. |
+| `<data dir>/cache/memory_sync.log` | The memory sync runs. Rotated at 5 MB. |
 
 ## Turn a guard off
 

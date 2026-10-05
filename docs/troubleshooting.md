@@ -10,9 +10,9 @@ In the commands below, `<data dir>` is the NOBLIVION data dir (see
 
 | File | What it tells you |
 | --- | --- |
-| `<data dir>/cache/recall.log` | One line per prompt: hits, characters, time, and `ok`, `fail:<reason>` or `skip:<reason>`. |
+| `<data dir>/cache/recall.log` | One line per prompt: hits, characters, time, and `ok`, `fail:<reason>` or `skip:<reason>`. Rotated at 5 MB. |
 | `<data dir>/logs/store.log` | Store start, stop, index scans and embedding state. |
-| `<data dir>/guard-log.jsonl` | Guard decisions. |
+| `<data dir>/guard-log.jsonl` | Guard decisions. Rotated at 5 MB. |
 | `<data dir>/error-recall-log.jsonl` | Error recall decisions. |
 | `<data dir>/cache/trust-flush.log` | Trust flush runs. |
 
@@ -41,6 +41,7 @@ tells you the cause.
 | `no_token` | The `token` file is missing or cannot be read. | Run `noblivion ensure-running`. The store makes a new token. |
 | `foreign_listener` | The handshake failed. | See [Handshake failure](#handshake-failure). |
 | `timeout` | The store did not answer within 2 seconds. | See [Recall is slow](#recall-is-slow). |
+| `store_hung` | A store call timed out less than 30 seconds ago, so the hook did not call the store. | See [Recall is slow](#recall-is-slow). |
 | `busy` | The hook already had 4 store requests in flight, because earlier requests hang. | Check that the store answers: run `noblivion ensure-running --json`. |
 | `namespace_mismatch`, `bad_project` | `NOBLIVION_PROJECT` or `NOBLIVION_RECALL_PROJECT` differs between the hook and the store, or has bad characters. | Use lower-case letters, digits and `_`. Set the same value for both. |
 | `skip:disabled` | `NOBLIVION_RECALL_DISABLE` is set. | Remove it. |
@@ -184,6 +185,12 @@ unless `embedding.allow_download` is `true`.
 ## Recall is slow
 
 - The hook has a budget of 2 seconds (`NOBLIVION_RECALL_TIMEOUT_S`).
+- When a store call runs out of time, the hooks do not call the store for
+  the next 30 seconds. The log then shows `store_hung`, and the prompt does
+  not wait. The hooks write the end of this pause to `<data dir>/store.hung`.
+  When `store_hung` comes back every 30 seconds, the store accepts a
+  connection but does not answer. Stop the store (SIGTERM to the process id
+  in `store.json`), then run `noblivion ensure-running`.
 - The first prompt after a store start can be slow, because the store
   loads the model and the index.
 - An embedding of the prompt that takes more than 1 second gives a

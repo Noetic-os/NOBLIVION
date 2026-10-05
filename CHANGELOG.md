@@ -38,6 +38,21 @@ All notable changes to NOBLIVION. The format follows
   `config.json` (NOBLIVION-57). Before, the default backend `fastembed`
   stayed, but the package was not installed. The store then reported
   `degraded` for good and logged a warning every hour.
+- A store that accepts a connection but does not answer no longer costs
+  every prompt and every subagent start a wait (NOBLIVION-69). Before,
+  each call waited for the listener proof (1 s) or for the search (2 s)
+  to time out. Now a call that times out writes `<data dir>/store.hung`,
+  and for the next 30 seconds the recall hook, the subagent rules hook,
+  error recall and the MCP tool do not call the store. The log reason is
+  `store_hung`. Measured with a store that never answers a search: the
+  prompt hook took 2.1 s on each prompt before; now it takes 2.0 s on the
+  first prompt and 0.04 s on each later prompt in the pause. A refused
+  connection does not start the pause, and a new store ends it.
+- `recall.log`, `memory-dir.log`, `guard-log.jsonl` and `memory_sync.log`
+  now move to `<name>.1` past 5 MB, as the stop check log does
+  (NOBLIVION-69). Before, they grew without a limit. `memory-dir.log` gets
+  one line per prompt in a project with no memory folder, and the guard
+  log holds command text.
 
 ## 0.1.6 - 2026-10-05
 

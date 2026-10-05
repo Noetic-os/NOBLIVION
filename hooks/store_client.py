@@ -18,6 +18,9 @@ client side of ``noblivion.launcher``:
    checks the proof and the version, and runs the atomic start check
    (``flock`` on ``spawn.stamp``, design doc section 3.2) itself. The hook
    only reads the stamp's age; it never touches or locks it.
+4. A store call that timed out writes ``store.hung``, a "down until" time
+   HUNG_BACKOFF_S ahead (``mark_hung``). While it is in force (``hung``), the
+   hooks send nothing to the store. A new ``store.json`` ends it.
 
 The HTTP request itself belongs to the caller (``recall_hook.http_get_json``),
 so this module opens no socket.
@@ -42,6 +45,7 @@ Standard library only. Hooks load this file by path, as a sibling.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import importlib.util
@@ -51,6 +55,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -67,6 +72,11 @@ PROOF_PREFIX = "noblivion-health:"
 PROBE_TIMEOUT_S = 0.3
 PROOF_TTL_S = 30.0  # a long-lived caller (the MCP server) proves again after this
 SPAWN_STAMP_MAX_AGE_S = 30.0
+# "Down until" (NOBLIVION-69): after a store call timed out, no hook calls the
+# store for this long. A store that accepts and never answers then costs one
+# wait per back-off, not one per prompt and per subagent start.
+HUNG_STAMP_FILE = "store.hung"
+HUNG_BACKOFF_S = 30.0
 BIN_ENV = "NOBLIVION_BIN"
 BIN_KEY = "store.bin"
 AUTOSTART_ENV = "NOBLIVION_STORE_AUTOSTART"
@@ -83,6 +93,7 @@ LOOPBACK = "127.0.0.1"
 DOWN = "store_down"  # no store.json, or no answer to the proof request
 NO_TOKEN = "no_token"  # store.json but no valid token file
 FOREIGN = "foreign_listener"  # an answer without the right proof
+HUNG = "store_hung"  # a call timed out less than HUNG_BACKOFF_S ago: nothing sent
 
 _PROVEN: Dict[Tuple[str, int, str], float] = {}
 
@@ -215,6 +226,42 @@ def forget(env: Optional[Mapping[str, str]] = None) -> None:
     folder = str(data_dir(env))
     for key in [k for k in _PROVEN if k[0] == folder]:
         _PROVEN.pop(key, None)
+
+
+def mark_hung(
+    env: Optional[Mapping[str, str]] = None, clock: Callable[[], float] = time.time
+) -> None:
+    """Write the "down until" stamp after a store call that timed out: for
+    HUNG_BACKOFF_S, ``hung`` is True. Never makes the data dir; a file error
+    leaves no stamp and is not raised."""
+    folder = data_dir(env)
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="." + HUNG_STAMP_FILE + ".", dir=str(folder))
+    except OSError:
+        return
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as fh:
+            fh.write("%.3f\n" % (clock() + HUNG_BACKOFF_S))
+        os.replace(tmp, folder / HUNG_STAMP_FILE)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+
+
+def hung(env: Optional[Mapping[str, str]] = None, clock: Callable[[], float] = time.time) -> bool:
+    """True while the "down until" stamp is in force. A stamp older than
+    ``store.json`` was written for an earlier store and does not count, nor
+    does a broken one or one that ends more than HUNG_BACKOFF_S ahead (the
+    clock went back; 1 s of slack covers the rounding of the written time)."""
+    folder = data_dir(env)
+    stamp = folder / HUNG_STAMP_FILE
+    try:
+        until = float(stamp.read_text(encoding="ascii"))
+        if stamp.stat().st_mtime < (folder / STORE_JSON_FILE).stat().st_mtime:
+            return False
+    except (OSError, ValueError):
+        return False
+    return 0.0 < until - clock() <= HUNG_BACKOFF_S + 1.0
 
 
 def autostart_on(env: Optional[Mapping[str, str]] = None) -> bool:

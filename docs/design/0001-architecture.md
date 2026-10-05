@@ -344,6 +344,12 @@ How E4 built these (the hooks are `hooks/recall_hook.py`,
   long-lived MCP server does not prove on every call; a request that gets
   no answer drops the kept proof. Reasons in the hook log: `store_down`,
   `no_token`, `foreign_listener`.
+- A proof or a request that times out writes `store.hung` in the data dir:
+  a "down until" time 30 s ahead (NOBLIVION-69). Until then every caller of
+  `store_get` fails at once with `store_hung` and sends nothing, so a store
+  that accepts a connection and never answers costs one wait per 30 s, not
+  one per prompt and per subagent start. A refused connection and an error
+  answer write no stamp. A `store.json` newer than the stamp ends it.
 - `root`: the hook entry derives it from the event's `cwd`. The memory
   folder is `NOBLIVION_RECALL_MEMORY_DIR` (or `NOBLIVION_MEMORY_DIR`), else
   `~/.claude/projects/<slug of cwd>/memory` when it exists. The root is

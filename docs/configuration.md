@@ -90,8 +90,8 @@ it. Codex does not set it, so there the event `cwd` is used.
    `CLAUDE_CONFIG_DIR` is set.
 
 When that folder does not exist, the recall hook writes one line to
-`<data dir>/cache/memory-dir.log` for the call, and recall reads no memory
-files. There is no home-folder default: a session in a project uses the
+`<data dir>/cache/memory-dir.log` for the call (rotated at 5 MB), and recall
+reads no memory files. There is no home-folder default: a session in a project uses the
 folder of that project, never the folder of your home folder.
 
 The stop checks name this folder when they ask Claude to save a lesson, so a

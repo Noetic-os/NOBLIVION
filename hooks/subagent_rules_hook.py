@@ -47,8 +47,9 @@ session key of a call is ``<session id>.<agent id>``. The parent session's
 shown-set and last index are in ``<cache>`` and are never read or written.
 
 Fail open: any error prints nothing and exits 0. The whole call is cut at
-``BUDGET_S`` (4.5 s; the hook entry has ``timeout: 5``). A store that is down
-or fails the listener proof gives no rules (design doc section 3.5). One log
+``BUDGET_S`` (4.5 s; the hook entry has ``timeout: 5``). A store that is down,
+fails the listener proof or timed out in the last 30 s (``store.hung``, the
+recall hook's back-off) gives no rules (design doc section 3.5). One log
 line per call in ``<cache>/subagent/recall.log``, in the recall log's format.
 It holds no task text and no memory text.
 

@@ -134,6 +134,7 @@ DONE_NAME = "memory_sync.done"
 BASH_SEEN_NAME = "memory_sync.bash_seen"  # newest folder change a trigger covered
 LOCK_NAME = "memory_sync.worker.lock"
 LOG_NAME = "memory_sync.log"
+LOG_MAX_BYTES = 5_000_000  # then the log moves to .1, as the stop check log does
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -201,6 +202,9 @@ def log_line(state: Path, event: str, **fields: Any) -> None:
         parts.append(f"{key}={_SAFE_NAME.sub('_', str(value))[:120]}")
     try:
         _make_dirs(state)
+        with contextlib.suppress(OSError):
+            if (state / LOG_NAME).stat().st_size > LOG_MAX_BYTES:
+                os.replace(state / LOG_NAME, state / (LOG_NAME + ".1"))
         with open(state / LOG_NAME, "a", encoding="utf-8") as fh:
             fh.write(" ".join(parts) + "\n")
     except OSError:

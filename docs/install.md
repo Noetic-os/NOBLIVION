@@ -68,6 +68,7 @@ The data dir holds these files:
 | `token` | the shared secret between the hooks and the store, mode 0600 |
 | `store.json` | the port and process id of the running store |
 | `store.error` | why the last store start failed; removed by a good start |
+| `store.hung` | the end of the 30-second pause after a store call timed out; the hooks do not call the store before it |
 | `venv/` | the store venv |
 | `models/` | the embedding model cache |
 | `cache/` | hook state: recall logs, trust events, sync state |

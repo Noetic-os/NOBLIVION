@@ -256,6 +256,7 @@ def _cfg():
 
 
 DEFAULT_LOG = _cfg().data_dir() / "guard-log.jsonl"
+LOG_MAX_BYTES = 5_000_000  # then the log moves to .1, as the stop check log does
 DEFAULT_STATE = _cfg().data_dir() / "guard-state"
 BASH_TOOLS = ("Bash",)
 FILE_TOOLS = ("Edit", "Write", "MultiEdit")
@@ -517,6 +518,11 @@ def log_line(
     try:  # best effort: a log failure never blocks a decision
         p = log_path(env)
         _make_dirs(p.parent)
+        try:  # no log yet, or another hook rotated it first: write the line anyway
+            if p.stat().st_size > LOG_MAX_BYTES:
+                os.replace(p, str(p) + ".1")
+        except OSError:
+            pass
         fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
