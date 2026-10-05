@@ -514,8 +514,14 @@ class Store:
                         self.backfill_once(conn)
                         backfilled_state = self.embedding.state
                         backfilled_rev = content_rev
-                    if state == embedding.STATE_FAILED and not self._model_alive():
-                        # The service itself keeps the retry to once per hour.
+                    if (
+                        state == embedding.STATE_FAILED
+                        and not self._model_alive()
+                        and self.embedding.retry_due(conn)
+                    ):
+                        # The service keeps the retry to once per hour, and a
+                        # new consent ends the wait. No thread and no log line
+                        # on a tick where a start would change nothing.
                         self._model_thread = self._spawn(self._load_model, "noblivion-model")
         except Exception as exc:  # noqa: BLE001 - the store keeps answering
             log.error("background jobs stopped: %s", type(exc).__name__)

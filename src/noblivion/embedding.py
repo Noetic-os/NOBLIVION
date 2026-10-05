@@ -759,14 +759,8 @@ class EmbeddingService:
             self.state = STATE_NONE
             return self.state
         with self._lock:
-            if self.state == STATE_FAILED and self._failed_at is not None:
-                # A missing consent is the one failure that a command of the
-                # user ends: the new consent does not wait for the retry time.
-                if self._clock() - self._failed_at < RETRY_AFTER_S and not (
-                    self._no_consent
-                    and has_consent(conn, self.settings.backend, self.settings.model)
-                ):
-                    return self.state
+            if self._retry_waits(conn):
+                return self.state
             self.state = STATE_LOADING
             try:
                 embedder = self._factory(self.settings, conn, self._env)
@@ -795,6 +789,29 @@ class EmbeddingService:
             self._no_consent = False
             self.state = STATE_REEMBEDDING if needs_reembed(conn, embedder) else STATE_READY
             return self.state
+
+    def _retry_waits(self, conn: sqlite3.Connection) -> bool:
+        """True while ``start`` makes no new attempt after a failed load: the
+        retry time is not over. Call it with ``_lock`` held."""
+        if self.state != STATE_FAILED or self._failed_at is None:
+            return False
+        # A missing consent is the one failure that a command of the user
+        # ends: the new consent does not wait for the retry time.
+        return self._clock() - self._failed_at < RETRY_AFTER_S and not (
+            self._no_consent and has_consent(conn, self.settings.backend, self.settings.model)
+        )
+
+    def retry_due(self, conn: sqlite3.Connection) -> bool:
+        """True when the backend failed and ``start`` would try it again now.
+        The jobs loop of the store asks this before it starts a model thread,
+        so a failed backend costs no thread and no log line on each tick.
+        While the consent is missing this is one read of ``meta``."""
+        if not self._lock.acquire(blocking=False):
+            return False  # a start or a revoke runs now; the next tick asks again
+        try:
+            return self.state == STATE_FAILED and not self._retry_waits(conn)
+        finally:
+            self._lock.release()
 
     def check_consent(self, conn: sqlite3.Connection) -> bool:
         """False when the backend sends text off the machine and its consent

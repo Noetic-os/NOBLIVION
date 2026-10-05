@@ -1120,6 +1120,11 @@ the database, WAL, SHM and token files, and mode 0700 on the data dir.
   that still waits in the pool when its time limit ends is cancelled. The
   check fails closed: without a database connection the remote query call
   is not made.
+  While the backend is `failed`, the jobs loop asks the service on each
+  tick if a new start can change the state: the retry time is over, or the
+  consent is back. Only then it starts a model thread. So a store with no
+  consent writes one log line for the revoke and then no more, and a new
+  consent starts the backend within a tick.
 - `none`: keyword-only ranking forever.
 
 ### 7.2 What is embedded

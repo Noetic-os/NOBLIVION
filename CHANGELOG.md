@@ -119,6 +119,14 @@ All notable changes to NOBLIVION. The format follows
   longer sent later. A new consent takes effect within seconds, without a
   restart. The health answer has a new field `embedding.consent`:
   `not_needed`, `given` or `missing` (NOBLIVION-51).
+- A store whose embedding backend is `failed` no longer starts a thread
+  and writes the line `embedding state: failed` to `store.log` every 0.5
+  seconds (NOBLIVION-51). A failed model load and a start without the
+  consent did this before, and with the entry above a consent revoke did it
+  too: about 170,000 log lines a day. Now the store starts the backend
+  again only when a start can change the state: when the hourly retry time
+  is over, or when the consent is back. A new consent still takes effect
+  within seconds, without a restart.
 - The transcript miner no longer stores an ordinary request as a
   `correction` note (NOBLIVION-53). Its own word list read "Run the tests
   again please", "Is there no index on this table?" and "Please revert the

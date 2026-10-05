@@ -461,6 +461,38 @@ def test_a_load_fault_that_is_not_the_consent_keeps_the_hourly_backoff(conn):
     service.close()
 
 
+def test_retry_due_says_when_a_start_would_try_again(conn, remote):
+    """The jobs loop of the store asks this before it starts a model thread."""
+    now = [1000.0]
+
+    def factory(*_a):
+        raise embedding.EmbeddingError("no model")
+
+    service = embedding.EmbeddingService(
+        embedding.EmbeddingSettings(), factory=factory, clock=lambda: now[0]
+    )
+    assert not service.retry_due(conn)  # not started yet: not a retry
+    assert service.start(conn) == "failed"
+    assert not service.retry_due(conn)
+    now[0] += embedding.RETRY_AFTER_S - 1
+    assert not service.retry_due(conn)
+    now[0] += 1
+    assert service.retry_due(conn)
+    service.close()
+
+    service = started(conn, remote)
+    assert not service.retry_due(conn)  # ready
+    embedding.revoke_consent(conn)
+    assert not service.check_consent(conn) and service.state == "failed"
+    assert not service.retry_due(conn)  # no consent: a start would change nothing
+    embedding.grant_consent(conn, "openrouter", "vendor/other")  # not this model
+    assert not service.retry_due(conn)
+    embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
+    assert service.retry_due(conn)
+    assert service.start(conn) in ("ready", "reembedding") and not service.retry_due(conn)
+    service.close()
+
+
 def test_a_query_embed_that_timed_out_in_the_queue_is_never_sent(conn, remote):
     service = started(conn, remote)
     remote.gate = threading.Event()  # the remote service does not answer

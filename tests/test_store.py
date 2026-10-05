@@ -765,6 +765,83 @@ def test_a_revoke_turns_an_idle_store_to_keyword_mode(tmp_path):
         remote.close()
 
 
+def _count_model_threads(st: store.Store) -> list[str]:
+    """The names of the model threads that ``st`` starts from now on."""
+    started: list[str] = []
+    spawn = st._spawn
+
+    def counting(target, name):
+        if name == "noblivion-model":
+            started.append(name)
+        return spawn(target, name)
+
+    st._spawn = counting  # type: ignore[method-assign]
+    return started
+
+
+def test_a_store_without_consent_is_quiet_until_the_consent_is_back(tmp_path, caplog):
+    """After a revoke the backend is ``failed``. While the consent is missing,
+    the jobs loop starts no model thread and writes no log line on its ticks.
+    A new consent turns the backend on again without a restart (NOBLIVION-51)."""
+    remote = FakeRemote()
+    st = make_store(tmp_path, embedding_service=remote_service(remote.url))
+    with closing(db.open_db(st.settings.db_path, create=True)) as conn:
+        embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
+    threads = _count_model_threads(st)
+    run = Running(st)
+
+    def lines() -> list[str]:
+        return [r.getMessage() for r in caplog.records]
+
+    try:
+        with caplog.at_level("INFO", logger="noblivion.store"):
+            assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
+            assert len(threads) == 1  # the start of the store
+            with closing(db.connect(st.settings.db_path)) as conn:
+                embedding.revoke_consent(conn)
+            assert wait_for(lambda: run.store.embedding.state == embedding.STATE_FAILED)
+            # The revoke is said once.
+            assert wait_for(lambda: sum("consent" in line for line in lines()) == 1)
+            caplog.clear()
+            time.sleep(6 * store.JOB_TICK_S)
+            assert len(threads) == 1
+            assert lines() == []
+
+            with closing(db.connect(st.settings.db_path)) as conn:
+                embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
+            assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
+            assert len(threads) == 2  # one new start for the new consent
+            assert wait_for(lambda: lines() == ["embedding state: ready"])
+        assert remote.requests == []
+    finally:
+        run.stop()
+        remote.close()
+
+
+def test_a_store_that_started_without_consent_is_quiet_too(tmp_path, caplog):
+    remote = FakeRemote()
+    st = make_store(tmp_path, embedding_service=remote_service(remote.url))
+    db.open_db(st.settings.db_path, create=True).close()
+    threads = _count_model_threads(st)
+    run = Running(st)
+    try:
+        with caplog.at_level("INFO", logger="noblivion.store"):
+            assert wait_for(
+                lambda: "embedding state: failed" in [r.getMessage() for r in caplog.records]
+            )
+            caplog.clear()
+            time.sleep(6 * store.JOB_TICK_S)
+            assert len(threads) == 1  # the start of the store
+            assert [r.getMessage() for r in caplog.records] == []
+            with closing(db.connect(st.settings.db_path)) as conn:
+                embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
+            assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
+            assert len(threads) == 2
+    finally:
+        run.stop()
+        remote.close()
+
+
 def test_answers_while_the_model_loads(tmp_path):
     gate = threading.Event()
 
