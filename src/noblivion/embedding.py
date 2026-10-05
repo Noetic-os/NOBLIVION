@@ -716,6 +716,8 @@ class EmbeddingService:
     remote call. When the consent is gone, the service takes the state of a
     start without consent (``failed``, keyword mode) and sends nothing. A new
     consent ends that state at the next ``start``, without the hourly wait.
+    When the consent cannot be read (``sqlite3.Error``), the service sends
+    nothing for that call and keeps its state: the next call reads again.
     """
 
     def __init__(
@@ -737,6 +739,8 @@ class EmbeddingService:
         self.error: str | None = None
         self._failed_at: float | None = None
         self._no_consent = False  # the last failure was a missing consent
+        self._unread = False  # the last consent read failed, and the log says so
+        self._unread_lock = threading.Lock()
 
     @property
     def model_id(self) -> str | None:
@@ -797,8 +801,12 @@ class EmbeddingService:
             return False
         # A missing consent is the one failure that a command of the user
         # ends: the new consent does not wait for the retry time.
+        # A consent that cannot be read is not a new consent: the wait goes on.
         return self._clock() - self._failed_at < RETRY_AFTER_S and not (
-            self._no_consent and has_consent(conn, self.settings.backend, self.settings.model)
+            self._no_consent
+            and self._read_consent(
+                lambda: has_consent(conn, self.settings.backend, self.settings.model)
+            )
         )
 
     def retry_due(self, conn: sqlite3.Connection) -> bool:
@@ -816,12 +824,37 @@ class EmbeddingService:
     def check_consent(self, conn: sqlite3.Connection) -> bool:
         """False when the backend sends text off the machine and its consent
         is not in ``meta`` now. The service then takes the state of a start
-        without consent. A local backend costs no read (NOBLIVION-51)."""
+        without consent. A local backend costs no read (NOBLIVION-51).
+
+        False too when ``meta`` cannot be read. The caller sends nothing for
+        this call. The state stays, because the consent is not known to be
+        gone, and the next call reads again."""
         embedder = self.embedder
-        if embedder is None or consent_ok(conn, embedder):
+        if embedder is None:
             return True
-        self._consent_gone(embedder)
-        return False
+        given = self._read_consent(lambda: consent_ok(conn, embedder))
+        if given is False:
+            self._consent_gone(embedder)
+        return bool(given)
+
+    def _read_consent(self, read: Callable[[], bool]) -> bool | None:
+        """The answer of one consent read, or None when ``meta`` cannot be
+        read. A run of reads that fail gets one log line; a read that works
+        ends the run. The jobs loop of the store reads on each tick."""
+        try:
+            given = read()
+        except sqlite3.Error as exc:
+            with self._unread_lock:
+                said, self._unread = self._unread, True
+            if not said:
+                log.warning(
+                    "the embeddings consent could not be read (%s); "
+                    "nothing is sent until a read works",
+                    type(exc).__name__,
+                )
+            return None
+        self._unread = False
+        return given
 
     def _consent_gone(self, embedder: Embedder) -> None:
         with self._lock:

@@ -171,6 +171,17 @@ All notable changes to NOBLIVION. The format follows
   again only when a start can change the state: when the hourly retry time
   is over, or when the consent is back. A new consent still takes effect
   within seconds, without a restart.
+- A consent read that fails no longer ends the background jobs of the
+  store (NOBLIVION-51). With the consent check above, the store reads the
+  embeddings consent of a remote backend on each tick of its jobs loop and
+  before each remote call. When that read failed with a database error (for
+  example `database is locked`), the jobs loop ended: no index scan, no
+  backfill and no maintenance until a restart. A search at that moment
+  returned an error and no rows. Now the store sends nothing for that
+  call. The search answers by keyword, the jobs loop goes on and reads
+  again on the next tick, and `store.log` gets one line for each run of
+  failed reads. A read that fails is not a revoke: the backend keeps its
+  state. A local backend reads no consent and was not affected.
 - The transcript miner no longer stores an ordinary request as a
   `correction` note (NOBLIVION-53). Its own word list read "Run the tests
   again please", "Is there no index on this table?" and "Please revert the

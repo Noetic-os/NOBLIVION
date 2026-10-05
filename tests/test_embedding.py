@@ -12,12 +12,13 @@ import io
 import json
 import math
 import os
+import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from noblivion import db, embedding
+from noblivion import db, embedding, ranking
 from store_helpers import (
     FAKE_DIM,
     REMOTE_MODEL,
@@ -490,6 +491,112 @@ def test_retry_due_says_when_a_start_would_try_again(conn, remote):
     embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
     assert service.retry_due(conn)
     assert service.start(conn) in ("ready", "reembedding") and not service.retry_due(conn)
+    service.close()
+
+
+@pytest.fixture
+def consent_fault(monkeypatch):
+    """Item 0 is the fault of every consent read, or None for a read that
+    works. A test sets an ``sqlite3.Error``, as a locked database raises it."""
+    fault: list = [None]
+    read = embedding.has_consent
+
+    def faulty(conn, provider, model):
+        if fault[0] is not None:
+            raise fault[0]
+        return read(conn, provider, model)
+
+    monkeypatch.setattr(embedding, "has_consent", faulty)
+    return fault
+
+
+def _unread_lines(caplog) -> list:
+    return [r.getMessage() for r in caplog.records if "could not be read" in r.getMessage()]
+
+
+def test_a_consent_that_cannot_be_read_sends_no_query_and_keeps_the_backend(
+    conn, remote, consent_fault, caplog
+):
+    service = started(conn, remote)
+    assert service.embed_query("alpha", conn=conn) is not None
+    state = service.state
+    with caplog.at_level("WARNING", logger="noblivion.store"):
+        consent_fault[0] = sqlite3.OperationalError("database is locked")
+        for word in ("beta", "gamma", "delta"):
+            assert service.embed_query(word, conn=conn) is None
+        assert service.check_consent(conn) is False
+        assert len(remote.requests) == 1, "the consent is not known, so nothing is sent"
+        # Not a revoke: the backend stays, and the next read that works sends again.
+        assert service.state == state and service.model_id is not None
+        assert service.error is None
+        lines = _unread_lines(caplog)
+        assert len(lines) == 1, "one line for the run of failed reads"
+        assert "OperationalError" in lines[0] and "locked" not in lines[0]
+
+        consent_fault[0] = None
+        assert service.check_consent(conn) is True
+        assert service.embed_query("epsilon", conn=conn) is not None
+        assert len(remote.requests) == 2
+        # A new run of failed reads gets its own line.
+        consent_fault[0] = sqlite3.DatabaseError("database disk image is malformed")
+        assert service.embed_query("zeta", conn=conn) is None
+        assert service.embed_query("eta", conn=conn) is None
+        assert len(_unread_lines(caplog)) == 2
+    assert len(remote.requests) == 2
+    service.close()
+
+
+def test_a_revoke_is_still_seen_after_a_consent_read_that_failed(conn, remote, consent_fault):
+    service = started(conn, remote)
+    consent_fault[0] = sqlite3.OperationalError("database is locked")
+    assert service.embed_query("alpha", conn=conn) is None
+    embedding.revoke_consent(conn)
+    consent_fault[0] = None
+    assert service.embed_query("beta", conn=conn) is None
+    assert service.state == "failed" and "consent" in service.error
+    assert remote.requests == []
+    service.close()
+
+
+def test_the_retry_question_does_not_raise_on_a_consent_that_cannot_be_read(
+    conn, remote, consent_fault, caplog
+):
+    """The jobs loop of the store asks ``retry_due`` on each tick of a failed
+    backend, and ``start`` asks the same question."""
+    service = started(conn, remote)
+    embedding.revoke_consent(conn)
+    assert not service.check_consent(conn) and service.state == "failed"
+    embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
+    with caplog.at_level("WARNING", logger="noblivion.store"):
+        consent_fault[0] = sqlite3.OperationalError("database is locked")
+        for _tick in range(3):
+            assert service.retry_due(conn) is False  # not known: no start on this tick
+        assert service.start(conn) == "failed"  # no new attempt, and no raise
+        assert len(_unread_lines(caplog)) == 1
+    consent_fault[0] = None
+    assert service.retry_due(conn) is True
+    assert service.start(conn) in ("ready", "reembedding")
+    service.close()
+
+
+def test_a_search_with_a_consent_that_cannot_be_read_is_a_keyword_answer(
+    conn, remote, consent_fault
+):
+    add_memory(conn, "lantern_rule", "Light the lantern before dusk.")
+    add_memory(conn, "kettle_rule", "Fill the kettle before tea.")
+    add_memory(conn, "garden_rule", "Water the garden at dawn.")
+    service = started(conn, remote)
+    service.backfill(conn)
+    ranker = ranking.Ranker(service)
+    result = ranker.search(conn, "lantern", project="claude_code", top_k=5)
+    assert result.mode == "hybrid" and len(result.hits) == 3
+    sent = len(remote.requests)
+    consent_fault[0] = sqlite3.OperationalError("database is locked")
+    result = ranker.search(conn, "lantern", project="claude_code", top_k=5)
+    assert result.mode == "keyword"
+    assert [h.row.path for h in result.hits] == ["lantern_rule.md"]
+    assert result.hits[0].score is None
+    assert len(remote.requests) == sent
     service.close()
 
 

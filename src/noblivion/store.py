@@ -502,8 +502,9 @@ class Store:
                 backfilled_rev = -1
                 while not self._jobs_stop.wait(JOB_TICK_S):
                     # A revoked consent turns a remote backend off, also on a
-                    # store that gets no query (NOBLIVION-51).
-                    self.embedding.check_consent(conn)
+                    # store that gets no query (NOBLIVION-51). False too when
+                    # the consent cannot be read: this tick then sends nothing.
+                    consent = self.embedding.check_consent(conn)
                     state = self.embedding.state
                     if self.clock() >= next_maintenance:
                         self.maintenance_once(conn)
@@ -512,7 +513,10 @@ class Store:
                     if due_scan:
                         self.scan_once(conn)
                         next_scan = self.clock() + interval
-                    usable = state in (embedding.STATE_READY, embedding.STATE_REEMBEDDING)
+                    usable = consent and state in (
+                        embedding.STATE_READY,
+                        embedding.STATE_REEMBEDDING,
+                    )
                     # A content change by `noblivion index` also needs a pass,
                     # with periodic scans off too (NOBLIVION-42).
                     content_rev = db.revisions(conn)[0] if usable else 0

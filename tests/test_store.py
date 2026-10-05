@@ -13,6 +13,7 @@ import json
 import os
 import signal
 import socket
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -780,6 +781,113 @@ def test_a_revoked_consent_stops_a_running_store_from_sending_text(tmp_path, mon
         assert wait_for(lambda: embedded("Kettle before tea."))
         assert health()["embedding"]["consent"] == "given"
         assert run.get("/api/memories/index?q=kettle")[1]["mode"] == "hybrid"
+    finally:
+        run.stop()
+        remote.close()
+
+
+def test_a_consent_that_cannot_be_read_keeps_the_search_and_the_jobs_alive(
+    tmp_path, monkeypatch, caplog
+):
+    """A consent read that fails, as on a locked database, is not a revoke and
+    not a fault of the store: the search answers by keyword, nothing is sent,
+    the background jobs go on, and the log says it once (NOBLIVION-51)."""
+    folder = tmp_path / "projects" / "-work-proj-demo" / "memory"
+    write_memory(folder, "lantern rule", "Light the lantern first.", "Lantern before dusk.")
+    remote = FakeRemote()
+    st = make_store(tmp_path, embedding_service=remote_service(remote.url))
+    db_path = st.settings.db_path
+    with closing(db.open_db(db_path, create=True)) as conn:
+        embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
+    fault: list = [None]
+    read = embedding.has_consent
+
+    def faulty(conn, provider, model):
+        if fault[0] is not None:
+            raise fault[0]
+        return read(conn, provider, model)
+
+    monkeypatch.setattr(embedding, "has_consent", faulty)
+    run = Running(st)
+    jobs = next(t for t in st._threads if t.name == "noblivion-jobs")
+
+    def embedded(phrase: str) -> bool:
+        emb = run.get("/health")[1]["embedding"]
+        return (
+            any(phrase in text for text in remote.texts)
+            and emb["state"] == "ready"
+            and emb["missing_vectors"] == 0
+        )
+
+    def lines(part: str) -> list[str]:
+        return [r.getMessage() for r in caplog.records if part in r.getMessage()]
+
+    try:
+        with caplog.at_level("INFO", logger="noblivion.store"):
+            assert wait_for(lambda: embedded("Lantern before dusk."))
+            assert run.get("/api/memories/index?q=lantern")[1]["mode"] == "hybrid"
+            sent = len(remote.requests)
+
+            fault[0] = sqlite3.OperationalError("database is locked")
+            body = run.get("/api/memories/index?q=lantern")[1]
+            assert (body["mode"], body["reason"]) == ("keyword", None)
+            assert len(body["results"]) == 1
+            body = run.get("/api/memories/search?q=lantern")[1]
+            assert "Lantern before dusk." in body["results"][0] and "reason" not in body
+            # A new note is not sent while the consent is not known.
+            write_memory(folder, "kettle rule", "Fill the kettle.", "Kettle before tea.")
+            assert indexer.main(["--memory-dir", str(folder), "--db", str(db_path)]) == 0
+            time.sleep(6 * store.JOB_TICK_S)  # the jobs loop had its turns
+            assert jobs.is_alive(), "the background jobs ended"
+            assert len(remote.requests) == sent
+            assert st.embedding.state == embedding.STATE_READY  # not a revoke
+            assert len(lines("could not be read")) == 1
+            assert lines("background jobs stopped") == [] and lines("rank failed") == []
+            assert lines("embed backfill failed") == []
+
+            fault[0] = None
+            assert wait_for(lambda: embedded("Kettle before tea."))
+            assert run.get("/api/memories/index?q=kettle")[1]["mode"] == "hybrid"
+            assert jobs.is_alive()
+    finally:
+        run.stop()
+        remote.close()
+
+
+def test_a_consent_that_cannot_be_read_starts_no_model_thread(tmp_path, monkeypatch, caplog):
+    """A store without the consent asks on each tick if a start would change
+    something. A consent read that fails then ends no job and starts no
+    thread; the new consent is used when the read works again (NOBLIVION-51)."""
+    remote = FakeRemote()
+    st = make_store(tmp_path, embedding_service=remote_service(remote.url))
+    db.open_db(st.settings.db_path, create=True).close()
+    fault: list = [None]
+    read = embedding.has_consent
+
+    def faulty(conn, provider, model):
+        if fault[0] is not None:
+            raise fault[0]
+        return read(conn, provider, model)
+
+    monkeypatch.setattr(embedding, "has_consent", faulty)
+    threads = _count_model_threads(st)
+    run = Running(st)
+    jobs = next(t for t in st._threads if t.name == "noblivion-jobs")
+    try:
+        with caplog.at_level("INFO", logger="noblivion.store"):
+            assert wait_for(lambda: run.store.embedding.state == embedding.STATE_FAILED)
+            assert len(threads) == 1  # the start of the store
+            fault[0] = sqlite3.OperationalError("database is locked")
+            with closing(db.connect(st.settings.db_path)) as conn:
+                embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
+            time.sleep(6 * store.JOB_TICK_S)
+            assert jobs.is_alive(), "the background jobs ended"
+            assert len(threads) == 1
+            unread = [r for r in caplog.records if "could not be read" in r.getMessage()]
+            assert len(unread) == 1
+            fault[0] = None
+            assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
+            assert len(threads) == 2
     finally:
         run.stop()
         remote.close()

@@ -92,6 +92,9 @@ The withdrawal applies at once. You do not need to restart the store:
 
 - A running store reads the consent before each request to the remote
   service. Without the consent it sends nothing: no prompt and no note.
+- When the store cannot read the consent (a database error), it sends
+  nothing for that request and answers by keyword search. It reads the
+  consent again for the next request.
 - Recall then uses keyword search only. The health answer shows
   `"consent": "missing"` and the embedding state `failed`.
 - A request that is already on its way when you run the command is not

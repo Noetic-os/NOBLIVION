@@ -1158,6 +1158,12 @@ the database, WAL, SHM and token files, and mode 0700 on the data dir.
   that still waits in the pool when its time limit ends is cancelled. The
   check fails closed: without a database connection the remote query call
   is not made.
+  A consent read that fails with a database error (for example
+  `database is locked`) is not a revoke. The store sends nothing for that
+  call and keeps the state of the backend: the query gets a keyword-only
+  answer, the jobs loop runs no backfill and starts no model on that tick,
+  and the next call reads again. The log gets one line for each run of
+  failed reads.
   While the backend is `failed`, the jobs loop asks the service on each
   tick if a new start can change the state: the retry time is over, or the
   consent is back. Only then it starts a model thread. So a store with no
