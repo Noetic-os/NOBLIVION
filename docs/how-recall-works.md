@@ -135,7 +135,10 @@ The hook has two output shapes.
 ### Note text (default without a config file)
 
 The hook asks for the 5 best hits. It drops a hit whose vector score is
-below `recall.min_score` (default 0.68). In keyword-only mode a hit has no
+below `recall.min_score` (default 0.68). The default was measured for the
+default embedding model, `BAAI/bge-small-en-v1.5`. The hook uses it with
+every model, so with another model set `recall.min_score` to a value that
+fits its scores. In keyword-only mode a hit has no
 vector score and always passes. It prints their text under a header
 that starts with `GROUNDED MEMORY`. The output is at most 4000
 characters. A note shown earlier in the same session is not shown again.
@@ -156,11 +159,22 @@ short, and a prompt that no note fits gets no index.
 In keyword-only mode a row has no vector score and always passes. Set the
 variable to `off` to get every row.
 
+The default 0.68 belongs to the default embedding model,
+`BAAI/bge-small-en-v1.5`. Another model puts its scores on another scale,
+and 0.68 could hide every row. So the store names its model in each index
+answer, and the hook uses the default only for that model. With another
+model the index has no floor until you set the variable, and the line in
+`recall.log` has the note `floor_off:model`. A store of an older version
+names no model. The hook then uses no default floor (`floor_off:no_model`)
+until the store runs the new version. A floor that you set applies to
+every model.
+
 ### Measured floors
 
 Each floor is measured on a made-up set of 36 notes, 57 prompts (20 of
 them fit no note) and 24 error lines (10 of them fit no note). The vector
-score floors are measured with the default embedding model. The `local`
+score floors are measured with the default embedding model,
+`BAAI/bge-small-en-v1.5`, and belong to that model. The `local`
 error recall floor uses no model. Each number describes one path only.
 
 | Path | Floor | Precision | Recall | Prompts or error lines that fit no note and still get rows |

@@ -204,14 +204,23 @@ def index_answer(
     *,
     query: str,
     mode: str,
+    model: str | None = None,
     trust: Mapping[int, tuple[float, int]] | None = None,
     prior_mined: float = 0.3,
     trust_ranking: str = "off",
 ) -> dict:
-    """Section 4.3. With ``trust.ranking`` ``shadow`` or ``on`` the answer
+    """Section 4.3. ``model`` is the embedding model of the row scores, or
+    None while the store ranks by keyword only: the hook applies its measured
+    floor only to the model it was measured for (NOBLIVION-48). With
+    ``trust.ranking`` ``shadow`` or ``on`` the answer
     names the mode in ``trust_ranking``: in ``shadow`` the hook computes and
     logs the trust factor but never applies it (section 8.6)."""
-    answer: dict[str, object] = {"namespace": namespace, "reason": None, "mode": mode}
+    answer: dict[str, object] = {
+        "namespace": namespace,
+        "reason": None,
+        "mode": mode,
+        "model": model,
+    }
     if trust_ranking in ("shadow", "on"):
         answer["trust_ranking"] = trust_ranking
     if result is None:
@@ -449,6 +458,7 @@ class Handler(BaseHTTPRequestHandler):
             namespace,
             query=query,
             mode=store.mode(),
+            model=store.model(),
             trust=trust,
             prior_mined=store.store_settings.prior_mined,
             trust_ranking=store.store_settings.trust_ranking,

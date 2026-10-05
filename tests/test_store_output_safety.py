@@ -61,6 +61,13 @@ def test_index_titles_and_summaries_are_masked():
         assert EVIL not in item[field] and INJECTION_TOKEN in item[field], field
 
 
+@pytest.mark.parametrize("result", [None, RankResult("hybrid", [], 0)])
+def test_index_names_the_model_also_with_no_rows(result):
+    answer = rest.index_answer(result, "claude_code", query="q", mode="hybrid", model="m/one")
+    assert answer["model"] == "m/one" and answer["results"] == []
+    assert rest.index_answer(result, "claude_code", query="q", mode="keyword")["model"] is None
+
+
 @pytest.mark.parametrize(("mode", "named"), [("off", False), ("shadow", True), ("on", True)])
 def test_index_names_the_trust_ranking_mode(mode, named):
     row = _row(4, _content("n", "d", "b"))

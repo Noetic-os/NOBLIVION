@@ -365,6 +365,14 @@ class Store:
             return ranking.MODE_HYBRID
         return ranking.MODE_KEYWORD
 
+    def model(self) -> str | None:
+        """The embedding model of the cosine leg by its plain name, or None in
+        keyword mode. The index answer names it (section 4.3)."""
+        embedder = self.embedding.embedder  # one read: a revoked consent sets it to None
+        if embedder is None or self.mode() != ranking.MODE_HYBRID:
+            return None
+        return embedder.model
+
     def health(self, *, nonce: str | None, full: bool) -> dict:
         """Section 4.7. The short form without a token; never a path or memory text."""
         state = self.embedding.state

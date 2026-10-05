@@ -70,6 +70,7 @@ class _Daemon:
         self.fetch: dict[str, Any] = {}
         self.status = 200
         self.namespace: str | None = None
+        self.model: str | None = None  # None: the answer has no ``model`` field
         self.store.route("/api/memories/index", self._index)
         self.store.route("/api/memories/fetch/", self._fetch)
         self.store.route("/api/memories/search", self._search)
@@ -88,7 +89,10 @@ class _Daemon:
     def _index(self, path: str, query: dict) -> Any:
         if self.status != 200:
             return self.status, {"detail": "boom"}
-        return {"namespace": self._ns(query), "reason": None, "results": self.index_rows}
+        answer = {"namespace": self._ns(query), "reason": None, "results": self.index_rows}
+        if self.model is not None:
+            answer["model"] = self.model
+        return answer
 
     def _fetch(self, path: str, query: dict) -> Any:
         if self.status != 200:
@@ -279,7 +283,9 @@ def test_the_hit_floor_does_not_cut_an_index_candidate(daemon, env):
 def test_the_index_floor_is_on_by_default(daemon, env):
     # NOBLIVION-48. With the variable unset the index drops a row under
     # DEFAULT_INDEX_MIN_SCORE, and asks for the candidate depth so that the
-    # next row that passes can take its place.
+    # next row that passes can take its place. The default is for an answer
+    # of the model that the floor was measured for.
+    daemon.model = hook.THRESHOLD_MODEL
     daemon.index_rows = [
         _row(1, 101, "low", "a weak candidate", score=0.67),
         _row(2, 102, "high", "a strong candidate", score=0.68),
@@ -293,6 +299,11 @@ def test_the_index_floor_is_on_by_default(daemon, env):
     # No row passes: the hook prints nothing.
     daemon.index_rows = [_row(1, 101, "low", "a weak candidate", score=0.5)]
     assert run_hook(_prompt("anything"), env)[1] == ""
+    # Another model: the measured floor does not fit its scores, so every
+    # row is shown, up to the k of the index.
+    daemon.model = "example/other-embedder"
+    daemon.index_rows = [_row(i, 100 + i, f"t{i}", "a candidate", score=0.5) for i in range(1, 41)]
+    assert run_hook(_prompt("anything"), env)[1].count("(id ") == hook.INDEX_K_DEFAULT
 
 
 # -- k, the cap, and the env that sets them -------------------------------------------

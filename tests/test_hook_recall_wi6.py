@@ -5,8 +5,9 @@ Two variables:
 
 - ``NOBLIVION_RECALL_INDEX_MIN_SCORE``: an index row whose store cosine is
   under the floor is not shown. The floor runs before the cut to K, so K is a
-  cap. Unset, the floor is ``DEFAULT_INDEX_MIN_SCORE`` (NOBLIVION-48); ``off``
-  is no floor.
+  cap. Unset, the floor is ``DEFAULT_INDEX_MIN_SCORE`` when the store answers
+  with ``THRESHOLD_MODEL``, and no floor for another model (NOBLIVION-48);
+  ``off`` is no floor.
 - ``NOBLIVION_RECALL_INDEX_CHECK_LINE`` (rule shape only, off unless set): the
   rule header gets the verbalised check as a second line.
 
@@ -23,6 +24,10 @@ What these tests hold:
 5. A ROW WITH NO SCORE IS KEPT and counted.
 6. THE CHECK LINE is the second header line, leaves the first line and every
    row unchanged, is counted against the cap, and needs the rule shape.
+7. THE DEFAULT FLOOR BELONGS TO ONE MODEL. An answer that names another
+   embedding model, or no model (a store of an older version), gets no default
+   floor, and the log says so. A floor that the user sets applies to every
+   model.
 
 Every test runs on a tmp data dir, cache folder and guard table path, so no
 live file is read or written, and the store call is replaced.
@@ -95,10 +100,17 @@ def corpus(tmp_path) -> Path:
 
 
 @pytest.fixture
-def daemon(monkeypatch):
+def store_model() -> list[str]:
+    """The embedding model that the answer names, in item 0. A test may
+    replace it; ``""`` is an answer with no ``model`` field."""
+    return [hook.THRESHOLD_MODEL]
+
+
+@pytest.fixture
+def daemon(monkeypatch, store_model):
     """``recall_index`` answers memories 1..12 with the cosines in ``scores``
-    (memory number -> score, None = the store sent no score). Nothing leaves
-    the host."""
+    (memory number -> score, None = the store sent no score), for the model
+    in ``store_model``. Nothing leaves the host."""
     scores: dict[int, float | None] = {i: round(0.70 - i / 100, 2) for i in range(1, 13)}
 
     def fake(query, k, environ=None, *args, **kwargs):
@@ -109,6 +121,7 @@ def daemon(monkeypatch):
                 title=f"feedback_m{i:02d}",
                 summary=f"summary {i}",
                 score=scores[i],
+                model=store_model[0],
             )
             for pos, i in enumerate(sorted(scores), start=1)
         ][:k]
@@ -203,7 +216,7 @@ def test_without_the_variable_the_default_floor_applies(tmp_path, corpus, daemon
     assert _status(tmp_path) == "ok:floor2of12:ruled2of2"
 
 
-@pytest.mark.parametrize("raw", ["off", "OFF", " Off "])
+@pytest.mark.parametrize("raw", ["off", "OFF", " Off ", "none", "None", "false", "no", " NO "])
 def test_off_is_no_floor_and_the_text_and_the_log_are_unchanged(tmp_path, corpus, daemon, raw):
     assert hook.index_min_score({FLOOR: raw}) is None
     text = _serve(_env(tmp_path, corpus, **{FLOOR: raw}))
@@ -232,6 +245,120 @@ def test_a_floor_under_every_row_changes_no_row(tmp_path, corpus, daemon):
     text = _serve(_env(tmp_path, corpus, **{FLOOR: "0.10"}))
     assert text == _before_floor()
     assert _status(tmp_path) == "ok:floor12of12:ruled12of12"
+
+
+# ── the default floor belongs to one model (NOBLIVION-48) ───────────────────
+
+OTHER_MODEL = "example/other-embedder"
+
+
+def test_the_default_floor_is_for_the_measured_model_only():
+    assert hook.index_min_score({}, hook.THRESHOLD_MODEL) == hook.DEFAULT_INDEX_MIN_SCORE
+    for model in (OTHER_MODEL, "", None, hook.THRESHOLD_MODEL.lower(), "fastembed:" + OTHER_MODEL):
+        assert hook.index_min_score({}, model) is None, model
+        assert hook.index_min_score({FLOOR: "abc"}, model) is None, model
+    # A floor that the user sets is for every model, and so is "off".
+    assert hook.index_min_score({FLOOR: "0.5"}, OTHER_MODEL) == 0.5
+    assert hook.index_min_score({FLOOR: "0.5"}, None) == 0.5
+    assert hook.index_min_score({FLOOR: "off"}, hook.THRESHOLD_MODEL) is None
+
+
+def test_another_model_gets_no_default_floor_and_the_log_says_so(
+    tmp_path, corpus, daemon, store_model
+):
+    # The cosines of another model are on another scale: here every row is
+    # under 0.68, and the measured floor would leave an empty index.
+    store_model[0] = OTHER_MODEL
+    daemon.update({i: round(0.40 - i / 100, 2) for i in range(1, 13)})
+    env = _env(tmp_path, corpus)
+    env.pop(FLOOR, None)
+    text = _serve(env)
+    assert text == _before_floor()
+    assert _status(tmp_path) == "ok:floor_off:model:ruled12of12"
+    assert " hits=12 " in _log(tmp_path)
+
+
+@pytest.mark.parametrize("raw", ["", "abc", "1.5"])
+def test_a_value_that_is_not_a_cosine_is_no_floor_for_another_model(
+    tmp_path, corpus, daemon, store_model, raw
+):
+    store_model[0] = OTHER_MODEL
+    text = _serve(_env(tmp_path, corpus, **{FLOOR: raw}))
+    assert text == _before_floor()
+    assert _status(tmp_path) == "ok:floor_off:model:ruled12of12"
+
+
+def test_an_answer_with_no_model_gets_no_default_floor(tmp_path, corpus, daemon, store_model):
+    # Version skew: the hook of this version asks a store of an older version,
+    # whose answer has no ``model`` field. The model is not known, so the
+    # measured floor is not applied.
+    store_model[0] = ""
+    env = _env(tmp_path, corpus)
+    env.pop(FLOOR, None)
+    assert _serve(env) == _before_floor()
+    assert _status(tmp_path) == "ok:floor_off:no_model:ruled12of12"
+
+
+@pytest.mark.parametrize("model", [OTHER_MODEL, ""])
+def test_a_set_floor_applies_to_every_model(tmp_path, corpus, daemon, store_model, model):
+    store_model[0] = model
+    text = _serve(_env(tmp_path, corpus, **{FLOOR: "0.645"}))
+    assert _names(text) == _m(1, 2, 3, 4, 5)
+    assert _status(tmp_path) == "ok:floor5of12:ruled5of5"
+
+
+def test_k_still_cuts_the_index_of_another_model(tmp_path, corpus, daemon, store_model):
+    # The hook asks for the candidate depth before it knows the model, so the
+    # cut to k must not depend on the floor.
+    store_model[0] = OTHER_MODEL
+    env = _env(tmp_path, corpus, **{hook.INDEX_K_ENV: "4"})
+    env.pop(FLOOR, None)
+    text = _serve(env)
+    assert text == _before_floor(4)
+    assert _status(tmp_path) == "ok:floor_off:model:ruled4of4"
+
+
+def test_keyword_mode_is_named_before_the_model(tmp_path, corpus, monkeypatch):
+    # A keyword answer has no cosine and names no model: the log keeps the
+    # keyword note.
+    def fake(query, k, environ=None, *args, **kwargs):
+        return [
+            hook.IndexLine(i, 19000 + i, f"feedback_m{i:02d}", f"summary {i}", None, keyword=True)
+            for i in range(1, 4)
+        ]
+
+    monkeypatch.setattr(hook, "recall_index", fake)
+    env = _env(tmp_path, corpus)
+    env.pop(FLOOR, None)
+    assert _names(_serve(env)) == _m(1, 2, 3)
+    assert _status(tmp_path) == "ok:floor_off:keyword:ruled3of3"
+
+
+def test_an_empty_answer_of_another_model_prints_nothing(tmp_path, corpus, monkeypatch):
+    monkeypatch.setattr(hook, "recall_index", lambda *a, **k: [])
+    env = _env(tmp_path, corpus)
+    env.pop(FLOOR, None)
+    assert _serve(env) == ""
+    assert _status(tmp_path) == "ok:floor0of0:ruled0of0"
+
+
+@pytest.mark.parametrize(
+    "answer,want",
+    [
+        ({"model": OTHER_MODEL}, OTHER_MODEL),
+        ({"model": hook.THRESHOLD_MODEL}, hook.THRESHOLD_MODEL),
+        ({}, ""),
+        ({"model": None}, ""),
+        ({"model": 7}, ""),
+        ({"model": ["x"]}, ""),
+    ],
+)
+def test_the_index_answer_model_is_read_as_text_or_nothing(answer, want):
+    payload = {"results": [{"rank": 1, "id": 5, "title": "t", "summary": "s", "score": 0.5}]}
+    payload.update(answer)
+    (line,) = hook.parse_index(payload)
+    assert line.model == want
+    assert hook.renumber([line])[0].model == want
 
 
 # ── the floor ───────────────────────────────────────────────────────────────

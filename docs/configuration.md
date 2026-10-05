@@ -192,7 +192,7 @@ run `noblivion consent embeddings`. The `openrouter` backend also needs
 | --- | --- | --- | --- |
 | `NOBLIVION_RECALL_DISABLE` | none | off (switch) | Turns the recall hook off. It also turns off the label rows at prompt time and the subagent rules hook. |
 | `NOBLIVION_RECALL_TIMEOUT_S` | `recall.timeout_s` | `2.0` | The time budget of one recall, in seconds. |
-| `NOBLIVION_RECALL_MIN_SCORE` | `recall.min_score` | `0.68` | The lowest score a hit needs. The store sends a cosine score with each hit. A hit with no score (keyword-only mode) always passes. |
+| `NOBLIVION_RECALL_MIN_SCORE` | `recall.min_score` | `0.68` | The lowest score a hit needs. The store sends a cosine score with each hit. A hit with no score (keyword-only mode) always passes. The default was measured for the embedding model `BAAI/bge-small-en-v1.5`, and the hook uses it with every model. With another model, set a value that fits its scores. |
 | `NOBLIVION_RECALL_PROJECT` | `namespace` | `claude_code` | The namespace to search. `NOBLIVION_PROJECT` is read when this is not set. |
 | `NOBLIVION_RECALL_MEMORY_DIR` | none | the session's memory folder (see "The session's memory folder") | The memory folder of the session. It sets the root (see below) and the folder for local re-ranking and rule rows. `NOBLIVION_MEMORY_DIR` is read when this is not set. |
 | `NOBLIVION_RECALL_ROOT` | none | the name of the project folder that holds the memory folder | The root. Recall searches only the notes of this root, plus the shared roots. |
@@ -209,7 +209,8 @@ With `NOBLIVION_RECALL_INDEX` set, the hook shows a ranked list of note
 titles instead of note text. Claude Code then opens the notes it needs
 with the MCP tool. The other settings in this table work only with the
 ranked index. All switches are off by default. The floor
-`NOBLIVION_RECALL_INDEX_MIN_SCORE` is on by default.
+`NOBLIVION_RECALL_INDEX_MIN_SCORE` is on by default when the embedding
+model is the default model, `BAAI/bge-small-en-v1.5`.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
@@ -217,7 +218,7 @@ ranked index. All switches are off by default. The floor
 | `NOBLIVION_RECALL_INDEX_K` | `recall.index_k` | `35` | How many candidates the hook asks for, 1 to 100. |
 | `NOBLIVION_RECALL_INDEX_MAX_CHARS` | none | `7600` | The most characters the index adds to the prompt. |
 | `NOBLIVION_RECALL_INDEX_QUERY_CHARS` | none | `300` | The most characters of the prompt sent as the query, up to 8000. |
-| `NOBLIVION_RECALL_INDEX_MIN_SCORE` | none | `0.68` | A cosine floor from -1 to 1. A row below it is not shown. `off` turns the floor off. A value that is not a number from -1 to 1 gives the default. Not used in keyword-only mode. |
+| `NOBLIVION_RECALL_INDEX_MIN_SCORE` | none | `0.68` with the embedding model `BAAI/bge-small-en-v1.5`, else no floor | A cosine floor from -1 to 1. A row below it is not shown. `off`, `none`, `false` or `no` turns the floor off. A value that is not a number from -1 to 1 gives the default. The default `0.68` was measured for the embedding model `BAAI/bge-small-en-v1.5`. The store names its model in each index answer, and the hook uses the default only for that model. With another model, or with a store of an older version that names no model, the default is no floor. A value that you set applies to every model. Not used in keyword-only mode. |
 | `NOBLIVION_RECALL_INDEX_HYGIENE` | none | off (switch) | Asks for more candidates. Drops index files, topic files and notes with a closed status. |
 | `NOBLIVION_RECALL_INDEX_RERANK` | none | off (switch) | Re-ranks the rows: a local keyword score over the memory files, fused with the store's vector order. |
 | `NOBLIVION_RECALL_INDEX_RULE_ROWS` | none | off (switch) | Shows each row as its id, the `rule:` line of the file and its name. |
@@ -256,8 +257,10 @@ The `recall.env` key accepts only `NOBLIVION_RECALL_*` names. A variable
 that is set in the environment wins over `recall.env`.
 
 The shipped file does not set `NOBLIVION_RECALL_INDEX_MIN_SCORE`. The
-default floor `0.68` applies, also to a config file that an older release
-installed. To set another floor, add the variable under `recall.env`.
+default floor `0.68` applies when the embedding model is
+`BAAI/bge-small-en-v1.5`, also to a config file that an older release
+installed. With another embedding model the index has no floor. To set a
+floor, add the variable under `recall.env`.
 
 ## Error recall hook
 
@@ -265,7 +268,7 @@ installed. To set another floor, add the variable under `recall.env`.
 | --- | --- | --- | --- |
 | `NOBLIVION_ERROR_RECALL_MODE` | none | `local` | `local` searches the memory files with a keyword score and needs no store. `store` asks the store. `fused` uses both. |
 | `NOBLIVION_ERROR_RECALL_LOCAL_MIN_SCORE` | none | `0.39` | The lowest score of a local hit, from 0 to 1: the share of the words of the error that the note holds, where a rare word counts more. |
-| `NOBLIVION_ERROR_RECALL_MIN_SCORE` | none | `0.70` | The lowest score of a store hit: a cosine score. |
+| `NOBLIVION_ERROR_RECALL_MIN_SCORE` | none | `0.70` | The lowest score of a store hit: a cosine score. The default was measured for the embedding model `BAAI/bge-small-en-v1.5`, and the hook uses it with every model. With another model, set a value that fits its scores. |
 | `NOBLIVION_ERROR_RECALL_TIMEOUT_S` | none | `0.8` | The time budget of the store call, in seconds. |
 | `NOBLIVION_ERROR_RECALL_SESSION_CHARS` | none | `6000` | The most characters the hook adds per agent in one session. |
 | `NOBLIVION_ERROR_RECALL_MEMORY_DIR` | none | `NOBLIVION_RECALL_MEMORY_DIR`, else `NOBLIVION_MEMORY_DIR`, else the session's memory folder | The memory folder to search. |

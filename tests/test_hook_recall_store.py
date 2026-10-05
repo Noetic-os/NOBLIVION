@@ -287,6 +287,47 @@ def test_keyword_mode_keeps_the_store_order_and_skips_the_floor(rh, tmp_path):
     assert ":rerank_off:keyword" in log and ":floor_off:keyword" in log
 
 
+# -- the default index floor and the model of the answer (NOBLIVION-48) ---------------------
+
+
+@pytest.mark.parametrize(
+    ("named", "note", "low_shown"),
+    [
+        ({"model": "BAAI/bge-small-en-v1.5"}, ":floor1of2", False),
+        ({"model": "example/other-embedder"}, ":floor_off:model", True),
+        ({}, ":floor_off:no_model", True),  # the answer of a store of an older version
+        ({"model": None}, ":floor_off:no_model", True),
+    ],
+)
+def test_the_default_index_floor_is_for_the_measured_model(rh, tmp_path, named, note, low_shown):
+    env = hook_env(tmp_path, NOBLIVION_RECALL_INDEX="1")
+    assert "NOBLIVION_RECALL_INDEX_MIN_SCORE" not in env
+    assert rh.THRESHOLD_MODEL == "BAAI/bge-small-en-v1.5"
+    rows = [
+        index_row(1, 21, "deploy checklist", "Check the release notes.", score=0.71),
+        index_row(2, 22, "tests use venv", "Use the project venv.", score=0.40),
+    ]
+    with FakeStore(Path(env["NOBLIVION_DATA_DIR"])) as fake:
+        fake.route("/api/memories/index", {**index_answer(rows), **named})
+        out = _run(rh, env, _prompt("venv pytest python tests"))
+    assert "deploy checklist" in out
+    assert ("tests use venv" in out) is low_shown
+    assert _log(env).split()[-1] == "ok" + note
+
+
+def test_a_set_index_floor_applies_to_a_store_that_names_no_model(rh, tmp_path):
+    env = hook_env(tmp_path, NOBLIVION_RECALL_INDEX="1", NOBLIVION_RECALL_INDEX_MIN_SCORE="0.5")
+    rows = [
+        index_row(1, 21, "deploy checklist", "Check the release notes.", score=0.71),
+        index_row(2, 22, "tests use venv", "Use the project venv.", score=0.40),
+    ]
+    with FakeStore(Path(env["NOBLIVION_DATA_DIR"])) as fake:
+        fake.route("/api/memories/index", index_answer(rows))
+        out = _run(rh, env, _prompt("venv pytest python tests"))
+    assert "deploy checklist" in out and "tests use venv" not in out
+    assert _log(env).split()[-1] == "ok:floor1of2"
+
+
 # -- end to end against a real store --------------------------------------------------------
 
 

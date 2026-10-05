@@ -108,8 +108,10 @@ Environment (config file keys in design doc section 12.3)
   NOBLIVION_RECALL_INDEX_ROW_DEDUPE  with the rule shape: a later index of one
                                 session leaves out the rows it was already shown
   NOBLIVION_RECALL_INDEX_MIN_SCORE  a cosine, -1..1: an index row under it is
-                                not shown. Default 0.68; ``off`` is no floor.
-                                Skipped in keyword mode.
+                                not shown. Default 0.68 when the answer names
+                                the model ``BAAI/bge-small-en-v1.5``, else no
+                                floor; ``off`` is no floor. Skipped in keyword
+                                mode.
   NOBLIVION_RECALL_INDEX_CHECK_LINE  with the rule shape: one more header line
   NOBLIVION_RECALL_INDEX_DROP_NO_RULE  with the rule shape: a row with no rule
                                 and no summary is not shown
@@ -183,7 +185,8 @@ DEFAULT_TIMEOUT_S = 2.0
 DEFAULT_MIN_SCORE = 0.68
 THRESHOLD_MODEL = "BAAI/bge-small-en-v1.5"
 # The floor of the ranked index, measured the same way on the path that the
-# shipped config file runs (NOBLIVION-48). See INDEX_MIN_SCORE_ENV.
+# shipped config file runs (NOBLIVION-48). It is the default only for an
+# answer that names THRESHOLD_MODEL. See INDEX_MIN_SCORE_ENV.
 DEFAULT_INDEX_MIN_SCORE = 0.68
 DEFAULT_CACHE_DIR = ""  # "": <data dir>/cache (hook_config)
 QUERY_MAX_CHARS = 300
@@ -398,6 +401,14 @@ SESSION_KEEP_MAX_DEFAULT = 200
 # byte for byte. The third part of the shrink, fewer rows, is
 # NOBLIVION_RECALL_INDEX_K, which already exists.
 #
+# THE DEFAULT IS FOR ONE MODEL. 0.68 was measured on the cosines of
+# THRESHOLD_MODEL, and another embedding model puts its cosines on another
+# scale: under this floor it can lose every row. The index answer names the
+# model of its scores (``model``). For another model the default is no floor
+# (log note ``:floor_off:model``), and also for an answer that names no model
+# (``:floor_off:no_model``): that is a store of an older version, and its
+# model is not known. A floor that the user sets applies to every model.
+#
 # WHY: measured 2026-09-30 on the live install, the index is about 6,600
 # characters on every prompt, and the prompt "continue" drew 29 rows (8,018
 # characters) of rules with no relation to the task. The index had no floor: it
@@ -425,6 +436,7 @@ SESSION_KEEP_MAX_DEFAULT = 200
 # the M ranked, and ``:unscoredU`` the rows kept without a score.
 INDEX_MIN_SCORE_ENV = "NOBLIVION_RECALL_INDEX_MIN_SCORE"
 INDEX_MIN_SCORE_OFF = "off"  # this value of the variable: no floor
+INDEX_MIN_SCORE_OFF_WORDS = (INDEX_MIN_SCORE_OFF, "none", "false", "no")  # read as "off"
 # The verbalised check (LEVERS.md lever 5, PLAN-LEVERS.md WI-6). One line after
 # the rule header, in the plan's own wording. Rule shape only: the arm D header
 # names titles, not rules. Set without F1 it is ignored and the log says so.
@@ -1053,6 +1065,7 @@ class IndexLine:
         "trust_prior",
         "keyword",
         "trust_ranking",
+        "model",
     )
 
     def __init__(
@@ -1070,6 +1083,7 @@ class IndexLine:
         trust_prior: Optional[float] = None,
         keyword: bool = False,
         trust_ranking: str = "",
+        model: str = "",
     ):
         self.rank = rank
         self.mid = mid
@@ -1091,6 +1105,10 @@ class IndexLine:
         # answer names none). In ``shadow`` the trust factor is computed and
         # logged, never applied (design doc section 8.6).
         self.trust_ranking = trust_ranking
+        # The embedding model of ``score``, as the answer names it (``""``
+        # when it names none). The default index floor is for one model only
+        # (see INDEX_MIN_SCORE_ENV).
+        self.model = model
         # W6 (F1) and W7 (F2). The two W5 fields of the LOCAL file this row
         # names, filled by ``annotate_index`` before rendering. Both are "" for
         # a row whose title names no local file and for the un-annotated corpus
@@ -1459,6 +1477,8 @@ def parse_index(payload: Any) -> List[IndexLine]:
     keyword = payload.get("mode") == "keyword"
     ranking = payload.get("trust_ranking")
     trust_ranking = ranking if ranking in ("shadow", "on") else ""
+    model = payload.get("model")
+    model = model if isinstance(model, str) else ""
     for position, item in enumerate(payload["results"], start=1):
         if not isinstance(item, dict):
             continue
@@ -1493,6 +1513,7 @@ def parse_index(payload: Any) -> List[IndexLine]:
                 trust_prior=_real_of(item.get("trust_prior")),
                 keyword=keyword,
                 trust_ranking=trust_ranking,
+                model=model,
             )
         )
     return lines
@@ -2190,25 +2211,35 @@ def index_row_dedupe(environ: Optional[Mapping[str, str]] = None) -> bool:
     return switch_on(env, INDEX_ROW_DEDUPE_ENV)
 
 
-def index_min_score(environ: Optional[Mapping[str, str]] = None) -> Optional[float]:
+def index_min_score(
+    environ: Optional[Mapping[str, str]] = None, model: Optional[str] = THRESHOLD_MODEL
+) -> Optional[float]:
     """WI-6. The relevance floor of the index, or None for no floor.
 
-    ``NOBLIVION_RECALL_INDEX_MIN_SCORE`` is a cosine. Unset or empty, the floor
-    is DEFAULT_INDEX_MIN_SCORE. ``off`` is no floor. A value outside -1..1 and
-    a value that is not a finite number are the default too: this hook never
-    fails a prompt over a malformed setting, and a malformed setting must not
-    turn the floor off.
+    ``NOBLIVION_RECALL_INDEX_MIN_SCORE`` is a cosine, and a cosine that is set
+    is the floor for every model. Unset or empty, the floor is the default.
+    ``off`` (or ``none``, ``false``, ``no``) is no floor. A value outside
+    -1..1 and a value that is not a finite number are the default too: this
+    hook never fails a prompt over a malformed setting, and a malformed
+    setting must not turn the floor off.
+
+    The default is DEFAULT_INDEX_MIN_SCORE only when ``model``, the embedding
+    model that the store's answer names, is THRESHOLD_MODEL. For another
+    model, and for an answer that names none, the default is no floor (see
+    INDEX_MIN_SCORE_ENV). Without ``model`` this is the floor of
+    THRESHOLD_MODEL: what the hook assumes before the store has answered.
     """
     env = os.environ if environ is None else environ
     raw = (env.get(INDEX_MIN_SCORE_ENV) or "").strip()
-    if raw.lower() == INDEX_MIN_SCORE_OFF:
+    if raw.lower() in INDEX_MIN_SCORE_OFF_WORDS:
         return None
+    default = DEFAULT_INDEX_MIN_SCORE if model == THRESHOLD_MODEL else None
     try:
         value = float(raw)
     except ValueError:
-        return DEFAULT_INDEX_MIN_SCORE
+        return default
     if not -1.0 <= value <= 1.0:  # False for nan too
-        return DEFAULT_INDEX_MIN_SCORE
+        return default
     return value
 
 
@@ -2492,6 +2523,7 @@ def renumber(lines: Sequence[IndexLine]) -> List[IndexLine]:
             trials=ln.trials,
             trust_prior=ln.trust_prior,
             keyword=ln.keyword,
+            model=ln.model,
         )
         for i, ln in enumerate(lines, start=1)
     ]
@@ -2831,7 +2863,9 @@ def _serve_index(
       nothing and the last index file is not rewritten. It needs no memory
       folder, so it also runs in the arm D shape, and it asks the store for
       INDEX_CANDIDATE_TOP_K candidates like P3 and P1h. Log note
-      ``:floorNofM``;
+      ``:floorNofM``. The default is for THRESHOLD_MODEL only: an answer of
+      another model, or of no named model, gets no default floor
+      (``:floor_off:model``, ``:floor_off:no_model``);
     - the check line (``NOBLIVION_RECALL_INDEX_CHECK_LINE``), behind its own
       variable and only with F1: the rule header gets INDEX_CHECK_LINE as a
       second line.
@@ -2911,6 +2945,11 @@ def _serve_index(
     if floor is not None and keyword:
         # Design doc section 8.4: no cosine, so no floor can judge a row.
         note += ":floor_off:keyword"
+    elif floor is not None and candidates and index_min_score(environ, candidates[0].model) is None:
+        # NOBLIVION-48: only the default floor is left, and it was measured for
+        # another model than the one of this answer. ``floor`` stays set: the
+        # store was asked for the candidate depth, so the cut to k below runs.
+        note += ":floor_off:model" if candidates[0].model else ":floor_off:no_model"
     elif floor is not None:
         # WI-6. On the ranked list and before the cut to k, so k is a cap and a
         # row under the floor gives its place to the next one that passes.

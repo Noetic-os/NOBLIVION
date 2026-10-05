@@ -59,6 +59,13 @@ When the store answers but finds nothing:
   note text and for the ranked index. For the ranked index the log status
   holds `:floorNofM`: N rows passed the floor, of M ranked rows. To see
   the index with no floor, set `NOBLIVION_RECALL_INDEX_MIN_SCORE` to `off`.
+- The floor 0.68 was measured for the default embedding model,
+  `BAAI/bge-small-en-v1.5`. With another model the ranked index has no
+  default floor, and the log status holds `:floor_off:model`. The status
+  `:floor_off:no_model` means that the store runs an older version than
+  the hook, so the index has no default floor: type `/noblivion:setup` in
+  the chat. The note text floor applies to every model: with another
+  model, set `recall.min_score` to a value that fits its scores.
 
 ## The store is not running
 

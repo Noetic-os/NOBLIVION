@@ -475,6 +475,7 @@ default `0`).
   "namespace": "claude_code",
   "reason": null,
   "mode": "hybrid",
+  "model": "BAAI/bge-small-en-v1.5",
   "results": [
     {
       "rank": 1,
@@ -515,6 +516,13 @@ Field rules:
   It compares rows inside one answer only. No hook reads it today.
 - `source_type` (new): `claude_code_md` or `transcript_mined`.
 - `mode` (new): `hybrid` or `keyword` (section 8.4).
+- `model` (top level, NOBLIVION-48): the embedding model of the cosine
+  leg, by its plain name (the value of `embedding.model`, with no backend
+  in front). `null` while the store has no usable model. The prompt hook
+  applies its default index floor only when this is the model that the
+  floor was measured for (section 18). An answer with no `model` field
+  comes from a store of an older version: the hook then applies no default
+  floor.
 - `trust_ranking` (top level, NOBLIVION-22): `shadow` or `on`, present
   only when the config key `trust.ranking` has that value. The hook reads
   it to keep the order in `shadow` (section 8.6).
@@ -1889,7 +1897,8 @@ docs/
    `recall.index_k = 30`. It does not ship the reference index score floor
    (0.52), because that number was measured with another embedding model.
    It sets no floor at all: the hook default `DEFAULT_INDEX_MIN_SCORE`
-   (0.68, measured for the default model, section 18) applies.
+   (0.68, measured for the default model, section 18) applies when the
+   store answers with that model.
    Trust flags stay with E5.
 4. Download the embedding model to `<data dir>/models/` (`--no-model`
    skips it). On failure, set `embedding.backend = none` in the config and
@@ -2153,7 +2162,13 @@ later goal, not a v0.1 gate.
   57 prompts got 30 rows: 40 right rows and 1670 wrong rows. The floor
   is now a default of the hook (`DEFAULT_INDEX_MIN_SCORE`), so a config
   file of an older release gets it too; the value `off` gives the index
-  with no floor back. At 0.68 the index shows 30 right rows and 5 wrong
+  with no floor back. The default is for the measured model only: the
+  index answer names the model of its scores (section 4.3), and for
+  another model, or for an answer that names none, the hook applies no
+  default floor and writes `floor_off:model` or `floor_off:no_model` to
+  the recall log. The note text floor and the error recall store floor do
+  not read the model yet: they apply to every model. At 0.68 the index
+  shows 30 right rows and 5 wrong
   rows, and 10 of the 40 expected rows are no longer shown. The eval runs
   the path a third time with the variable unset and fails when the counts
   differ from the counts of the shipped floor. The label rows

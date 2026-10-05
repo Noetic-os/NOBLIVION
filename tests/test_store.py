@@ -355,10 +355,12 @@ def test_search_root_scoping(running):
 def test_index_shape(running):
     status, body = running.get("/api/memories/index?q=pytest+venv")
     assert status == 200
-    assert set(body) == {"namespace", "reason", "mode", "results"}
+    assert set(body) == {"namespace", "reason", "mode", "model", "results"}
     assert body["namespace"] == "claude_code"
     assert body["reason"] is None
     assert body["mode"] in ("hybrid", "keyword")
+    # NOBLIVION-48: the embedding model of the scores, by its plain name.
+    assert body["model"] == ("fake-model" if body["mode"] == "hybrid" else None)
     rows = body["results"]
     assert [r["rank"] for r in rows] == list(range(1, len(rows) + 1))
     top = rows[0]
@@ -370,6 +372,38 @@ def test_index_shape(running):
     assert top["source_type"] == "claude_code_md"
     assert isinstance(top["fusion_score"], float)
     assert top["score"] is None or -1.0 <= top["score"] <= 1.0
+
+
+def test_index_names_the_model_while_the_store_ranks_with_it(tmp_path):
+    # NOBLIVION-48. The hook applies its measured floor only to the model it
+    # was measured for, so the answer names the model of the cosine leg: the
+    # plain name, as ``embedding.model`` in the config file has it.
+    pytest.importorskip("numpy")
+    service = fake_service(FakeEmbedder(model=embedding.DEFAULT_MODEL))
+    run = Running(make_store(tmp_path, embedding_service=service))
+    try:
+        with closing(db.connect(run.store.settings.db_path, create=True)) as conn:
+            add_memory(conn, "alpha rule", "alpha bravo charlie")
+        assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
+        body = run.get("/api/memories/index?q=alpha")[1]
+        assert (body["mode"], body["model"]) == ("hybrid", embedding.DEFAULT_MODEL)
+        assert run.get("/api/memories/index?q=")[1]["model"] == embedding.DEFAULT_MODEL
+    finally:
+        run.stop()
+
+
+def test_the_store_names_no_model_while_it_ranks_by_keyword(tmp_path):
+    pytest.importorskip("numpy")
+    service = fake_service(FakeEmbedder(model="example/model-one"))
+    st = make_store(tmp_path, embedding_service=service)
+    assert service.state == embedding.STATE_LOADING and st.model() is None
+    service.embedder = FakeEmbedder(model="example/model-one")
+    assert st.model() is None, "an embedder that is not ready gives no cosine"
+    for state in (embedding.STATE_READY, embedding.STATE_REEMBEDDING):
+        service.state = state
+        assert (st.mode(), st.model()) == ("hybrid", "example/model-one")
+    service.state = embedding.STATE_FAILED
+    assert (st.mode(), st.model()) == ("keyword", None)
 
 
 def test_index_empty_query(running):
@@ -427,6 +461,7 @@ def test_keyword_mode_has_null_scores(tmp_path):
             add_memory(conn, "alpha rule", "alpha bravo charlie")
         body = run.get("/api/memories/index?q=alpha")[1]
         assert body["mode"] == "keyword"
+        assert body["model"] is None  # no cosine, so no model to name
         assert body["results"][0]["score"] is None
         health = run.get("/health")[1]
         assert health["mode"] == "keyword" and health["embedding"]["state"] == "off"

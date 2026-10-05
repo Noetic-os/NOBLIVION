@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from hookload import load_hook
-from noblivion import dedup, embedding
+from noblivion import db, dedup, embedding
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
 
@@ -39,6 +39,22 @@ def ev():
 def test_hook_thresholds_name_the_shipped_model(hook):
     mod = load_hook(hook, f"hooktest_threshold_model_{hook}")
     assert mod.THRESHOLD_MODEL == embedding.DEFAULT_MODEL
+
+
+def test_the_default_backend_has_the_model_name_that_the_index_floor_reads(tmp_path):
+    # NOBLIVION-48. The store names the model of its embedder in the index
+    # answer, and the hook applies its default floor only to THRESHOLD_MODEL.
+    # A name in another form (with the backend in front, in another case)
+    # would turn the default floor off on every default install.
+    rh = load_hook("recall_hook", "hooktest_threshold_model_index_floor")
+    conn = db.open_db(tmp_path / "data" / "noblivion.db", create=True)
+    try:
+        embedder = embedding.make_embedder(embedding.EmbeddingSettings(), conn, {})
+    finally:
+        conn.close()
+    assert embedder is not None and embedder.model == rh.THRESHOLD_MODEL
+    assert rh.index_min_score({}, embedder.model) == rh.DEFAULT_INDEX_MIN_SCORE
+    assert rh.index_min_score({}, embedder.model_id) is None
 
 
 def test_dedup_cosine_names_the_shipped_model():

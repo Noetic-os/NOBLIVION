@@ -18,9 +18,18 @@ All notable changes to NOBLIVION. The format follows
   eval set every prompt got 30 rows, also the 20 prompts that fit no note
   (precision 0.023, recall 1.000). With the floor 1 of these 20 prompts
   gets rows (precision 0.857, recall 0.750). The floor is a default of the
-  hook, so a config file of an older release gets it too. Set the variable
-  to `off` for the index with no floor. A value that is not a number from
-  -1 to 1 now gives the default, not "no floor".
+  hook, so a config file of an older release gets it too. The number 0.68
+  was measured for the embedding model `BAAI/bge-small-en-v1.5`, so it is
+  the default only for that model. The index answer of the store has a new
+  field `model`, and the hook reads it. With another embedding model the
+  default is no floor, because the scores of another model are on another
+  scale and 0.68 could hide every row. The recall log then has the note
+  `floor_off:model`. A store of an older version names no model: the hook
+  then applies no default floor (`floor_off:no_model`) until the store runs
+  the new version. A floor that you set applies to every model. Set the
+  variable to `off`, `none`, `false` or `no` for the index with no floor. A
+  value that is not a number from -1 to 1 now gives the default, not "no
+  floor".
 - Behaviour change for error recall in its default `local` mode: the floor
   `NOBLIVION_ERROR_RECALL_LOCAL_MIN_SCORE` is now 0.39, not 0.75
   (NOBLIVION-48). The old value was not measured. On the eval set it let 1
