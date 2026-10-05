@@ -1180,6 +1180,125 @@ def test_hook_denies_hidden_reads(call, env, work, cmd):
     assert SECRET not in raw and USER not in raw
 
 
+#: Reads of the git config whose text holds no ``git`` and no ``config``: a brace list, quotes or a
+#: backslash inside the name, a variable that holds a part of the name. The first two are the
+#: commands of the review finding. The cheap text test of the hook let them pass.
+HIDDEN_FROM_THE_HINT = [
+    "cat .gi{t,}/conf{ig,}",
+    "d=.gi; cat ${d}t/conf''ig",
+    "cat .g'i't/con'f'ig",
+    'cat ".g"it/conf""ig',
+    "cat .gi\\t/con\\fig",
+    "tail .g\"i\"t/c'o'nfig",
+    "cat {.gi,x}t/conf*",
+    "cat {.gi,x}t/con{f,}ig",
+    "cat ./.gi{t,}/c{onfig,}",
+    "cat < .gi{t,}/con\\fig",
+    "a=.gi; b=fig; cat ${a}t/con$b",
+    'd=.gi; cat "$d"t/con"fig"',
+    "d=.gi;cat ${d}t/c*",
+    "x=.g; y=it; cat $x$y/c{onfig,}",
+    "for d in .gi; do cat ${d}t/con{fig,}; done",
+    "p=.gi; head -3 ${p}t/con\\fig",
+    'echo "$(< .gi\\t/con\\fig)"',
+]
+
+#: ``$(< file)`` prints the file, as ``$(cat file)`` does.
+STDIN_SUBSTITUTIONS = [
+    'echo "$(< .git/config)"',
+    "echo $(< .git/config)",
+    'x=$(<.git/config); echo "$x"',
+    'echo "$(<.g*/c*)"',
+    'cfg=$(< "$d/config"); echo "$cfg"',
+    "f=.git/config; echo $(< $f)",
+    "cd src && echo $(< ../.git/config)",
+]
+
+
+@pytest.mark.parametrize("cmd", HIDDEN_FROM_THE_HINT + STDIN_SUBSTITUTIONS + HIDDEN_READS)
+def test_hook_denies_every_hidden_read(call, env, work, cmd):
+    """Through the hook entry point: its text test must send each of these commands to the guard."""
+    assert bash_deny(cmd, work)
+    hso, raw = call(env, ev("Bash", {"command": cmd}, work))
+    assert hso is not None and hso["permissionDecision"] == "deny"
+    assert hso["permissionDecisionReason"].startswith("Credential guard:")
+    assert SECRET not in raw and USER not in raw
+
+
+#: Commands that the wider text test sends to the guard and that print no credential.
+HINTED_AND_ALLOWED = [
+    'cat "$HOME/.profile"',
+    "ls ~/.cache/$USER",
+    "cat .env | awk '{print $1}'",
+    "source .venv/bin/activate && echo $PATH",
+    "ls .{venv,cache}",
+    "cat .github/workflows/{ci,release}.yml",
+    "cat .g'i'thub/x.yml",
+    "cat .git/{HEAD,description}",
+    "cat .gi{t,}/HEAD",
+    "d=.gi; cat ${d}t/HEAD",
+    'echo "$(< .git/HEAD)"',
+    "wc -l < .git/config",
+    f'echo "$(< .git/config {SCRUB})"',
+]
+
+
+@pytest.mark.parametrize("cmd", HINTED_AND_ALLOWED)
+def test_hook_allows_hinted_commands_that_show_no_credential(gh, call, env, work, cmd):
+    assert gh._cred_hint(cmd)
+    assert not bash_deny(cmd, work)
+    hso, _ = call(env, ev("Bash", {"command": cmd}, work))
+    assert hso is None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        'echo "$(< README.md)"',
+        'n=$(< input.txt); echo "$n"',
+        'x=$(< "$f"); echo "$x"',
+        "x=1 < input.txt",
+        'while read l; do echo "$l"; done < input.txt',
+    ],
+)
+def test_stdin_substitution_of_another_file_is_allowed(call, env, work, cmd):
+    assert not bash_deny(cmd, work)
+    hso, _ = call(env, ev("Bash", {"command": cmd}, work))
+    assert hso is None
+
+
+#: Everyday commands that the text test must keep away from the guard: the hook does not load
+#: the guard module for them, so they cost no time.
+NOT_HINTED = [
+    "ls -la src",
+    "ls . .. ./src ../other",
+    "cat README.md",
+    "python3 -m pytest -q",
+    "python3 -c 'import os; print(os.getcwd())'",
+    'cat .env | grep "KEY"',
+    "cat .e'n'v",
+    "source .venv/bin/activate && pytest -k 'foo'",
+    "echo \"a.b\" 'c.d' e\\.f",
+    "awk '{print $1}' input.txt",
+    'curl -s "https://example.com/api?id=$ID"',
+    "sed -n '1,5p' README.md",
+    'for f in src/*.py; do wc -l "$f"; done',
+    "npm test 2>&1 | tail -20",
+    "tar -czf out.tar.gz ./build && ls -la *.gz",
+    "make -j4 CFLAGS='-O2 -g' all",
+]
+
+
+@pytest.mark.parametrize("cmd", NOT_HINTED)
+def test_everyday_commands_never_load_the_guard(gh, call, env, work, cmd, monkeypatch):
+    assert not gh._cred_hint(cmd)
+    loaded = []
+    load = gh._load
+    monkeypatch.setattr(gh, "_load", lambda name: loaded.append(name) or load(name))
+    hso, _ = call(env, ev("Bash", {"command": cmd}, work))
+    assert hso is None and "credential_guard" not in loaded
+
+
 def test_open_path_reason_and_global_config(work, home_store, monkeypatch):
     got = cg.decide("Bash", {"command": 'cat "$d/config"'}, str(work))
     assert got is not None and "set when the command runs" in got[1]
@@ -1323,6 +1442,34 @@ def test_held_text_number_regex_is_linear(unit):
 def test_hook_hint_regex_is_linear(gh, unit):
     t0 = time.perf_counter()
     assert gh._CRED_BASH_HINT.search(unit * 50_000 + "x") is None
+    assert time.perf_counter() - t0 < 1.0
+
+
+#: 100 KB for the text test of the hook: its hidden-name regex and the copy without quotes.
+HINT_TEXTS = {
+    "dots": "." * 100_000,
+    "hidden names": " .a" * 34_000,
+    "dots and spaces": " ." * 50_000,
+    "current folders": " ./" * 34_000,
+    "quoted dots": "'.'" * 34_000,
+    "quotes": "'\"" * 50_000,
+    "backslashes": "\\" * 100_000,
+    "braces": "{.,}" * 25_000,
+    "dollars and braces": "${" * 50_000,
+    "hidden names with a dollar": "$ .a" * 25_000,
+    "split word": "g'i't c'o'nfi\\g " * 7_000,
+    "split other word": "a'b'c\\d " * 20_000,
+}
+
+
+@pytest.mark.parametrize("name", sorted(HINT_TEXTS))
+def test_hook_text_test_is_linear(gh, name):
+    text = HINT_TEXTS[name]
+    assert len(text) >= 100_000
+    t0 = time.perf_counter()
+    gh._cred_hint(text)
+    gh._CRED_HIDDEN.search(text)
+    gh._CRED_HIDDEN.findall(text)
     assert time.perf_counter() - t0 < 1.0
 
 

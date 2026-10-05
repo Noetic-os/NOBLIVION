@@ -36,8 +36,9 @@ What the guard denies, and only when the probe finds a credential URL:
   read here and scanned line by line. A ``grep`` / ``rg`` whose output cannot
   hold a credential line (``-c``, ``-l``, ``-q``, or a pattern that matches no
   credential line, context lines included) is allowed.
-* The same file by another name: as stdin (``cat < .git/config``), a glob on
-  any part of the path (``.g*/conf*``), a brace list (``.git/{config,HEAD}``),
+* The same file by another name: as stdin (``cat < .git/config``,
+  ``$(< .git/config)``), a glob on any part of the path (``.g*/conf*``), a
+  brace list (``.git/{config,HEAD}``),
   a variable that the command set before (``f=.git/config; cat $f``, a ``for``
   variable).
 * A print command (``cat``, ``head``, ``tail``, ``less``, ``grep``, ``sed``,
@@ -1735,9 +1736,11 @@ def check_bash(
         first: Optional[Tuple[int, Finding]] = None
         for si, words in enumerate(pipe):
             w, assigns = unwrap([x for x in words if x != TO_STDERR])
+            files, opened, alts = stages[si][1:]
+            if not w and files and not assigns:
+                w = ["cat"]  # ``$(< file)`` prints the file
             if not w:
                 continue
-            files, opened, alts = stages[si][1:]
             name = os.path.basename(w[0])
             f = None
             if name in _SHELLS:

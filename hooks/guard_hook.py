@@ -1340,6 +1340,23 @@ _CRED_BASH_HINT = re.compile(
     r"|\bgrep\b[^|;&\n]*\s(?:-[A-Za-z]*[rR]|--recursive|--dereference-recursive|-d\s*recurse)"
     r"|(?:^|[\s/=])\.[^\s/=*?\[]*[*?\[]"  # a glob on a hidden name: ``.g*/conf*``
 )
+# a hidden name: a dot where a word, a path part, a value or an item of a brace list starts
+_CRED_HIDDEN = re.compile(r"(?:^|[\s/=:;,|&<>({`])\.(?![\s/.]|$)")
+_CRED_QUOTES = str.maketrans("", "", "'\"\\")
+
+
+def _cred_hint(command: str) -> bool:
+    """The cheap text test of a Bash command: False when the credential guard has nothing to
+    check in it, so most calls never load the guard. True for the words of ``_CRED_BASH_HINT``,
+    also when quotes or a backslash split one (``.g'i't/con\\fig``), and for a hidden name in
+    a command with a ``$`` or a ``{``: such a command can build the name ``.git`` from parts
+    (``.gi{t,}/conf{ig,}``, ``d=.gi; cat ${d}t/conf*``)."""
+    if _CRED_BASH_HINT.search(command):
+        return True
+    plain = command.translate(_CRED_QUOTES)
+    if plain != command and _CRED_BASH_HINT.search(plain):
+        return True
+    return ("$" in plain or "{" in plain) and _CRED_HIDDEN.search(plain) is not None
 
 
 def _credential_check(
@@ -1355,7 +1372,7 @@ def _credential_check(
         return None
     if tool == "Bash":
         cmd = ti.get("command")
-        if not isinstance(cmd, str) or not _CRED_BASH_HINT.search(cmd):
+        if not isinstance(cmd, str) or not _cred_hint(cmd):
             return None
     elif tool == "Read":
         fp = str(ti.get("file_path") or "")

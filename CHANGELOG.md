@@ -64,17 +64,20 @@ All notable changes to NOBLIVION. The format follows
   note again with the new rules. Notes that the transcript miner stored
   before the update are not written again.
 - The credential guard now also blocks these reads of a git config that
-  holds a credential URL: the file as standard input (`cat < .git/config`),
-  a glob on a folder name (`cat .g*/conf*`), a brace list
-  (`cat .git/{config,HEAD}`), a variable or `$( )` as the path
+  holds a credential URL: the file as standard input (`cat < .git/config`,
+  `echo "$(< .git/config)"`), a glob on a folder name (`cat .g*/conf*`), a
+  brace list (`cat .git/{config,HEAD}`), a variable or `$( )` as the path
   (`f=.git/config; cat $f`), `git var -l`, and a `GIT_TRACE*` variable on a
-  git command that talks to the remote. A path that the guard cannot
-  resolve is blocked only when the git config holds a credential and the
-  fixed end of the path is the name of that file (`cat "$d/config"`,
-  `cat $(git rev-parse --git-dir)/config`). A read through a loop
-  variable, a `read` variable, `xargs` or `$(git ls-files)` passes, as
-  before: `for f in $(git diff --name-only); do head -5 "$f"; done`. The
-  README now says what the guard covers: git URLs, not every credential.
+  git command that talks to the remote. A command that builds the name
+  from parts is blocked too: `cat .gi{t,}/conf{ig,}`,
+  `cat .g'i't/con'f'ig`, `d=.gi; cat ${d}t/config`. A path that the guard
+  cannot resolve is blocked only when the git config holds a credential
+  and the fixed end of the path is the name of that file
+  (`cat "$d/config"`, `cat $(git rev-parse --git-dir)/config`). A read
+  through a loop variable, a `read` variable, `xargs` or
+  `$(git ls-files)` passes, as before:
+  `for f in $(git diff --name-only); do head -5 "$f"; done`. The README
+  now says what the guard covers: git URLs, not every credential.
   docs/guards.md lists the limits (NOBLIVION-47).
 - The credential guard no longer needs seconds for a Bash command with one
   very long word (NOBLIVION-47). The search for a `.git/config` path inside

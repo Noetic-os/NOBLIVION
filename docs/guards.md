@@ -187,8 +187,10 @@ command that would print a git URL with a password or a token in it.
 - A read of the config file is a read in each of these forms: the file name
   (`cat .git/config`), a glob (`cat .g*/conf*`), a brace list
   (`cat .git/{config,HEAD}`), the file as standard input
-  (`cat < .git/config`), and a variable that the same command sets
-  (`f=.git/config; cat $f`).
+  (`cat < .git/config`, `echo "$(< .git/config)"`), and a variable that the
+  same command sets (`f=.git/config; cat $f`). The guard also sees the name
+  when the command builds it from parts: `cat .gi{t,}/conf{ig,}`,
+  `cat .g'i't/con'f'ig` and `d=.gi; cat ${d}t/config`.
 - It covers `git fetch`, `git pull`, `git push`, `git ls-remote`,
   `git submodule` and `git remote update` when the command sets a
   `GIT_TRACE*` variable or `GIT_CURL_VERBOSE`. The trace prints the URL.
