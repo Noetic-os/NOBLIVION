@@ -2086,12 +2086,135 @@ def test_a_rebuild_of_a_changed_folder_has_its_own_time_limit(folder_env, monkey
     ev = json.dumps(bash("git stash pop"))
     assert gh.main(stdin=io.StringIO(ev), stdout=out, environ=env, time_limit=0.4) == 0
     assert json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"] == "deny"
-    # a rebuild over its own limit ends the call: fail open, with the line
-    _rulefile(mem, "feedback_no_stash_drop", "drop")
-    monkeypatch.setattr(gh, "REBUILD_LIMIT_S", 0.2)
-    assert json.loads(_timed_out(env, bash("git stash drop"), time_limit=0.4)) == _timeout_doc()
     # the limit of the call is back after a rebuild
-    monkeypatch.setattr(gh, "REBUILD_LIMIT_S", 5.0)
+    _rulefile(mem, "feedback_no_stash_drop", "drop")
     monkeypatch.setattr(gtm, "rebuild", real)
     monkeypatch.setattr(gtm, "match", lambda *_a, **_k: time.sleep(2) or [])
     assert json.loads(_timed_out(env, bash("git stash drop"), time_limit=0.4)) == _timeout_doc()
+
+
+def _main_doc(env, cmd, time_limit=0.4):
+    """One call through ``main`` with a short time limit: the whole output document, or None."""
+    text = _timed_out(env, bash(cmd), time_limit=time_limit).strip()
+    return json.loads(text) if text else None
+
+
+def _slow_rebuild(monkeypatch, calls, seconds=5.0):
+    """Every rebuild of the hook takes ``seconds``; the limit of a rebuild is 0.2 seconds."""
+    gtm = gh._gt()
+    real = gtm.rebuild
+
+    def slow(*a, **k):
+        calls.append(1)
+        time.sleep(seconds)
+        return real(*a, **k)
+
+    monkeypatch.setattr(gtm, "rebuild", slow)
+    monkeypatch.setattr(gh, "REBUILD_LIMIT_S", 0.2)
+    return real
+
+
+def test_a_rebuild_over_its_time_limit_keeps_the_old_table_in_force(folder_env, monkeypatch):
+    """The reviewer's case with a slow rebuild in place of 650 rules: a memory file changes, the
+    rebuild runs out of time. The rules of the last build must still deny, in this call and in
+    the next ones, and the user reads one line for this change of the folder, not one per call."""
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    assert _denied(env, "git stash pop")  # builds the table
+    calls: list = []
+    real = _slow_rebuild(monkeypatch, calls)
+    _rulefile(mem, "feedback_no_stash_drop", "drop")  # ``sed -i``, ``cp``: no Write event
+
+    doc = _main_doc(env, "git stash pop")
+    assert doc["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert doc["systemMessage"] == gh.REBUILD_LATE_LINE and len(calls) == 1
+    assert (
+        gh.REBUILD_LATE_LINE.startswith("NOBLIVION: ") and "stay in force" in doc["systemMessage"]
+    )
+    # the next calls: the old rules, no second rebuild, no second line, no wait
+    for _ in range(3):
+        doc = _main_doc(env, "git stash pop")
+        assert doc["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "systemMessage" not in doc
+    assert _main_doc(env, "ls") is None
+    assert _main_doc(env, "git stash drop") is None  # the rule of the new file is not in force yet
+    assert len(calls) == 1
+    lines = [x for x in log(env) if x["decision"] == "error"]
+    assert len(lines) == 1 and "rebuild" in lines[0]["error"]
+
+    # the folder changes again: one more try, and one more line when that try is late too
+    _rulefile(mem, "feedback_no_stash_clear", "clear")
+    doc = _main_doc(env, "git stash pop")
+    assert doc["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert doc["systemMessage"] == gh.REBUILD_LATE_LINE and len(calls) == 2
+    assert "systemMessage" not in _main_doc(env, "git stash pop") and len(calls) == 2
+
+    # a rebuild that ends in time puts every rule in force and ends the late state
+    monkeypatch.setattr(gh._gt(), "rebuild", real)
+    _rulefile(mem, "feedback_no_stash_apply", "apply")
+    for word in ("pop", "drop", "clear", "apply"):
+        doc = _main_doc(env, f"git stash {word}")
+        assert doc["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "systemMessage" not in doc
+    assert not list(gh.table_file(env, "/tmp").parent.glob("*" + gh.LATE_SUFFIX))
+
+
+def test_a_call_that_times_out_after_a_late_rebuild_prints_both_lines(folder_env, monkeypatch):
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    assert _denied(env, "git stash pop")
+    _slow_rebuild(monkeypatch, [])
+    monkeypatch.setattr(gh._gt(), "match", lambda *_a, **_k: time.sleep(2) or [])
+    _rulefile(mem, "feedback_no_stash_drop", "drop")
+    doc = _main_doc(env, "git stash pop")
+    assert doc["systemMessage"] == gh.TIMEOUT_LINE + " " + gh.REBUILD_LATE_LINE
+    assert doc["hookSpecificOutput"] == _timeout_doc()["hookSpecificOutput"]
+    assert _main_doc(env, "git stash pop") == _timeout_doc()  # the rebuild line came once
+
+
+def test_a_late_rebuild_with_no_table_tells_the_user_once(folder_env, monkeypatch):
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    calls: list = []
+    real = _slow_rebuild(monkeypatch, calls)
+    doc = _main_doc(env, "git stash pop")
+    assert doc["systemMessage"] == gh.REBUILD_NONE_LINE and "no deny rule" in doc["systemMessage"]
+    assert "permissionDecision" not in doc["hookSpecificOutput"]
+    assert _main_doc(env, "git stash pop") is None and _main_doc(env, "ls") is None
+    assert len(calls) == 1
+    # the session start builds the table (no limit there): the rule is in force again
+    real([mem], gh.table_file(env, "/tmp"))
+    assert _denied(env, "git stash pop") and len(calls) == 1
+
+
+def test_a_late_rebuild_on_a_failure_event_is_tried_again_and_told_later(folder_env, monkeypatch):
+    """A PostToolUseFailure event prints no line for the user, so it does not use up the one
+    line of this change: the next PreToolUse call prints it."""
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    assert _denied(env, "git stash pop")
+    calls: list = []
+    _slow_rebuild(monkeypatch, calls)
+    _rulefile(mem, "feedback_no_stash_drop", "drop")
+    failed = dict(bash("git stash list"), hook_event_name="PostToolUseFailure", error="Exit code 1")
+    assert _timed_out(env, failed, time_limit=0.4).strip() == "" and len(calls) == 1
+    doc = _main_doc(env, "git stash pop")
+    assert doc["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert doc["systemMessage"] == gh.REBUILD_LATE_LINE and len(calls) == 2
+
+
+def test_a_rebuild_after_one_edit_times_only_the_changed_rule(folder_env, monkeypatch):
+    """Through the hook: the regex probe of a rule runs once, not at each rebuild."""
+    env, mem = folder_env
+    for word in ("pop", "drop", "clear", "apply"):
+        _rulefile(mem, f"feedback_no_stash_{word}", word)
+    mfm = gh._gt()._mf()
+    real, probes = mfm.subprocess.run, []
+    monkeypatch.setattr(mfm.subprocess, "run", lambda *a, **k: probes.append(1) or real(*a, **k))
+    assert _denied(env, "git stash pop") and len(probes) == 4  # no table yet: every rule
+    target = mem / "feedback_no_stash_drop.md"
+    target.write_text(target.read_text().replace("Body.", "Body, edited."))
+    assert _denied(env, "git stash drop") and len(probes) == 4  # the text changed, no regex
+    _rulefile(mem, "feedback_no_stash_drop", "show")
+    assert _denied(env, "git stash show") and not _denied(env, "git stash drop")
+    assert len(probes) == 5  # one regex changed

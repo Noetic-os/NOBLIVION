@@ -357,15 +357,64 @@ def write_atomic(path: Path, data: Dict[str, object]) -> None:
         raise
 
 
+PROBES_SUFFIX = ".probes"
+
+
+def probes_path(table: Path) -> Path:
+    """The file next to the table at ``table`` that keeps the regex probe
+    times of its builds: ``{hash of the probe input: seconds}``."""
+    return table.with_name(table.name + PROBES_SUFFIX)
+
+
+def _read_probes(path: Path) -> Dict[str, float]:
+    """The probe times in ``path``; none when the file is missing or broken."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if type(v) in (int, float)}
+
+
+def _write_probes(table: Path, probes: Dict[str, float], old: Dict[str, float]) -> None:
+    """Best effort: without the file the next build is only slower."""
+    if probes == old:
+        return
+    try:
+        write_atomic(probes_path(table), probes)
+    except OSError:
+        pass
+
+
 def rebuild(folder: Any = None, out: Optional[Path] = None) -> Dict[str, Any]:
     """Build the table for ``folder`` (one folder or a list, default
     ``source_dirs()``) and write it to ``out`` (default the table of the
-    first folder, ``table_path``). Returns the table."""
+    first folder, ``table_path``). Returns the table.
+
+    The build times every ``violates`` and ``complies`` regex in a child
+    process (``memory_fields.regex_too_slow``, about 10 ms each). The time of
+    a probe that passed is kept in ``probes_path(out)``, so the next build
+    times only a new or changed regex. A build that is cut off (the time
+    limit of the guard hook) keeps the times it measured: the next build goes
+    on from there."""
     folders = _folders(folder) if folder is not None else source_dirs()
     if not folders:
         raise FileNotFoundError("no memory folder")
-    table = build(folders)
-    write_atomic(Path(out) if out is not None else table_path(folders[0]), table)
+    path = Path(out) if out is not None else table_path(folders[0])
+    mf = _mf()
+    old = _read_probes(probes_path(path))
+    new: Dict[str, float] = {}
+    mf.PROBE_TIMES = (old, new)
+    try:
+        table = build(folders)
+    except BaseException:
+        _write_probes(path, {**old, **new}, old)
+        raise
+    finally:
+        mf.PROBE_TIMES = None
+    write_atomic(path, table)
+    _write_probes(path, new, old)
     return table
 
 

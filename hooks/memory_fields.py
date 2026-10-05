@@ -60,6 +60,7 @@ Standard library only: hooks import this module on a 2 s budget.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -565,10 +566,25 @@ def regex_probe_inputs(example: str) -> List[str]:
     ]
 
 
+#: ``(old, new)``, set by a caller that keeps the probe times between its runs
+#: (``guard_table.rebuild``). ``old`` holds the search time of each probe that
+#: passed in an earlier run, by the hash of the probe input (the pattern and
+#: the probe texts). Such a probe is not run again. ``new`` gets every probe
+#: that passes in this run. A probe that fails is never kept: a busy machine
+#: can cause it, so it is measured again. None: every probe runs.
+PROBE_TIMES: Optional[Tuple[Dict[str, float], Dict[str, float]]] = None
+
+
 def regex_too_slow(pattern: str, example: str = "", name: str = "violates") -> str:
     """``""`` when ``pattern`` searches 10 KB probe inputs fast, else the reason.
     Runs in a child process that is killed after ``REGEX_PROBE_KILL`` seconds."""
     payload = json.dumps({"p": pattern, "i": regex_probe_inputs(example)})
+    times, key = PROBE_TIMES, ""
+    if times is not None:
+        key = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+        if key in times[0] and times[0][key] <= REGEX_PROBE_SECONDS:
+            times[1][key] = times[0][key]
+            return ""
     try:
         r = subprocess.run(
             [sys.executable, "-c", _PROBE_CHILD],
@@ -590,6 +606,8 @@ def regex_too_slow(pattern: str, example: str = "", name: str = "violates") -> s
             f"{name} takes {secs:.2f} s on {REGEX_PROBE_BYTES} bytes; "
             f"the limit is {REGEX_PROBE_SECONDS} s"
         )
+    if times is not None:
+        times[1][key] = round(secs, 4)
     return ""
 
 

@@ -973,6 +973,123 @@ def test_the_table_stamp_follows_the_memory_files_only(folder, table_file):
     assert gt.stale(folder, table_file)
 
 
+# 10. NOBLIVION-50: the regex probe times are kept between builds --------------------
+@pytest.fixture
+def probes(monkeypatch):
+    """The runs of the probe child process (``memory_fields.regex_too_slow``)."""
+    mfm = gt._mf()
+    real, runs = mfm.subprocess.run, []
+    monkeypatch.setattr(mfm.subprocess, "run", lambda *a, **k: runs.append(a) or real(*a, **k))
+    return runs
+
+
+def test_a_rebuild_times_a_regex_once(folder, table_file, probes):
+    first = gt.rebuild(folder)
+    assert len(probes) == 2  # the two rules with ``violates``
+    kept = json.loads(gt.probes_path(table_file).read_text())
+    assert len(kept) == 2 and all(
+        0 <= secs <= gt._mf().REGEX_PROBE_SECONDS for secs in kept.values()
+    )
+    # nothing changed, or only the text of a memory: no probe runs
+    assert gt.rebuild(folder)["entries"] == first["entries"] and len(probes) == 2
+    target = folder / "feedback_stash.md"
+    target.write_text(target.read_text() + "One more line.\n")
+    assert gt.rebuild(folder)["entries"] == first["entries"] and len(probes) == 2
+    # a new regex, or a new example for the same regex: one probe
+    target.write_text(
+        memory("feedback_stash", r"^git\s+stash\s+drop\s*$", "git stash drop", "git stash list")
+    )
+    assert gt.match("git stash drop", gt.rebuild(folder)) and len(probes) == 3
+    target.write_text(
+        memory("feedback_stash", r"^git\s+stash\s+drop\s*$", "git  stash drop", "git stash list")
+    )
+    gt.rebuild(folder)
+    assert len(probes) == 4
+    # the file holds the probes of this build only
+    assert len(json.loads(gt.probes_path(table_file).read_text())) == 2
+    target.unlink()
+    gt.rebuild(folder)
+    assert len(json.loads(gt.probes_path(table_file).read_text())) == 1 and len(probes) == 4
+
+
+def test_a_missing_or_broken_probe_file_is_only_slower(folder, table_file, probes):
+    table = gt.rebuild(folder)
+    for text in (None, "not json", "[1, 2]", '{"x": "slow", "y": null}'):
+        if text is None:
+            gt.probes_path(table_file).unlink()
+        else:
+            gt.probes_path(table_file).write_text(text)
+        n = len(probes)
+        assert gt.rebuild(folder)["entries"] == table["entries"] and len(probes) == n + 2
+        assert len(json.loads(gt.probes_path(table_file).read_text())) == 2
+
+
+def test_a_slow_regex_is_timed_again_at_each_build(folder, table_file, probes, monkeypatch):
+    """Only a probe that passed is kept. A slow result can come from a busy machine, so it is
+    measured again, and the rule can come back."""
+    monkeypatch.setattr(gt._mf(), "REGEX_PROBE_SECONDS", -1.0)  # every probe is too slow
+    table = gt.rebuild(folder)
+    assert len(probes) == 2 and len(table["skipped"]) == 2
+    assert not gt.probes_path(table_file).exists()
+    monkeypatch.setattr(gt._mf(), "REGEX_PROBE_SECONDS", 0.25)
+    table = gt.rebuild(folder)
+    assert len(probes) == 4 and not table["skipped"] and gt.match("git stash pop", table)
+
+
+def test_a_build_that_is_cut_off_keeps_its_probe_times(folder, table_file, probes, monkeypatch):
+    """A build that ends early (the time limit of the guard hook) loses no probe: the next
+    build goes on from there. The table of the last full build stays as it is."""
+    for i in range(4):
+        (folder / f"feedback_more_{i}.md").write_text(
+            memory(
+                f"feedback_more_{i}",
+                rf"^git\s+stash\s+w{i}\s*$",
+                f"git stash w{i}",
+                "git stash list",
+            )
+        )
+    (folder / "feedback_more_3.md").unlink()
+    gt.rebuild(folder)
+    assert len(probes) == 5
+    before = table_file.read_text()
+    (folder / "feedback_more_3.md").write_text(
+        memory("feedback_more_3", r"^git\s+stash\s+w3\s*$", "git stash w3", "git stash list")
+    )
+    (folder / "feedback_more_4.md").write_text(
+        memory("feedback_more_4", r"^git\s+stash\s+w4\s*$", "git stash w4", "git stash list")
+    )
+    mfm = gt._mf()
+    run = mfm.subprocess.run
+
+    class Cut(BaseException):
+        pass
+
+    def cut(*a, **k):
+        if len(probes) == 6:  # one new probe is done, the second one is cut off
+            raise Cut()
+        return run(*a, **k)
+
+    monkeypatch.setattr(mfm.subprocess, "run", cut)
+    with pytest.raises(Cut):
+        gt.rebuild(folder)
+    assert table_file.read_text() == before and mfm.PROBE_TIMES is None
+    assert len(json.loads(gt.probes_path(table_file).read_text())) == 6
+    monkeypatch.setattr(mfm.subprocess, "run", run)
+    table = gt.rebuild(folder)
+    assert len(probes) == 7  # only the probe that was cut off
+    assert gt.match("git stash w3", table) and gt.match("git stash w4", table)
+
+
+def test_the_field_check_of_one_file_keeps_no_probe_times(monkeypatch):
+    """Outside a table build (the check after a memory write) every probe runs, as before."""
+    mfm = gt._mf()
+    real, runs = mfm.subprocess.run, []
+    monkeypatch.setattr(mfm.subprocess, "run", lambda *a, **k: runs.append(1) or real(*a, **k))
+    assert mfm.PROBE_TIMES is None
+    assert mfm.regex_too_slow(STASH, "git stash pop") == ""
+    assert mfm.regex_too_slow(STASH, "git stash pop") == "" and len(runs) == 2
+
+
 @pytest.mark.parametrize("change", ["rm", "edit", "mv", "new", "same size and mtime"])
 def test_a_changed_memory_folder_makes_the_table_stale(folder, table_file, change):
     gt.rebuild(folder)

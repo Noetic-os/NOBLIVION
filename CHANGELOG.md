@@ -108,7 +108,13 @@ All notable changes to NOBLIVION. The format follows
   rebuilds the table before a call when the stamp changed, and a write of
   a memory file of any kind rebuilds it. The check adds about 0.3 ms to a
   call with 200 notes. A table that `NOBLIVION_GUARD_TABLE` names is not
-  checked on each call.
+  checked on each call. A build measures the speed of each `violates`
+  expression once and keeps the result in the file `<table>.probes`, so a
+  rebuild measures only a new or changed expression: in a test with 650
+  rules, a rebuild after one change took about 0.2 seconds, and the first
+  build about 7 seconds. A rebuild in the guard hook has a limit of 6 seconds.
+  When it is not done in that time, the rules of the last build stay in
+  force, and one line tells the user so for that change of the folder.
 - A deny check that runs out of time is no longer silent (NOBLIVION-50).
   The call is still allowed after 1.5 seconds, but one line now says that
   the deny rules were not checked for this call. Before, only the guard

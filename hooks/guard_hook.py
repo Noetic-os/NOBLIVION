@@ -14,8 +14,11 @@ folder is the project folder of the event's ``cwd`` (NOBLIVION-31). When that
 table is missing, or a memory file changed since it was built
 (``guard_table.stale``: a shell ``rm``, ``sed``, ``mv`` or ``git checkout``
 sends no Write event), the hook rebuilds it before it reads it
-(NOBLIVION-50; the prompt leg of the label rows reads it as it is). A table
-named by ``NOBLIVION_GUARD_TABLE`` is read as it is. No daemon call, no network.
+(NOBLIVION-50; the prompt leg of the label rows reads it as it is). A rebuild
+that runs out of its time (``REBUILD_LIMIT_S``) leaves the table of the last
+build in force and tells the user once per change of the folder
+(``_rebuild``). A table named by ``NOBLIVION_GUARD_TABLE`` is read as it is.
+No daemon call, no network.
 
 Bash
   * A ``violates:`` hit (``guard_table.match``; it strips the git
@@ -269,14 +272,28 @@ LOG_TEXT_CHARS = 300
 STATE_MAX_AGE_S = 7 * 24 * 3600
 TIME_LIMIT_S = 1.5
 # A rebuild of the table (``table_file``) has its own limit: the build times
-# every ``violates`` regex in a child process (``memory_fields.regex_too_slow``,
-# about 10 ms each), so it does not fit in ``TIME_LIMIT_S`` from about 150
-# rules. The hook is registered with a timeout of 10 s.
+# each new or changed ``violates`` regex in a child process
+# (``memory_fields.regex_too_slow``, about 10 ms each; ``guard_table.rebuild``
+# keeps the times), so a first build does not fit in ``TIME_LIMIT_S`` from
+# about 150 rules. The hook is registered with a timeout of 10 s.
 REBUILD_LIMIT_S = 6.0
 DENY_TOOLS = ("Bash", "Read", "Grep")  # a ``violates`` rule or the credential guard can deny
 TIMEOUT_LINE = (
     "NOBLIVION: the guard ran out of time, so the deny rules were not checked for this call."
 )
+# A rebuild of the table that ran out of ``REBUILD_LIMIT_S``: one line for the
+# user per change of the memory folder. The stamp of the folder goes to the
+# file ``<table>.late``, so the same state of the folder is not built again.
+REBUILD_LATE_LINE = (
+    "NOBLIVION: a memory file changed, and the deny rules could not be read again in time. "
+    "The rules from before the change stay in force until a memory file changes again "
+    "or a new session starts."
+)
+REBUILD_NONE_LINE = (
+    "NOBLIVION: the deny rules could not be read in time, so no deny rule is checked "
+    "until a memory file changes or a new session starts."
+)
+LATE_SUFFIX = ".late"
 ROWS_SESSION_CHARS = 6000
 ROWS_HEADER = (
     "Memory rules for this action (guard rows). This is the memory's own text, "
@@ -394,14 +411,20 @@ def state_dir(env: Mapping[str, str]) -> Path:
     return _path_env(env, "NOBLIVION_GUARD_STATE_DIR", DEFAULT_STATE)
 
 
-def table_file(env: Mapping[str, str], cwd: Optional[str] = None, fresh: bool = False) -> Path:
+def table_file(
+    env: Mapping[str, str],
+    cwd: Optional[str] = None,
+    fresh: bool = False,
+    notes: Optional[List[str]] = None,
+) -> Path:
     """``NOBLIVION_GUARD_TABLE``, else the table of the project memory folder
     of ``cwd``. A missing table of an existing folder is built here once,
     fail open (a SessionStart that ran before the folder existed). With
     ``fresh`` (the guard's own legs) a stale table is rebuilt too: a memory
     file changed since the build, by any means (NOBLIVION-50). A table named
     by ``NOBLIVION_GUARD_TABLE`` is read as it is: one file for every project
-    has no one folder to follow."""
+    has no one folder to follow. ``notes`` gets a line for the user when the
+    rebuild ran out of time (``_rebuild``)."""
     raw = env.get("NOBLIVION_GUARD_TABLE")
     if raw:
         return Path(raw).expanduser()
@@ -411,16 +434,31 @@ def table_file(env: Mapping[str, str], cwd: Optional[str] = None, fresh: bool = 
     if folders and any(f.is_dir() for f in folders):
         try:
             if not path.is_file() or (fresh and gt.stale(folders, path)):
-                _rebuild(gt, folders, path)
+                _rebuild(gt, folders, path, notes)
         except Exception:  # noqa: BLE001, S110 - a hook fails open
             pass
     return path
 
 
-def _rebuild(gt: Any, folders: List[Path], path: Path) -> None:
+def _rebuild(gt: Any, folders: List[Path], path: Path, notes: Optional[List[str]] = None) -> None:
     """``gt.rebuild`` inside ``REBUILD_LIMIT_S``. The time limit of the call
     waits and goes on with the time it had left, so a slow rebuild does not
-    turn the deny check off."""
+    turn the deny check off.
+
+    A rebuild that runs out of its time changes nothing: the table of the
+    last build stays in force, and the call goes on with it. ``notes`` then
+    gets one line for the user, and the stamp of the folder goes to the file
+    ``<table>.late``. While the folder keeps that stamp, no call builds it or
+    prints the line again: without the file every call would wait
+    ``REBUILD_LIMIT_S`` for the same result. A caller with no ``notes`` writes
+    no file, so a later call tries again and tells the user."""
+    late = path.with_name(path.name + LATE_SUFFIX)
+    stamp = gt.folder_stamp(folders)
+    try:
+        if late.read_text(encoding="utf-8") == stamp:
+            return
+    except (OSError, ValueError):
+        pass
     left = 0.0
     try:
         left = signal.getitimer(signal.ITIMER_REAL)[0]
@@ -428,11 +466,28 @@ def _rebuild(gt: Any, folders: List[Path], path: Path) -> None:
             signal.setitimer(signal.ITIMER_REAL, REBUILD_LIMIT_S)
     except (ValueError, OSError, AttributeError):
         left = 0.0
+    done = False
     try:
         gt.rebuild(folders, path)
+        done = True
+    except _TimeUp:
+        if left <= 0:
+            raise  # not the limit of the rebuild
+        if notes is not None:  # no alarm is set here: the file is written before the call goes on
+            notes.append(REBUILD_LATE_LINE if path.is_file() else REBUILD_NONE_LINE)
+            try:
+                _make_dirs(late.parent)
+                late.write_text(stamp, encoding="utf-8")
+            except OSError:
+                pass
     finally:
         if left > 0:
             signal.setitimer(signal.ITIMER_REAL, left)
+    if done:
+        try:
+            late.unlink()
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------------------
@@ -1431,12 +1486,16 @@ def _settled(pending: Optional[List[bool]]) -> None:
 
 
 def decide(
-    event: Mapping[str, object], env: Mapping[str, str], pending: Optional[List[bool]] = None
+    event: Mapping[str, object],
+    env: Mapping[str, str],
+    pending: Optional[List[bool]] = None,
+    notes: Optional[List[str]] = None,
 ) -> Decision:
     """The decision for one PreToolUse event. Nothing is charged or logged
     here: ``main`` prints ``out`` first, then commits, then logs.
     ``pending[0]`` is set to False (``_settled``) when the deny check is done
-    and found nothing."""
+    and found nothing. ``notes`` gets a line for the user that ``main`` adds
+    to the output (a table rebuild that ran out of time)."""
     if not isinstance(event, dict):
         return Decision()
     tool = str(event.get("tool_name") or "")
@@ -1461,7 +1520,7 @@ def decide(
         return Decision()  # the file-tool leg is off: nothing is read
     sid = event.get("session_id")
     agent = agent_key(event)
-    tpath = table_file(env, cwd, fresh=True)
+    tpath = table_file(env, cwd, fresh=True, notes=notes)
     table = _gt().load_table(tpath) if tpath.is_file() else {}
     if not table.get("entries"):
         _settled(pending)  # no rule
@@ -1720,6 +1779,12 @@ def _trust_use(env: Mapping[str, str], sid: object, decision: str, ids: List[str
         pass
 
 
+def _with_message(out: str, message: str) -> str:
+    """The hook output ``out`` (empty: no output) with ``message`` as the line for the user."""
+    doc = json.loads(out or _out())
+    return json.dumps({"systemMessage": message, **doc}, ensure_ascii=False)
+
+
 def _alarm(_signum, _frame):
     raise _TimeUp()
 
@@ -1762,6 +1827,8 @@ def main(
     d: Optional[Decision] = None
     armed = False
     pending = [False]  # True while this call can still be denied
+    notes: List[str] = []  # a line for the user from the table rebuild (``_rebuild``)
+    told = False
     try:
         armed = _arm(time_limit)
         event = json.loads(stdin.read())
@@ -1772,20 +1839,24 @@ def main(
                 tool in DENY_TOOLS
                 and str(event.get("hook_event_name") or "PreToolUse") == "PreToolUse"
             )
-        d = decide(event, env, pending)
+        d = decide(event, env, pending, notes)
         if armed:
             _disarm()
             armed = False
         pending[0] = False
-        if d.out:
-            stdout.write(d.out + "\n")
+        out = _with_message(d.out, notes[0]) if notes else d.out
+        if out:
+            stdout.write(out + "\n")
             stdout.flush()
+        told = True
         armed = _arm(time_limit)  # charge and log get their own time limit
         d.commit()
         if d.log:
             text = d.log_text if d.log_text is not None else _log_text(event)
             log_line(env, sid, tool, d.log[0], d.log[1], text, agent, **d.extra)
             _trust_use(env, sid, d.log[0], d.log[1])
+        if notes:
+            log_line(env, sid, tool, "error", [], "", agent, error="table rebuild timeout")
     except BaseException as exc:  # noqa: BLE001 - a guard fails open
         if armed:
             _disarm()
@@ -1795,9 +1866,12 @@ def main(
                 d.abort()
             except Exception:  # noqa: BLE001, S110 - a hook fails open
                 pass
-        if pending[0] and isinstance(exc, _TimeUp):
+        late = pending[0] and isinstance(exc, _TimeUp)
+        lines = ([TIMEOUT_LINE] if late else []) + ([] if told else notes)
+        if lines:
             try:
-                stdout.write(_out(context=TIMEOUT_LINE, message=TIMEOUT_LINE) + "\n")
+                text = _out(context=TIMEOUT_LINE if late else "", message=" ".join(lines))
+                stdout.write(text + "\n")
                 stdout.flush()
             except Exception:  # noqa: BLE001, S110 - a hook fails open
                 pass

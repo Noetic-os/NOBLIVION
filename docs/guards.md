@@ -29,8 +29,12 @@ table. Each project has its own table,
   `sed`, `mv`, `git checkout`), an editor or another session. The table
   holds a stamp of the memory files: their names, sizes and change times.
   The hook compares the stamp on each call. It reads no file for that, and
-  the check takes less than 1 ms for 200 files. A rebuild takes about 10 ms
-  for each `violates` expression.
+  the check takes less than 1 ms for 200 files. A build measures the speed
+  of each `violates` expression once. That takes about 10 ms for each
+  expression. The file `<table>.probes` next to the table keeps the
+  results, so a rebuild measures only a new or changed expression. In a
+  test with 650 rules, the first build took about 7 seconds and a rebuild
+  after one change took about 0.2 seconds.
 
   A table that `NOBLIVION_GUARD_TABLE` names is not checked on each call.
   It is rebuilt only at session start and after a memory write.
@@ -152,8 +156,23 @@ NOBLIVION: the guard ran out of time, so the deny rules were not checked for thi
 This can occur with a very long command and a very large table, for
 example 1000 rules and a 90 KB command. The guard log records `timeout`.
 When the time runs out after a deny check that found nothing, only rows
-are lost, and the hook prints nothing. A rebuild of the table has its own
-limit of 6 seconds.
+are lost, and the hook prints nothing.
+
+A rebuild of the table has its own limit of 6 seconds. When a rebuild is
+not done in that time, the rules of the last build stay in force and the
+call is checked against them. The hook prints one line for that change of
+the memory folder:
+
+```text
+NOBLIVION: a memory file changed, and the deny rules could not be read again in time. The rules from before the change stay in force until a memory file changes again or a new session starts.
+```
+
+The hook does not try that rebuild again at each call. It tries again when
+a memory file changes again. The session start and a memory write rebuild
+the table with no such limit. The rebuild that ran out of time keeps what
+it measured, so the next one is faster. The guard log records
+`table rebuild timeout`. When there is no table from an earlier build, the
+line says that no deny rule is checked.
 
 ### Override
 
@@ -300,6 +319,8 @@ tool, the check does not fire and the log row notes `notify_skipped`.
 | --- | --- |
 | `<data dir>/guard-log.jsonl` | One line per guard decision: rows, deny, override, label rows, credential deny, error. It holds command text. Mode 0600. |
 | `<data dir>/guard-state/` | State per agent and session. Removed after 7 days. |
+| `<data dir>/guard-tables/<table>.probes` | The measured speed of each `violates` expression of that table. You can delete it: the next build measures again. |
+| `<data dir>/guard-tables/<table>.late` | The state of the memory folder whose rebuild ran out of time. The hook removes it after the next rebuild in time. |
 | `<data dir>/stop-check-log.jsonl` | One line per stop check decision. Rotated at 5 MB. |
 | `<data dir>/cache/memory_sync.log` | The memory sync runs. |
 
