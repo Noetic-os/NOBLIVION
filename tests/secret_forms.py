@@ -74,6 +74,9 @@ RESTRICTED_KEY = fake("rk" + "_live_", 24, LOWER)
 HF_TOKEN = fake("h" + "f_", 34, LOWER)
 NPM_TOKEN = fake("np" + "m_", 36, LOWER)
 ENCRYPTED = ("Proc-Type: 4,ENCRYPTED", "DEK-Info: AES-256-CBC," + "0123ABCD" * 4)
+# Two values for a plain `pass` key: letters with digits, and symbols.
+PLAIN_PASS = "S3cr3t" + "Passw0rd"
+SYMBOL_PASS = "Xk9#" + "mQ2!vL"
 
 # (name, text, the secret that must be gone)
 FORMS: list[tuple[str, str, str]] = [
@@ -133,6 +136,14 @@ FORMS: list[tuple[str, str, str]] = [
     ("yaml pass suffix of digits", f"smtp_pass: {DIGITS}", DIGITS),
     ("yaml pass suffix with a symbol", "redis.pass: correct-horse-battery", "horse"),
     ("yaml pass suffix with mixed case", "smtp_pass: hunterHunter", "hunterHunter"),
+    # A plain `pass` key at the start of a line with ":" (YAML), also after an
+    # indent: the value looks like a secret.
+    ("pass key at the start of a line", f"pass: {PLAIN_PASS}", PLAIN_PASS),
+    ("yaml pass key after an indent", f"  pass: {SYMBOL_PASS}", SYMBOL_PASS),
+    ("yaml pass key in a block", f"smtp:\n  user: alice\n  pass: {PASSWORD}\n", PASSWORD),
+    ("yaml pass key after a tab, value in quotes", f'\tpass: "{PLAIN_PASS}"', PLAIN_PASS),
+    ("pass key with a capital first letter", f"User: alice\nPass: {PLAIN_PASS}", PLAIN_PASS),
+    ("pass key at the start of a line, mixed case value", "pass: hunterHunter", "hunterHunter"),
     ("value in quotes with spaces", f'password="{PHRASE}"', PHRASE_TAIL),
     ("value in single quotes with spaces", f"SECRET_KEY='{PHRASE}'", PHRASE_TAIL),
     ("yaml value in quotes with spaces", f'password: "{PHRASE}"', PHRASE_TAIL),
@@ -242,6 +253,18 @@ NOTES: list[str] = [
     'db_pass: "{{ vault_db_pass }}"',
     "db_pass: ${DB_PASS}",
     "final-pass: complete; the report is in the log",
+    # A plain `pass` with ":" at the start of a line: `PASS` in capitals is a
+    # word of a test report, and a plain word is not a secret. In the middle
+    # of a line `pass` is prose.
+    "PASS: test_name",
+    "PASS: TestIndexer12",
+    "pass: complete",
+    "  pass: enabled",
+    "Pass: Complete",
+    "The first pass: read the file",
+    "The second pass: step2_of_the_plan is done",
+    'pass: "{{ vault_smtp_pass }}"',
+    "pass: ${SMTP_PASS}",
 ]
 
 # (name, a hostile text of 100 KB or more): a new or changed rule must stay
@@ -311,4 +334,11 @@ HOSTILE: list[tuple[str, str]] = [
     ("a quoted token key and spaces", '"token":' + " " * SIZE),
     ("a quote and token words", '"' + "token" * (SIZE // 5)),
     ("a pwd key and a long number", "pwd: " + "1" * SIZE + "x"),
+    ("pass keys at the start of a line", "pass: aaaaaaaa\n" * (SIZE // 15 + 1)),
+    ("a long indent and a pass key", " " * SIZE + "pass: a"),
+    ("a long indent in each line", (" " * 999 + "\n") * (SIZE // 1000)),
+    ("indents and pass words", "\t \tpass \n" * (SIZE // 10)),
+    ("a pass key at the start of a line and spaces", "pass:" + " " * SIZE),
+    ("a pass key at the start of a line and symbols", "pass: " + "a-" * (SIZE // 2)),
+    ("empty lines", "\n" * SIZE),
 ]

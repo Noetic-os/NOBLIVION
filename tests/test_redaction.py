@@ -138,11 +138,35 @@ def test_a_pass_key_with_a_colon_counts_when_its_value_looks_like_a_secret():
     plain = ("complete", "Complete", "COMPLETE", "optimizer.", "enabled,", "hunter2", "(skipped)")
     for value in plain:
         assert redact_at_rest(f"first_pass: {value}") == f"first_pass: {value}", value
-    # `pass` alone and `pwd` alone are not a key in front of ":".
-    for text in ("PASS: TestIndexer12", "pass: hunter2hunter2", "pwd: /srv/app/current"):
+    # `PASS` in capitals and `pwd` alone are not a key in front of ":".
+    for text in ("PASS: TestIndexer12", "pwd: /srv/app/current"):
         assert redact_at_rest(text) == text
     assert redact_at_rest("smtp-pass=hunter2") == f"smtp-pass={FIELD_TOKEN}"
     assert redact_at_rest('"smtp-pass": "hunter2"') == f'"smtp-pass": "{FIELD_TOKEN}"'
+
+
+def test_a_plain_pass_key_at_the_start_of_a_line_counts_when_its_value_looks_like_a_secret():
+    # `pass: value` as a line of its own, also after an indent (YAML).
+    plain, symbols = secret_forms.PLAIN_PASS, secret_forms.SYMBOL_PASS
+    assert redact_at_rest(f"pass: {plain}") == f"pass: {FIELD_TOKEN}"
+    assert redact_at_rest(f"  pass: {symbols}") == f"  pass: {FIELD_TOKEN}"
+    assert redact_at_rest(f"smtp:\n  user: alice\n  pass: {plain}\n  port: 587\n") == (
+        f"smtp:\n  user: alice\n  pass: {FIELD_TOKEN}\n  port: 587\n"
+    )
+    assert redact_at_rest(f'\tpass: "{plain}"') == f'\tpass: "{FIELD_TOKEN}"'
+    assert redact_at_rest(f"User: alice\nPass: {plain}") == f"User: alice\nPass: {FIELD_TOKEN}"
+    # `PASS` in capitals is a word of a test report, a plain word is not a
+    # secret, and `pass` in the middle of a line is prose.
+    for text in (
+        "PASS: test_name",
+        f"PASS: {plain}",
+        "pass: complete",
+        "  pass: complete",
+        "The first pass: read the file",
+        f"The first pass: {plain}",
+        f"pass:\n  {plain}",
+    ):
+        assert redact_at_rest(text) == text, text
 
 
 def test_a_number_is_a_secret_for_a_password_key_and_a_count_for_a_token_key():
@@ -274,6 +298,7 @@ FRAGMENTS = [
     secret_forms.begin_line("PGP") + "\n",
     "smtp-pass: ",
     "12345678",
+    "\n  pass: ",
 ]
 
 

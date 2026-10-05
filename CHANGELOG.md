@@ -81,11 +81,15 @@ All notable changes to NOBLIVION. The format follows
   that ends in `pass` with a colon counts only when its value looks like a
   secret: one word of 8 or more characters with a digit, a symbol inside
   it, or a capital letter after a small letter
-  (`smtp-pass: hunter2hunter2`). So `first_pass: complete` and
-  `PASS: test_name` stay. After a colon, `true`, `false` and `null` stay.
-  A number stays for a key that ends in `token`
-  (`"input_token": 12345678`) and is removed for a password key
-  (`password: 12345678`). A list of 81 texts is tested against the store
+  (`smtp-pass: hunter2hunter2`). So `first_pass: complete` stays. A plain
+  `pass` or `Pass` key with a colon counts by the same rule, but only at
+  the start of a line, also after an indent as in YAML
+  (`  pass: hunter2hunter2`). So `pass: complete` stays, and a sentence
+  such as "The first pass: read the file" stays. `PASS` in capitals is the
+  word of a test report, so `PASS: test_name` stays. After a colon,
+  `true`, `false` and `null` stay. A number stays for a key that ends in
+  `token` (`"input_token": 12345678`) and is removed for a password key
+  (`password: 12345678`). A list of 90 texts is tested against the store
   redactor and against the redactor that the hooks use for memory text.
 - The redactor version is 2, so the first index scan after the update
   writes every Markdown note whose file it can read again with the new

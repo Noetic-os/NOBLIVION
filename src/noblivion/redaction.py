@@ -18,7 +18,8 @@ Covered shapes:
 - secret field names in ``key: value`` and ``key=value`` form, also with the
   key in quotes (JSON: ``"password": "value"``). A key that ends in ``pass``
   or ``pwd`` counts in front of ``=``, in the JSON form, and in front of
-  ``:`` when its value looks like a secret;
+  ``:`` when its value looks like a secret. A plain ``pass`` key in front of
+  ``:`` counts at the start of a line;
 - the password in a connection URL (``scheme://user:PASSWORD@host``);
 - the data block of a cluster ``kind: Secret`` manifest;
 - email addresses.
@@ -181,6 +182,10 @@ _KEYVALUE_PATTERNS: list[tuple[re.Pattern[str], _Replacement]] = [
 # - in the JSON form with both sides in quotes (`"db_pass": "value"`);
 # - as the last part of a name in front of `:` (YAML), when the value looks
 #   like a secret (`smtp-pass: hunter2hunter2`, not `first_pass: complete`);
+# - a plain `pass` or `Pass` in front of `:` at the start of a line, also
+#   after an indent (YAML), when the value on that line looks like a secret
+#   (`  pass: hunter2hunter2`); `PASS` in capitals is the word of a test
+#   report there;
 # - `pwd` in front of a number.
 # `pass` must not follow a letter ("bypass") and `pwd` in front of `=` must
 # be the last part of a name.
@@ -206,6 +211,7 @@ _FIELD_KEY = (
     r"|(?:(?<![a-z])pass|(?<=[_.\-])pwd)['\"]?\s*=\s*"
     r"|(?:(?<=['\"_.\-])pass|(?<=[_.\-])pwd)['\"]\s*:\s*(?=['\"])"
     r"|(?<=[_.\-])(?:pass|pwd)\s*:\s*(?=['\"]?" + _SECRET_LIKE + r")"
+    r"|(?m:^[ \t]*)(?-i:[Pp]ass)[ \t]*:[ \t]*(?=['\"]?" + _SECRET_LIKE + r")"
     r"|(?<![a-z])pwd['\"]?\s*[=:]\s*(?=" + _NUMBER + r")"
 )
 _SECRET_FIELD_RE = re.compile(

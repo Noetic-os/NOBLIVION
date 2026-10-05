@@ -150,6 +150,34 @@ def test_a_pass_key_in_memory_text_needs_an_equals_sign_or_a_value_like_a_secret
     assert mt.redact("first_pass: complete") == "first_pass: [REDACTED]"
 
 
+def test_a_plain_pass_key_at_the_start_of_a_line_counts_in_memory_text() -> None:
+    # ``pass: value`` as a line of its own, also after an indent (YAML), when
+    # the value looks like a secret
+    plain, symbols = secret_forms.PLAIN_PASS, secret_forms.SYMBOL_PASS
+    assert mt.redact_memory(f"pass: {plain}") == "pass: [REDACTED]"
+    assert mt.redact_memory(f"  pass: {symbols}") == "  pass: [REDACTED]"
+    assert mt.redact_memory(f"smtp:\n  user: alice\n  pass: {plain}\n  port: 587\n") == (
+        "smtp:\n  user: alice\n  pass: [REDACTED]\n  port: 587\n"
+    )
+    assert mt.redact_memory(f'\tpass: "{plain}"') == "\tpass: [REDACTED]"
+    assert mt.redact_memory(f"User: alice\nPass: {plain}") == "User: alice\nPass: [REDACTED]"
+    # ``PASS`` in capitals is a word of a test report, a plain word is not a
+    # secret, and ``pass`` in the middle of a line is prose
+    for text in (
+        "PASS: test_name",
+        f"PASS: {plain}",
+        "pass: complete",
+        "  pass: complete",
+        "The first pass: read the file",
+        f"The first pass: {plain}",
+        f"pass:\n  {plain}",
+    ):
+        assert mt.redact_memory(text) == text, text
+    # the query set keeps the broad rule
+    assert mt.redact(f"  pass: {symbols}") == "  pass: [REDACTED]"
+    assert mt.redact("pass: complete") == "pass: [REDACTED]"
+
+
 def test_a_number_is_a_secret_for_a_password_key_and_a_count_for_a_token_key() -> None:
     for redact in (mt.redact, mt.redact_memory):
         for key in ("password", "passwd", "pwd", "secret", "api_key", "client_secret"):

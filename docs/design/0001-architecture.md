@@ -877,7 +877,9 @@ Three rules keep the text of a note that is not a secret:
   front of `:` a key that ends in `pass` counts when its value looks like a
   secret: one word of 8 or more characters with a digit, a symbol inside
   it, or a capital letter after a small letter
-  (`smtp-pass: hunter2hunter2`).
+  (`smtp-pass: hunter2hunter2`). A plain `pass` or `Pass` in front of `:`
+  counts by the same rule at the start of a line, also after an indent
+  (`  pass: hunter2hunter2`). `PASS` in capitals does not count there.
 - After `:` the words `true`, `false` and `null` are not a secret. A number
   is a secret for a password key (`password: 12345678`) and a count for a
   key that ends in `token` (`"input_token": 12345678`).

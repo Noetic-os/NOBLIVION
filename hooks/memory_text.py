@@ -143,9 +143,12 @@ _RX_PASS_KEY = (
 # There it is a key in front of ``=`` when it does not follow a letter
 # (``DB_PASS=value``, not ``bypass=off``), and as the last part of a name in
 # front of ``:`` when the value looks like a secret
-# (``smtp-pass: hunter2hunter2``). ``passphrase``, ``passcode``, ``session``
-# and ``cookie`` keys stay as in the query set; the key is read from that
-# word on, at most 40 characters.
+# (``smtp-pass: hunter2hunter2``). A plain ``pass`` or ``Pass`` is a key in
+# front of ``:`` at the start of a line, also after an indent (YAML), when the
+# value on that line looks like a secret; ``PASS`` in capitals is the word of
+# a test report there. ``passphrase``, ``passcode``, ``session`` and
+# ``cookie`` keys stay as in the query set; the key is read from that word
+# on, at most 40 characters.
 # A value that looks like a secret: one word of 8 or more characters that has
 # a digit, a symbol inside it, or a capital letter after a small letter. A
 # plain word stays, also with a capital first letter, in brackets or with a
@@ -160,6 +163,7 @@ _SECRET_LIKE = (
 )
 _RX_PASS_KEY_MEMORY = (
     r"(?i)((?<![a-z])pass(?=\s*=)|(?<=[_.-])pass(?=\s*:\s*['\"]?" + _SECRET_LIKE + r")"
+    r"|(?m:^[ \t]*)(?-i:[Pp]ass)(?=[ \t]*:[ \t]*['\"]?" + _SECRET_LIKE + r")"
     r"|(?:passphrase|passcode|session|cookie)[\w-]{0,40})"
     r"(\s*[:=]\s*)(['\"]?)[^\s'\"&,;]{3,}\3",
     0,
