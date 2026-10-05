@@ -84,7 +84,8 @@ The store scans the memory folders at start and then every 30 seconds.
   cannot be redacted is not stored. When an update changes the redaction
   rules, the next scan writes every note again with the new rules. A note
   that this scan cannot read is written again by the first later scan that
-  can read it.
+  can read it. The row of a deleted note is not written again. It keeps its
+  old text until the store removes it.
 
 After Claude Code writes a memory file, the memory sync hook runs
 `noblivion index` at once. You do not have to wait for the next scan.

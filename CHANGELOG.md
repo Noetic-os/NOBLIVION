@@ -88,13 +88,16 @@ All notable changes to NOBLIVION. The format follows
   (`password: 12345678`). A list of 81 texts is tested against the store
   redactor and against the redactor that the hooks use for memory text.
 - The redactor version is 2, so the first index scan after the update
-  writes every Markdown note again with the new rules (NOBLIVION-46). The
-  indexer now keeps the version mark per namespace. Before, the mark was
-  one value for the database, so with two namespaces the second kept its
-  old rows. One file that the scan cannot read no longer makes every later
-  scan write all rows again: the scan sets the mark, and it writes the row
-  of that file again when the file can be read. Notes that the transcript
-  miner stored before the update are not written again.
+  writes every Markdown note whose file it can read again with the new
+  rules (NOBLIVION-46). The indexer now keeps the version mark per
+  namespace. Before, the mark was one value for the database, so with two
+  namespaces the second kept its old rows. One file that the scan cannot
+  read no longer makes every later scan write all rows again: the scan sets
+  the mark, and it writes the row of that file again when the file can be
+  read. The row of a note whose file is deleted is not written again: it
+  keeps its old text until the store removes the row at the end of the
+  delete grace time (14 days by default). Notes that the transcript miner
+  stored before the update are not written again.
 - The credential guard now also blocks these reads of a git config that
   holds a credential URL: the file as standard input (`cat < .git/config`,
   `echo "$(< .git/config)"`), a glob on a folder name (`cat .g*/conf*`), a
