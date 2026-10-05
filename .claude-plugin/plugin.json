@@ -1,6 +1,6 @@
 {
   "name": "noblivion",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Local memory recall, guards and a memory usage report for Claude Code. The store runs on this machine.",
   "author": {
     "name": "NOBLIVION contributors"

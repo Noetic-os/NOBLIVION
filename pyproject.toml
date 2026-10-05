@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 [project]
 name = "noblivion"
-version = "0.1.5"
+version = "0.1.6"
 description = "A Claude Code plugin for local memory recall, guards and a memory usage report."
 readme = "README.md"
 license = "AGPL-3.0-or-later"

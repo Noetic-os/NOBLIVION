@@ -6,10 +6,29 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.6 - 2026-10-05
+
+Changes three defaults and the redactor version. The transcript miner is
+off. The ranked index has a relevance floor of 0.68 for the default
+embedding model. The floor of error recall in `local` mode is 0.39. The
+redactor version is 2, so the first index scan after the update writes
+the Markdown notes again with the new secret rules. Also fixes the
+citation trust signal, the secret redactor, the credential guard, the
+guard table, keyword matches in recall, the embeddings consent of a
+running store, and the transcript miner. After the plugin update, type
+`/noblivion:setup` in the next session: the store venv must be rebuilt for
+0.1.6.
 
 ### Changed
 
+- Behaviour change: the transcript miner is off by default (NOBLIVION-53).
+  Before, it ran at the end of every session. No precision figure is
+  measured for its notes yet, and it stored false notes (see Fixed). To
+  turn it on, set `miner.enabled` to `true` in `config.json` or set
+  `NOBLIVION_MINER=1`. A config file or an environment that already turns
+  the miner on keeps it on. While the miner is off, `noblivion mine` reads
+  no transcript and says how to turn it on. Notes mined before stay in the
+  database. The update does not delete or change them.
 - Behaviour change for the ranked index, which the shipped config file
   turns on: the index now has a relevance floor by default (NOBLIVION-48).
   A row whose vector score is below 0.68 is not shown, so the index can be
@@ -37,20 +56,27 @@ All notable changes to NOBLIVION. The format follows
   of 14 expected notes pass (recall 0.071). At 0.39, 9 of 14 pass (recall
   0.643) and no wrong note passes (precision 1.000). The quote check still
   runs after this floor.
+- The redactor version is 2, so the first index scan after the update
+  writes every Markdown note whose file it can read again with the new
+  rules (NOBLIVION-46). The indexer now keeps the version mark per
+  namespace. Before, the mark was one value for the database, so with two
+  namespaces the second kept its old rows. One file that the scan cannot
+  read no longer makes every later scan write all rows again: the scan sets
+  the mark, and it writes the row of that file again when the file can be
+  read. The row of a note whose file is deleted is not written again: it
+  keeps its old text until the store removes the row at the end of the
+  delete grace time (14 days by default). Notes that the transcript miner
+  stored before the update are not written again. A store process that
+  started before the update runs the old code until it stops. A note that
+  it indexes in that time gets the old rules. The next scan of the new
+  code writes that row again: a scan keeps the revision of its last write
+  for each namespace and redoes a row with a later revision.
 - `tools/eval_thresholds.py` now also measures the two paths of a default
   install: the ranked index with the shipped config file, and error recall
   in `local` mode. CI gates both. The docs name the path that each
   published number describes. The eval set is small and has no held-out
   split, so the numbers are too good as a forecast for real notes
   (NOBLIVION-48).
-- Behaviour change: the transcript miner is off by default (NOBLIVION-53).
-  Before, it ran at the end of every session. No precision figure is
-  measured for its notes yet, and it stored false notes (see Fixed). To
-  turn it on, set `miner.enabled` to `true` in `config.json` or set
-  `NOBLIVION_MINER=1`. A config file or an environment that already turns
-  the miner on keeps it on. While the miner is off, `noblivion mine` reads
-  no transcript and says how to turn it on. Notes mined before stay in the
-  database. The update does not delete or change them.
 
 ### Fixed
 
@@ -92,21 +118,6 @@ All notable changes to NOBLIVION. The format follows
   `token` (`"input_token": 12345678`) and is removed for a password key
   (`password: 12345678`). A list of 90 texts is tested against the store
   redactor and against the redactor that the hooks use for memory text.
-- The redactor version is 2, so the first index scan after the update
-  writes every Markdown note whose file it can read again with the new
-  rules (NOBLIVION-46). The indexer now keeps the version mark per
-  namespace. Before, the mark was one value for the database, so with two
-  namespaces the second kept its old rows. One file that the scan cannot
-  read no longer makes every later scan write all rows again: the scan sets
-  the mark, and it writes the row of that file again when the file can be
-  read. The row of a note whose file is deleted is not written again: it
-  keeps its old text until the store removes the row at the end of the
-  delete grace time (14 days by default). Notes that the transcript miner
-  stored before the update are not written again. A store process that
-  started before the update runs the old code until it stops. A note that
-  it indexes in that time gets the old rules. The next scan of the new
-  code writes that row again: a scan keeps the revision of its last write
-  for each namespace and redoes a row with a later revision.
 - The credential guard now also blocks these reads of a git config that
   holds a credential URL: the file as standard input (`cat < .git/config`,
   `echo "$(< .git/config)"`), a glob on a folder name (`cat .g*/conf*`), a
