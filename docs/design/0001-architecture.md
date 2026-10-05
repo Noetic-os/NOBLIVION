@@ -841,9 +841,12 @@ description is left out with its blank line.
 - Empty scan: if a folder is missing or empty while its root has live
   rows, the scan deletes nothing in that root. A missing folder is far more often a
   mount or a config fault than a user who deleted every memory.
-- Redaction failure: if the redactor returns its fail token for any file,
-  that file is skipped and logged, and the scan deletes nothing in that
-  run. A file whose text cannot be redacted safely is never stored.
+- Skipped file: if a file cannot be read, or the redactor returns its fail
+  token for it, that file is skipped and logged, and the scan deletes
+  nothing in the root of that file in that run. The deletes of the other
+  roots run. The CLI and the store log name the file that holds back the
+  deletes of its root. A file whose text cannot be redacted safely is never
+  stored.
 
 ### 5.6 When it runs
 
@@ -856,9 +859,9 @@ description is left out with its blank line.
   keeps the mtime, and the cache would hide it (E3d).
 - On demand: `noblivion index [--force] [--allow-shrink]`, also
   `python -m noblivion.indexer`. Exit codes: 0 done; 1 a file was skipped
-  (not readable or not redactable), so nothing was deleted; 2 the shrink
-  guard blocked the deletes; 3 the schema refuses the CLI (section 6.6);
-  4 another scan holds `index.lock`.
+  (not readable or not redactable), so nothing was deleted in its root;
+  2 the shrink guard blocked the deletes; 3 the schema refuses the CLI
+  (section 6.6); 4 another scan holds `index.lock`.
 - One scan at a time: the store holds an in-process lock, and the CLI holds
   `flock` on `index.lock` in the data dir. The store takes the same flock.
 

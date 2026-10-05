@@ -202,6 +202,11 @@ reason. When you really removed the files, run:
 noblivion index --allow-shrink
 ```
 
+The index also deletes nothing in a project folder while a file of that
+folder cannot be read or redacted. `noblivion index` names the file, and
+`--json` shows the held deletes per folder in `deletes_held`. Fix the
+permissions of the file, or remove it. The next scan runs the deletes.
+
 ## Hooks run twice
 
 You may still have the old hand-installed hooks. Run

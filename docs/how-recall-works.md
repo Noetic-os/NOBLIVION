@@ -76,9 +76,10 @@ The store scans the memory folders at start and then every 30 seconds.
 - **Deletes.** A deleted file is marked as deleted. The store removes the
   row after 14 days.
 - **Shrink guard.** When a scan would delete more than 10% of the notes,
-  the indexer deletes none of them. It also deletes nothing when it cannot
-  read or redact a file. Run `noblivion index --allow-shrink` when you
-  really removed many files.
+  the indexer deletes none of them. It also deletes nothing in a project
+  folder when it cannot read or redact a file of that folder.
+  `noblivion index` names the file. Run `noblivion index --allow-shrink`
+  when you really removed many files.
 - **Redaction.** The indexer removes secrets (keys, private key blocks,
   tokens, passwords) from the text before it stores the text. A file that
   cannot be redacted is not stored. When an update changes the redaction

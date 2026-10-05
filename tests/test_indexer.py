@@ -676,7 +676,7 @@ def test_empty_folder_deletes_nothing(conn, tmp_path):
     assert len(live(conn)) == 10
 
 
-def test_redaction_failure_skips_the_file_and_all_deletes(conn, tmp_path, monkeypatch):
+def test_redaction_failure_skips_the_file_and_the_deletes_of_its_root(conn, tmp_path, monkeypatch):
     folder = make_folder(tmp_path, "proj-demo", _ten_files())
     indexer.scan(conn, [folder])
     (folder / "user_0.md").unlink()
@@ -695,6 +695,57 @@ def test_redaction_failure_skips_the_file_and_all_deletes(conn, tmp_path, monkey
     monkeypatch.setattr(redaction, "redact_at_rest", real)
     result = indexer.scan(conn, [folder])
     assert (result.inserted, result.deleted, result.skipped) == (1, 1, [])
+
+
+def _ten_files_of(root: str) -> dict[str, str]:
+    return {f"user_{i}.md": f"note {i} of {root}\n" for i in range(10)}
+
+
+@pytest.mark.parametrize("fault", ["unreadable", "unredactable"])
+def test_a_skipped_file_holds_back_the_deletes_of_its_own_root_only(
+    conn, tmp_path, monkeypatch, fault
+):
+    a = make_folder(tmp_path, "proj-a", {**_ten_files_of("a"), "reference_ci.md": "ci note\n"})
+    b = make_folder(tmp_path, "proj-b", _ten_files_of("b"))
+    indexer.scan(conn, [a, b])
+    (a / "user_1.md").unlink()
+    (b / "user_1.md").unlink()
+    with monkeypatch.context() as broken:
+        if fault == "unreadable":
+            _make_unreadable(broken, "reference_ci.md")  # its row is a delete candidate too
+            bad, held = "proj-a/reference_ci.md", 2
+        else:
+            (a / "user_bad.md").write_text("POISON\n", encoding="utf-8")
+            _make_unredactable(broken, "POISON")
+            bad, held = "proj-a/user_bad.md", 1
+        result = indexer.scan(conn, [a, b], allow_shrink=True)
+    assert result.skipped == [bad]
+    assert (result.deleted, result.deletes_cancelled) == (1, held)
+    assert result.deletes_held == {"proj-a": held}
+    assert result.to_dict()["deletes_held"] == {"proj-a": held}
+    assert result.held_lines() == [
+        f"root proj-a: {held} delete(s) wait until {bad} can be read and redacted"
+    ]
+    assert ("proj-b", "user_1.md") not in live(conn)
+    assert {("proj-a", "user_1.md"), ("proj-a", "reference_ci.md")} <= live(conn)
+    # The file can be read and redacted again: the held delete runs.
+    result = indexer.scan(conn, [a, b], allow_shrink=True)
+    assert (result.deleted, result.skipped, result.deletes_held) == (1, [], {})
+    assert ("proj-a", "user_1.md") not in live(conn)
+    assert ("proj-a", "reference_ci.md") in live(conn)
+
+
+def test_a_skipped_file_in_a_root_with_no_delete_holds_nothing_back(conn, tmp_path, monkeypatch):
+    a = make_folder(tmp_path, "proj-a", _ten_files_of("a"))
+    b = make_folder(tmp_path, "proj-b", _ten_files_of("b"))
+    indexer.scan(conn, [a, b])
+    (a / "user_1.md").unlink()
+    (b / "user_bad.md").write_text("POISON\n", encoding="utf-8")
+    _make_unredactable(monkeypatch, "POISON")
+    result = indexer.scan(conn, [a, b])
+    assert (result.skipped, result.deleted) == (["proj-b/user_bad.md"], 1)
+    assert (result.deletes_cancelled, result.deletes_held, result.held_lines()) == (0, {}, [])
+    assert ("proj-a", "user_1.md") not in live(conn)
 
 
 def test_failed_redaction_of_a_changed_file_keeps_the_old_row(conn, tmp_path, monkeypatch):

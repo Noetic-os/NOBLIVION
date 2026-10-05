@@ -20,6 +20,14 @@ All notable changes to NOBLIVION. The format follows
   rows (at most 2400 characters per prompt and 4000 per session). To turn
   them off, set `NOBLIVION_RECALL_LABELS` to `0` in `recall.env` or in the
   environment.
+- A note file that the indexer cannot read or redact now holds back only
+  the deletes of its own project folder (NOBLIVION-54). Before, one such
+  file stopped the deletes in every folder, so deleted notes of all
+  projects stayed in recall until the file was fixed. `noblivion index`
+  and the store log name the file that holds back the deletes of its
+  folder, and `noblivion index --json` shows the count per folder in the
+  new key `deletes_held`. The other half of the report, a full rewrite on
+  every scan after a redactor version change, was already fixed in 0.1.6.
 
 ## 0.1.6 - 2026-10-05
 

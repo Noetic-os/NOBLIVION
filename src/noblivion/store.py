@@ -479,6 +479,8 @@ class Store:
         self.index_blocked = result.blocked
         if result.changed or result.skipped or result.blocked:
             log.info("index scan: %s", result.summary())
+        for line in result.held_lines():
+            log.warning("index scan: %s", line)
         return result
 
     def backfill_once(self, conn: sqlite3.Connection) -> None:

@@ -172,6 +172,32 @@ def test_the_hook_memory_dir_is_always_indexed(home, monkeypatch, tmp_path):
     assert hook_dir in config.load_settings().resolved_memory_dirs()
 
 
+def test_cli_names_the_file_that_holds_back_the_deletes_of_its_root(home, capsys, monkeypatch):
+    a = make_folder(home, "proj-a", 20)
+    b = make_folder(home, "proj-b", 20)
+    (a / "reference_ci.md").write_text("ci note\n", encoding="utf-8")
+    assert indexer.main([]) == indexer.EXIT_OK
+    (a / "user_001.md").unlink()
+    (b / "user_001.md").unlink()
+    real = Path.read_bytes
+
+    def read_bytes(self):
+        if self.name == "reference_ci.md":
+            raise PermissionError(13, "Permission denied")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    capsys.readouterr()
+    assert indexer.main(["--json"]) == indexer.EXIT_SKIPPED
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+    assert (out["deleted"], out["deletes_cancelled"]) == (1, 2)
+    assert out["deletes_held"] == {"proj-a": 2}
+    assert "skipped proj-a/reference_ci.md" in captured.err
+    held = "root proj-a: 2 delete(s) wait until proj-a/reference_ci.md can be read and redacted"
+    assert f"noblivion index: {held}\n" in captured.err
+
+
 def test_cli_explicit_memory_dir_and_db(home, tmp_path):
     folder = make_folder(tmp_path / "x", "proj-x", 2)
     db_path = tmp_path / "other" / "store.db"

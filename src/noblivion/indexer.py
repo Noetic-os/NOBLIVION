@@ -16,8 +16,9 @@ One scan:
    soft-deleted, or sits in a root whose folder is gone moves that row (id and
    trust history stay); else an insert. A live row whose file is gone is
    soft-deleted.
-4. Guards (section 5.5) may cancel every delete of the scan: the shrink guard,
-   the empty-folder rule, and a file that could not be read or redacted.
+4. Guards (section 5.5) may cancel deletes: the shrink guard every delete of
+   the scan, the empty-folder rule the deletes of its root, and a file that
+   could not be read or redacted the deletes of its root.
 5. Write in batches of 200 rows, each in one ``BEGIN IMMEDIATE`` transaction
    that bumps ``meta.content_rev`` and stamps the changed rows.
 
@@ -35,10 +36,10 @@ older release wrote that row, with its rules.
 
 CLI: ``python -m noblivion.indexer [--force] [--allow-shrink]`` (also
 ``noblivion index``). Exit codes: 0 done; 1 some files were skipped (not
-readable or not redactable) so nothing was deleted; 2 the shrink guard blocked
-the deletes; 3 the database schema refuses this tool; 4 another scan holds the
-index lock; 5 SQLite stayed locked past its busy timeout, or another SQLite
-error (one line on stderr, no traceback).
+readable or not redactable) so nothing was deleted in their roots; 2 the shrink
+guard blocked the deletes; 3 the database schema refuses this tool; 4 another
+scan holds the index lock; 5 SQLite stayed locked past its busy timeout, or
+another SQLite error (one line on stderr, no traceback).
 """
 
 from __future__ import annotations
@@ -402,6 +403,7 @@ class ScanResult:
     blocked: bool = False
     block_reason: str = ""
     deletes_cancelled: int = 0
+    deletes_held: dict[str, int] = field(default_factory=dict)  # root -> deletes a skip held
     content_rev: int = 0
 
     @property
@@ -423,6 +425,7 @@ class ScanResult:
             "index_blocked": self.blocked,
             "block_reason": self.block_reason,
             "deletes_cancelled": self.deletes_cancelled,
+            "deletes_held": dict(self.deletes_held),
             "content_rev": self.content_rev,
         }
 
@@ -434,6 +437,15 @@ class ScanResult:
             f"content_rev={self.content_rev}"
         )
         return line + (" index_blocked=true" if self.blocked else "")
+
+    def held_lines(self) -> list[str]:
+        """One line per root whose deletes a skipped file held back. It names
+        the files the user must fix or remove."""
+        lines = []
+        for root, n in sorted(self.deletes_held.items()):
+            files = ", ".join(name for name in self.skipped if name.split("/", 1)[0] == root)
+            lines.append(f"root {root}: {n} delete(s) wait until {files} can be read and redacted")
+        return lines
 
 
 @dataclass(frozen=True)
@@ -617,11 +629,21 @@ def scan(
             continue
         work.append((op, prep))
 
-    if result.skipped:
-        # A file that cannot be read or redacted: delete nothing this run.
-        cancelled = sum(1 for op, _ in work if op.kind == "delete")
-        result.deletes_cancelled += cancelled
-        work = [(op, prep) for op, prep in work if op.kind != "delete"]
+    held_roots = {name.split("/", 1)[0] for name in result.skipped}
+    if held_roots:
+        # A file that cannot be read or redacted: delete nothing in its root
+        # this run. Its own row, or the row of its old name, may be a delete.
+        # The deletes of the other roots run.
+        root_of: dict[int | None, str] = {r.id: r.root for r in rows}
+        kept: list[tuple[Op, _Prepared | None]] = []
+        for op, prep in work:
+            root = root_of.get(op.row_id, "") if op.kind == "delete" else ""
+            if root in held_roots:
+                result.deletes_held[root] = result.deletes_held.get(root, 0) + 1
+                continue
+            kept.append((op, prep))
+        result.deletes_cancelled += sum(result.deletes_held.values())
+        work = kept
 
     for start in range(0, len(work), db.BATCH_ROWS):
         batch = work[start : start + db.BATCH_ROWS]
@@ -749,6 +771,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(json.dumps(result.to_dict()) if args.json else f"noblivion index: {result.summary()}")
     for name in result.skipped:
         print(f"noblivion index: skipped {name} (not readable or not redactable)", file=sys.stderr)
+    for line in result.held_lines():
+        print(f"noblivion index: {line}", file=sys.stderr)
     if result.blocked:
         print(f"noblivion index: {result.block_reason}", file=sys.stderr)
         return EXIT_BLOCKED

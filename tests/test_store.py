@@ -716,6 +716,35 @@ def test_background_scan_and_backfill_feed_search(tmp_path):
         run.stop()
 
 
+def test_a_scan_logs_the_file_that_holds_back_the_deletes_of_its_root(
+    tmp_path, monkeypatch, caplog
+):
+    st = make_store(tmp_path)
+    folder = st.settings.memory_dirs[0]
+    folder.mkdir(parents=True)
+    for i in range(20):
+        (folder / f"user_{i:02}.md").write_text(f"note {i}\n", encoding="utf-8")
+    (folder / "reference_ci.md").write_text("ci note\n", encoding="utf-8")
+    real = Path.read_bytes
+
+    def read_bytes(self):
+        if self.name == "reference_ci.md":
+            raise PermissionError(13, "Permission denied")
+        return real(self)
+
+    with closing(db.open_db(st.settings.db_path, create=True)) as conn:
+        assert st.scan_once(conn).inserted == 21
+        (folder / "user_01.md").unlink()
+        monkeypatch.setattr(Path, "read_bytes", read_bytes)
+        with caplog.at_level("INFO", logger="noblivion.store"):
+            assert st.scan_once(conn).deletes_held == {"-work-proj-demo": 2}
+    held = (
+        "index scan: root -work-proj-demo: 2 delete(s) wait until "
+        "-work-proj-demo/reference_ci.md can be read and redacted"
+    )
+    assert held in [r.getMessage() for r in caplog.records]
+
+
 def test_index_command_changes_get_vectors_with_periodic_scans_off(tmp_path):
     """With ``index_interval_s=0`` a row that ``noblivion index`` changes or
     adds gets the vector of its new text, without a store restart (NOBLIVION-42)."""
