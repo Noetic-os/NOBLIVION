@@ -965,28 +965,52 @@ def test_a_store_without_consent_is_quiet_until_the_consent_is_back(tmp_path, ca
         remote.close()
 
 
+def _count_job_turns(st: store.Store) -> list[float]:
+    """One entry each time the jobs loop of ``st`` starts to wait for its next
+    turn. The first entry says that the start of the loop (maintenance pass
+    and first scan) is over; entry ``n + 1`` says that turn ``n`` is over."""
+    waits: list[float] = []
+    wait = st._jobs_stop.wait
+
+    def counting(timeout=None):
+        waits.append(timeout)
+        return wait(timeout)
+
+    st._jobs_stop.wait = counting  # type: ignore[method-assign]
+    return waits
+
+
 def test_a_store_that_started_without_consent_is_quiet_too(tmp_path, caplog):
     remote = FakeRemote()
     st = make_store(tmp_path, embedding_service=remote_service(remote.url))
     db.open_db(st.settings.db_path, create=True).close()
     threads = _count_model_threads(st)
-    run = Running(st)
-    try:
-        with caplog.at_level("INFO", logger="noblivion.store"):
-            assert wait_for(
-                lambda: "embedding state: failed" in [r.getMessage() for r in caplog.records]
-            )
+    turns = _count_job_turns(st)
+
+    def lines() -> list[str]:
+        return [r.getMessage() for r in caplog.records]
+
+    # The log level first, then the store: the model thread can write its
+    # state line before the next statement of this test runs.
+    with caplog.at_level("INFO", logger="noblivion.store"):
+        run = Running(st)
+        try:
+            # The start is over: the model thread said its state, and the jobs
+            # loop wrote the lines of its first maintenance pass and scan.
+            assert wait_for(lambda: "embedding state: failed" in lines() and len(turns) >= 1)
             caplog.clear()
-            time.sleep(6 * store.JOB_TICK_S)
+            seen = len(turns)
+            # Six full turns of the jobs loop after the clear.
+            assert wait_for(lambda: len(turns) >= seen + 7, timeout=30.0)
             assert len(threads) == 1  # the start of the store
-            assert [r.getMessage() for r in caplog.records] == []
+            assert lines() == []
             with closing(db.connect(st.settings.db_path)) as conn:
                 embedding.grant_consent(conn, "openrouter", REMOTE_MODEL)
             assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
             assert len(threads) == 2
-    finally:
-        run.stop()
-        remote.close()
+        finally:
+            run.stop()
+            remote.close()
 
 
 def test_answers_while_the_model_loads(tmp_path):
