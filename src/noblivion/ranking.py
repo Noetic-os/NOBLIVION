@@ -81,35 +81,43 @@ def rank_pool(
     bm25_scores: Sequence[float],
     cosines: dict[int, float] | None,
     top_k: int,
+    matched: Sequence[bool] | None = None,
 ) -> RankResult:
     """The fusion step of section 8.3 and the keyword mode of section 8.4.
 
     ``pool`` and ``bm25_scores`` are aligned. ``cosines`` maps a pool position
     to the raw cosine of that row (rows without a vector are absent). ``None``
     or an empty map means keyword mode.
+
+    ``matched`` is aligned with ``pool`` too: True for a row that holds a
+    query token (``BM25.matches``). Without it a row matches when its BM25
+    score is not 0. That test misses a row whose only query token is in
+    exactly half of the pool: the token has an idf of 0 (NOBLIVION-49).
     """
     n = len(pool)
     top_k = max(0, int(top_k))
     bm = [_q(s, FUSION_DECIMALS) for s in bm25_scores]
+    if matched is None:
+        # In a pool of one or two rows a matched term can get a negative idf
+        # (BM25 Okapi), so the test is "not zero", not "above zero".
+        matched = [s != 0 for s in bm]
+    # The rows that match a query term, in BM25 order. Section 8.4 drops the
+    # others: "rows with a BM25 score of 0".
+    by_bm25 = sorted((i for i in range(n) if matched[i]), key=lambda i: (-bm[i], pool[i].id))
     if not cosines:
-        # "Drop rows with a BM25 score of 0" (section 8.4): a row that matches
-        # no query term. In a pool of one or two rows a matched term can get a
-        # negative idf (BM25 Okapi), so the test is "not zero", not "above zero".
-        order = sorted((i for i in range(n) if bm[i] != 0), key=lambda i: (-bm[i], pool[i].id))
         hits = [
             Hit(rank, pool[i], None, _q(1.0 / (RRF_K + rank), FUSION_DECIMALS), bm[i])
-            for rank, i in enumerate(order[:top_k], start=1)
+            for rank, i in enumerate(by_bm25[:top_k], start=1)
         ]
         return RankResult(MODE_KEYWORD, hits, n)
 
     sem = {i: _q(c * pool[i].weight, SCORE_DECIMALS) for i, c in cosines.items()}
     lists = [sorted(sem, key=lambda i: (-sem[i], pool[i].id))]
-    if n and max(bm) > 0:
+    if by_bm25:
         # Only the rows that match a query term, as in keyword mode above. A
-        # row with a BM25 score of 0 gets no fused score from this list, so a
-        # row with no cosine and no match is in no list and is not returned.
-        matched = (i for i in range(n) if bm[i] != 0)
-        lists.append(sorted(matched, key=lambda i: (-bm[i], pool[i].id)))
+        # row that matches none gets no fused score from this list, so a row
+        # with no cosine and no match is in no list and is not returned.
+        lists.append(by_bm25)
     fused: dict[int, float] = {}
     for ranked in lists:
         for rank, i in enumerate(ranked, start=1):
@@ -343,9 +351,10 @@ class RankIndex:
         if not rows or not query.strip():
             mode = MODE_HYBRID if query_vector is not None and rows else MODE_KEYWORD
             return RankResult(mode, [], len(rows))
-        scores = index.scores(bm25.tokenize(query))
+        tokens = bm25.tokenize(query)
+        scores = index.scores(tokens)
         cosines = self._cosines(snap, key, rows, query_vector) if query_vector else {}
-        return rank_pool(rows, scores, cosines, top_k)
+        return rank_pool(rows, scores, cosines, top_k, index.matches(tokens))
 
 
 class Ranker:

@@ -74,3 +74,17 @@ def test_unknown_terms_and_empty_documents_score_zero():
 def test_empty_corpus():
     index = bm25.BM25([])
     assert index.n == 0 and index.scores(["alpha"]) == []
+    assert index.matches(["alpha"]) == []
+
+
+def test_matches_says_which_documents_hold_a_query_token():
+    # NOBLIVION-49. "deploy" is in 2 of 4 documents, so its idf is
+    # log(2.5) - log(2.5) = 0 and every score is 0. The score cannot say
+    # which documents match; the tokens can.
+    index = bm25.BM25([["deploy", "window"], ["coffee"], ["deploy"], []])
+    assert index.idf["deploy"] == 0.0
+    assert index.scores(["how", "do", "deploy"]) == [0.0, 0.0, 0.0, 0.0]
+    assert index.matches(["how", "do", "deploy"]) == [True, False, True, False]
+    assert index.matches(["window", "coffee"]) == [True, True, False, False]
+    assert index.matches(["zeta"]) == [False] * 4
+    assert index.matches([]) == [False] * 4

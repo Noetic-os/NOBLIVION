@@ -105,3 +105,10 @@ class BM25:
     def scores(self, query_tokens: Sequence[str]) -> list[float]:
         """One score per document, in corpus order."""
         return [self.score(query_tokens, i) for i in range(self.n)]
+
+    def matches(self, query_tokens: Sequence[str]) -> list[bool]:
+        """One flag per document, in corpus order: True when the document
+        holds a query token. The score cannot say this: a token in exactly
+        half of the documents has an idf of 0, so it adds 0 to the score."""
+        words = set(query_tokens) & self.idf.keys()
+        return [any(word in tf for word in words) for tf in self.tf]

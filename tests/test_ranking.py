@@ -119,6 +119,60 @@ def test_hybrid_keeps_a_matched_row_with_a_negative_bm25():
     assert result.hits[1].score is None and result.hits[1].bm25 == -0.1
 
 
+def test_hybrid_keeps_a_matched_row_with_a_bm25_of_0():
+    # NOBLIVION-49. A query word in exactly half of the pool has an idf of 0,
+    # so every BM25 score is 0. The rows 20 and 40 hold the word; 30 and 40
+    # have no vector yet. Row 40 matches, so it is returned on the keyword
+    # list alone. Row 30 has no vector and no match: it is in no list.
+    pool = [row(10), row(20), row(30), row(40)]
+    matched = [False, True, False, True]
+    result = ranking.rank_pool(pool, [0.0] * 4, {0: 0.9, 1: 0.5}, top_k=5, matched=matched)
+    assert result.mode == "hybrid"
+    assert [h.row.id for h in result.hits] == [20, 10, 40]
+    # fused 20 = 1/62 + 1/61, fused 10 = 1/61, fused 40 = 1/62
+    assert [h.fusion_score for h in result.hits] == [
+        round(1 / 62 + 1 / 61, 6),
+        round(1 / 61, 6),
+        round(1 / 62, 6),
+    ]
+    assert [h.score for h in result.hits] == [0.5, 0.9, None]
+    assert [h.bm25 for h in result.hits] == [0.0, 0.0, 0.0]
+
+
+def test_hybrid_ranks_a_matched_row_with_a_bm25_of_0_under_the_scored_rows():
+    # The keyword list is in BM25 order: a positive score, then the matched
+    # rows with 0 (ties by id), then a matched row with a negative score.
+    pool = [row(1), row(2), row(3), row(4), row(5)]
+    matched = [True, True, True, False, True]
+    result = ranking.rank_pool(pool, [0.0, 2.0, -0.1, 0.0, 0.0], {3: 0.9}, 5, matched)
+    by_id = {h.row.id: h.fusion_score for h in result.hits}
+    assert by_id == {
+        4: round(1 / 61, 6),  # the cosine list only
+        2: round(1 / 61, 6),
+        1: round(1 / 62, 6),
+        5: round(1 / 63, 6),
+        3: round(1 / 64, 6),
+    }
+
+
+def test_no_matched_row_means_no_keyword_list():
+    pool = [row(1), row(2)]
+    result = ranking.rank_pool(pool, [0.0, 0.0], {0: 0.3, 1: 0.7}, 5, [False, False])
+    assert [h.fusion_score for h in result.hits] == [round(1 / 61, 6), round(1 / 62, 6)]
+    assert ranking.rank_pool(pool, [0.0, 0.0], None, 5, [False, False]).hits == []
+
+
+def test_keyword_mode_keeps_a_matched_row_with_a_bm25_of_0():
+    # Section 8.4 drops the rows that match no query term. A matched row whose
+    # only term is in exactly half of the pool has a score of 0 too.
+    pool = [row(1), row(2), row(3), row(4)]
+    matched = [True, False, True, True]
+    result = ranking.rank_pool(pool, [0.0, 0.0, 1.5, 0.0], None, top_k=5, matched=matched)
+    assert result.mode == "keyword"
+    assert [h.row.id for h in result.hits] == [3, 1, 4]
+    assert [h.score for h in result.hits] == [None, None, None]
+
+
 def test_keyword_mode_drops_zero_rows_and_reports_null_score():
     pool = [row(1), row(2), row(3), row(4)]
     result = ranking.rank_pool(pool, [0.5, 0.0, 1.5, -0.1], None, top_k=5)
@@ -260,6 +314,53 @@ def test_hybrid_search_with_a_fake_model(conn):
     assert result.hits[0].row.id == ids["tests"]
     assert all(h.score is not None for h in result.hits)
     assert embedder.queries == ["pytest venv python"]
+
+
+def half_pool(conn):
+    """4 notes; "deploy" is in exactly 2 of them, so its idf is 0."""
+    return {
+        "deploy_a": add_memory(conn, "release_steps", "deploy the service after the backup"),
+        "coffee": add_memory(conn, "coffee_filter", "paper filter brand"),
+        "deploy_b": add_memory(conn, "rollback_steps", "deploy the old build again"),
+        "garden": add_memory(conn, "garden_hose", "hose length and nozzle"),
+    }
+
+
+def test_a_word_in_half_of_the_pool_still_matches_in_hybrid_mode(conn):
+    # NOBLIVION-49, the review reproducer: 4 notes, "deploy" in 2, and the
+    # query "how do I deploy". Every BM25 score is 0. During a backfill only
+    # 2 notes have a vector; the matched note without one must come back.
+    ids = half_pool(conn)
+    embedder = FakeEmbedder()
+    service = make_service(embedder, conn)
+    for key in ("deploy_a", "coffee"):
+        content = conn.execute("SELECT content FROM memories WHERE id = ?", (ids[key],))
+        text = embedding.embed_text(content.fetchone()[0])
+        vector = embedder.embed_documents([text])[0]
+        embedding._write_vectors(
+            conn, embedder.model_id, [(ids[key], embedding.text_hash(text), vector)]
+        )
+    result = ranking.Ranker(service).search(
+        conn, "how do I deploy", project="claude_code", top_k=10
+    )
+    assert result.mode == "hybrid"
+    assert [h.bm25 for h in result.hits] == [0.0] * len(result.hits)
+    by_id = {h.row.id: h for h in result.hits}
+    assert set(by_id) == {ids["deploy_a"], ids["coffee"], ids["deploy_b"]}
+    assert by_id[ids["deploy_b"]].score is None  # matched, no vector yet
+    assert ids["garden"] not in by_id  # no vector and no match
+    # The matched note with a vector is in both lists, so it is first.
+    assert result.hits[0].row.id == ids["deploy_a"]
+
+
+def test_a_word_in_half_of_the_pool_still_matches_in_keyword_mode(conn):
+    ids = half_pool(conn)
+    index = ranking.RankIndex()
+    index.refresh(conn)
+    result = index.rank("how do I deploy", project="claude_code", top_k=10)
+    assert result.mode == "keyword"
+    assert ranked_ids(result) == [ids["deploy_a"], ids["deploy_b"]]
+    assert index.rank("how do I brew", project="claude_code", top_k=10).hits == []
 
 
 def test_keyword_only_while_no_model_is_available(conn):

@@ -1266,9 +1266,12 @@ row cannot change the ranks of the others.
 Reciprocal rank fusion with `k = 60`, as in the reference implementation:
 
 1. Rank the rows that have a vector by weighted cosine (ties by id).
-2. Rank the rows whose BM25 score is not 0 by BM25 (ties by id). Skip this
-   list when no BM25 score is above zero. A row that matches no query term
-   is not in this list, as in keyword-only mode (section 8.4). The reference
+2. Rank the rows that match a query term by BM25 (ties by id). A row
+   matches when it holds at least one token of the query. Skip this list
+   when no row matches. A row that matches no query term is not in this
+   list, as in keyword-only mode (section 8.4). The BM25 score cannot
+   decide the match: a term in exactly half of the pool has an idf of 0,
+   so a row that holds only this term has a score of 0. The reference
    implementation ranked the whole pool here, so the tie of zeros broke by
    id and the oldest rows got a fused score for a query they do not match
    (NOBLIVION-49).
@@ -1298,9 +1301,12 @@ score (or the cosine in the empty fallback).
 Used when the backend is `none`, the model is not loaded yet, the model
 failed, or the query embed failed.
 
-- Rank by BM25 only. Drop rows with a BM25 score of 0 (rows that match no
-  query term). In a pool of one or two rows a matched term can have a
-  negative idf, so the rule is "not 0", not "above 0".
+- Rank by BM25 only. Drop the rows that match no query term: the rows
+  that hold no token of the query. A matched row can have a BM25 score of
+  0, because a term in exactly half of the pool has an idf of 0. In a pool
+  of one or two rows a matched term can have a negative idf, so the score
+  can be below 0 too. Such a row stays, after the rows with a higher score
+  (NOBLIVION-49).
 - `score` is `null`, because no cosine exists. A `0.0` would read as "no
   match" to a hook floor and drop every row. `fusion_score` is
   `1 / (60 + rank)`.

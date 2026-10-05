@@ -127,6 +127,14 @@ All notable changes to NOBLIVION. The format follows
   change, old notes that had nothing to do with the prompt reached the
   context. Now the keyword list holds only the notes that match, as in
   keyword-only mode, and a note with no vector and no match is not returned.
+- Recall no longer misses a note whose only matching word is in exactly
+  half of the notes of its pool (NOBLIVION-49). Such a word has a keyword
+  weight of 0, so the note had a keyword score of 0, and the store read a
+  score of 0 as "matches no word". With 4 notes and `deploy` in 2 of them,
+  the prompt `how do I deploy` found nothing in keyword-only mode. In
+  hybrid mode, with the entry above, a matching note with no vector yet
+  was not returned. The store now compares the words: a note matches when
+  it holds a word of the query. The keyword scores are unchanged.
 - A rule that the guard table build skips no longer goes unnoticed
   (NOBLIVION-50). A rule whose `violates` matches the empty command or an
   everyday command, or is too slow, does not block. Before, only
