@@ -315,8 +315,9 @@ def test_unknown_route_wrong_method_and_no_cors(running):
 def test_search_shape(running):
     status, body = running.get("/api/memories/search?q=pytest+venv&top_k=1")
     assert status == 200
-    assert set(body) == {"results", "scores", "namespace"}
+    assert set(body) == {"results", "scores", "namespace", "model"}
     assert len(body["scores"]) == 1
+    assert body["model"] == ("fake-model" if body["scores"][0] is not None else None)
     assert body["namespace"] == "claude_code"
     assert len(body["results"]) == 1
     entries = body["results"][0].split(rest.ENTRY_SEPARATOR)
@@ -335,12 +336,47 @@ def test_search_joins_entries(running):
 @pytest.mark.parametrize("query", ["", "q=", "q=+++"])
 def test_search_empty_query(running, query):
     body = running.get(f"/api/memories/search?{query}")[1]
-    assert body == {"results": ["No memories available."], "scores": [], "namespace": "claude_code"}
+    assert body == {
+        "results": ["No memories available."],
+        "scores": [],
+        "namespace": "claude_code",
+        "model": None,
+    }
 
 
 def test_search_echoes_the_project_and_scopes_by_it(running):
     body = running.get("/api/memories/search?q=venv&project=other_space")[1]
-    assert body == {"results": ["No memories available."], "scores": [], "namespace": "other_space"}
+    assert body["results"] == ["No memories available."]
+    assert (body["scores"], body["namespace"]) == ([], "other_space")
+
+
+def test_search_names_the_model_while_the_store_ranks_with_it(tmp_path):
+    # NOBLIVION-76. The hook applies its measured note text floor only to the
+    # model it was measured for, so the search answer names the model of its
+    # scores, as the index answer does (NOBLIVION-48).
+    pytest.importorskip("numpy")
+    service = fake_service(FakeEmbedder(model=embedding.DEFAULT_MODEL))
+    run = Running(make_store(tmp_path, embedding_service=service))
+    try:
+        with closing(db.connect(run.store.settings.db_path, create=True)) as conn:
+            add_memory(conn, "alpha rule", "alpha bravo charlie")
+        assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
+        body = run.get("/api/memories/search?q=alpha")[1]
+        assert body["model"] == embedding.DEFAULT_MODEL and body["scores"][0] is not None
+        # An empty query has no embedding, so its rows are ranked by keyword.
+        assert run.get("/api/memories/search?q=")[1]["model"] is None
+    finally:
+        run.stop()
+
+
+def test_search_answer_names_no_model_in_keyword_mode():
+    from noblivion.ranking import Hit, PoolRow, RankResult
+
+    row = PoolRow(1, "claude_code", "r", "a.md", "claude_code_md", "# a\n\nbody", 1.0, ())
+    hybrid = rest.search_answer(RankResult("hybrid", [Hit(1, row, 0.5, 0.1, 1.0)], 1), "c", "m")
+    keyword = rest.search_answer(RankResult("keyword", [Hit(1, row, None, 0.1, 1.0)], 1), "c", "m")
+    assert (hybrid["model"], keyword["model"]) == ("m", None)
+    assert rest.search_answer(None, "c", "m")["model"] is None
 
 
 def test_search_root_scoping(running):

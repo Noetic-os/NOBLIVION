@@ -69,7 +69,9 @@ Search (env ``NOBLIVION_ERROR_RECALL_MODE``, see ``search``)
                    (0.8 s). Only rows of a memory file are kept (no
                    transcript-miner rows, no index or topic files). Gate
                    ``STORE_MIN_SCORE`` 0.70 (env
-                   ``NOBLIVION_ERROR_RECALL_MIN_SCORE``).
+                   ``NOBLIVION_ERROR_RECALL_MIN_SCORE``), by default only
+                   for an answer that names ``THRESHOLD_MODEL``; another
+                   model gets no gate (``store_gate``).
   fused            both lists, reciprocal rank fusion; a hit passes when either
                    of its scores reaches its gate.
   The store and fused modes are OFF by default: only an explicit
@@ -154,8 +156,10 @@ STORE_TOP_K = 10
 TIME_LIMIT_S = 1.5
 # Measured for THRESHOLD_MODEL by tools/eval_thresholds.py (design doc 0001,
 # section 18). A test fails when embedding.DEFAULT_MODEL changes and this
-# string does not. LOCAL_MIN_SCORE is a share of the query terms and needs no
-# model. The same script measures it on the same eval set (NOBLIVION-48).
+# string does not. The default STORE_MIN_SCORE applies only to an answer that
+# names THRESHOLD_MODEL (NOBLIVION-76, ``store_gate``). LOCAL_MIN_SCORE is a
+# share of the query terms and needs no model. The same script measures it on
+# the same eval set (NOBLIVION-48).
 STORE_MIN_SCORE = 0.70
 THRESHOLD_MODEL = "BAAI/bge-small-en-v1.5"
 LOCAL_MIN_SCORE = 0.39
@@ -861,11 +865,13 @@ class LocalIndex:
 # --------------------------------------------------------------------------
 def store_search(
     query: str, env: Mapping[str, str], folder: Path, k: int = STORE_TOP_K
-) -> List[Tuple[float, Dict[str, str]]]:
-    """``[(score, memory)]`` from the store's ranked index, memory-file rows
-    only, in the store's order. Raises on any failure, and on a keyword-mode
-    answer (no cosine: design doc section 8.4), so the caller falls back to
-    the local search. GET only; the store is read-only for this hook."""
+) -> Tuple[List[Tuple[float, Dict[str, str]]], str]:
+    """``([(score, memory)], model)`` from the store's ranked index:
+    memory-file rows only, in the store's order, and the embedding model that
+    the answer names (``""`` when it names none). Raises on any failure, and
+    on a keyword-mode answer (no cosine: design doc section 8.4), so the
+    caller falls back to the local search. GET only; the store is read-only
+    for this hook."""
     rh = _rh()
     project = rh.recall_project(env)
     root = os.path.basename(os.path.dirname(os.path.normpath(str(folder)))) or None
@@ -906,7 +912,25 @@ def store_search(
                 "body": "",
             }
         out.append((float(score), mem))
-    return out
+    model = payload.get("model")
+    return out, model if isinstance(model, str) else ""
+
+
+def store_gate(env: Mapping[str, str], model: str) -> Optional[float]:
+    """The gate of a store row, or None for no gate.
+
+    ``NOBLIVION_ERROR_RECALL_MIN_SCORE`` that is set is the gate for every
+    model. Unset, or not a number, the gate is STORE_MIN_SCORE only when
+    ``model``, the embedding model that the store's answer names, is
+    THRESHOLD_MODEL. Another model puts its cosines on another scale, and
+    under this gate it can lose every row. So for another model, and for an
+    answer that names none, no store gate applies, as for the index floor of
+    the recall hook (NOBLIVION-76). The quote check still holds every row.
+    """
+    try:
+        return float(env.get("NOBLIVION_ERROR_RECALL_MIN_SCORE", ""))
+    except (TypeError, ValueError):
+        return STORE_MIN_SCORE if model == THRESHOLD_MODEL else None
 
 
 RRF_K = 60
@@ -917,12 +941,13 @@ DEFAULT_MODE = "local"
 def fuse(
     store_rows: List[Tuple[float, Dict[str, str]]],
     local_rows: List[Tuple[float, Dict[str, str]]],
-    store_floor: float,
+    store_floor: Optional[float],
     local_floor: float,
 ) -> List[Tuple[float, Dict[str, Any]]]:
     """Reciprocal rank fusion (k = ``RRF_K``) of the two ranked lists, by
     memory id. A memory is kept when its store score reaches
-    ``store_floor`` OR its local score reaches ``local_floor``. Each kept
+    ``store_floor`` (every store row, when it is None) OR its local score
+    reaches ``local_floor``. Each kept
     memory is a copy with ``d_score`` and ``l_score`` (None when that list did
     not hold it). Best first."""
     table: Dict[str, Dict[str, Any]] = {}
@@ -937,7 +962,9 @@ def fuse(
     kept = [
         e
         for e in table.values()
-        if (e["d_score"] is not None and float(e["d_score"]) >= store_floor)
+        if (
+            e["d_score"] is not None and (store_floor is None or float(e["d_score"]) >= store_floor)
+        )
         or (e["l_score"] is not None and float(e["l_score"]) >= local_floor)
     ]
     kept.sort(key=lambda e: (-float(e["rrf"]), str(e["mem"]["id"])))
@@ -966,13 +993,14 @@ def search(
     """
     mode = (env.get("NOBLIVION_ERROR_RECALL_MODE") or DEFAULT_MODE).strip().lower()
     mode = mode if mode in MODES else DEFAULT_MODE
-    d_floor = _float_env(env, "NOBLIVION_ERROR_RECALL_MIN_SCORE", STORE_MIN_SCORE)
+    d_floor: Optional[float] = None
     l_floor = _float_env(env, "NOBLIVION_ERROR_RECALL_LOCAL_MIN_SCORE", LOCAL_MIN_SCORE)
     store_rows: Optional[List[Tuple[float, Dict[str, str]]]] = None
     store_error = ""
     if mode != "local":
         try:
-            store_rows = store_search(query, env, folder)
+            store_rows, model = store_search(query, env, folder)
+            d_floor = store_gate(env, model)
         except _TimeUp:
             raise
         except Exception as exc:  # noqa: BLE001 - fall back to the local search

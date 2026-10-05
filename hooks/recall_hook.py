@@ -44,7 +44,8 @@ Store call (design doc sections 3.3 and 4)
   ``"No memories available."``. ``root`` is the memory folder key of the
   session (section 5.1): the parent folder name of the memory folder.
   The answer also carries ``scores``: one score per entry, in entry order
-  (design doc section 4.2). ``NOBLIVION_RECALL_MIN_SCORE`` applies only to a
+  (design doc section 4.2), and ``model``, the embedding model of the scores
+  (``null`` in keyword mode). ``NOBLIVION_RECALL_MIN_SCORE`` applies only to a
   hit that carries a numeric ``score``. A body can hold ``---`` lines of its own: only a separator
   followed by a ``[claude_code_md: ...]`` marker starts a new entry.
 
@@ -96,7 +97,8 @@ Log
 
 Environment (config file keys in design doc section 12.3)
   NOBLIVION_DATA_DIR            the data dir (store.json, token, cache)
-  NOBLIVION_RECALL_MIN_SCORE    default 0.68, see above
+  NOBLIVION_RECALL_MIN_SCORE    default 0.68 when the answer names the model
+                                ``BAAI/bge-small-en-v1.5``, else no floor
   NOBLIVION_RECALL_TIMEOUT_S    default 2.0
   NOBLIVION_RECALL_CACHE_DIR    default <data dir>/cache
   NOBLIVION_RECALL_DISABLE      any non-empty value: exit 0, no call, no output
@@ -185,7 +187,8 @@ LOCK_POLL_S = 0.01
 DEFAULT_TIMEOUT_S = 2.0
 # Measured for THRESHOLD_MODEL by tools/eval_thresholds.py (design doc 0001,
 # section 18). A test fails when embedding.DEFAULT_MODEL changes and this
-# string does not: a new model needs a new measurement.
+# string does not: a new model needs a new measurement. It is the default only
+# for a search answer that names THRESHOLD_MODEL (NOBLIVION-76, ``min_score``).
 DEFAULT_MIN_SCORE = 0.68
 THRESHOLD_MODEL = "BAAI/bge-small-en-v1.5"
 # The floor of the ranked index, measured the same way on the path that the
@@ -2121,6 +2124,28 @@ def query_for(payload: Dict[str, Any], max_chars: int = QUERY_MAX_CHARS) -> Opti
     return q or None
 
 
+def min_score(
+    environ: Optional[Mapping[str, str]] = None, model: Optional[str] = THRESHOLD_MODEL
+) -> Optional[float]:
+    """The note text floor of ``recall()``, or None for no floor.
+
+    ``NOBLIVION_RECALL_MIN_SCORE`` that is set is the floor for every model.
+    Unset, or not a number, the floor is DEFAULT_MIN_SCORE only when
+    ``model``, the embedding model that the store's search answer names, is
+    THRESHOLD_MODEL. Another model puts its cosines on another scale, and
+    under this floor it can lose every hit. So for another model, and for an
+    answer that names none (keyword mode, or a store of an older version),
+    the default is no floor, as for the index floor (NOBLIVION-76, see
+    INDEX_MIN_SCORE_ENV). Without ``model`` this is the floor of
+    THRESHOLD_MODEL.
+    """
+    env = os.environ if environ is None else environ
+    try:
+        return float(env.get("NOBLIVION_RECALL_MIN_SCORE", ""))
+    except (TypeError, ValueError):
+        return DEFAULT_MIN_SCORE if model == THRESHOLD_MODEL else None
+
+
 def recall(
     query: str,
     k: int,
@@ -2129,7 +2154,7 @@ def recall(
     root: Optional[str] = None,
 ) -> List[Hit]:
     """Search the store: at most ``k`` hits, with any hit whose score is below
-    ``NOBLIVION_RECALL_MIN_SCORE`` dropped (a scoreless hit passes). The hook and
+    the floor of ``min_score`` dropped (a scoreless hit passes). The hook and
     the MCP tool both come through here, so they share the threshold.
 
     ``md_only`` (the hook) keeps only mirrored markdown memory files
@@ -2140,7 +2165,6 @@ def recall(
     Raises RecallError with a short reason on failure."""
     env = os.environ if environ is None else environ
     timeout_s = _float_env(env, "NOBLIVION_RECALL_TIMEOUT_S", DEFAULT_TIMEOUT_S)
-    min_score = _float_env(env, "NOBLIVION_RECALL_MIN_SCORE", DEFAULT_MIN_SCORE)
     top_k = max(k, min(K_MAX, k * MD_ONLY_OVERFETCH)) if md_only else k
     project = recall_project(env)
     where = session_root(env) if root is None else root
@@ -2149,10 +2173,12 @@ def recall(
     # name one namespace while the rows come from another.
     if isinstance(payload, dict) and "namespace" in payload and payload["namespace"] != project:
         raise RecallError("namespace_mismatch")
+    model = payload.get("model") if isinstance(payload, dict) else None
+    floor = min_score(env, model if isinstance(model, str) else "")
     hits = [
         h
         for h in parse_hits(payload)
-        if (h.score is None or h.score >= min_score) and (h.md or not md_only)
+        if (floor is None or h.score is None or h.score >= floor) and (h.md or not md_only)
     ]
     return hits[:k]
 
@@ -2243,7 +2269,9 @@ def index_row_dedupe(environ: Optional[Mapping[str, str]] = None) -> bool:
 
 
 def index_min_score(
-    environ: Optional[Mapping[str, str]] = None, model: Optional[str] = THRESHOLD_MODEL
+    environ: Optional[Mapping[str, str]] = None,
+    model: Optional[str] = THRESHOLD_MODEL,
+    default: float = DEFAULT_INDEX_MIN_SCORE,
 ) -> Optional[float]:
     """WI-6. The relevance floor of the index, or None for no floor.
 
@@ -2254,9 +2282,10 @@ def index_min_score(
     hook never fails a prompt over a malformed setting, and a malformed
     setting must not turn the floor off.
 
-    The default is DEFAULT_INDEX_MIN_SCORE only when ``model``, the embedding
-    model that the store's answer names, is THRESHOLD_MODEL. For another
-    model, and for an answer that names none, the default is no floor (see
+    The default is ``default`` (DEFAULT_INDEX_MIN_SCORE, or the subagent
+    hook's own measured floor) only when ``model``, the embedding model that
+    the store's answer names, is THRESHOLD_MODEL. For another model, and for
+    an answer that names none, the default is no floor (see
     INDEX_MIN_SCORE_ENV). Without ``model`` this is the floor of
     THRESHOLD_MODEL: what the hook assumes before the store has answered.
     """
@@ -2264,13 +2293,13 @@ def index_min_score(
     raw = (env.get(INDEX_MIN_SCORE_ENV) or "").strip()
     if raw.lower() in INDEX_MIN_SCORE_OFF_WORDS:
         return None
-    default = DEFAULT_INDEX_MIN_SCORE if model == THRESHOLD_MODEL else None
+    floor = default if model == THRESHOLD_MODEL else None
     try:
         value = float(raw)
     except ValueError:
-        return default
+        return floor
     if not -1.0 <= value <= 1.0:  # False for nan too
-        return default
+        return floor
     return value
 
 
@@ -2471,10 +2500,12 @@ def rerank_index(
       (that order is the store's own fusion). A row with no score is put last,
       because a candidate the store could not score cannot be trusted above one
       it could;
-    - the local sub-token BM25 order over the same candidates.
+    - the local sub-token BM25 order over the candidates whose file holds a
+      query word.
 
     A row whose title does not name a file in the local corpus keeps its place in
-    the cosine list and scores zero in the BM25 list. That is the honest handling:
+    the cosine list and is not in the BM25 list, like a row whose file holds no
+    query word (BM25 0). That is the honest handling:
     the row is a real candidate, and this hook has nothing to say about its text.
     ``joined`` counts the rows that did find their file, so a gate can see when
     the join is failing instead of reading a silently degraded ranking as a win.
@@ -2500,15 +2531,12 @@ def rerank_index(
     lexical = bm25.scores(tokens_sub(query), [j for _, j in wanted])
     row_score = {i: lexical.get(j, 0.0) for i, j in wanted}
     lists = [cosine_order]
-    if row_score and max(row_score.values()) > 0:
-        lists.append(
-            [
-                i
-                for _, _, i in sorted(
-                    (-round(row_score.get(i, 0.0), 6), ids[i], i) for i in range(len(lines))
-                )
-            ]
-        )
+    # Only the rows whose file holds a query word are in the BM25 list. A row
+    # with BM25 0 has no BM25 rank: ranked by its id, it got a fused score that
+    # its text did not earn (NOBLIVION-76).
+    matched = sorted((-round(v, 6), ids[i], i) for i, v in row_score.items() if v > 0)
+    if matched:
+        lists.append([i for _, _, i in matched])
     fused: Dict[int, float] = {}
     order = _rrf_order(lists, ids, fused)
     for i in order:
@@ -2827,7 +2855,14 @@ def emit(event: str, text: str, stdout) -> int:
 
 
 def _serve_index(
-    query: str, event: str, sid: Any, cache: str, t0: float, stdout, environ: Dict[str, str]
+    query: str,
+    event: str,
+    sid: Any,
+    cache: str,
+    t0: float,
+    stdout,
+    environ: Dict[str, str],
+    default_floor: float = DEFAULT_INDEX_MIN_SCORE,
 ) -> None:
     """The ranked-index shape of one hook call (R1).
 
@@ -2894,9 +2929,9 @@ def _serve_index(
       nothing and the last index file is not rewritten. It needs no memory
       folder, so it also runs in the arm D shape, and it asks the store for
       INDEX_CANDIDATE_TOP_K candidates like P3 and P1h. Log note
-      ``:floorNofM``. The default is for THRESHOLD_MODEL only: an answer of
-      another model, or of no named model, gets no default floor
-      (``:floor_off:model``, ``:floor_off:no_model``);
+      ``:floorNofM``. The default is ``default_floor``, and it is for
+      THRESHOLD_MODEL only: an answer of another model, or of no named model,
+      gets no default floor (``:floor_off:model``, ``:floor_off:no_model``);
     - the check line (``NOBLIVION_RECALL_INDEX_CHECK_LINE``), behind its own
       variable and only with F1: the rule header gets INDEX_CHECK_LINE as a
       second line.
@@ -2921,7 +2956,7 @@ def _serve_index(
     rerank = index_rerank(environ)
     rule_rows = index_rule_rows(environ)
     apply_on = index_apply(environ)
-    floor = index_min_score(environ)
+    floor = index_min_score(environ, default=default_floor)
     drop_asked = index_drop_no_rule(environ)
     drop_on = drop_asked and rule_rows
     local = hygiene or rerank or rule_rows
@@ -2976,7 +3011,11 @@ def _serve_index(
     if floor is not None and keyword:
         # Design doc section 8.4: no cosine, so no floor can judge a row.
         note += ":floor_off:keyword"
-    elif floor is not None and candidates and index_min_score(environ, candidates[0].model) is None:
+    elif (
+        floor is not None
+        and candidates
+        and index_min_score(environ, candidates[0].model, default_floor) is None
+    ):
         # NOBLIVION-48: only the default floor is left, and it was measured for
         # another model than the one of this answer. ``floor`` stays set: the
         # store was asked for the candidate depth, so the cut to k below runs.

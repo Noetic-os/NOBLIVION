@@ -364,6 +364,35 @@ def test_the_cosine_leg_is_the_score_and_not_the_order_the_daemon_sent(daemon, e
     assert [ln.mid for ln in ranked] == [502, 501], "ordered by cosine, not by arrival"
 
 
+def test_a_row_with_bm25_0_keeps_its_cosine_place(tmp_path):
+    """NOBLIVION-76. Only a row whose file holds a query word is ranked in the
+    BM25 list. A list that also ranked the rows with BM25 0, by their id, gave
+    a row with a low id a better fused score than a row with a better cosine."""
+    folder = tmp_path / "memory"
+    for name, body in (
+        ("feedback_a", "alpha note"),
+        ("feedback_b", "bravo note"),
+        ("feedback_c", "charlie note"),
+        ("feedback_d", "the kiwi note"),
+    ):
+        _write(folder, f"{name}.md", name, f"{name} rule", body)
+    cosines = {1: 0.5, 2: 0.6, 3: 0.7, 4: 0.4}
+    lines = [
+        hook.IndexLine(
+            rank=mid, mid=mid, title=f"feedback_{'abcd'[mid - 1]}", summary="s", score=cos
+        )
+        for mid, cos in cosines.items()
+    ]
+    folder_corpus = hook.load_memory_corpus(str(folder))
+    bm25 = hook.BM25([md.tokens for md in folder_corpus])
+    ranked, joined = hook.rerank_index(
+        lines, "kiwi", folder_corpus, hook.corpus_by_name(folder_corpus), bm25
+    )
+    assert joined == 4
+    # The kiwi row is in both lists; the others keep their cosine order.
+    assert [ln.mid for ln in ranked] == [4, 3, 2, 1]
+
+
 def test_a_row_with_no_score_goes_last(corpus):
     lines = [
         hook.IndexLine(rank=1, mid=601, title="feedback_live_thing", summary="a", score=None),

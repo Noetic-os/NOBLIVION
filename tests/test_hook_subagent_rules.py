@@ -72,6 +72,7 @@ class _State:
         self.base = ""  # set by the fixture once the port is known
         self.token = ""
         self.results: Any = []
+        self.model: Any = rh.THRESHOLD_MODEL  # the embedding model the answer names
         # When set, the handler holds every store response (not the proof)
         # until ``released`` fires (the fixture fires it on teardown). This
         # is a hung store without a fixed sleep: the hook's own budget is what
@@ -115,7 +116,9 @@ def _make_handler(state: _State):
                 return self._send(401, b'{"detail":"missing or wrong token"}')
             if state.mode == "badjson":
                 return self._send(200, b"<html>not json")
-            answer = recall_helpers.index_answer(state.results, namespace=qs.get("project", ""))
+            answer = recall_helpers.index_answer(
+                state.results, namespace=qs.get("project", ""), model=state.model
+            )
             return self._send(200, json.dumps(answer).encode())
 
         def _send(self, code: int, body: bytes):
@@ -371,7 +374,7 @@ def test_the_cap_is_settable(tmp_path, env):
 
 def test_the_floor_and_the_no_rule_drop_of_the_recall_hook_apply(tmp_path, env, store):
     rows = _results(4)
-    rows[1]["score"] = 0.40  # under the 0.52 floor
+    rows[1]["score"] = 0.40  # under the default floor
     rows.append(
         {
             "rank": 5,
@@ -388,6 +391,42 @@ def test_the_floor_and_the_no_rule_drop_of_the_recall_hook_apply(tmp_path, env, 
     status = _log(tmp_path)[-1].rsplit(" ", 1)[1]
     assert ":floor4of5" in status and ":norule_drop1" in status
     assert _index_requests(store)[0]["qs"]["top_k"] == str(rh.INDEX_CANDIDATE_TOP_K)
+
+
+@pytest.mark.parametrize(
+    ("model", "note"),
+    [
+        ("BAAI/bge-small-en-v1.5", ":floor3of4"),
+        ("example/other-embedder", ":floor_off:model"),
+        (None, ":floor_off:no_model"),  # the answer of a store of an older version
+    ],
+)
+def test_the_default_floor_is_for_the_measured_model(tmp_path, env, store, model, note):
+    # NOBLIVION-76. The subagent floor is a cosine of THRESHOLD_MODEL, like the
+    # floor of the prompt index. Another model puts its cosines on another
+    # scale, so the default applies only to an answer that names that model.
+    assert rh.INDEX_MIN_SCORE_ENV not in env
+    assert sub.DEFAULT_INDEX_MIN_SCORE > 0.40
+    rows = _results(4)
+    rows[1]["score"] = 0.40
+    store.results, store.model = rows, model
+    _run(_pre(), env)
+    text = _context(_run(_start(), env)[1])
+    shown = [_row_id(r) for r in _rows(text)]
+    assert ("19002" in shown) is (model != rh.THRESHOLD_MODEL)
+    assert note in _log(tmp_path)[-1]
+
+
+@pytest.mark.parametrize("model", ["BAAI/bge-small-en-v1.5", "example/other-embedder", None])
+def test_a_floor_that_the_user_sets_applies_to_every_model(tmp_path, env, store, model):
+    rows = _results(4)
+    rows[1]["score"] = 0.40
+    store.results, store.model = rows, model
+    env = dict(env, **{rh.INDEX_MIN_SCORE_ENV: "0.45"})
+    _run(_pre(), env)
+    text = _context(_run(_start(), env)[1])
+    assert [_row_id(r) for r in _rows(text)] == ["19001", "19003", "19004"]
+    assert ":floor3of4" in _log(tmp_path)[-1]
 
 
 def test_no_row_over_the_floor_prints_nothing(tmp_path, env, store):

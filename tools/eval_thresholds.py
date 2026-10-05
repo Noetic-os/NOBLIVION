@@ -27,6 +27,14 @@ path that compares it with its threshold:
   floor off, and with the variable unset, which is what a user with the
   shipped config file gets. The label rows (``NOBLIVION_RECALL_LABELS``) are
   not part of this path and are not measured.
+- subagent rules floor (``hooks/subagent_rules_hook.py``
+  ``DEFAULT_INDEX_MIN_SCORE``): the subagent hook's own ``run()`` for a
+  ``SubagentStart`` event that carries the query as its task text, with the
+  shipped config file, the hook's own index defaults (``INDEX_DEFAULTS``,
+  8 rows) and ``NOBLIVION_RECALL_INDEX_MIN_SCORE`` set to each grid value.
+  Each query is the first subagent of its own session. The path is measured
+  once more with the variable unset. The eval queries are prompts: a real
+  task text is longer (NOBLIVION-76).
 - error recall store floor (``hooks/error_recall_hook.py``
   ``STORE_MIN_SCORE``): the hook's own ``search()`` in ``store`` mode, with
   ``NOBLIVION_ERROR_RECALL_MIN_SCORE`` set to each grid value. The score is
@@ -384,6 +392,53 @@ def measure_index(
     return curve, at_floor(-1.0, INDEX_FLOOR_OFF, "off"), at_floor(floor, None, "unset")
 
 
+def measure_subagent(
+    es: EvalStore, srh: ModuleType, queries: Sequence[Mapping]
+) -> tuple[list[Point], Point]:
+    """The subagent rules path: ``run()`` of the subagent hook for a
+    ``SubagentStart`` event with the task text in it. Returns the curve and the
+    point with the floor variable unset (the floor of the shipped defaults).
+    Like ``measure_index``, every call must log ``ok`` with no step off."""
+    ids = es.memory_ids(RECALL_ROOT)
+    agent = "a0000000000000001"
+
+    def at_floor(t: float, value: str | None, tag: str) -> Point:
+        cache = es.tmp / f"cache-subagent-{tag}"
+        extra = {"NOBLIVION_CONFIG": str(SHIPPED_CONFIG), "NOBLIVION_RECALL_CACHE_DIR": str(cache)}
+        if value is not None:
+            extra["NOBLIVION_RECALL_INDEX_MIN_SCORE"] = value
+        env = es.hook_env(RECALL_ROOT, **extra)
+        calls = iter(range(len(queries)))
+
+        def returned(q: str) -> list[str]:
+            sid = f"eval-{next(calls)}"
+            event = {
+                "hook_event_name": "SubagentStart",
+                "session_id": sid,
+                "agent_id": agent,
+                "agent_type": "general-purpose",
+                "prompt": q,
+            }
+            out = io.StringIO()
+            srh.run(json.dumps(event), out, env)
+            status = index_status(cache / srh.SUBDIR, f"{sid}.{agent}")
+            if not status.startswith("ok") or "_off:" in status:
+                raise SystemExit(
+                    f"the subagent path did not run in full: {status or 'no log line'}"
+                )
+            text = out.getvalue()
+            context = json.loads(text)["hookSpecificOutput"]["additionalContext"] if text else ""
+            return [ids[int(n)] for n in _INDEX_ROW_RE.findall(context)]
+
+        point = score_queries(t, queries, returned)
+        shutil.rmtree(cache, ignore_errors=True)
+        return point
+
+    curve = [at_floor(t, str(t), f"{t:.2f}") for t in RECALL_GRID]
+    floor = float(srh.DEFAULT_INDEX_MIN_SCORE)
+    return curve, at_floor(floor, None, "unset")
+
+
 def measure_error_recall(es: EvalStore, erh: ModuleType, queries: Sequence[Mapping]) -> list[Point]:
     """The error hook path: ``search()`` in store mode, every row that passes the gate."""
     folder = es.folders[RECALL_ROOT]
@@ -449,10 +504,11 @@ def measure_dedup(cosines: Mapping, duplicates: Iterable[Sequence[str]]) -> list
 # -- report -----------------------------------------------------------------------
 
 
-def shipped(rh: ModuleType, erh: ModuleType) -> dict[str, float]:
+def shipped(rh: ModuleType, erh: ModuleType, srh: ModuleType) -> dict[str, float]:
     return {
         "recall": float(rh.DEFAULT_MIN_SCORE),
         "index": float(rh.DEFAULT_INDEX_MIN_SCORE),
+        "subagent": float(srh.DEFAULT_INDEX_MIN_SCORE),
         "error_recall": float(erh.STORE_MIN_SCORE),
         "error_local": float(erh.LOCAL_MIN_SCORE),
         "dedup": float(dedup.DEFAULT_MIN_COSINE),
@@ -498,32 +554,38 @@ def check(
     return failures
 
 
-def check_shipped_config(points: Sequence[Point], current: float, unset: Point) -> list[str]:
+def check_shipped_config(
+    points: Sequence[Point], current: float, unset: Point, name: str = "index"
+) -> list[str]:
     """The index path with ``NOBLIVION_RECALL_INDEX_MIN_SCORE`` unset must give
     the counts of the shipped floor: a user with the shipped config file, and
-    no setting of their own, then gets the floor that was measured."""
+    no setting of their own, then gets the floor that was measured. The same
+    holds for the subagent path (``name`` ``subagent``)."""
     p = at(points, current)
     want = (p.tp, p.fp, p.fn, p.negatives_hit)
     got = (unset.tp, unset.fp, unset.fn, unset.negatives_hit)
     if got == want:
         return []
     return [
-        f"index: the shipped config with the floor variable unset gives tp, fp, fn, neg_hit"
+        f"{name}: the shipped config with the floor variable unset gives tp, fp, fn, neg_hit"
         f" {got}, not {want} of the shipped floor {current:.2f}"
     ]
 
 
 def run(data: Mapping) -> tuple[dict[str, list[Point]], dict[str, float], dict, dict[str, Point]]:
     """Every curve, the shipped values, extra numbers for ``--json``, and the
-    two more points of the index path (``off`` and ``unset``)."""
+    two more points of the index path (``off`` and ``unset``) and the one of
+    the subagent path (``subagent_unset``)."""
     rh = load_hook("recall_hook")
     erh = load_hook("error_recall_hook")
+    srh = load_hook("subagent_rules_hook")
     with (
         tempfile.TemporaryDirectory(prefix="noblivion-eval-") as tmp,
         EvalStore(Path(tmp), data) as es,
     ):
         recall_points = measure_recall(es, rh, data["recall"]["queries"])
         index_points, index_off, index_unset = measure_index(es, rh, data["recall"]["queries"])
+        subagent_points, subagent_unset = measure_subagent(es, srh, data["recall"]["queries"])
         error_points = measure_error_recall(es, erh, data["recall"]["error_queries"])
         local_points = measure_error_local(
             es.folders[RECALL_ROOT], erh, data["recall"]["error_queries"]
@@ -538,11 +600,13 @@ def run(data: Mapping) -> tuple[dict[str, list[Point]], dict[str, float], dict, 
     results = {
         "recall": recall_points,
         "index": index_points,
+        "subagent": subagent_points,
         "error_recall": error_points,
         "error_local": local_points,
         "dedup": dedup_points,
     }
-    return results, shipped(rh, erh), extra, {"off": index_off, "unset": index_unset}
+    paths = {"off": index_off, "unset": index_unset, "subagent_unset": subagent_unset}
+    return results, shipped(rh, erh, srh), extra, paths
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -564,6 +628,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         " store 'scores' value",
         "index": "ranked index floor, shipped config file (recall_hook DEFAULT_INDEX_MIN_SCORE),"
         " index 'score'",
+        "subagent": "subagent rules floor, shipped config file"
+        " (subagent_rules_hook DEFAULT_INDEX_MIN_SCORE), index 'score'",
         "error_recall": "error recall store floor, store mode (error_recall_hook STORE_MIN_SCORE),"
         " index 'score'",
         "error_local": "error recall local floor, local mode, the default"
@@ -575,6 +641,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if name == "index":
             print(point_row("off", index_paths["off"], "  no floor"))
             print(point_row("unset", index_paths["unset"], "  the shipped config file as it is"))
+        if name == "subagent":
+            print(point_row("unset", index_paths["subagent_unset"], "  the shipped defaults"))
     if args.json:
         args.json.write_text(
             json.dumps(
@@ -587,6 +655,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "off": {**index_paths["off"].as_dict(), "threshold": None},
                         "unset": index_paths["unset"].as_dict(),
                     },
+                    "subagent_unset": index_paths["subagent_unset"].as_dict(),
                     **extra,
                 },
                 indent=1,
@@ -596,6 +665,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.check:
         failures = check(results, current, data["gate"])
         failures += check_shipped_config(results["index"], current["index"], index_paths["unset"])
+        failures += check_shipped_config(
+            results["subagent"], current["subagent"], index_paths["subagent_unset"], "subagent"
+        )
         for line in failures:
             print(f"FAIL {line}")
         if failures:

@@ -120,6 +120,7 @@ class _State:
         self.blob = BLOB_AB
         self.results: Any = None  # when set, used verbatim as the "results" list
         self.namespace: Any = None  # when set, the "namespace" the answer names
+        self.model: Any = None  # when set, the embedding model the answer names
         # When set, the handler holds every store response until ``released``
         # fires (the fixture fires it on teardown). This simulates a hung store
         # without a fixed sleep: the hook's own timeout ends the wait.
@@ -184,7 +185,10 @@ def _make_handler(state: _State):
                 return None
             results = state.results if state.results is not None else [state.blob]
             ns = state.namespace if state.namespace is not None else req["qs"].get("project")
-            return self._send(200, json.dumps({"results": results, "namespace": ns}).encode())
+            answer = {"results": results, "namespace": ns}
+            if state.model is not None:
+                answer["model"] = state.model
+            return self._send(200, json.dumps(answer).encode())
 
         def _send(self, code: int, body: bytes):
             self.send_response(code)
@@ -850,6 +854,7 @@ def test_unsafe_session_id_writes_no_file_but_still_answers(daemon, env):
 
 
 def test_hits_below_min_score_are_skipped(daemon, env):
+    daemon.model = hook.THRESHOLD_MODEL  # the default floor is for this model only
     daemon.results = [
         {"content": "# low\n\n[claude_code_md: topic_low.md]\n\nlow body", "score": 0.10},
         {"content": "# high\n\n[claude_code_md: topic_high.md]\n\nhigh body", "score": 0.95},
@@ -1103,6 +1108,7 @@ def test_mcp_has_no_output_cap(daemon, env):
 
 def test_mcp_applies_the_min_score_threshold(daemon, env):
     """The threshold lives in recall(), so the MCP path honours it too."""
+    daemon.model = hook.THRESHOLD_MODEL  # the default floor is for this model only
     daemon.results = [
         {"content": "# low\n\n[claude_code_md: topic_low.md]\n\nlow body", "score": 0.10},
         {"content": "# high\n\n[claude_code_md: topic_high.md]\n\nhigh body", "score": 0.95},

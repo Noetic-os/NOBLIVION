@@ -440,13 +440,13 @@ are joined with `"\n---\n"`. Each entry is redacted on its own before the
 join.
 
 ```json
-{"results": ["<entry 1>\n---\n<entry 2>\n---\n<entry 3>"], "scores": [0.71, 0.66, null], "namespace": "claude_code"}
+{"results": ["<entry 1>\n---\n<entry 2>\n---\n<entry 3>"], "scores": [0.71, 0.66, null], "namespace": "claude_code", "model": "BAAI/bge-small-en-v1.5"}
 ```
 
 No hit, empty query, or empty pool:
 
 ```json
-{"results": ["No memories available."], "scores": [], "namespace": "claude_code"}
+{"results": ["No memories available."], "scores": [], "namespace": "claude_code", "model": null}
 ```
 
 Notes:
@@ -459,6 +459,11 @@ Notes:
   `score` rules of section 4.3 (`null` in keyword-only mode). The hook
   pairs the scores with the entries only when the counts match, and drops
   a hit below `recall.min_score`. A hit with no score passes.
+- `model` (NOBLIVION-76): the embedding model of the scores, as in the
+  index answer (section 4.3); `null` when the rows were ranked by keyword
+  only. The default `recall.min_score` was measured for one model, so the
+  hook applies it only to an answer that names that model. A value that
+  the user sets applies to every model.
 - Each entry goes through the secret redactor and then the
   injection-pattern redactor (section 15.4).
 - The hooks treat these strings as "no hits": `No memories available.`,
@@ -1302,7 +1307,11 @@ Reciprocal rank fusion with `k = 60`, as in the reference implementation:
 
 1. Rank the rows that have a vector by weighted cosine (ties by id).
 2. Rank the rows that match a query term by BM25 (ties by id). A row
-   matches when it holds at least one token of the query. Skip this list
+   matches when it holds at least one token of the query that is not a
+   stop word (`bm25.STOP_WORDS`: articles, pronouns, auxiliary verbs,
+   prepositions, conjunctions and question words). Nearly every row holds
+   "the", so a stop word as a match brought back unrelated rows with no
+   vector during a backfill (NOBLIVION-76). Skip this list
    when no row matches. A row that matches no query term is not in this
    list, as in keyword-only mode (section 8.4). The BM25 score cannot
    decide the match: a term in exactly half of the pool has an idf of 0,
@@ -1341,7 +1350,8 @@ Used when the backend is `none`, the model is not loaded yet, the model
 failed, or the query embed failed.
 
 - Rank by BM25 only. Drop the rows that match no query term: the rows
-  that hold no token of the query. A matched row can have a BM25 score of
+  that hold no token of the query that is not a stop word (section 8.3).
+  A query of stop words alone matches no row. A matched row can have a BM25 score of
   0, because a term in exactly half of the pool has an idf of 0. In a pool
   of one or two rows a matched term can have a negative idf, so the score
   can be below 0 too. Such a row stays, after the rows with a higher score
@@ -1784,7 +1794,7 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 | `index.delete_grace_days` | none | `14` |
 | `recall.shared_roots` | none | `[]` |
 | `recall.timeout_s` | `NOBLIVION_RECALL_TIMEOUT_S` | `2.0` |
-| `recall.min_score` | `NOBLIVION_RECALL_MIN_SCORE` | `0.68` |
+| `recall.min_score` | `NOBLIVION_RECALL_MIN_SCORE` | `0.68` for the model `BAAI/bge-small-en-v1.5`, else none |
 | `recall.index_k` | `NOBLIVION_RECALL_INDEX_K` | `35` (shipped config: `30`) |
 | `recall.env` | the `NOBLIVION_RECALL_*` env vars it names | `{}`; the shipped config turns on the ranked index and its steps (section 13.2) |
 | `trust.events` | `NOBLIVION_TRUST_EVENTS` | `1` (on; `0`, `off`, `false` or `no` turns it off) |
@@ -2203,6 +2213,7 @@ later goal, not a v0.1 gate.
   |---|---|---|---|---|---|---|
   | note text floor `recall.min_score` | prompt hook with no config file: `recall()`, k = 5 | 0.3 | 0.68 | 0.137 / 0.857 | 0.975 / 0.750 | 20 of 20 / 1 of 20 |
   | index floor `NOBLIVION_RECALL_INDEX_MIN_SCORE` | prompt hook with the shipped config file: the ranked index (`_serve_index`), 30 rows, with re-rank and rule rows | none | 0.68 | 0.023 / 0.857 | 1.000 / 0.750 | 20 of 20 / 1 of 20 |
+  | subagent rules floor `subagent_rules_hook.DEFAULT_INDEX_MIN_SCORE` | subagent hook with the shipped config file: the ranked index of `INDEX_DEFAULTS`, 8 rows (NOBLIVION-76) | 0.52 | 0.68 | 0.112 / 0.857 | 1.000 / 0.750 | 16 of 20 / 1 of 20 |
   | error recall local floor `LOCAL_MIN_SCORE` | error hook in `local` mode (the default): `search()` over the memory files | 0.75 | 0.39 | 1.000 / 1.000 | 0.071 / 0.643 | 0 of 10 / 0 of 10 |
   | error recall store floor `STORE_MIN_SCORE` | error hook in `store` mode (off by default): `search()` over the store index | 0.60 | 0.70 | 0.283 / 1.000 | 0.929 / 0.857 | 3 of 10 / 0 of 10 |
   | dedup cosine `dedup.min_cosine` | `noblivion dedup`: pairs of stored vectors | 0.82 | 0.75 | 1.000 / 1.000 | 0.875 / 1.000 | not applicable |
@@ -2219,13 +2230,23 @@ later goal, not a v0.1 gate.
   index answer names the model of its scores (section 4.3), and for
   another model, or for an answer that names none, the hook applies no
   default floor and writes `floor_off:model` or `floor_off:no_model` to
-  the recall log. The note text floor and the error recall store floor do
-  not read the model yet: they apply to every model. At 0.68 the index
+  the recall log. NOBLIVION-76 made the other cosine floors read the model
+  the same way: the note text floor (the search answer names the model,
+  section 4.2), the error recall store floor and the subagent rules floor.
+  For another model each has no default. At 0.68 the index
   shows 30 right rows and 5 wrong
   rows, and 10 of the 40 expected rows are no longer shown. The eval runs
   the path a third time with the variable unset and fails when the counts
   differ from the counts of the shipped floor. The label rows
   (`NOBLIVION_RECALL_LABELS`) are a separate output and are not measured.
+
+  The subagent rules floor 0.52 is the reference index floor, measured
+  with another embedding model (section 13.2). On the eval set it let
+  rows through for 16 of the 20 prompts without a memory, about 5 wrong
+  rows each. NOBLIVION-76 measured the subagent path the same way as the
+  index path, and 0.68 has the best F1 there too. The eval queries are
+  prompts. A subagent's task text is longer, and the cosines of a long
+  text were not measured.
 
   The local error score is not a cosine. It is the share of the error's
   words that the memory holds, weighted by idf, so it needs no model. At

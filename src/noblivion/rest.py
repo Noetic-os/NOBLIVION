@@ -158,14 +158,17 @@ def _cut_to_json_len(text: str, limit: int) -> str:
 # -- answers ----------------------------------------------------------------------
 
 
-def search_answer(result: RankResult | None, namespace: str) -> dict:
+def search_answer(result: RankResult | None, namespace: str, model: str | None = None) -> dict:
     """Section 4.2: one joined text, each entry redacted on its own, below 512 KB.
     An entry that does not fit is left out, and a smaller entry after it still
     goes in. A stored text that is too large by itself is left out before it
     is redacted, so it costs no redaction time.
     ``scores`` holds the score of each entry (section 4.3 rules; ``null`` in
     keyword-only mode), in entry order, so the hook can apply
-    ``recall.min_score``."""
+    ``recall.min_score``. ``model`` is the embedding model of the scores, as
+    in the index answer: the hook applies its measured default floor only to
+    the model it was measured for (NOBLIVION-76). An answer ranked by keyword
+    only names no model."""
     entries: list[str] = []
     scores: list[float | None] = []
     budget = ANSWER_CAP_BYTES - 4096 - 16 * 50  # room for the keys, the scores, the namespace
@@ -185,7 +188,13 @@ def search_answer(result: RankResult | None, namespace: str) -> dict:
         scores.append(hit.score)
         used += size
     joined = ENTRY_SEPARATOR.join(entries) if entries else NO_MEMORIES
-    return {"results": [joined], "scores": scores, "namespace": namespace}
+    hybrid = result is not None and result.mode != MODE_KEYWORD
+    return {
+        "results": [joined],
+        "scores": scores,
+        "namespace": namespace,
+        "model": model if hybrid else None,
+    }
 
 
 def index_row(hit: Hit, trust: Mapping[int, tuple[float, int]] | None, prior_mined: float) -> dict:
@@ -465,7 +474,7 @@ class Handler(BaseHTTPRequestHandler):
         query = first(params, "q")[:MAX_Q_CHARS]
         top_k = clamp_int(first(params, "top_k"), 5, 1, 50)
         result = store.rank(query, namespace, top_k=top_k, root=root_of(params))
-        answer = search_answer(result, namespace)
+        answer = search_answer(result, namespace, store.model())
         if result is None:
             answer["reason"] = INTERNAL_REASON
         return answer

@@ -9,6 +9,8 @@ answer whose ``scores`` does not line up) always passes.
 
 from __future__ import annotations
 
+import pytest
+
 from hookload import load_hook
 
 hook = load_hook("recall_hook", "hooktest_recall_hook_min_score")
@@ -41,6 +43,52 @@ def test_recall_drops_a_hit_below_the_floor(monkeypatch):
     assert [h.title for h in hook.recall("q", 5, env, md_only=True)] == ["alpha", "beta"]
     env["NOBLIVION_RECALL_MIN_SCORE"] = "0.05"
     assert [h.title for h in hook.recall("q", 5, env, md_only=True)] == ["alpha", "beta", "gamma"]
+
+
+_NO_KEY = object()  # the answer has no "model" key
+
+
+def _named(model, scores=(0.71, None, 0.12)):
+    payload = _payload(list(scores))
+    if model is not _NO_KEY:
+        payload["model"] = model
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("model", "titles"),
+    [
+        ("BAAI/bge-small-en-v1.5", ["alpha", "beta"]),
+        ("example/other-embedder", ["alpha", "beta", "gamma"]),
+        (None, ["alpha", "beta", "gamma"]),  # keyword mode names no model
+        (_NO_KEY, ["alpha", "beta", "gamma"]),  # the answer of a store of an older version
+        ("baai/bge-small-en-v1.5", ["alpha", "beta", "gamma"]),
+    ],
+)
+def test_the_default_floor_is_for_the_measured_model(monkeypatch, model, titles):
+    # NOBLIVION-76. DEFAULT_MIN_SCORE was measured on the cosines of
+    # THRESHOLD_MODEL. Another model puts its cosines on another scale, so the
+    # default applies only to an answer that names THRESHOLD_MODEL.
+    assert hook.THRESHOLD_MODEL == "BAAI/bge-small-en-v1.5"
+    assert hook.DEFAULT_MIN_SCORE > 0.12
+    monkeypatch.setattr(hook, "store_get", lambda *_a, **_k: _named(model))
+    env = {"NOBLIVION_RECALL_ROOT": "r"}
+    assert [h.title for h in hook.recall("q", 5, env, md_only=True)] == titles
+
+
+@pytest.mark.parametrize("model", ["BAAI/bge-small-en-v1.5", "example/other-embedder", None])
+def test_a_floor_that_the_user_sets_applies_to_every_model(monkeypatch, model):
+    monkeypatch.setattr(hook, "store_get", lambda *_a, **_k: _named(model, (0.71, 0.5, 0.12)))
+    env = {"NOBLIVION_RECALL_ROOT": "r", "NOBLIVION_RECALL_MIN_SCORE": "0.3"}
+    assert [h.title for h in hook.recall("q", 5, env, md_only=True)] == ["alpha", "beta"]
+
+
+def test_a_malformed_floor_is_the_default_of_the_model(monkeypatch):
+    env = {"NOBLIVION_RECALL_ROOT": "r", "NOBLIVION_RECALL_MIN_SCORE": "high"}
+    monkeypatch.setattr(hook, "store_get", lambda *_a, **_k: _named(hook.THRESHOLD_MODEL))
+    assert [h.title for h in hook.recall("q", 5, env, md_only=True)] == ["alpha", "beta"]
+    monkeypatch.setattr(hook, "store_get", lambda *_a, **_k: _named("example/other-embedder"))
+    assert len(hook.recall("q", 5, env, md_only=True)) == 3
 
 
 def test_parse_index_reads_the_store_trust_ranking():

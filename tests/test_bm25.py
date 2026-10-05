@@ -88,3 +88,22 @@ def test_matches_says_which_documents_hold_a_query_token():
     assert index.matches(["window", "coffee"]) == [True, True, False, False]
     assert index.matches(["zeta"]) == [False] * 4
     assert index.matches([]) == [False] * 4
+
+
+def test_a_stop_word_is_not_a_match():
+    # NOBLIVION-76. "the" is in nearly every note. As a match it let unrelated
+    # notes with no vector into a hybrid answer, with no score.
+    docs = ["deploy the service", "the coffee filter", "the garden hose", "how to brew tea"]
+    index = bm25.BM25([bm25.tokenize(d) for d in docs])
+    query = bm25.tokenize("How do I deploy the service?")
+    assert index.matches(query) == [True, False, False, False]
+    assert index.matches(bm25.tokenize("how do I do the")) == [False] * 4
+    assert index.matches(["brew"]) == [False, False, False, True]
+    # The scores do not change: a stop word adds its weight as before.
+    assert index.scores(["the"])[1] > 0
+
+
+def test_the_stop_words_are_tokens_of_the_tokenizer():
+    assert bm25.STOP_WORDS
+    for word in bm25.STOP_WORDS:
+        assert bm25.tokenize(word) == [word]

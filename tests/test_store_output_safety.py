@@ -45,7 +45,12 @@ def test_search_entries_are_masked_and_carry_their_scores():
 
 def test_search_with_no_hit_has_no_scores():
     answer = rest.search_answer(RankResult("hybrid", [], 0), "claude_code")
-    assert answer == {"results": [rest.NO_MEMORIES], "scores": [], "namespace": "claude_code"}
+    assert answer == {
+        "results": [rest.NO_MEMORIES],
+        "scores": [],
+        "namespace": "claude_code",
+        "model": None,
+    }
 
 
 def test_index_titles_and_summaries_are_masked():

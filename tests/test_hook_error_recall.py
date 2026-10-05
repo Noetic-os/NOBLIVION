@@ -775,6 +775,7 @@ class _Store(http.server.BaseHTTPRequestHandler):
     probes: list = []  # (path, auth hash) of every /health proof request
     rows: list = []
     mode = "hybrid"
+    model: str | None = er.THRESHOLD_MODEL  # the embedding model the answer names
     delay = 0.0
     token = ""
 
@@ -790,7 +791,9 @@ class _Store(http.server.BaseHTTPRequestHandler):
             time.sleep(cls.delay)
         if self.headers.get("Authorization") != f"Bearer {cls.token}":
             return self._send(401, {"detail": "missing or wrong token"})
-        return self._send(200, recall_helpers.index_answer(cls.rows, mode=cls.mode))
+        return self._send(
+            200, recall_helpers.index_answer(cls.rows, mode=cls.mode, model=cls.model)
+        )
 
     def _send(self, status, payload):
         body = json.dumps(payload).encode()
@@ -812,7 +815,7 @@ class _Store(http.server.BaseHTTPRequestHandler):
 @pytest.fixture
 def store(env):
     _Store.seen, _Store.probes, _Store.rows = [], [], []
-    _Store.mode, _Store.delay = "hybrid", 0.0
+    _Store.mode, _Store.delay, _Store.model = "hybrid", 0.0, er.THRESHOLD_MODEL
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Store)
     srv.daemon_threads = True
     t = threading.Thread(target=srv.serve_forever, args=(0.05,), daemon=True)
@@ -853,6 +856,45 @@ def test_store_mode_keeps_memory_file_rows_and_sends_get(env, store):
     # the listener proof came first and carried no token
     assert len(_Store.probes) == 1 and _Store.probes[0][1] == hashlib.sha256(b"").hexdigest()
     assert log_lines(env)[-1]["source"] == "store"
+
+
+@pytest.mark.parametrize(
+    ("model", "shown"),
+    [
+        ("BAAI/bge-small-en-v1.5", False),
+        ("example/other-embedder", True),
+        (None, True),  # the answer of a store of an older version names none
+    ],
+)
+def test_the_default_store_gate_is_for_the_measured_model(env, store, model, shown):
+    # NOBLIVION-76. STORE_MIN_SCORE was measured on the cosines of
+    # THRESHOLD_MODEL. Another model puts its cosines on another scale, so the
+    # default gate applies only to an answer that names THRESHOLD_MODEL. The
+    # quote check still holds every row.
+    assert er.THRESHOLD_MODEL == "BAAI/bge-small-en-v1.5" and er.STORE_MIN_SCORE > 0.45
+    _Store.model = model
+    _Store.rows = [
+        _row(1, 4, "c", 0.45, "feedback_rev_parse_needs_one_ref.md"),
+        _row(2, 5, "low", 0.44, "feedback_unrelated_topic.md"),
+    ]
+    env = dict(env, NOBLIVION_ERROR_RECALL_MODE="store")
+    out = run(fail_event(REV), env)
+    assert ("- Memory feedback_rev_parse_needs_one_ref (" in out) is shown
+    assert "feedback_unrelated_topic" not in out  # no quote of the error
+    assert log_lines(env)[-1]["source"] == "store"
+
+
+@pytest.mark.parametrize("model", ["BAAI/bge-small-en-v1.5", "example/other-embedder", None])
+def test_a_store_gate_that_the_user_sets_applies_to_every_model(env, store, model):
+    _Store.model = model
+    _Store.rows = [_row(1, 4, "c", 0.45, "feedback_rev_parse_needs_one_ref.md")]
+    env = dict(env, NOBLIVION_ERROR_RECALL_MODE="store")
+    assert "- Memory feedback_rev_parse_needs_one_ref (" not in run(
+        fail_event(REV), dict(env, NOBLIVION_ERROR_RECALL_MIN_SCORE="0.5")
+    )
+    assert "- Memory feedback_rev_parse_needs_one_ref (" in run(
+        fail_event(REV, sid="s2"), dict(env, NOBLIVION_ERROR_RECALL_MIN_SCORE="0.4")
+    )
 
 
 def test_store_down_falls_back_to_the_local_search(env):

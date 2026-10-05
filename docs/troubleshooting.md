@@ -65,8 +65,11 @@ When the store answers but finds nothing:
   default floor, and the log status holds `:floor_off:model`. The status
   `:floor_off:no_model` means that the store runs an older version than
   the hook, so the index has no default floor: type `/noblivion:setup` in
-  the chat. The note text floor applies to every model: with another
-  model, set `recall.min_score` to a value that fits its scores.
+  the chat. The note text floor, the subagent rules floor and the error
+  recall store floor follow the same rule: with another model they have
+  no default. To get a floor with another model, set `recall.min_score`,
+  `NOBLIVION_RECALL_INDEX_MIN_SCORE` or `NOBLIVION_ERROR_RECALL_MIN_SCORE`
+  to a value that fits its scores.
 
 ## The store is not running
 

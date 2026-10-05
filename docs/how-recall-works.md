@@ -141,9 +141,11 @@ The hook has two output shapes.
 
 The hook asks for the 5 best hits. It drops a hit whose vector score is
 below `recall.min_score` (default 0.68). The default was measured for the
-default embedding model, `BAAI/bge-small-en-v1.5`. The hook uses it with
-every model, so with another model set `recall.min_score` to a value that
-fits its scores. In keyword-only mode a hit has no
+default embedding model, `BAAI/bge-small-en-v1.5`. The store names its
+model in each answer, and the hook uses the default only for that model.
+With another model there is no default floor, so set `recall.min_score` to
+a value that fits its scores. A value that you set applies to every model.
+In keyword-only mode a hit has no
 vector score and always passes. It prints their text under a header
 that starts with `GROUNDED MEMORY`. The output is at most 4000
 characters. A note shown earlier in the same session is not shown again.
@@ -187,6 +189,8 @@ error recall floor uses no model. Each number describes one path only.
 | Note text (no config file) | 0.68 | 0.857 | 0.750 | 1 of 20 |
 | Ranked index (shipped config file), no floor | none | 0.023 | 1.000 | 20 of 20 |
 | Ranked index (shipped config file) | 0.68 | 0.857 | 0.750 | 1 of 20 |
+| Subagent rules, old floor | 0.52 | 0.112 | 1.000 | 16 of 20 |
+| Subagent rules (shipped config file) | 0.68 | 0.857 | 0.750 | 1 of 20 |
 | Error recall, `local` mode (default) | 0.39 | 1.000 | 0.643 | 0 of 10 |
 | Error recall, `store` mode | 0.70 | 1.000 | 0.857 | 0 of 10 |
 

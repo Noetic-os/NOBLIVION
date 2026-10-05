@@ -27,6 +27,27 @@ EPSILON = 0.25
 _TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9_.\-/]+")
 _SUB_TOKEN_SPLIT_RE = re.compile(r"[_/.\-]+")
 
+# Common English words that never make a keyword match (``BM25.matches``,
+# NOBLIVION-76). Nearly every note holds "the", so as a match it let unrelated
+# notes with no vector into a hybrid answer. Only articles, pronouns,
+# auxiliary verbs, prepositions, conjunctions and question words, and the
+# part of a contraction that the tokenizer keeps (``doesn`` of "doesn't"): a
+# word that can name a task (``up``, ``down``, ``off``, ``out``) is not in
+# the list. The scores do not use the list.
+STOP_WORDS = frozenset(
+    """
+    about above after again am an and are as at be been before being below between
+    both but by can could did do does doing don during each for from further had has
+    have having he her here hers herself him himself his how if in into is it its
+    itself just me more most my myself no nor not of on once only or other our ours
+    ourselves own same she should so some such than that the their theirs them
+    themselves then there these they this those through to too until very was we
+    were what when where which while who whom why will with would you your yours
+    yourself yourselves
+    aren couldn didn doesn hadn hasn haven isn shouldn wasn weren won wouldn
+    """.split()
+)
+
 
 def tokenize(text: str) -> list[str]:
     """The tokenizer of the reference store: lower case, split on every
@@ -108,7 +129,8 @@ class BM25:
 
     def matches(self, query_tokens: Sequence[str]) -> list[bool]:
         """One flag per document, in corpus order: True when the document
-        holds a query token. The score cannot say this: a token in exactly
-        half of the documents has an idf of 0, so it adds 0 to the score."""
-        words = set(query_tokens) & self.idf.keys()
+        holds a query token that is not in STOP_WORDS. The score cannot say
+        this: a token in exactly half of the documents has an idf of 0, so it
+        adds 0 to the score."""
+        words = (set(query_tokens) - STOP_WORDS) & self.idf.keys()
         return [any(word in tf for word in words) for tf in self.tf]

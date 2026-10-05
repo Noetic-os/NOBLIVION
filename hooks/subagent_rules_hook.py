@@ -64,7 +64,11 @@ Environment:
   NOBLIVION_SUBAGENT_RULES_QUERY_CHARS  characters of task text sent, default 2000
   NOBLIVION_SUBAGENT_RULES_MODE         ``context`` (default) or ``rewrite``
   NOBLIVION_RECALL_*                    as the recall hook. Unset index options
-                                      take the defaults in INDEX_DEFAULTS.
+                                      take the defaults in INDEX_DEFAULTS. The
+                                      floor NOBLIVION_RECALL_INDEX_MIN_SCORE,
+                                      unset, is DEFAULT_INDEX_MIN_SCORE (0.68)
+                                      for an answer of the measured model and
+                                      no floor for another model.
 """
 
 from __future__ import annotations
@@ -126,10 +130,20 @@ HEADER = "Memory rules for this subagent task, ranked from the local memory stor
 # so a newer Claude Code may send one. A text in the event is used first.
 INPUT_TEXT_KEYS = ("subagent_prompt", "task_description", "prompt")
 
+# The relevance floor of the subagent index: a cosine of the recall hook's
+# THRESHOLD_MODEL, and the default only for an answer that names that model.
+# Another model gets no default floor, as the prompt index does
+# (recall_hook.INDEX_MIN_SCORE_ENV). NOBLIVION_RECALL_INDEX_MIN_SCORE that is
+# set is the floor for every model.
+# Measured by tools/eval_thresholds.py on this hook's path (NOBLIVION-76). The
+# old floor 0.52 let rows through for 16 of the 20 queries that no memory
+# answers (precision 0.112, recall 1.000); 0.68 has the best F1 (precision
+# 0.857, recall 0.750, 1 of 20). The eval queries are prompts: a task text is
+# longer, and its cosines were not measured.
+DEFAULT_INDEX_MIN_SCORE = 0.68
 # The index options of the reference prompt hook setup. Used only for a
 # variable the hook command does not set.
 INDEX_DEFAULTS: Tuple[Tuple[str, str], ...] = (
-    (rh.INDEX_MIN_SCORE_ENV, "0.52"),
     (rh.INDEX_DROP_NO_RULE_ENV, "1"),
     (rh.INDEX_ROW_DEDUPE_ENV, "1"),
     (rh.INDEX_APPLY_ENV, "1"),
@@ -397,7 +411,7 @@ def _rules_for(text: str, label: str, sid: Optional[str], t0: float, env: Mappin
         rh.log_line(cache, label, sid, 0, 0, 0, "skip:empty_query")
         return ""
     buf = io.StringIO()
-    rh._serve_index(query, label, sid, cache, t0, buf, ienv)
+    rh._serve_index(query, label, sid, cache, t0, buf, ienv, DEFAULT_INDEX_MIN_SCORE)
     body = buf.getvalue().strip("\n")
     return f"{HEADER}\n{body}" if body else ""
 

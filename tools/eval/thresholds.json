@@ -1,9 +1,10 @@
 {
   "spdx": "AGPL-3.0-or-later",
-  "about": "Labelled eval set for tools/eval_thresholds.py (NOBLIVION-33, NOBLIVION-48). Made-up developer memories only. 'recall' feeds the prompt recall floor (note text, no config file) and the ranked index floor (the shipped config file) and, with 'error_queries', the error recall store floor (store mode) and local floor (local mode, the default). 'dedup' feeds the dedup cosine: 'duplicates' lists the pairs that say the same thing; every other pair in the dedup folder is a non-duplicate. The set is small and has no held-out split: each threshold is chosen and scored on the same items.",
+  "about": "Labelled eval set for tools/eval_thresholds.py (NOBLIVION-33, NOBLIVION-48). Made-up developer memories only. 'recall' feeds the prompt recall floor (note text, no config file) and the ranked index floor (the shipped config file) and the subagent rules floor (NOBLIVION-76) and, with 'error_queries', the error recall store floor (store mode) and local floor (local mode, the default). 'dedup' feeds the dedup cosine: 'duplicates' lists the pairs that say the same thing; every other pair in the dedup folder is a non-duplicate. The set is small and has no held-out split: each threshold is chosen and scored on the same items.",
   "gate": {
     "recall": {"precision": 0.80, "recall": 0.70},
     "index": {"precision": 0.80, "recall": 0.70},
+    "subagent": {"precision": 0.80, "recall": 0.70},
     "error_recall": {"precision": 0.90, "recall": 0.78},
     "error_local": {"precision": 0.90, "recall": 0.57},
     "dedup": {"precision": 0.85, "recall": 0.85}

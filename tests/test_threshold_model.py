@@ -64,9 +64,11 @@ def test_dedup_cosine_names_the_shipped_model():
 def test_shipped_values_are_on_the_eval_grid(ev):
     rh = load_hook("recall_hook", "hooktest_threshold_model_grid_rh")
     erh = load_hook("error_recall_hook", "hooktest_threshold_model_grid_erh")
-    current = ev.shipped(rh, erh)
+    srh = load_hook("subagent_rules_hook", "hooktest_threshold_model_grid_srh")
+    current = ev.shipped(rh, erh, srh)
     assert current["recall"] in ev.RECALL_GRID
     assert current["index"] in ev.RECALL_GRID
+    assert current["subagent"] in ev.RECALL_GRID
     assert current["error_recall"] in ev.RECALL_GRID
     assert current["error_local"] in ev.LOCAL_GRID
     assert current["dedup"] in ev.DEDUP_GRID
@@ -85,7 +87,7 @@ def test_eval_set_is_well_formed(ev):
             assert set(item["expect"]) <= recall_ids, item
     for a, b in data["dedup"]["duplicates"]:
         assert {a, b} <= dedup_ids and a != b
-    for name in ("recall", "index", "error_recall", "error_local", "dedup"):
+    for name in ("recall", "index", "subagent", "error_recall", "error_local", "dedup"):
         floor = data["gate"][name]
         assert 0 < floor["precision"] <= 1 and 0 < floor["recall"] <= 1
 
@@ -138,6 +140,8 @@ def test_check_shipped_config_reports_a_floor_that_does_not_reach_the_path(ev):
     # The path ran with no floor: more rows than the shipped floor lets through.
     failures = ev.check_shipped_config(curve, 0.6, ev.Point(0.6, 9, 60, 0, 5))
     assert len(failures) == 1 and "(9, 60, 0, 5), not (7, 2, 2, 1)" in failures[0]
+    named = ev.check_shipped_config(curve, 0.6, ev.Point(0.6, 9, 60, 0, 5), "subagent")
+    assert len(named) == 1 and named[0].startswith("subagent: ")
 
 
 def test_index_status_is_the_log_status_of_one_session(ev, tmp_path):

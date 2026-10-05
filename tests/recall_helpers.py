@@ -211,8 +211,14 @@ def index_row(rank: int, mid: int, title: str, summary: str = "", score: Any = 0
     return row
 
 
-def index_answer(rows: list, mode: str = "hybrid", namespace: str = "claude_code") -> dict:
-    return {"namespace": namespace, "reason": None, "mode": mode, "results": rows}
+def index_answer(
+    rows: list, mode: str = "hybrid", namespace: str = "claude_code", model: str | None = None
+) -> dict:
+    """``model`` is the embedding model the answer names, left out when None."""
+    answer = {"namespace": namespace, "reason": None, "mode": mode, "results": rows}
+    if model is not None:
+        answer["model"] = model
+    return answer
 
 
 Handler = Callable[[str, dict], Any]

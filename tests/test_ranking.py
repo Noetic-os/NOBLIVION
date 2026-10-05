@@ -427,6 +427,49 @@ def test_a_word_in_half_of_the_pool_still_matches_in_keyword_mode(conn):
     assert index.rank("how do I brew", project="claude_code", top_k=10).hits == []
 
 
+def _embed(conn, embedder, memory_id):
+    content = conn.execute("SELECT content FROM memories WHERE id = ?", (memory_id,))
+    text = embedding.embed_text(content.fetchone()[0])
+    vector = embedder.embed_documents([text])[0]
+    embedding._write_vectors(
+        conn, embedder.model_id, [(memory_id, embedding.text_hash(text), vector)]
+    )
+
+
+def test_a_stop_word_brings_back_no_note_that_has_no_vector(conn):
+    # NOBLIVION-76, the reproducer of the second review. During a backfill the
+    # query "how do I deploy the service" brought back every note with no
+    # vector, with no score: "the" counted as a keyword match.
+    ids = {
+        "deploy_a": add_memory(conn, "release_steps", "deploy the service after the backup"),
+        "coffee": add_memory(conn, "coffee_filter", "the paper filter of the brand"),
+        "garden": add_memory(conn, "garden_hose", "the hose length and the nozzle"),
+        "tea": add_memory(conn, "tea_kettle", "how to clean the kettle"),
+        "bike": add_memory(conn, "bike_chain", "oil the chain once a month"),
+        "deploy_b": add_memory(conn, "rollback_steps", "deploy the old build again"),
+    }
+    embedder = FakeEmbedder()
+    service = make_service(embedder, conn)
+    for key in ("deploy_a", "coffee"):
+        _embed(conn, embedder, ids[key])
+    query = "how do I deploy the service"
+    result = ranking.Ranker(service).search(conn, query, project="claude_code", top_k=10)
+    assert result.mode == "hybrid"
+    assert sorted(h.row.id for h in result.hits) == sorted(
+        [ids["deploy_a"], ids["coffee"], ids["deploy_b"]]
+    )
+    assert [h.row.id for h in result.hits if h.score is None] == [ids["deploy_b"]]
+
+
+def test_a_query_of_stop_words_alone_matches_no_note_in_keyword_mode(conn):
+    ids = half_pool(conn)
+    index = ranking.RankIndex()
+    index.refresh(conn)
+    assert index.rank("how do I do the", project="claude_code", top_k=10).hits == []
+    result = index.rank("how do I do the deploy", project="claude_code", top_k=10)
+    assert ranked_ids(result) == [ids["deploy_a"], ids["deploy_b"]]
+
+
 def test_keyword_only_while_no_model_is_available(conn):
     ids = seed(conn)
     settings = embedding.EmbeddingSettings(backend="none")
