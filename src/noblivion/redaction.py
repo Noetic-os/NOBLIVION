@@ -17,7 +17,8 @@ Covered shapes:
 - CLI ``key=value``, ``--token=``, ``--password=`` and ``-p VALUE`` forms;
 - secret field names in ``key: value`` and ``key=value`` form, also with the
   key in quotes (JSON: ``"password": "value"``). A key that ends in ``pass``
-  or ``pwd`` counts only in front of ``=`` and in the JSON form;
+  or ``pwd`` counts in front of ``=``, in the JSON form, and in front of
+  ``:`` when its value looks like a secret;
 - the password in a connection URL (``scheme://user:PASSWORD@host``);
 - the data block of a cluster ``kind: Secret`` manifest;
 - email addresses.
@@ -171,25 +172,46 @@ _KEYVALUE_PATTERNS: list[tuple[re.Pattern[str], _Replacement]] = [
 # to its closing quote on the same line, so a space in it does not end it and
 # the rest of a compact JSON line stays. Any other value is the run up to the
 # next whitespace.
-# After `:` a number, `true`, `false` or `null` is not a secret, so
-# `"input_token": 12345678,` stays with its comma.
+# After `:` the words `true`, `false` and `null` are not a secret. A number is
+# a secret for a password key (`password: 12345678`) and a count for a key
+# that ends in `token`, so `"input_token": 12345678,` stays with its comma.
 # `pass` and `pwd` are words of prose, of a compiler and of a test report
-# (`first_pass: complete`, `PASS: test_name`, `PWD=/tmp`). They are a key only
-# in front of `=` (`DB_PASS=value`, `pass=value`, `MYSQL_PWD=value`) and in
-# the JSON form with both sides in quotes (`"db_pass": "value"`). `pass` must
-# not follow a letter ("bypass") and `pwd` must be the last part of a name.
-_NOT_A_BARE_SCALAR = r"(?!\s*(?:-?[\d.]+|true|false|null)(?:[\s,;}\]]|$))"
+# (`first_pass: complete`, `PASS: test_name`, `PWD=/tmp`). They are a key
+# - in front of `=` (`DB_PASS=value`, `pass=value`, `MYSQL_PWD=value`);
+# - in the JSON form with both sides in quotes (`"db_pass": "value"`);
+# - as the last part of a name in front of `:` (YAML), when the value looks
+#   like a secret (`smtp-pass: hunter2hunter2`, not `first_pass: complete`);
+# - `pwd` in front of a number.
+# `pass` must not follow a letter ("bypass") and `pwd` in front of `=` must
+# be the last part of a name.
+_NOT_A_KEYWORD = r"(?!\s*(?:true|false|null)(?:[\s,;}\]]|$))"
+_NOT_A_NUMBER = r"(?!\s*-?[\d.]+(?:[\s,;}\]]|$))"
+_NUMBER = r"[\d.]{6,}(?=[\s,;}\]]|$)"
+# A value that looks like a secret: one word of 8 or more characters that has
+# a digit, a symbol inside it, or a capital letter after a small letter. A
+# plain word stays, also with a capital first letter, in brackets or with a
+# full stop or a comma after it. Only the first 64 characters are read, so a
+# long word costs the same as a short one.
+_SECRET_LIKE = (
+    r"(?=[^\s'\"]{8})"
+    r"(?:[^\s\d'\"]{0,63}\d"
+    r"|[^\W_]{0,63}(?:_|[^\s\w'\"(){}\[\],;`])[^\W_]"
+    r"|(?-i:[^\sa-z'\"]{0,63}[a-z][^\sA-Z'\"]{0,63}[A-Z]))"
+)
 _FIELD_KEY = (
-    r"(?:password|passwd|secret|token|api[_-]?key|credential|private[_-]?key|access[_-]?key"
+    r"(?:password|passwd|secret|api[_-]?key|credential|private[_-]?key|access[_-]?key"
     r"|secret[_-]?key|client[_-]?secret|jwt|\.dockerconfigjson|tls\.crt|tls\.key|ca\.crt)"
-    r"['\"]?\s*(?:=|:" + _NOT_A_BARE_SCALAR + r")\s*"
+    r"['\"]?\s*(?:=|:" + _NOT_A_KEYWORD + r")\s*"
+    r"|token['\"]?\s*(?:=|:" + _NOT_A_KEYWORD + _NOT_A_NUMBER + r")\s*"
     r"|(?:(?<![a-z])pass|(?<=[_.\-])pwd)['\"]?\s*=\s*"
     r"|(?:(?<=['\"_.\-])pass|(?<=[_.\-])pwd)['\"]\s*:\s*(?=['\"])"
+    r"|(?<=[_.\-])(?:pass|pwd)\s*:\s*(?=['\"]?" + _SECRET_LIKE + r")"
+    r"|(?<![a-z])pwd['\"]?\s*[=:]\s*(?=" + _NUMBER + r")"
 )
 _SECRET_FIELD_RE = re.compile(
     r"(?i)(" + _FIELD_KEY + r")"
     r"(?:(['\"])" + _NOT_A_MARKER + r"(?:(?!\2)[^\\\n]|\\.){6,}\2"
-    r"|(?!['\"]?(?:\*\*\*REDACTED|\[REDACTED))[^\s]{6,})",
+    r"|" + _NUMBER + r"|(?!['\"]?(?:\*\*\*REDACTED|\[REDACTED))[^\s]{6,})",
 )
 _BEARER_FIELD_RE = re.compile(
     r"(?i)((?:authorization|bearer)\s*[=:\s]\s*(?:bearer\s+)?)"

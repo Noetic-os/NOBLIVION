@@ -132,14 +132,36 @@ def test_the_text_of_a_note_is_not_changed(text: str) -> None:
     assert mt.redact_memory(text) == text
 
 
-def test_a_pass_key_in_memory_text_counts_only_before_an_equals_sign() -> None:
+def test_a_pass_key_in_memory_text_needs_an_equals_sign_or_a_value_like_a_secret() -> None:
     assert mt.redact_memory("DB_PASS=hunter2hunter2") == "DB_PASS=[REDACTED]"
     assert mt.redact_memory("pass = hunter2hunter2") == "pass = [REDACTED]"
+    # with ":" the value is one word of 8 or more characters with a digit, a
+    # symbol, or a capital letter after a small one
+    for value in ("hunter2hunter2", "12345678", "correct-horse", "hunterHunter", "$ecretword"):
+        assert mt.redact_memory(f"smtp-pass: {value}") == "smtp-pass: [REDACTED]", value
+    assert mt.redact_memory('db_pass: "hunter2hunter2"') == "db_pass: [REDACTED]"
+    for value in ("complete", "Complete", "COMPLETE", "optimizer.", "enabled,", "hunter2"):
+        assert mt.redact_memory(f"first_pass: {value}") == f"first_pass: {value}", value
+    assert mt.redact_memory("PASS: TestIndexer12") == "PASS: TestIndexer12"
     # the other keys of the rule stay as in the query set
     for text in ("passphrase: correct-horse", "session_id=abc123def", "Cookie: sid=abc123def"):
         assert "[REDACTED]" in mt.redact_memory(text), text
     # the query set keeps the broad rule: a query is not shown as a note
-    assert mt.redact("smtp-pass: hunter2hunter2") == "smtp-pass: [REDACTED]"
+    assert mt.redact("first_pass: complete") == "first_pass: [REDACTED]"
+
+
+def test_a_number_is_a_secret_for_a_password_key_and_a_count_for_a_token_key() -> None:
+    for redact in (mt.redact, mt.redact_memory):
+        for key in ("password", "passwd", "pwd", "secret", "api_key", "client_secret"):
+            assert redact(f"{key}: 12345678") == f"{key}: [REDACTED]", key
+            assert redact(f"{key}=12345678") == f"{key}=[REDACTED]", key
+            assert redact(f'{{"{key}": 12345678, "n": 1}}') == f'{{"{key}": [REDACTED], "n": 1}}'
+            assert redact(f'{{"{key}": 12345678}}') == f'{{"{key}": [REDACTED]}}'
+            for word in ("true", "false", "null"):
+                assert redact(f'{{"use_{key}": {word}}}') == f'{{"use_{key}": {word}}}'
+        assert redact('{"input_token": 12345678}') == '{"input_token": 12345678}'
+    for text in ("token: 12345678", "max_tokens: 16384", "token_count=152000"):
+        assert mt.redact_memory(text) == text
 
 
 def test_a_value_in_quotes_is_removed_up_to_its_closing_quote() -> None:

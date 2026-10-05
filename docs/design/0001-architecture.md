@@ -864,11 +864,15 @@ Three rules keep the text of a note that is not a secret:
   A block with no END line is masked up to the end of its key text, not up
   to the end of the note.
 - `pass` and `pwd` are also words of prose and of a test report
-  (`first_pass: complete`, `PASS: test_name`). They count as a key only in
-  front of `=` (`DB_PASS=value`) and in the JSON form (`"db_pass": "value"`).
-  So the value of a YAML line such as `smtp-pass: value` stays.
-- After `:` a number, `true`, `false` or `null` is not a secret
-  (`"input_token": 12345678`).
+  (`first_pass: complete`, `PASS: test_name`). They count as a key in front
+  of `=` (`DB_PASS=value`) and in the JSON form (`"db_pass": "value"`). In
+  front of `:` a key that ends in `pass` counts when its value looks like a
+  secret: one word of 8 or more characters with a digit, a symbol inside
+  it, or a capital letter after a small letter
+  (`smtp-pass: hunter2hunter2`).
+- After `:` the words `true`, `false` and `null` are not a secret. A number
+  is a secret for a password key (`password: 12345678`) and a count for a
+  key that ends in `token` (`"input_token": 12345678`).
 
 The hooks have a redactor of their own for the text that they show to the
 model (`hooks/memory_text.py`), because they run without the package. The

@@ -69,12 +69,15 @@ All notable changes to NOBLIVION. The format follows
 - The new rules keep the text of a note that is not a secret
   (NOBLIVION-46). A line that only names the BEGIN line of a key block
   stays, and so does the text after a key block with no END line. A key
-  that ends in `pass` with a colon stays (`first_pass: complete`,
-  `PASS: test_name`), so the value of a YAML line such as
-  `smtp-pass: value` is not removed. A number, `true`, `false` or `null`
-  after a colon stays (`"input_token": 12345678`). A list of 67 texts is
-  tested against the store redactor and against the redactor that the
-  hooks use for memory text.
+  that ends in `pass` with a colon counts only when its value looks like a
+  secret: one word of 8 or more characters with a digit, a symbol inside
+  it, or a capital letter after a small letter
+  (`smtp-pass: hunter2hunter2`). So `first_pass: complete` and
+  `PASS: test_name` stay. After a colon, `true`, `false` and `null` stay.
+  A number stays for a key that ends in `token`
+  (`"input_token": 12345678`) and is removed for a password key
+  (`password: 12345678`). A list of 81 texts is tested against the store
+  redactor and against the redactor that the hooks use for memory text.
 - The redactor version is 2, so the first index scan after the update
   writes every Markdown note again with the new rules (NOBLIVION-46). The
   indexer now keeps the version mark per namespace. Before, the mark was

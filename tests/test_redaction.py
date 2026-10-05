@@ -124,13 +124,40 @@ def test_redacts(text, expected):
     assert redact_at_rest(text) == expected
 
 
-def test_a_pass_key_counts_only_before_an_equals_sign_and_in_json():
-    # `pass` is a word of prose too. After ":" with no quotes it is not a key,
-    # so the value of a YAML line with such a key stays.
-    for text in ("smtp:\n  smtp-pass: hunter2hunter2\n", "first_pass: complete", "pwd: /srv/app"):
+def test_a_pass_key_with_a_colon_counts_when_its_value_looks_like_a_secret():
+    # `pass` is a word of prose too. After ":" with no quotes the value must be
+    # one word of 8 or more characters with a digit, a symbol, or a capital
+    # letter after a small one.
+    for value in ("hunter2hunter2", "12345678", "correct-horse", "hunterHunter", "$ecretword"):
+        assert redact_at_rest(f"smtp-pass: {value}") == f"smtp-pass: {FIELD_TOKEN}", value
+    assert redact_at_rest("smtp:\n  smtp-pass: hunter2hunter2\n") == (
+        f"smtp:\n  smtp-pass: {FIELD_TOKEN}\n"
+    )
+    assert redact_at_rest('db_pass: "hunter2hunter2"') == f'db_pass: "{FIELD_TOKEN}"'
+    assert redact_at_rest("mysql_pwd: hunter2hunter2") == f"mysql_pwd: {FIELD_TOKEN}"
+    plain = ("complete", "Complete", "COMPLETE", "optimizer.", "enabled,", "hunter2", "(skipped)")
+    for value in plain:
+        assert redact_at_rest(f"first_pass: {value}") == f"first_pass: {value}", value
+    # `pass` alone and `pwd` alone are not a key in front of ":".
+    for text in ("PASS: TestIndexer12", "pass: hunter2hunter2", "pwd: /srv/app/current"):
         assert redact_at_rest(text) == text
-    assert redact_at_rest("smtp-pass=hunter2hunter2") == f"smtp-pass={FIELD_TOKEN}"
-    assert redact_at_rest('"smtp-pass": "hunter2hunter2"') == f'"smtp-pass": "{FIELD_TOKEN}"'
+    assert redact_at_rest("smtp-pass=hunter2") == f"smtp-pass={FIELD_TOKEN}"
+    assert redact_at_rest('"smtp-pass": "hunter2"') == f'"smtp-pass": "{FIELD_TOKEN}"'
+
+
+def test_a_number_is_a_secret_for_a_password_key_and_a_count_for_a_token_key():
+    for key in ("password", "passwd", "secret", "api_key", "client_secret", "access_key"):
+        assert redact_at_rest(f"{key}: 12345678") == f"{key}: {FIELD_TOKEN}", key
+        # the comma and the brace of a JSON line stay
+        assert redact_at_rest(f'{{"{key}": 12345678, "n": 1}}') == (
+            f'{{"{key}": {FIELD_TOKEN}, "n": 1}}'
+        )
+        assert redact_at_rest(f'{{"{key}": 12345678}}') == f'{{"{key}": {FIELD_TOKEN}}}'
+        for word in ("true", "false", "null"):
+            assert redact_at_rest(f'{{"use_{key}": {word}}}') == f'{{"use_{key}": {word}}}'
+    assert redact_at_rest("pwd: 12345678") == f"pwd: {FIELD_TOKEN}"
+    for text in ("token: 12345678", '{"input_token": 12345678}', "token: 0.000015"):
+        assert redact_at_rest(text) == text
 
 
 @pytest.mark.parametrize(
@@ -200,13 +227,14 @@ def test_new_rules_run_in_linear_time(text):
 
 
 def test_cluster_secret_data_only_in_a_secret_manifest():
-    # The key is not a secret field name: a field name is masked in any text.
+    # The key is not a secret field name: a key that ends in "pass" is masked
+    # in any text when its value looks like a secret (NOBLIVION-46).
     value = fake("", 24, "QWxhZGRpbjpvcGVuIHNlc2FtZQ")
     manifest = f"apiVersion: v1\nkind: Secret\ndata:\n  db-conn: {value}\n"
     assert f"  db-conn: {FIELD_TOKEN}" in redact_at_rest(manifest)
     config_map = f"apiVersion: v1\nkind: ConfigMap\ndata:\n  db-conn: {value}\n"
     assert redact_at_rest(config_map) == config_map
-    assert f"  db-token: {FIELD_TOKEN}" in redact_at_rest(config_map.replace("db-conn", "db-token"))
+    assert f"  db-pass: {FIELD_TOKEN}" in redact_at_rest(config_map.replace("db-conn", "db-pass"))
 
 
 def test_word_boundary_created_by_a_replacement_still_settles():
@@ -244,6 +272,8 @@ FRAGMENTS = [
     "<password>",
     "</password>",
     secret_forms.begin_line("PGP") + "\n",
+    "smtp-pass: ",
+    "12345678",
 ]
 
 

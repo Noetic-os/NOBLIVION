@@ -109,22 +109,28 @@ _RX_KEY_NAME_MEMORY = (
 # word counts, so ``"max_tokens": 4096`` and ``"author": "..."`` stay. ``pass``
 # counts alone or as the last part of a name (``"DB_PASS"``, not ``"bypass"``).
 # A value in quotes runs to its closing quote, so a space in it does not end
-# it. A number, ``true``, ``false`` or ``null`` is not a secret
-# (``"input_token": 12345678``). The same rule serves the query and the memory
-# text.
+# it. ``true``, ``false`` and ``null`` are not a secret. A number is a secret
+# for a password key (``"password": 12345678``) and a count for a key that
+# ends in ``token`` or ``pass`` (``"input_token": 12345678``). The same rule
+# serves the query and the memory text.
 _RX_QUOTED_KEY = (
-    r"(?i)(['\"](?:[\w-]*(?:password|passwd|pwd|secret|token|credential|(?:api|private|access)[_-]?key)"
-    r"|(?:[\w.-]*[_.-])?pass)['\"])"
+    r"(?i)(['\"](?:[\w-]*(?:password|passwd|pwd|secret|credential|(?:api|private|access)[_-]?key)"
+    r"|(?:[\w-]*token|(?:[\w.-]*[_.-])?pass)(?!['\"]\s*:\s*-?[\d.]+(?:[\s'\"&,;}\]]|$)))['\"])"
     r"(\s*:\s*)(?:(['\"])(?:(?!\3)[^\\\n]|\\.){4,}\3"
-    r"|(?!\[REDACTED\])(?!(?:-?[\d.]+|true|false|null)(?:[\s'\"&,;}\]]|$))[^\s'\"&,;]{4,})",
+    r"|-?[\d.]{4,}(?=[\s'\"&,;}\]]|$)"
+    r"|(?!\[REDACTED\])(?!(?:true|false|null)(?:[\s'\"&,;}\]]|$))[^\s'\"&,;]{4,})",
     0,
 )
-# A value in quotes with a space in it (``password="two words"``): the two key
-# name rules above stop at the space. The key ends in a secret word. The same
-# rule serves the query and the memory text.
+# Two values that the key name rules above miss, for a key that ends in a
+# secret word: a value in quotes with a space in it (``password="two words"``),
+# and a number after a password key (``password: 12345678``; the memory rule
+# above keeps every number, because of ``MAX_TOKENS=16384``). A number after a
+# key that ends in ``token`` stays. The same rule serves the query and the
+# memory text.
 _RX_QUOTED_VALUE = (
-    r"(?i)((?:password|passwd|pwd|secret|token|credential|(?:api|private|access|secret)[_-]?key)['\"]?)"
-    r"(\s*[:=]\s*)(['\"])(?:(?!\3)[^\\\n]|\\.){4,}\3",
+    r"(?i)((?:password|passwd|pwd|secret|credential|(?:api|private|access|secret)[_-]?key"
+    r"|token(?=['\"]?\s*[:=]\s*['\"]))['\"]?)"
+    r"(\s*[:=]\s*)(?:(['\"])(?:(?!\3)[^\\\n]|\\.){4,}\3|-?[\d.]{4,}(?=[\s'\"&,;}\]]|$))",
     0,
 )
 # pass / session / cookie keys only with ":" or "=" ("3 passed" stays).
@@ -134,12 +140,27 @@ _RX_PASS_KEY = (
 )
 # In memory text ``pass`` is a word of prose, of a compiler and of a test
 # report too (``first_pass: complete``, ``PASS: test_name``, ``passed: 12``).
-# There it is a key only in front of ``=`` and not after a letter
-# (``DB_PASS=value``, not ``bypass=off``). ``passphrase``, ``passcode``,
-# ``session`` and ``cookie`` keys stay as in the query set; the key is read
-# from that word on, at most 40 characters.
+# There it is a key in front of ``=`` when it does not follow a letter
+# (``DB_PASS=value``, not ``bypass=off``), and as the last part of a name in
+# front of ``:`` when the value looks like a secret
+# (``smtp-pass: hunter2hunter2``). ``passphrase``, ``passcode``, ``session``
+# and ``cookie`` keys stay as in the query set; the key is read from that
+# word on, at most 40 characters.
+# A value that looks like a secret: one word of 8 or more characters that has
+# a digit, a symbol inside it, or a capital letter after a small letter. A
+# plain word stays, also with a capital first letter, in brackets or with a
+# full stop or a comma after it. Only the first 64 characters are read, so a
+# long word costs the same as a short one. The store redactor has the same
+# text (``_SECRET_LIKE`` in ``src/noblivion/redaction.py``).
+_SECRET_LIKE = (
+    r"(?=[^\s'\"]{8})"
+    r"(?:[^\s\d'\"]{0,63}\d"
+    r"|[^\W_]{0,63}(?:_|[^\s\w'\"(){}\[\],;`])[^\W_]"
+    r"|(?-i:[^\sa-z'\"]{0,63}[a-z][^\sA-Z'\"]{0,63}[A-Z]))"
+)
 _RX_PASS_KEY_MEMORY = (
-    r"(?i)((?<![a-z])pass(?=\s*=)|(?:passphrase|passcode|session|cookie)[\w-]{0,40})"
+    r"(?i)((?<![a-z])pass(?=\s*=)|(?<=[_.-])pass(?=\s*:\s*['\"]?" + _SECRET_LIKE + r")"
+    r"|(?:passphrase|passcode|session|cookie)[\w-]{0,40})"
     r"(\s*[:=]\s*)(['\"]?)[^\s'\"&,;]{3,}\3",
     0,
 )
