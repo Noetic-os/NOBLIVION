@@ -69,6 +69,19 @@ All notable changes to NOBLIVION. The format follows
     each search that hit the note, and 100 KB of letters cost minutes. Now
     100 KB costs less than 0.1 s. The rules mask the same text as before,
     so the redactor version stays 2.
+- A common word no longer counts as a keyword match (NOBLIVION-76). Before,
+  a word such as "the" matched nearly every note, so while the store was
+  still computing vectors, the query "how do I deploy the service" brought
+  back unrelated notes with no vector and no score, and the hook floors
+  keep a row with no score. The store now skips a list of stop words
+  (articles, pronouns, auxiliary verbs, prepositions, conjunctions and
+  question words) when it decides which notes match. The scores do not
+  change. In keyword-only mode, a query of stop words alone finds no note.
+- The local re-rank of the ranked index (`NOBLIVION_RECALL_INDEX_RERANK`)
+  no longer ranks the rows whose note holds no word of the query in its
+  keyword list (NOBLIVION-76). Before, it ranked them by their id, so a row
+  with a low id got a better place than a row with a better vector score.
+
 ### Changed
 
 - Behaviour change for the subagent rules hook: its default relevance floor
@@ -91,21 +104,6 @@ All notable changes to NOBLIVION. The format follows
   that you set applies to every model. The search answer of the store has
   a new field `model`, as the index answer has. It is `null` when the rows
   were ranked by keyword only.
-
-### Fixed
-
-- A common word no longer counts as a keyword match (NOBLIVION-76). Before,
-  a word such as "the" matched nearly every note, so while the store was
-  still computing vectors, the query "how do I deploy the service" brought
-  back unrelated notes with no vector and no score, and the hook floors
-  keep a row with no score. The store now skips a list of stop words
-  (articles, pronouns, auxiliary verbs, prepositions, conjunctions and
-  question words) when it decides which notes match. The scores do not
-  change. In keyword-only mode, a query of stop words alone finds no note.
-- The local re-rank of the ranked index (`NOBLIVION_RECALL_INDEX_RERANK`)
-  no longer ranks the rows whose note holds no word of the query in its
-  keyword list (NOBLIVION-76). Before, it ranked them by their id, so a row
-  with a low id got a better place than a row with a better vector score.
 
 ## 0.1.6 - 2026-10-05
 
