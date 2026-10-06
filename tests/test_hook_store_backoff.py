@@ -194,7 +194,8 @@ def test_a_slow_search_of_a_short_budget_leaves_the_prompt_hook_its_store(rh, sc
         short = _reason(lambda: rh.store_get(lambda base: base + "/api/x", env, 0.8))
         assert short == "timeout"
         stamp = tmp_path / "data" / sc.HUNG_STAMP_FILE
-        assert stamp.exists()  # the slow call is on record, with its budget
+        # The slow call is on record, with its budget and the store it went to.
+        assert stamp.read_text(encoding="ascii").split()[1:] == ["0.800", sc.store_identity(env)]
         assert rh.store_get(lambda base: base + "/api/x", env, 3.0)["namespace"] == "claude_code"
     finally:
         fake.stop()
@@ -216,6 +217,23 @@ def test_a_stamp_for_another_store_does_not_count(sc, tmp_path):
     sc.mark_hung(env, 2.0, sc.store_identity(env), clock=lambda: now)
     later = (data / sc.HUNG_STAMP_FILE).stat().st_mtime
     os.utime(data / "store.json", (later - 5, later - 5))
+    assert sc.hung(env, 2.0, clock=lambda: now)
+
+
+def test_a_stamp_for_a_store_with_another_pid_on_the_same_port_does_not_count(sc, tmp_path):
+    # A new store can listen on the port of the old one: the pid tells them
+    # apart.
+    env = hook_env(tmp_path)
+    data = Path(env["NOBLIVION_DATA_DIR"])
+    write_store_files(data, 40123, pid=4001)
+    old = sc.store_identity(env)
+    now = 1_000_000.0
+    write_store_files(data, 40123, pid=4002)  # the new store, the same port
+    sc.mark_hung(env, 2.0, old, clock=lambda: now)
+    later = (data / sc.HUNG_STAMP_FILE).stat().st_mtime
+    os.utime(data / "store.json", (later - 5, later - 5))  # the stamp is the newer file
+    assert not sc.hung(env, 2.0, clock=lambda: now)
+    sc.mark_hung(env, 2.0, sc.store_identity(env), clock=lambda: now)
     assert sc.hung(env, 2.0, clock=lambda: now)
 
 

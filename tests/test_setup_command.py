@@ -100,11 +100,13 @@ def test_install_refuses_an_empty_data_dir(tmp_path):
 # -- install.sh starts the store in the same session ---------------------------------------
 
 
-def _fake_uv(folder: Path) -> None:
+def _fake_uv(folder: Path, stdin_fault: bool = False) -> None:
     """A ``uv`` that makes a venv whose ``python`` and ``noblivion`` run this
-    test's interpreter, where the package is importable. No download."""
+    test's interpreter, where the package is importable. No download. With
+    ``stdin_fault`` the venv ``python`` fails on a script from stdin."""
     folder.mkdir(parents=True)
     py = sys.executable
+    fault = '[ \\"$1\\" = - ] && exit 9\\n' if stdin_fault else ""
     (folder / "uv").write_text(
         f"""#!{py}
 import os, sys
@@ -116,8 +118,9 @@ if args[:1] == ["venv"]:
     # pyvenv.cfg next to it does not see the test venv, so not the package.
     for name, tail in (("python", ""), ("noblivion", " -m noblivion")):
         exe = os.path.join(bin_dir, name)
+        fault = "{fault}" if name == "python" else ""
         with open(exe, "w") as fh:
-            fh.write("#!/bin/sh\\nexec {py}" + tail + " \\"$@\\"\\n")
+            fh.write("#!/bin/sh\\n" + fault + "exec {py}" + tail + " \\"$@\\"\\n")
         os.chmod(exe, 0o755)
 elif args[:1] == ["export"]:
     open(args[args.index("--output-file") + 1], "w").close()
@@ -127,11 +130,11 @@ elif args[:1] == ["export"]:
     (folder / "uv").chmod(0o755)
 
 
-def _install_env(tmp_path: Path) -> dict[str, str]:
+def _install_env(tmp_path: Path, stdin_fault: bool = False) -> dict[str, str]:
     """A clean env with a temp HOME and the fake ``uv`` first on PATH."""
     home = tmp_path / "home"
     home.mkdir()
-    _fake_uv(tmp_path / "bin")
+    _fake_uv(tmp_path / "bin", stdin_fault)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("NOBLIVION_", "CLAUDE_"))}
     env.update(
         HOME=str(home),
@@ -181,6 +184,10 @@ def test_install_starts_the_store_so_the_next_prompt_has_recall(tmp_path):
         pid = info["pid"] if info else None
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "The store runs" in proc.stdout, proc.stdout + proc.stderr
+        # The restart can wait up to 100 s: a line says so before it.
+        starting = "noblivion install: starting the store; when an old store runs"
+        assert starting in proc.stdout
+        assert proc.stdout.index(starting) < proc.stdout.index("The store runs")
         # No new session and no SessionStart hook: the next prompt's hook
         # finds and proves the store through store.json and the token.
         assert info is not None
@@ -262,6 +269,66 @@ def test_install_no_embed_goes_on_with_a_broken_config(tmp_path, text, problem):
         "changed. Fix the file and set embedding.backend to none (--no-embed).\n"
     )
     assert line in proc.stdout, proc.stdout
+    assert (data / "config.json").read_text(encoding="utf-8") == text
+    assert "done. The store starts at the next Claude Code session." in proc.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not found")
+def test_install_no_embed_goes_on_when_the_config_cannot_be_written(tmp_path):
+    # A folder in the place of the temp file: the write fails. Before, a
+    # Python traceback of 9 lines.
+    data = tmp_path / "plugin-data"
+    data.mkdir(mode=0o700)
+    text = json.dumps({"embedding": {"backend": "fastembed"}})
+    (data / "config.json").write_text(text, encoding="utf-8")
+    (data / "config.tmp").mkdir()
+    proc = _install(_install_env(tmp_path), data, "--no-embed", "--no-start")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Traceback" not in proc.stdout + proc.stderr
+    line = (
+        f"noblivion install: {data / 'config.json'} cannot be written (Is a directory: "
+        f"{data / 'config.tmp'}); embedding.backend not changed. Fix the file and set "
+        "embedding.backend to none (--no-embed).\n"
+    )
+    assert line in proc.stdout, proc.stdout
+    assert (data / "config.json").read_text(encoding="utf-8") == text
+    assert (data / "config.tmp").is_dir()
+    assert "done. The store starts at the next Claude Code session." in proc.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not found")
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file of mode 000")
+def test_install_no_embed_goes_on_when_the_config_cannot_be_read(tmp_path):
+    # Before, the line said "is not valid JSON".
+    data = tmp_path / "plugin-data"
+    data.mkdir(mode=0o700)
+    (data / "config.json").write_text("{}", encoding="utf-8")
+    (data / "config.json").chmod(0)
+    try:
+        proc = _install(_install_env(tmp_path), data, "--no-embed", "--no-start")
+    finally:
+        (data / "config.json").chmod(0o600)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Traceback" not in proc.stdout + proc.stderr
+    line = (
+        f"noblivion install: {data / 'config.json'} cannot be read (Permission denied); "
+        "embedding.backend not changed."
+    )
+    assert line in proc.stdout, proc.stdout
+    assert "not valid JSON" not in proc.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not found")
+def test_install_no_embed_goes_on_after_an_error_that_the_script_does_not_expect(tmp_path):
+    # The Python step that changes config.json fails (here: the venv python
+    # exits 9). set -e must not stop the install there: one line says so.
+    data = tmp_path / "plugin-data"
+    data.mkdir(mode=0o700)
+    text = json.dumps({"embedding": {"backend": "fastembed"}})
+    (data / "config.json").write_text(text, encoding="utf-8")
+    proc = _install(_install_env(tmp_path, stdin_fault=True), data, "--no-embed", "--no-start")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"could not change embedding.backend in {data / 'config.json'}\n" in proc.stdout
     assert (data / "config.json").read_text(encoding="utf-8") == text
     assert "done. The store starts at the next Claude Code session." in proc.stdout
 

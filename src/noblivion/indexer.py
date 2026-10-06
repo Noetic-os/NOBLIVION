@@ -91,11 +91,20 @@ STAT_CACHE_MIN_AGE_NS = 2_000_000_000
 # a search answer (512 KB) and costs the redactor a bounded time. The hash
 # stays the hash of the whole file.
 MAX_FILE_BYTES = 256 * 1024
+# A rule masks a secret only when it sees the end of it: the END line of a
+# key block, the end tag of a ``<password>`` element, the rest of a token. The
+# head of a large file can end inside a secret. So the indexer redacts the
+# head with this many more bytes of the file too, and stores only the text on
+# which the two redactions agree (``_redact_head``).
+CUT_CONTEXT_BYTES = 64 * 1024
 # The bytes that can go on a token or a password: every visible ASCII
 # character but the quote marks, the backtick, "," ";" ":" and the brackets,
 # and every byte of a multi-byte UTF-8 character. A hard cut drops a run of
 # them at its end (``_head``).
 _VALUE_BYTES = bytes(b for b in range(0x21, 0x100) if b != 0x7F and chr(b) not in "\"'`,;:()[]{}<>")
+# The markers that the redactor writes. The stored head of a large file does
+# not end inside one (``_agreed_head``).
+_MARKERS = (redaction.REDACTION_TOKEN, redaction.FIELD_TOKEN, redaction.EMAIL_TOKEN)
 
 # -- frontmatter and content ---------------------------------------------------
 
@@ -476,10 +485,10 @@ def _head(raw: bytes) -> bytes:
     run starts in the first half. A cut that is not at a line end also drops
     the text after the last quote mark in the second half.
 
-    A rule masks a token, a password or a quoted value only when it is
-    whole: a part of one can be too short for its rule, and a quoted value
-    with no closing quote is masked only up to its first space. So the cut
-    keeps no such part."""
+    So the head ends at a clean place when it can. It can still end inside
+    a secret: inside a key block or a ``<password>`` element that spans
+    lines, after a space inside a value, or inside a run that starts in the
+    first half. ``_redact_head`` keeps such a part out of the stored text."""
     if len(raw) <= MAX_FILE_BYTES:
         return raw
     half = MAX_FILE_BYTES // 2
@@ -491,13 +500,68 @@ def _head(raw: bytes) -> bytes:
     if cut != -1:
         head = head[:cut]
     else:
-        # A run that starts in the first half stays: its kept part is
-        # longer than any rule needs.
+        # A run that starts in the first half stays, cut at the limit, so a
+        # file of one long run keeps its head. The cut can split a token in
+        # that run (``_redact_head``).
         kept = head.rstrip(_VALUE_BYTES)
         if len(kept) >= half:
             head = kept
     quote = max(head.rfind(b'"', half), head.rfind(b"'", half))
     return head[: quote + 1] if quote != -1 else head
+
+
+def _agreed_head(short: str, wide: str) -> str:
+    """The longest common start of the two redacted texts ``short`` and
+    ``wide``, cut back to the start of a marker that it would split, with no
+    whitespace at its end."""
+    end = min(len(short), len(wide))
+    n = 0
+    while n + 4096 <= end and short[n : n + 4096] == wide[n : n + 4096]:
+        n += 4096
+    while n < end and short[n] == wide[n]:
+        n += 1
+    moved = True
+    while moved:
+        moved = False
+        for text in (short, wide):
+            for marker in _MARKERS:
+                # A marker that starts in front of n and ends after it.
+                at = text.find(marker, max(0, n - len(marker) + 1), n + len(marker) - 1)
+                if at != -1:
+                    n, moved = at, True
+    return short[:n].rstrip()
+
+
+def _redact_head(path: str, raw: bytes, head: bytes) -> str:
+    """The stored text of a file that is cut to ``head``.
+
+    The redacted head can keep a part of a secret that the redaction of the
+    whole file masks, because the cut removed what the rule needs to see:
+    the END line of a key block, the end tag of a ``<password>`` element,
+    the rest of a token. The redaction of the head with
+    ``CUT_CONTEXT_BYTES`` more of the file sees that part and masks the
+    secret, so the two texts differ from the start of the secret on. The
+    stored text is the part on which they agree. The wider part is a plain
+    byte count, not a cut at a line end, so it holds that much text after
+    the head also when the next line is very long. A secret that runs on for
+    more than ``CUT_CONTEXT_BYTES`` after the head is not covered.
+
+    The data rule of a cluster Secret reads the ``kind: Secret`` line from
+    the whole file: ``kubectl get secret -o yaml`` puts ``data:`` before
+    ``kind:``, and the cut can fall between them or after the wider part.
+    """
+    manifest = redaction.holds_secret_kind(raw)
+
+    def redact(part: bytes) -> str:
+        text = part.decode("utf-8", errors="replace")
+        content = build_content(path, parse_file(path, text))
+        return redaction.redact_at_rest(content, secret_manifest=manifest)
+
+    short = redact(head)
+    wide = redact(raw[: len(head) + CUT_CONTEXT_BYTES])
+    if redaction.REDACTION_FAILED_TOKEN in (short, wide):
+        return redaction.REDACTION_FAILED_TOKEN
+    return _agreed_head(short, wide)
 
 
 @dataclass(frozen=True)
@@ -523,14 +587,10 @@ def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
     cut = len(head) < len(raw)
     text = head.decode("utf-8", errors="replace")
     parsed = parse_file(entry.path, text)
-    content = build_content(entry.path, parsed)
     if cut:
-        # A rule that reads a fact from anywhere in the file (a cluster
-        # Secret's "kind: Secret" line) reads it from the whole file, not
-        # from the head alone.
-        content = redaction.redact_cut(content, raw.decode("utf-8", errors="replace"))
+        content = _redact_head(entry.path, raw, head)
     else:
-        content = redaction.redact_at_rest(content)
+        content = redaction.redact_at_rest(build_content(entry.path, parsed))
     if content == redaction.REDACTION_FAILED_TOKEN:
         return None
     labels = None

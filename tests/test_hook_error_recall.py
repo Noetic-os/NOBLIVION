@@ -905,6 +905,14 @@ def test_a_store_gate_that_is_not_a_cosine_is_the_default_of_the_model(bad):
     assert er.store_gate({"NOBLIVION_ERROR_RECALL_MIN_SCORE": "0.4"}, None) == 0.4
 
 
+@pytest.mark.parametrize("bad", ["nan", "inf", "1.5", "-2"])
+def test_a_local_floor_that_is_not_a_score_is_the_default(env, bad):
+    # `l_score >= nan` is never true: every local hit was dropped.
+    env = dict(env, NOBLIVION_ERROR_RECALL_LOCAL_MIN_SCORE=bad)
+    assert "- Memory feedback_rev_parse_needs_one_ref (" in run(fail_event(REV), env)
+    assert log_lines(env)[-1]["source"] == "local"
+
+
 def test_store_down_falls_back_to_the_local_search(env):
     s = socket.socket()
     s.bind(("127.0.0.1", 0))

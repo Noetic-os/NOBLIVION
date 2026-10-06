@@ -67,9 +67,10 @@ Fail open
   operation cannot hold the worker. A body over RESPONSE_MAX_BYTES (1 MiB) is
   ``fail:too_large``. At most WORKER_MAX (4) requests are in flight; past
   that a call is ``fail:busy`` at once. After a proof or a request timed out,
-  every call is ``fail:store_hung`` at once for 30 s (``store.hung`` in the
-  data dir, ``store_client.HUNG_BACKOFF_S``), so a store that accepts and
-  never answers does not cost each prompt the full budget.
+  for 30 s (``store.hung`` in the data dir, ``store_client.HUNG_BACKOFF_S``)
+  a call to the same store with no larger time budget is ``fail:store_hung``
+  at once, so a store that accepts and never answers does not cost each
+  prompt the full budget.
 
 Transport
   Plain ``http://`` only to a loopback IP literal (``localhost`` is a name,

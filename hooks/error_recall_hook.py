@@ -995,6 +995,8 @@ def search(
     mode = mode if mode in MODES else DEFAULT_MODE
     d_floor: Optional[float] = None
     l_floor = _float_env(env, "NOBLIVION_ERROR_RECALL_LOCAL_MIN_SCORE", LOCAL_MIN_SCORE)
+    # nan, inf or a value out of range would drop every local hit: unset.
+    l_floor = l_floor if -1.0 <= l_floor <= 1.0 else LOCAL_MIN_SCORE
     store_rows: Optional[List[Tuple[float, Dict[str, str]]]] = None
     store_error = ""
     if mode != "local":

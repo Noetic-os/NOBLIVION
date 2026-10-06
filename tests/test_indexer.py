@@ -296,6 +296,221 @@ def test_a_space_cut_keeps_no_part_of_a_quoted_value(conn, tmp_path):
     assert "correct" not in content and "horse" not in content
 
 
+# -- A secret at the cut of a large file (review round 2 of NOBLIVION-62). The
+# head can end inside a secret whose rule needs the part after the cut: the
+# END line of a key block, the end tag of a <password> element, the rest of a
+# token. The redaction of the whole file masks each case below; the stored
+# head kept a part of each.
+
+_KEY_LINES = [
+    secret_forms.fake("", 64, secret_forms.B64[i:] + secret_forms.B64[:i]) for i in range(12)
+]
+_LINES_FILL = "notes about the deploy steps and the tests\n"
+_RUN_FILL = "&a=1"  # one run of token characters: no line end, no space
+
+
+def _limit_inside(block: str, inside: int, fill: str, tail: str | None = None) -> bytes:
+    """``fill`` repeated, then ``block``, then ``tail`` (more ``fill`` when
+    None): the limit falls ``inside`` bytes into ``block``."""
+    size = indexer.MAX_FILE_BYTES - inside
+    pad = (fill * (size // len(fill) + 1)).encode()[:size]
+    return pad + block.encode() + (fill * 2000 if tail is None else tail).encode()
+
+
+def _stored(tmp_path: Path, raw: bytes) -> str:
+    path = tmp_path / "reference_big.md"
+    path.write_bytes(raw)
+    prep = indexer._prepare(indexer.FileEntry("proj-demo", path.name, path, ""), None)
+    assert prep is not None and prep.cut
+    return prep.content
+
+
+def _holds_part(text: str, secret: str, n: int) -> bool:
+    """True when ``text`` holds any ``n`` characters in a row of ``secret``."""
+    return any(secret[i : i + n] in text for i in range(len(secret) - n + 1))
+
+
+def _key_case(prefix: str, header: str = "", tail: str | None = None):
+    lines = [secret_forms.begin_line("RSA"), *_KEY_LINES, secret_forms.end_line("RSA")]
+    block = "\n" + header + "".join(f"{prefix}{line}\n" for line in lines)
+    inside = block.index(_KEY_LINES[6]) + 10 if tail is None else len(block) - 1
+    return _limit_inside(block, inside, _LINES_FILL, tail), _KEY_LINES, 16
+
+
+def _xml_case(after_end_tag: str):
+    block = f"\n<settings>\n<password>\n    {secret_forms.PASSWORD}\n</password>{after_end_tag}\n"
+    inside = block.index("</password>") + 3
+    return _limit_inside(block, inside, _LINES_FILL), [secret_forms.PASSWORD], 8
+
+
+def _run_case(block: str, inside: int, secret: str, n: int, fill: str = _RUN_FILL):
+    return _limit_inside(block, inside, fill), [secret], n
+
+
+def _api_key_case():
+    key = "sk" + "-proj-" + secret_forms.fake("", 32)
+    block = f"&openai={key}&z=1"
+    return _run_case(block, block.index(key) + 14, key, 8)
+
+
+def _url_case():
+    password = "Sup3r:" + "S3cretPassw0rdLong"
+    block = f",https://admin:{password}@db.example.org/x,"
+    return _run_case(block, block.index("S3c") + 3, password, 6, fill="b")
+
+
+def _phrase_case():
+    block = f"<password>{secret_forms.PHRASE}</password>"
+    inside = block.index(secret_forms.PHRASE_TAIL.split()[-1]) + 2
+    return _run_case(block, inside, secret_forms.PHRASE, 6, fill="<a>x</a>")
+
+
+def _email_case():
+    email = "alice.private@" + "example.com"
+    block = f"&mail={email}&"
+    return _run_case(block, block.index("@") - 4, email, 6)
+
+
+def _jwt_case():
+    def part(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+    header = part(b'{"alg":"HS256"}')
+    payload = part(b'{"sub":"alice@example.com","role":"admin"}')
+    jwt = f"{header}.{payload}.{secret_forms.fake('', 43)}"
+    block = f"&t2={jwt}&"
+    return _run_case(block, block.index(payload) + 10, jwt, 8)
+
+
+_CUT_CASES = {
+    "a diff that removes a key": lambda: _key_case(
+        "-", "diff --git a/k.pem b/k.pem\n--- a/k.pem\n+++ /dev/null\n@@ -1,14 +0,0 @@\n"
+    ),
+    "a key in a quote": lambda: _key_case("> "),
+    "a key in a comment": lambda: _key_case("# "),
+    "a key in a // comment": lambda: _key_case("// "),
+    "a key at the end of a file one byte over the limit": lambda: _key_case("> ", tail=""),
+    "a password element over lines": lambda: _xml_case(""),
+    "a password element and a long line after it": lambda: _xml_case(
+        "<x/>" * (indexer.CUT_CONTEXT_BYTES // 4)
+    ),
+    "a password element in a long line": _phrase_case,
+    "an API key in a run": _api_key_case,
+    "a URL password with a colon": _url_case,
+    "an email address in a run": _email_case,
+    "a JWT in a run": _jwt_case,
+}
+
+
+@pytest.mark.parametrize("case", list(_CUT_CASES))
+def test_the_stored_head_keeps_no_part_of_a_secret_at_the_cut(tmp_path, case):
+    raw, secrets, n = _CUT_CASES[case]()
+    assert len(raw) > indexer.MAX_FILE_BYTES
+    whole = redaction.redact_at_rest(raw.decode("utf-8"))
+    assert not any(_holds_part(whole, secret, n) for secret in secrets)
+    stored = _stored(tmp_path, raw)
+    assert not any(_holds_part(stored, secret, n) for secret in secrets)
+    assert len(stored.encode()) > indexer.MAX_FILE_BYTES // 2  # the head is still stored
+
+
+def test_a_file_one_byte_over_the_limit_is_cut_in_front_of_its_last_line():
+    raw = _key_case("> ", tail="")[0]
+    assert len(raw) == indexer.MAX_FILE_BYTES + 1
+    assert secret_forms.end_line("RSA").encode() not in indexer._head(raw)
+
+
+def test_a_hard_cut_inside_a_character_stores_no_replacement_character(tmp_path):
+    # One run of two-byte characters: the hard cut at the limit splits one.
+    lead = b"x" * (1 + indexer.MAX_FILE_BYTES % 2)
+    raw = lead + "é".encode() * (indexer.MAX_FILE_BYTES // 2 + 1000)
+    assert indexer._head(raw).decode("utf-8", errors="replace").endswith("�")
+    stored = _stored(tmp_path, raw)
+    assert "�" not in stored and stored.endswith("é")
+
+
+@pytest.mark.parametrize(
+    ("kind", "end"),
+    [
+        ("kind: Secret", "\n"),
+        ('kind: "Secret"', "\n"),
+        ("kind: 'Secret'", "\n"),
+        ("kind: Secret", "\r\n"),
+    ],
+    ids=["plain", "double quotes", "single quotes", "CRLF"],
+)
+def test_a_kind_line_after_the_wider_part_masks_the_data_lines(tmp_path, kind, end):
+    value = base64.b64encode(b"example-db-password-0123456789").decode()
+    data = f"{end}apiVersion: v1{end}data:{end}" + "".join(
+        f"  db{i}.conf: {value}{end}" for i in range(400)
+    )
+    after = _LINES_FILL * (indexer.CUT_CONTEXT_BYTES // len(_LINES_FILL) + 100)
+    raw = _limit_inside(data, len(data) // 2, _LINES_FILL, after + kind + end)
+    assert raw.index(kind.encode()) > len(indexer._head(raw)) + indexer.CUT_CONTEXT_BYTES
+    stored = _stored(tmp_path, raw)
+    assert f"  db0.conf: {redaction.FIELD_TOKEN}{end}" in stored
+    assert value not in stored
+
+
+@pytest.mark.parametrize(
+    "replace",
+    [("\n", "\r\n"), ("kind: Secret", 'kind: "Secret"'), ("kind: Secret", "kind: 'Secret'")],
+    ids=["CRLF", "kind in double quotes", "kind in single quotes"],
+)
+def test_a_small_secret_manifest_with_crlf_or_a_quoted_kind_is_masked(conn, tmp_path, replace):
+    values = [base64.b64encode(f"example-db-password-{i}".encode()).decode() for i in range(2)]
+    text = f"apiVersion: v1\ndata:\n  a: {values[0]}\n  b: {values[1]}\nkind: Secret\n"
+    folder = make_folder(tmp_path, "proj-demo", {"reference_secret.md": ""})
+    (folder / "reference_secret.md").write_bytes(text.replace(*replace).encode())
+    indexer.scan(conn, [folder])
+    content = rows(conn)[("proj-demo", "reference_secret.md")]["content"]
+    assert content.count(redaction.FIELD_TOKEN) == 2
+    assert not any(value in content for value in values)
+
+
+@pytest.mark.parametrize(
+    ("short", "wide", "agreed"),
+    [
+        ("text ***REDACTED*** a", "text ***REDACTED*** b", "text ***REDACTED***"),
+        ("text ***RED", "text ***REDACTED*** b", "text"),
+        ("key: [REDACTED] x", "key: [REDACTED_EMAIL] y", "key:"),
+        ("key: [REDACTED_EMAIL] x", "key: [REDACTED] y", "key:"),
+        ("a" * 10_000 + "x", "a" * 10_000 + "y", "a" * 10_000),
+        ("the same text", "the same text and more", "the same text"),
+    ],
+    ids=[
+        "after a marker",
+        "inside a marker",
+        "a field and an email",
+        "an email and a field",
+        "long",
+        "a prefix",
+    ],
+)
+def test_the_agreed_head_ends_outside_a_marker(short, wide, agreed):
+    assert indexer._agreed_head(short, wide) == agreed
+
+
+def test_the_cut_costs_about_the_same_for_a_much_larger_file(tmp_path):
+    # The indexer redacts the head and the wider part only, never the whole
+    # file. A relative bound: a redaction of the whole file costs about 16
+    # times more here.
+    line = "line: run the tests with the venv python, then key=value and alice@example.com\n"
+
+    def cost(size: int) -> float:
+        path = tmp_path / f"reference_{size}.md"
+        path.write_bytes((line * (size // len(line) + 1)).encode())
+        entry = indexer.FileEntry("proj-demo", path.name, path, "")
+        best = float("inf")
+        for _ in range(3):
+            start = time.perf_counter()
+            indexer._prepare(entry, None)
+            best = min(best, time.perf_counter() - start)
+        return best
+
+    window = indexer.MAX_FILE_BYTES + indexer.CUT_CONTEXT_BYTES
+    assert cost(16 * window) < 3 * cost(window)
+
+
 def test_hash_skip_and_update_in_place(conn, tmp_path):
     folder = make_folder(tmp_path, "proj-demo", {"user_alice.md": "likes tea\n"})
     first = indexer.scan(conn, [folder])

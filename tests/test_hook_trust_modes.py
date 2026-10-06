@@ -246,6 +246,9 @@ def test_mode_c_applies_trust_only_at_or_above_the_relevance_threshold():
     assert tr.apply_index_trust(rows, env, {})[1] == ":trust2of4"
     env["NOBLIVION_RECALL_TRUST_MIN_SCORE"] = "junk"  # unreadable -> the default 0.58
     assert tr.apply_index_trust(rows, env, {})[1] == ":trust1of4"
+    for raw in ("nan", "inf", "-inf", "1.5", "-2"):  # not a cosine -> the default 0.58
+        env["NOBLIVION_RECALL_TRUST_MIN_SCORE"] = raw
+        assert tr.apply_index_trust(rows, env, {})[1] == ":trust1of4", raw
 
 
 def test_the_default_threshold_is_the_pre_registered_value():

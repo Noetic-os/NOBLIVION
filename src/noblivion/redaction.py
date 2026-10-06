@@ -43,7 +43,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-REDACTOR_VERSION = "2"
+REDACTOR_VERSION = "3"
 
 REDACTION_TOKEN = "***REDACTED***"
 FIELD_TOKEN = "[REDACTED]"
@@ -237,20 +237,23 @@ _BEARER_FIELD_RE = re.compile(
     + r"([A-Za-z0-9\-_=.]{20,})",
 )
 
-# -- Cluster Secret manifest data: an indented `key: <base64>` line. Applied only
-# when the text holds `kind: Secret`, or the caller says the whole file does
-# (``redact_cut``). The text it masks is the text that the plain form
-# ``^(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})$`` masks, but in linear
-# time. In the plain form ``\s+`` runs over line ends too, so a key line
+# -- Cluster Secret manifest data: an indented `key: <base64>` line, also with a
+# CRLF line end. Applied only when the text holds `kind: Secret` (also with
+# the kind in quotes), or the caller says the whole file does
+# (``holds_secret_kind``). The text it masks is the text that the plain form
+# ``^(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})(?=\r?$)`` masks, but in
+# linear time. In the plain form ``\s+`` runs over line ends too, so a key line
 # matched from each line start of the blank lines above it, and N blank
 # lines cost N squared. All those starts end at the same key, so only the
 # first line start in a run of whitespace counts: the match starts at the end
 # of the text in front of the run (the lookbehind), or at the start of the
 # text. Group 1 is the indent, the key and the space in front of the value.
 _K8S_SECRET_DATA_RE = re.compile(
-    r"(?m)(?:\A|(?<=\S)[^\S\n]*\n)(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})$"
+    r"(?m)(?:\A|(?<=\S)[^\S\n]*\n)(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})(?=\r?$)"
 )
-_K8S_KIND_RE = re.compile(r"kind:\s*secret\b", re.IGNORECASE)
+_K8S_KIND = r"kind:\s*[\"']?secret\b"
+_K8S_KIND_RE = re.compile(_K8S_KIND, re.IGNORECASE)
+_K8S_KIND_BYTES_RE = re.compile(_K8S_KIND.encode(), re.IGNORECASE)
 
 # -- Connection URL password. The match is anchored right after each "://",
 # so a "user:pass@" shape inside a URL path (a timestamp, for example) is not
@@ -350,7 +353,7 @@ def redact_at_rest(text: str, *, secret_manifest: bool = False) -> str:
     """Return ``text`` with every covered secret shape masked.
 
     ``secret_manifest`` masks the data lines of a cluster Secret also when
-    ``text`` holds no ``kind: Secret`` line (``redact_cut``).
+    ``text`` holds no ``kind: Secret`` line (``holds_secret_kind``).
 
     Returns ``REDACTION_FAILED_TOKEN`` when the text does not settle within
     ``MAX_PASSES`` passes or when a pattern raises. Never returns the raw text
@@ -368,20 +371,19 @@ def redact_at_rest(text: str, *, secret_manifest: bool = False) -> str:
         return REDACTION_FAILED_TOKEN
 
 
-def redact_cut(text: str, whole: str) -> str:
-    """``redact_at_rest`` for ``text``, a part of the longer text ``whole``
-    (the indexer stores the head of a large file).
+def holds_secret_kind(raw: bytes) -> bool:
+    """True when the file bytes ``raw`` hold a ``kind: Secret`` line.
 
     One rule reads a fact from anywhere in the text: the data lines of a
     cluster Secret are masked only in a text that holds ``kind: Secret``.
     ``kubectl get secret -o yaml`` sorts the keys, so ``data:`` comes before
-    ``kind:``, and a cut between them kept the data lines unmasked. Here the
-    fact comes from ``whole``. The other rules read only the text next to
-    what they mask. The indexer cuts at a line end, or drops the part of a
-    token or of a quoted value at the cut (``indexer._head``), and a key
-    block that lost its END line is masked by its BEGIN line.
+    ``kind:``. The indexer stores the head of a large file, and the kind line
+    can be in the part that is cut off. So it reads the fact from the whole
+    file with this test, on the bytes, with no decode, and passes it to
+    ``redact_at_rest`` as ``secret_manifest``. The other rules read only the
+    text next to what they mask.
     """
-    return redact_at_rest(text, secret_manifest=_K8S_KIND_RE.search(whole) is not None)
+    return _K8S_KIND_BYTES_RE.search(raw) is not None
 
 
 def would_change(text: str) -> bool:

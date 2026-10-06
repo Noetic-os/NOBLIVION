@@ -756,11 +756,19 @@ the source of truth. The indexer never writes a memory file.
   cut is at its last space; when it holds no space either, the cut is hard
   at 256 KB, and the run of token characters at the cut is dropped too
   (unless that run starts in the first half). A cut that is not at a line
-  end also drops the text after the last quote mark in the second half. So
-  the head keeps no part of a token or of a quoted value that its rule
-  would not mask. A rule that needs a fact from the rest of the file reads
-  it from the whole file (section 5.7). So a row fits in a search answer,
-  and the redactor time stays bounded. The hash stays the hash of the whole
+  end also drops the text after the last quote mark in the second half.
+  The head can still end inside a secret whose rule needs the part after
+  the cut: the END line of a key block, the end tag of a `<password>`
+  element, the rest of a token. So the indexer also redacts the head with
+  the next 64 KB of the file (`CUT_CONTEXT_BYTES`), and stores only the
+  text on which the two redactions agree, cut back to the start of a
+  marker that it would split. The wider part is a plain byte count, not a
+  cut at a line end, so it holds 64 KB after the head also when the next
+  line is very long. A secret that runs on for more than 64 KB after the
+  cut is not covered. A rule that needs a fact from the rest of the file
+  reads it from the whole file (section 5.7). So a row fits in a search
+  answer, and the redactor time stays bounded: it reads at most 256 KB and
+  320 KB. The hash stays the hash of the whole
   file. `noblivion index` names each file that it stored by its head, and
   `--json` counts them in `files_cut`. The store logs one info line per
   scan with the new names, each file once per process.
@@ -923,10 +931,11 @@ start in a run of whitespace. They mask the same text as the plain forms;
 a differential run of 500000 texts per rule found no difference.
 
 The cluster secret data rule masks only in a text that holds
-`kind: Secret`. For the head of a large file (section 5.1) the indexer
-reads that fact from the whole file (`redaction.redact_cut`): `kubectl get
-secret -o yaml` puts `data:` before `kind:`, and a cut between them kept
-the data lines unmasked. The answer paths redact the stored head again
+`kind: Secret`, also with the kind in quotes, and it allows a CRLF line
+end after the value (redactor version 3). For the head of a large file
+(section 5.1) the indexer reads that fact from the bytes of the whole file
+(`redaction.holds_secret_kind`): `kubectl get secret -o yaml` puts `data:`
+before `kind:`, and a cut between them kept the data lines unmasked. The answer paths redact the stored head again
 without the fact; that is harmless, because the stored head is masked
 already.
 

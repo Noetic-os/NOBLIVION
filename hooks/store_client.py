@@ -20,7 +20,9 @@ client side of ``noblivion.launcher``:
    only reads the stamp's age; it never touches or locks it.
 4. A store call that timed out writes ``store.hung``, a "down until" time
    HUNG_BACKOFF_S ahead (``mark_hung``). While it is in force (``hung``), the
-   hooks send nothing to the store. A new ``store.json`` ends it.
+   hooks send nothing to that store with no larger time budget than the call
+   that timed out. A new ``store.json``, or a stamp for another store, does
+   not count.
 
 The HTTP request itself belongs to the caller (``recall_hook.http_get_json``),
 so this module opens no socket.

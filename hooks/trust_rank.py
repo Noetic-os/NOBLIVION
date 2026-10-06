@@ -114,12 +114,13 @@ def trust_mode(environ: Optional[Mapping[str, str]] = None) -> str:
 
 
 def min_score(environ: Mapping[str, str]) -> float:
-    """The mode ``c`` threshold; TRUST_MIN_SCORE when unset or not a number."""
+    """The mode ``c`` threshold; TRUST_MIN_SCORE when unset, not a number,
+    not finite or outside -1..1 (a cosine). nan or inf would drop every row."""
     try:
         value = float((environ.get(MIN_SCORE_ENV) or "").strip())
     except ValueError:
         return TRUST_MIN_SCORE
-    return value if value == value else TRUST_MIN_SCORE
+    return value if -1.0 <= value <= 1.0 else TRUST_MIN_SCORE  # False for nan too
 
 
 def _count(value: Any) -> Optional[int]:

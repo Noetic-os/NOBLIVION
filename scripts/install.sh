@@ -55,9 +55,9 @@ run() {
 
 # Set embedding.backend to none in config.json: keyword search only. This is
 # the one key of an existing config.json that the script changes. It prints
-# the value it replaced. A config.json that is not valid JSON, or whose
-# "embedding" is not an object, stays as it is: one line says so, and the
-# install goes on.
+# the value it replaced. A config.json that is not valid JSON, whose
+# "embedding" is not an object, or that cannot be read or written, stays as
+# it is: one line says so, and the install goes on.
 backend_none() {
     NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/python" - "$1" <<'PY'
 import json, os, sys
@@ -65,27 +65,40 @@ from noblivion import config
 
 why = sys.argv[1]
 path = config.data_dir() / "config.json"
-try:
-    doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-except (OSError, ValueError) as exc:
-    doc = exc
-embedding = doc.get("embedding", {}) if isinstance(doc, dict) else None
-if not isinstance(embedding, dict):
-    problem = "is not valid JSON" if isinstance(doc, Exception) else (
-        "is not a JSON object" if not isinstance(doc, dict) else 'has an "embedding" that is not an object'
-    )
+
+
+def give_up(problem):
     print(
         f"noblivion install: {path} {problem}; embedding.backend not changed. "
         f"Fix the file and set embedding.backend to none ({why})."
     )
     sys.exit(0)
+
+
+try:
+    doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+except OSError as exc:
+    give_up(f"cannot be read ({exc.strerror or exc})")
+except ValueError:
+    give_up("is not valid JSON")
+embedding = doc.get("embedding", {}) if isinstance(doc, dict) else None
+if not isinstance(embedding, dict):
+    give_up("is not a JSON object" if not isinstance(doc, dict) else 'has an "embedding" that is not an object')
 old = embedding.get("backend")
 embedding["backend"] = "none"
 doc["embedding"] = embedding
 tmp = path.with_suffix(".tmp")
-tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-os.chmod(tmp, 0o600)
-os.replace(tmp, path)
+try:
+    tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+except OSError as exc:
+    try:
+        if tmp.is_file():
+            tmp.unlink()
+    except OSError:
+        pass
+    give_up(f"cannot be written ({exc.strerror or exc}: {exc.filename})")
 was = f"; it was {old}" if old is not None and old != "none" else ""
 print(f"noblivion install: {why}: set embedding.backend to none in {path}{was} (keyword search only)")
 PY
@@ -228,8 +241,13 @@ if [ "$START" = 0 ]; then
     say "done. The store starts at the next Claude Code session."
 elif [ "$DRY_RUN" = 1 ]; then
     run env NOBLIVION_DATA_DIR="$DATA_DIR" CLAUDE_PLUGIN_ROOT="$ROOT" "$VENV/bin/noblivion" ensure-running --restart
-elif env NOBLIVION_DATA_DIR="$DATA_DIR" CLAUDE_PLUGIN_ROOT="$ROOT" "$VENV/bin/noblivion" ensure-running --restart; then
-    say "done. The store runs. Memory recall works from the next prompt in this session."
 else
-    say "done, but the store did not start (reason above). The next Claude Code session tries again."
+    # The restart waits up to 10 s for the new store and up to 90 s for an
+    # old store to stop, with no output.
+    say "starting the store; when an old store runs, it is stopped first (up to 100 s)"
+    if env NOBLIVION_DATA_DIR="$DATA_DIR" CLAUDE_PLUGIN_ROOT="$ROOT" "$VENV/bin/noblivion" ensure-running --restart; then
+        say "done. The store runs. Memory recall works from the next prompt in this session."
+    else
+        say "done, but the store did not start (reason above). The next Claude Code session tries again."
+    fi
 fi

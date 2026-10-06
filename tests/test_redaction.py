@@ -293,24 +293,61 @@ def test_cluster_secret_data_only_in_a_secret_manifest():
     assert f"  db-pass: {FIELD_TOKEN}" in redact_at_rest(config_map.replace("db-conn", "db-pass"))
 
 
-def test_redact_cut_reads_the_kind_line_from_the_whole_text():
+def test_the_kind_line_of_the_whole_file_masks_the_data_lines_of_its_head():
     # `kubectl get secret -o yaml` sorts the keys: data before kind. The
     # indexer stores the head of a large file, and the kind line may be cut
-    # off. The data rule reads that fact from the whole file.
+    # off. It reads that fact from the bytes of the whole file.
     value = fake("", 24, "QWxhZGRpbjpvcGVuIHNlc2FtZQ")
     head = f"apiVersion: v1\ndata:\n  db-conn: {value}\n"
     whole = head + "kind: Secret\nmetadata:\n  name: app-db\n"
     assert redact_at_rest(head) == head  # the head alone holds no kind line
-    assert redaction.redact_cut(head, whole) == head.replace(value, FIELD_TOKEN)
-    config_map = whole.replace("kind: Secret", "kind: ConfigMap")
-    assert redaction.redact_cut(head, config_map) == head
+    assert redaction.holds_secret_kind(whole.encode())
     assert redact_at_rest(head, secret_manifest=True) == head.replace(value, FIELD_TOKEN)
+    for kind in ('kind: "Secret"', "kind: 'secret'", "KIND:Secret", "kind:\r\n  Secret"):
+        assert redaction.holds_secret_kind(whole.replace("kind: Secret", kind).encode()), kind
+    for kind in ("kind: ConfigMap", "kind: Secrets", "kind: SecretStore", "kind: `Secret`"):
+        assert not redaction.holds_secret_kind(whole.replace("kind: Secret", kind).encode()), kind
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        "apiVersion: v1\r\ndata:\r\n  a: {0}\r\n  b: {1}\r\nkind: Secret\r\n",
+        'apiVersion: v1\ndata:\n  a: {0}\n  b: {1}\nkind: "Secret"\n',
+        "apiVersion: v1\ndata:\n  a: {0}\n  b: {1}\nkind: 'Secret'\n",
+        'apiVersion: v1\r\nkind: "Secret"\r\ndata:\r\n  a: {0}\r\n  b: {1}\r\n',
+    ],
+    ids=["CRLF", "kind in double quotes", "kind in single quotes", "both"],
+)
+def test_cluster_secret_data_with_crlf_or_a_quoted_kind(manifest):
+    # Redactor version 3: the data rule allowed no CR in front of the line
+    # end, and the kind rule no quote in front of the kind.
+    values = [
+        fake("", 24, "QWxhZGRpbjpvcGVuIHNlc2FtZQ"),
+        fake("", 32, "c2VjcmV0LXZhbHVlLTAxMjM0NTY3"),
+    ]
+    out = redact_at_rest(manifest.format(*values))
+    assert not any(value in out for value in values)
+    assert out == manifest.format(FIELD_TOKEN, FIELD_TOKEN)
+
+
+def test_the_redactor_version_is_3():
+    # A rule changed in version 3 (the cluster Secret data rule), so the
+    # indexer writes every row again once.
+    assert redaction.REDACTOR_VERSION == "3"
 
 
 # The two rules as they were before they were made linear (NOBLIVION-62
-# review). The new ones must mask the same text.
+# review). The new ones must mask the same text. Version 3 adds one form to
+# the data rule: a CR in front of the line end.
 _OLD_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_.\-]+")
 _OLD_SECRET_DATA_RE = re.compile(r"^(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})$", re.MULTILINE)
+_CRLF_SECRET_DATA_RE = re.compile(
+    r"^(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})(?=\r?$)", re.MULTILINE
+)
+_OLD_KIND_RE = re.compile(r"kind:\s*secret\b", re.IGNORECASE)
+_KIND_PIECES = ["kind", "kind:", ":", " ", "\t", "\n", "\r\n", '"', "'", "`", "secret", "Secret"]
+_KIND_PIECES += ["SECRET", "s", "x", "_", "é", "Secrets", "-", "kind: ", "ki", "nd"]
 _JWT_PIECES = ["eyJ", "eyJ", ".", ".", "a", "Zb", "09", "_", "-", "abcd", "eyJhbGci", "+", "/"]
 _JWT_PIECES += ["=", " ", "\n", "e", "y", "J", "yJ", ".eyJ", "é", "@"]
 _DATA_PIECES = ["data:\n", "\n", "\n", " ", "  ", "\t", "\r", "\r\n", "\x0b", "\x0c", "\xa0"]
@@ -320,16 +357,31 @@ _DATA_PIECES += ["QUJDREVGR0hJSktMTU5PUA==", "ABCDEFGHIJKLMNOP", "=", "==", "===
 
 def test_the_linear_jwt_and_secret_data_rules_mask_what_the_old_ones_masked():
     # 20000 texts per rule here; the review ran 500000 per rule with no
-    # difference. Each text is up to 40 pieces of the rule's own tokens.
+    # difference. Each text is up to 40 pieces of the rule's own tokens. The
+    # data rule masks what the plain form with the CRLF line end masks, and
+    # in a text with no CR what the old rule masked.
     jwt = next(rule for rule in redaction._SHAPE_PATTERNS if rule[0] is redaction._JWT_RE)
     rng = random.Random(62)
     for _ in range(20_000):
         text = "".join(rng.choice(_JWT_PIECES) for _ in range(rng.randint(1, 40)))
         assert jwt[0].sub(jwt[1], text) == _OLD_JWT_RE.sub(REDACTION_TOKEN, text), repr(text)
         text = "".join(rng.choice(_DATA_PIECES) for _ in range(rng.randint(1, 40)))
-        old = _OLD_SECRET_DATA_RE.sub(lambda m: m.group(1) + FIELD_TOKEN, text)
+        plain = _CRLF_SECRET_DATA_RE.sub(lambda m: m.group(1) + FIELD_TOKEN, text)
         new = redaction._K8S_SECRET_DATA_RE.sub(redaction._mask_secret_data, text)
-        assert new == old, repr(text)
+        assert new == plain, repr(text)
+        if "\r" not in text:
+            assert new == _OLD_SECRET_DATA_RE.sub(lambda m: m.group(1) + FIELD_TOKEN, text)
+
+
+def test_the_kind_rule_differs_from_the_old_one_only_for_a_quoted_kind():
+    rng = random.Random(3)
+    for _ in range(20_000):
+        text = "".join(rng.choice(_KIND_PIECES) for _ in range(rng.randint(1, 12)))
+        new = redaction._K8S_KIND_RE.search(text)
+        if bool(new) != bool(_OLD_KIND_RE.search(text)):
+            assert new and new.group()[-7] in "\"'", repr(text)
+        if text.isascii():  # the indexer reads the bytes of the file
+            assert redaction.holds_secret_kind(text.encode()) == bool(new), repr(text)
 
 
 @pytest.mark.parametrize(

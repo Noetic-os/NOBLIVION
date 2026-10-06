@@ -36,19 +36,25 @@ All notable changes to NOBLIVION. The format follows
   `noblivion ensure-running --restart`. The new store waits up to 90 s
   for the old one to stop, because a busy store needs up to about 71 s
   after `SIGTERM`. A wait of 10 s gave up while the old store still
-  stopped, and then no store ran.
+  stopped, and then no store ran. The script prints one line before this
+  step, which can take up to 100 s with no other output.
 - `install.sh --no-embed` sets `embedding.backend` to `none` in
   `config.json` (NOBLIVION-57). Before, the default backend `fastembed`
   stayed, but the package was not installed. The store then reported
   `degraded` for good and logged a warning every hour. It does this also
   when `config.json` names another backend, and it prints the value it
-  replaced. A `config.json` that is not valid JSON, or whose `embedding`
-  is not an object, stays as it is: one line names the file and the
-  install goes on, with no Python traceback. With a backend other than
+  replaced. A `config.json` that is not valid JSON, whose `embedding` is
+  not an object, or that cannot be read or written, stays as it is: one
+  line names the file and the problem, and the install goes on, with no
+  Python traceback. With a backend other than
   `fastembed`, the script no longer prints "embedding model ready".
 - A relevance floor that is not a cosine (`nan`, `inf`, or a value outside
-  -1..1) in `NOBLIVION_RECALL_MIN_SCORE` or `NOBLIVION_ERROR_RECALL_MIN_SCORE`
-  now counts as unset. Before, `nan` dropped every scored hit.
+  -1..1) in `NOBLIVION_RECALL_MIN_SCORE`, `NOBLIVION_ERROR_RECALL_MIN_SCORE`,
+  `NOBLIVION_ERROR_RECALL_LOCAL_MIN_SCORE` or
+  `NOBLIVION_RECALL_TRUST_MIN_SCORE` now counts as unset. Before, `nan`
+  dropped every scored hit, `nan` or `inf` in the local error recall floor
+  dropped every local hit, and `inf` in the trust floor gave no row its
+  trust in mode `c`.
 - A store that accepts a connection but does not answer no longer costs
   every prompt and every subagent start a wait (NOBLIVION-69). Before,
   each call waited for the listener proof (1 s) or for the search (2 s)
@@ -77,29 +83,36 @@ All notable changes to NOBLIVION. The format follows
     last 128 KB in front of the limit hold no line end, the cut is at the
     last space; when they hold no space either, the cut is hard at the
     limit and drops the token characters there. A cut that is not at a
-    line end also drops the text after the last quote mark. So no part of
-    a token or of a quoted value is stored that its rule would not mask.
-    The data lines of a cluster Secret are masked when `kind: Secret` is
-    anywhere in the file, also in the part that is cut off: `kubectl get
-    secret -o yaml` puts `data:` before `kind:`. `noblivion index` names
-    each file that it stored by its head, `noblivion index --json` counts
-    them in the new key `files_cut`, and the store log names each one
-    once.
+    line end also drops the text after the last quote mark. The head can
+    still end inside a secret whose rule needs the part after the cut: the
+    END line of a key block, the end tag of a `<password>` element, the
+    rest of a token. So the indexer also redacts the head with the next
+    64 KB of the file, and stores only the text on which the two
+    redactions agree. A secret that runs on for more than 64 KB after the
+    cut is not covered. The data lines of a cluster Secret are masked when
+    `kind: Secret` is anywhere in the file, also in the part that is cut
+    off: `kubectl get secret -o yaml` puts `data:` before `kind:`.
+    `noblivion index` names each file that it stored by its head,
+    `noblivion index --json` counts them in the new key `files_cut`, and
+    the store log names each one once.
   - `/api/memories/fetch/{id}` cuts a text that would make the answer
     larger than 512 KB, with `…` at the cut. Before, it had no limit.
   - The connection URL rule and the email rule of the store redactor now
     start at each `://` and `@`. Before, they read a long run of letters,
     digits or dashes again from each character, so 40 KB cost 9.7 s on
     each search that hit the note, and 100 KB of letters cost minutes. Now
-    100 KB costs less than 0.1 s. The rules mask the same text as before,
-    so the redactor version stays 2.
+    100 KB costs less than 0.1 s. The rules mask the same text as before.
   - The JWT rule and the cluster Secret data rule of the store redactor
     now read each run of characters once. Before, 256 KB of `eyJ` cost
     18.5 s, and `kind: Secret` with 64 K blank lines after it cost 34 s.
     Now the two rules take about 5 ms together on 128 KB of such text, and
     the time grows in line with the length. A differential run of
-    500000 texts per rule gave the same output as the old rules, so the
-    redactor version stays 2.
+    500000 texts per rule gave the same output as the old rules.
+- The data lines of a cluster Secret are now masked also when the
+  manifest has CRLF line ends, or when its kind is in quotes
+  (`kind: "Secret"`). Before, the store kept both. The redactor version is
+  now 3, so the first index scan after the update writes the notes again.
+  A differential run of 300000 texts per rule found no other change.
 - A common word no longer counts as a keyword match (NOBLIVION-76). Before,
   a word such as "the" matched nearly every note, so while the store was
   still computing vectors, the query "how do I deploy the service" brought

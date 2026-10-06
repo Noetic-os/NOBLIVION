@@ -38,9 +38,12 @@ def write_private(path: Path, text: str) -> None:
         fh.write(text)
 
 
-def write_store_files(data_dir: Path, port: int, token: str | None = None) -> str:
+def write_store_files(
+    data_dir: Path, port: int, token: str | None = None, pid: int | None = None
+) -> str:
     """Make ``data_dir`` name a store on ``127.0.0.1:port``: the ``token`` file
-    and ``store.json``, as the store writes them. Returns the token.
+    and ``store.json``, as the store writes them. Returns the token. ``pid``
+    is the process id in ``store.json``; default: this process.
 
     For a test that keeps its own fake HTTP handler: the handler answers
     ``GET /health?nonce=<n>`` with ``health_reply(token, nonce)`` and checks
@@ -52,7 +55,7 @@ def write_store_files(data_dir: Path, port: int, token: str | None = None) -> st
     write_private(data_dir / "token", token + "\n")
     write_private(
         data_dir / "store.json",
-        json.dumps({"pid": os.getpid(), "port": int(port), "version": "0.0.0"}),
+        json.dumps({"pid": pid or os.getpid(), "port": int(port), "version": "0.0.0"}),
     )
     return token
 
