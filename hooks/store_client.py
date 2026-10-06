@@ -50,6 +50,7 @@ import hashlib
 import hmac
 import importlib.util
 import json
+import math
 import os
 import re
 import secrets
@@ -228,12 +229,28 @@ def forget(env: Optional[Mapping[str, str]] = None) -> None:
         _PROVEN.pop(key, None)
 
 
+def store_identity(env: Optional[Mapping[str, str]] = None) -> str:
+    """``<pid>:<port>`` of the store that ``store.json`` names now, or "" when
+    it names none. A caller reads it BEFORE a call, so a stamp written after
+    the call can tell which store the call went to."""
+    info = read_store_json(data_dir(env))
+    if info is None:
+        return ""
+    return "%s:%d" % (info.get("pid", "-"), info["port"])
+
+
 def mark_hung(
-    env: Optional[Mapping[str, str]] = None, clock: Callable[[], float] = time.time
+    env: Optional[Mapping[str, str]] = None,
+    budget_s: float = math.inf,
+    store: str = "",
+    clock: Callable[[], float] = time.time,
 ) -> None:
     """Write the "down until" stamp after a store call that timed out: for
-    HUNG_BACKOFF_S, ``hung`` is True. Never makes the data dir; a file error
-    leaves no stamp and is not raised."""
+    HUNG_BACKOFF_S, ``hung`` is True. The stamp holds the time budget of the
+    call that got no answer and ``store`` (``store_identity`` from before the
+    call), so it stops only callers that would wait no longer, and only for
+    that store. Never makes the data dir; a file error leaves no stamp and is
+    not raised."""
     folder = data_dir(env)
     try:
         fd, tmp = tempfile.mkstemp(prefix="." + HUNG_STAMP_FILE + ".", dir=str(folder))
@@ -241,25 +258,38 @@ def mark_hung(
         return
     try:
         with os.fdopen(fd, "w", encoding="ascii") as fh:
-            fh.write("%.3f\n" % (clock() + HUNG_BACKOFF_S))
+            fh.write("%.3f %.3f %s\n" % (clock() + HUNG_BACKOFF_S, budget_s, store))
         os.replace(tmp, folder / HUNG_STAMP_FILE)
     except OSError:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
 
 
-def hung(env: Optional[Mapping[str, str]] = None, clock: Callable[[], float] = time.time) -> bool:
-    """True while the "down until" stamp is in force. A stamp older than
-    ``store.json`` was written for an earlier store and does not count, nor
-    does a broken one or one that ends more than HUNG_BACKOFF_S ahead (the
-    clock went back; 1 s of slack covers the rounding of the written time)."""
+def hung(
+    env: Optional[Mapping[str, str]] = None,
+    budget_s: float = 0.0,
+    clock: Callable[[], float] = time.time,
+) -> bool:
+    """True while the "down until" stamp is in force for a call with the time
+    budget ``budget_s``. A call with a larger budget than the one that timed
+    out is not stopped: the store may answer in the longer time. A stamp
+    older than ``store.json`` or written for another store (pid and port)
+    was written for an earlier store and does not count, nor does a broken
+    one or one that ends more than HUNG_BACKOFF_S ahead (the clock went back;
+    1 s of slack covers the rounding of the written time)."""
     folder = data_dir(env)
     stamp = folder / HUNG_STAMP_FILE
     try:
-        until = float(stamp.read_text(encoding="ascii"))
+        fields = stamp.read_text(encoding="ascii").split()
+        until = float(fields[0])
+        stamp_budget = float(fields[1]) if len(fields) > 1 else math.inf
         if stamp.stat().st_mtime < (folder / STORE_JSON_FILE).stat().st_mtime:
             return False
-    except (OSError, ValueError):
+    except (OSError, ValueError, IndexError):
+        return False
+    if len(fields) > 2 and fields[2] != store_identity(env):
+        return False
+    if budget_s > stamp_budget + 0.001:
         return False
     return 0.0 < until - clock() <= HUNG_BACKOFF_S + 1.0
 

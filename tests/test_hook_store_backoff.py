@@ -165,6 +165,60 @@ def test_the_stamp_ends_after_the_back_off_and_with_a_new_store(sc, tmp_path):
     assert not sc.hung(env, clock=lambda: now + 1)
 
 
+def test_a_call_with_a_short_budget_does_not_stop_a_call_with_a_longer_one(sc, tmp_path):
+    env = hook_env(tmp_path)
+    write_store_files(Path(env["NOBLIVION_DATA_DIR"]), 40123)
+    now = 1_000_000.0
+    sc.mark_hung(env, 0.8, clock=lambda: now)  # the error hook: a store that needs 1 s
+    assert sc.hung(env, 0.8, clock=lambda: now)
+    assert sc.hung(env, 0.5, clock=lambda: now)
+    assert not sc.hung(env, 2.0, clock=lambda: now)  # the prompt hook may still be answered
+    sc.mark_hung(env, 2.0, clock=lambda: now)
+    assert sc.hung(env, 2.0, clock=lambda: now)
+    assert sc.hung(env, 0.8, clock=lambda: now)
+    assert not sc.hung(env, 4.5, clock=lambda: now)
+
+
+def test_a_slow_search_of_a_short_budget_leaves_the_prompt_hook_its_store(rh, sc, tmp_path):
+    # The error recall hook asks with 0.8 s. A store that needs 1.0 s for one
+    # search must not be put on the back-off list for the prompt hook (2.0 s).
+    fake = FakeStore(tmp_path / "data")
+
+    def _slow(_path, _query):
+        time.sleep(1.0)
+        return {"results": [], "scores": [], "namespace": "claude_code"}
+
+    fake.route("/api/", _slow)
+    try:
+        env = hook_env(tmp_path)
+        short = _reason(lambda: rh.store_get(lambda base: base + "/api/x", env, 0.8))
+        assert short == "timeout"
+        stamp = tmp_path / "data" / sc.HUNG_STAMP_FILE
+        assert stamp.exists()  # the slow call is on record, with its budget
+        assert rh.store_get(lambda base: base + "/api/x", env, 3.0)["namespace"] == "claude_code"
+    finally:
+        fake.stop()
+
+
+def test_a_stamp_for_another_store_does_not_count(sc, tmp_path):
+    # A call that began on an old store may time out after a new store started
+    # and wrote ``store.json``: its stamp is newer than ``store.json``, but it
+    # names the old store.
+    env = hook_env(tmp_path)
+    data = Path(env["NOBLIVION_DATA_DIR"])
+    write_store_files(data, 40123)
+    old = sc.store_identity(env)
+    assert old.endswith(":40123")
+    now = 1_000_000.0
+    write_store_files(data, 40124)  # the new store
+    sc.mark_hung(env, 2.0, old, clock=lambda: now)
+    assert not sc.hung(env, 2.0, clock=lambda: now)
+    sc.mark_hung(env, 2.0, sc.store_identity(env), clock=lambda: now)
+    later = (data / sc.HUNG_STAMP_FILE).stat().st_mtime
+    os.utime(data / "store.json", (later - 5, later - 5))
+    assert sc.hung(env, 2.0, clock=lambda: now)
+
+
 def test_the_stamp_never_makes_the_data_dir(sc, tmp_path):
     env = hook_env(tmp_path)
     sc.mark_hung(env)

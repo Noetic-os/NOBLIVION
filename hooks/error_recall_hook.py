@@ -920,17 +920,17 @@ def store_gate(env: Mapping[str, str], model: str) -> Optional[float]:
     """The gate of a store row, or None for no gate.
 
     ``NOBLIVION_ERROR_RECALL_MIN_SCORE`` that is set is the gate for every
-    model. Unset, or not a number, the gate is STORE_MIN_SCORE only when
-    ``model``, the embedding model that the store's answer names, is
-    THRESHOLD_MODEL. Another model puts its cosines on another scale, and
+    model. Unset, or not a cosine (``recall_hook.cosine_setting``), the gate
+    is STORE_MIN_SCORE only when ``model``, the embedding model that the
+    store's answer names, is THRESHOLD_MODEL. Another model puts its cosines on another scale, and
     under this gate it can lose every row. So for another model, and for an
     answer that names none, no store gate applies, as for the index floor of
     the recall hook (NOBLIVION-76). The quote check still holds every row.
     """
-    try:
-        return float(env.get("NOBLIVION_ERROR_RECALL_MIN_SCORE", ""))
-    except (TypeError, ValueError):
-        return STORE_MIN_SCORE if model == THRESHOLD_MODEL else None
+    value = _rh().cosine_setting(env.get("NOBLIVION_ERROR_RECALL_MIN_SCORE"))
+    if value is not None:
+        return value
+    return STORE_MIN_SCORE if model == THRESHOLD_MODEL else None
 
 
 RRF_K = 60

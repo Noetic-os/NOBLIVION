@@ -897,6 +897,14 @@ def test_a_store_gate_that_the_user_sets_applies_to_every_model(env, store, mode
     )
 
 
+@pytest.mark.parametrize("bad", ["nan", "inf", "1e9", "-2", ""])
+def test_a_store_gate_that_is_not_a_cosine_is_the_default_of_the_model(bad):
+    env = {"NOBLIVION_ERROR_RECALL_MIN_SCORE": bad}
+    assert er.store_gate(env, er.THRESHOLD_MODEL) == er.STORE_MIN_SCORE
+    assert er.store_gate(env, "example/other-embedder") is None
+    assert er.store_gate({"NOBLIVION_ERROR_RECALL_MIN_SCORE": "0.4"}, None) == 0.4
+
+
 def test_store_down_falls_back_to_the_local_search(env):
     s = socket.socket()
     s.bind(("127.0.0.1", 0))

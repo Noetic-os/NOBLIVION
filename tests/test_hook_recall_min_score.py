@@ -91,6 +91,22 @@ def test_a_malformed_floor_is_the_default_of_the_model(monkeypatch):
     assert len(hook.recall("q", 5, env, md_only=True)) == 3
 
 
+@pytest.mark.parametrize("bad", ["nan", "inf", "-inf", "1e9", "-1.5", "", "  "])
+def test_a_floor_that_is_not_a_cosine_is_the_default_of_the_model(monkeypatch, bad):
+    # ``score >= nan`` is never true: a nan floor would drop every scored hit.
+    env = {"NOBLIVION_RECALL_ROOT": "r", "NOBLIVION_RECALL_MIN_SCORE": bad}
+    assert hook.min_score(env, hook.THRESHOLD_MODEL) == hook.DEFAULT_MIN_SCORE
+    assert hook.min_score(env, "example/other-embedder") is None
+    monkeypatch.setattr(hook, "store_get", lambda *_a, **_k: _named(hook.THRESHOLD_MODEL))
+    assert [h.title for h in hook.recall("q", 5, env, md_only=True)] == ["alpha", "beta"]
+
+
+def test_a_floor_at_the_ends_of_the_cosine_range_is_kept():
+    for text, value in (("-1", -1.0), ("0", 0.0), ("1", 1.0), (" 0.25 ", 0.25)):
+        env = {"NOBLIVION_RECALL_MIN_SCORE": text}
+        assert hook.min_score(env, hook.THRESHOLD_MODEL) == value
+
+
 def test_parse_index_reads_the_store_trust_ranking():
     """Section 8.6: the store's ``trust.ranking`` reaches each index row, so
     ``trust_rank`` can keep the order in ``shadow``."""

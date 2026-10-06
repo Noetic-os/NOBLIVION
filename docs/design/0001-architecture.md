@@ -348,8 +348,12 @@ How E4 built these (the hooks are `hooks/recall_hook.py`,
   a "down until" time 30 s ahead (NOBLIVION-69). Until then every caller of
   `store_get` fails at once with `store_hung` and sends nothing, so a store
   that accepts a connection and never answers costs one wait per 30 s, not
-  one per prompt and per subagent start. A refused connection and an error
-  answer write no stamp. A `store.json` newer than the stamp ends it.
+  one per prompt and per subagent start. The stamp holds the time budget of
+  the call and the store (pid and port from `store.json`, read before the
+  call). It stops only a caller with no larger budget, and only for that
+  store, so error recall (0.8 s) does not stop the prompt hook (2 s). A
+  refused connection and an error answer write no stamp. A `store.json`
+  newer than the stamp ends it.
 - `root`: the hook entry derives it from the event's `cwd`. The memory
   folder is `NOBLIVION_RECALL_MEMORY_DIR` (or `NOBLIVION_MEMORY_DIR`), else
   `~/.claude/projects/<slug of cwd>/memory` when it exists. The root is

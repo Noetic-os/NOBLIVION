@@ -869,13 +869,16 @@ def store_get(build: Any, environ: Optional[Mapping[str, str]], timeout_s: float
     (``store_client.request_start``, detached, never waited for).
 
     A proof or a request that times out writes the "down until" stamp
-    (``store_client.mark_hung``). While it is in force, this raises
-    ``RecallError("store_hung")`` at once and sends nothing.
+    (``store_client.mark_hung``) with ``timeout_s`` and the store it went to.
+    While it is in force for a call with no more than that budget, this
+    raises ``RecallError("store_hung")`` at once and sends nothing. A call
+    with a longer budget still goes: the store may answer in the longer time.
     """
     env = os.environ if environ is None else environ
-    if _STORE.hung(env):
+    if _STORE.hung(env, timeout_s):
         raise RecallError(_STORE.HUNG)
     t0 = time.monotonic()
+    store = _STORE.store_identity(env)
     probe_s = min(timeout_s, max(_STORE.PROBE_TIMEOUT_S, timeout_s / 2.0))
 
     def _probe(url: str, budget: float) -> Any:
@@ -883,7 +886,7 @@ def store_get(build: Any, environ: Optional[Mapping[str, str]], timeout_s: float
             return http_get_json(url, "", budget)
         except RecallError as exc:
             if exc.reason == "timeout":
-                _STORE.mark_hung(env)
+                _STORE.mark_hung(env, timeout_s, store)
             raise
 
     try:
@@ -902,7 +905,7 @@ def store_get(build: Any, environ: Optional[Mapping[str, str]], timeout_s: float
         return http_get_json(url, token, left)
     except RecallError as exc:
         if exc.reason == "timeout":
-            _STORE.mark_hung(env)
+            _STORE.mark_hung(env, timeout_s, store)
         if not exc.reason.startswith("http_"):
             _STORE.forget(env)  # no answer: prove again next time
         raise
@@ -2124,26 +2127,37 @@ def query_for(payload: Dict[str, Any], max_chars: int = QUERY_MAX_CHARS) -> Opti
     return q or None
 
 
+def cosine_setting(raw: Any) -> Optional[float]:
+    """A cosine floor that the user set, or None when ``raw`` is unset, not a
+    number, not finite or outside -1..1. A malformed setting must not drop
+    every hit (``score >= nan`` is never true), so it counts as unset."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if -1.0 <= value <= 1.0 else None  # False for nan too
+
+
 def min_score(
     environ: Optional[Mapping[str, str]] = None, model: Optional[str] = THRESHOLD_MODEL
 ) -> Optional[float]:
     """The note text floor of ``recall()``, or None for no floor.
 
     ``NOBLIVION_RECALL_MIN_SCORE`` that is set is the floor for every model.
-    Unset, or not a number, the floor is DEFAULT_MIN_SCORE only when
-    ``model``, the embedding model that the store's search answer names, is
-    THRESHOLD_MODEL. Another model puts its cosines on another scale, and
-    under this floor it can lose every hit. So for another model, and for an
-    answer that names none (keyword mode, or a store of an older version),
-    the default is no floor, as for the index floor (NOBLIVION-76, see
-    INDEX_MIN_SCORE_ENV). Without ``model`` this is the floor of
-    THRESHOLD_MODEL.
+    Unset, or not a cosine (``cosine_setting``), the floor is
+    DEFAULT_MIN_SCORE only when ``model``, the embedding model that the
+    store's search answer names, is THRESHOLD_MODEL. Another model puts its
+    cosines on another scale, and under this floor it can lose every hit. So
+    for another model, and for an answer that names none (keyword mode, or a
+    store of an older version), the default is no floor, as for the index
+    floor (NOBLIVION-76, see INDEX_MIN_SCORE_ENV). Without ``model`` this is
+    the floor of THRESHOLD_MODEL.
     """
     env = os.environ if environ is None else environ
-    try:
-        return float(env.get("NOBLIVION_RECALL_MIN_SCORE", ""))
-    except (TypeError, ValueError):
-        return DEFAULT_MIN_SCORE if model == THRESHOLD_MODEL else None
+    value = cosine_setting(env.get("NOBLIVION_RECALL_MIN_SCORE"))
+    if value is not None:
+        return value
+    return DEFAULT_MIN_SCORE if model == THRESHOLD_MODEL else None
 
 
 def recall(

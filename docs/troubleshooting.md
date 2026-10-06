@@ -191,6 +191,8 @@ unless `embedding.allow_download` is `true`.
 - When a store call runs out of time, the hooks do not call the store for
   the next 30 seconds. The log then shows `store_hung`, and the prompt does
   not wait. The hooks write the end of this pause to `<data dir>/store.hung`.
+  The pause stops only a call with no more time than the call that timed
+  out, so a hook with a short budget does not stop the prompt hook.
   When `store_hung` comes back every 30 seconds, the store accepts a
   connection but does not answer. Stop the store (SIGTERM to the process id
   in `store.json`), then run `noblivion ensure-running`.
