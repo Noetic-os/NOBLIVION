@@ -86,10 +86,12 @@ All notable changes to NOBLIVION. The format follows
     line end also drops the text after the last quote mark. The head can
     still end inside a secret whose rule needs the part after the cut: the
     END line of a key block, the end tag of a `<password>` element, the
-    rest of a token. So the indexer also redacts the head with the next
-    64 KB of the file, and stores only the text on which the two
-    redactions agree. A secret that runs on for more than 64 KB after the
-    cut is not covered. The data lines of a cluster Secret are masked when
+    rest of a token. So the indexer also redacts the first 320 KB of the
+    file (the limit and the next 64 KB), and stores only the text on which
+    the two redactions agree. The 64 KB are counted from the limit, not from
+    the end of the head, so they also cover a head that is cut back to a
+    line end near 128 KB. A secret that runs on for more than 64 KB after the
+    limit is not covered. The data lines of a cluster Secret are masked when
     `kind: Secret` is anywhere in the file, also in the part that is cut
     off: `kubectl get secret -o yaml` puts `data:` before `kind:`.
     `noblivion index` names each file that it stored by its head,
@@ -113,6 +115,14 @@ All notable changes to NOBLIVION. The format follows
   (`kind: "Secret"`). Before, the store kept both. The redactor version is
   now 3, so the first index scan after the update writes the notes again.
   A differential run of 300000 texts per rule found no other change.
+- The store redactor now reads the `kind: Secret` line as ASCII only, as
+  the indexer reads it from the bytes of a large file. Before, the text
+  rule also took a no-break space, an em space or U+001C after `kind:`,
+  the long s in `secret` and the Kelvin sign in `kind`, and the byte test
+  did not, so the stored head of a large file kept data lines that the
+  redaction of the whole file masked. So a small file with such a kind
+  line now keeps its data lines, and `kind: Secreté` now masks them. The
+  redactor version 3 above covers this change.
 - A common word no longer counts as a keyword match (NOBLIVION-76). Before,
   a word such as "the" matched nearly every note, so while the store was
   still computing vectors, the query "how do I deploy the service" brought

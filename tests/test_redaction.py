@@ -345,9 +345,22 @@ _OLD_SECRET_DATA_RE = re.compile(r"^(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})$
 _CRLF_SECRET_DATA_RE = re.compile(
     r"^(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})(?=\r?$)", re.MULTILINE
 )
-_OLD_KIND_RE = re.compile(r"kind:\s*secret\b", re.IGNORECASE)
+# The old kind rule read the kind line as Unicode text. The new one reads it
+# as ASCII, as the byte test does (review round 3), so the comparison reads
+# the old one as ASCII too.
+_OLD_KIND_RE = re.compile(r"kind:\s*secret\b", re.IGNORECASE | re.ASCII)
+# Forms that only a Unicode reading takes as `kind: Secret`: a no-break
+# space, an em space, U+001C, the long s and the Kelvin sign.
+_UNICODE_ONLY_KINDS = [
+    "kind:\xa0Secret",
+    "kind: Secret",
+    "kind:\x1cSecret",
+    "kind: ſecret",
+    "Kind: Secret",
+]
 _KIND_PIECES = ["kind", "kind:", ":", " ", "\t", "\n", "\r\n", '"', "'", "`", "secret", "Secret"]
 _KIND_PIECES += ["SECRET", "s", "x", "_", "é", "Secrets", "-", "kind: ", "ki", "nd"]
+_KIND_PIECES += ["\xa0", " ", "\x1c", "ſecret", "Kind", *_UNICODE_ONLY_KINDS]
 _JWT_PIECES = ["eyJ", "eyJ", ".", ".", "a", "Zb", "09", "_", "-", "abcd", "eyJhbGci", "+", "/"]
 _JWT_PIECES += ["=", " ", "\n", "e", "y", "J", "yJ", ".eyJ", "é", "@"]
 _DATA_PIECES = ["data:\n", "\n", "\n", " ", "  ", "\t", "\r", "\r\n", "\x0b", "\x0c", "\xa0"]
@@ -380,8 +393,26 @@ def test_the_kind_rule_differs_from_the_old_one_only_for_a_quoted_kind():
         new = redaction._K8S_KIND_RE.search(text)
         if bool(new) != bool(_OLD_KIND_RE.search(text)):
             assert new and new.group()[-7] in "\"'", repr(text)
-        if text.isascii():  # the indexer reads the bytes of the file
-            assert redaction.holds_secret_kind(text.encode()) == bool(new), repr(text)
+        # The indexer reads the bytes of the file: the same answer for every text.
+        assert redaction.holds_secret_kind(text.encode()) == bool(new), repr(text)
+
+
+@pytest.mark.parametrize(
+    "kind", _UNICODE_ONLY_KINDS, ids=["U+00A0", "U+2003", "U+001C", "U+017F", "U+212A"]
+)
+def test_the_kind_line_is_read_as_ascii_only(kind):
+    # Review round 3: the text rule took these forms as `kind: Secret` and
+    # the byte test did not, so the stored head of a large file kept data
+    # lines that the redaction of the whole file masked.
+    assert re.search(r"kind:\s*secret\b", kind, re.IGNORECASE)  # a Unicode reading
+    assert not redaction._K8S_KIND_RE.search(kind)
+    assert not redaction.holds_secret_kind(kind.encode())
+    value = secret_forms.fake("", 24, "QWxhZGRpbjpvcGVuIHNlc2FtZQ")
+    manifest = f"apiVersion: v1\ndata:\n  db-conn: {value}\n{kind}\n"
+    assert redact_at_rest(manifest) == manifest
+    # A letter that is not ASCII ends the word for both rules.
+    assert redaction._K8S_KIND_RE.search("kind: Secreté")
+    assert redaction.holds_secret_kind("kind: Secreté".encode())
 
 
 @pytest.mark.parametrize(

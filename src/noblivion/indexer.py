@@ -93,9 +93,9 @@ STAT_CACHE_MIN_AGE_NS = 2_000_000_000
 MAX_FILE_BYTES = 256 * 1024
 # A rule masks a secret only when it sees the end of it: the END line of a
 # key block, the end tag of a ``<password>`` element, the rest of a token. The
-# head of a large file can end inside a secret. So the indexer redacts the
-# head with this many more bytes of the file too, and stores only the text on
-# which the two redactions agree (``_redact_head``).
+# head of a large file can end inside a secret. So the indexer also redacts
+# the file up to this many bytes after ``MAX_FILE_BYTES``, and stores only the
+# text on which the two redactions agree (``_redact_head``).
 CUT_CONTEXT_BYTES = 64 * 1024
 # The bytes that can go on a token or a password: every visible ASCII
 # character but the quote marks, the backtick, "," ";" ":" and the brackets,
@@ -538,13 +538,19 @@ def _redact_head(path: str, raw: bytes, head: bytes) -> str:
     The redacted head can keep a part of a secret that the redaction of the
     whole file masks, because the cut removed what the rule needs to see:
     the END line of a key block, the end tag of a ``<password>`` element,
-    the rest of a token. The redaction of the head with
-    ``CUT_CONTEXT_BYTES`` more of the file sees that part and masks the
-    secret, so the two texts differ from the start of the secret on. The
+    the rest of a token. The redaction of the file up to
+    ``CUT_CONTEXT_BYTES`` after ``MAX_FILE_BYTES`` sees that part and masks
+    the secret, so the two texts differ from the start of the secret on. The
     stored text is the part on which they agree. The wider part is a plain
-    byte count, not a cut at a line end, so it holds that much text after
-    the head also when the next line is very long. A secret that runs on for
-    more than ``CUT_CONTEXT_BYTES`` after the head is not covered.
+    byte count from the start of the file, not a cut at a line end and not a
+    count from the end of the head. So it holds that much text after the
+    limit also when the next line is very long, and when the head is cut
+    back to a line end near half the limit. A file of up to
+    ``MAX_FILE_BYTES + CUT_CONTEXT_BYTES`` bytes thus stores a start of the
+    redaction of the whole file. A secret that runs on for more than
+    ``CUT_CONTEXT_BYTES`` after the limit is not covered. A cut that splits
+    a character at the end of the wider part changes only text after the
+    head, which is never stored.
 
     The data rule of a cluster Secret reads the ``kind: Secret`` line from
     the whole file: ``kubectl get secret -o yaml`` puts ``data:`` before
@@ -558,7 +564,7 @@ def _redact_head(path: str, raw: bytes, head: bytes) -> str:
         return redaction.redact_at_rest(content, secret_manifest=manifest)
 
     short = redact(head)
-    wide = redact(raw[: len(head) + CUT_CONTEXT_BYTES])
+    wide = redact(raw[: MAX_FILE_BYTES + CUT_CONTEXT_BYTES])
     if redaction.REDACTION_FAILED_TOKEN in (short, wide):
         return redaction.REDACTION_FAILED_TOKEN
     return _agreed_head(short, wide)

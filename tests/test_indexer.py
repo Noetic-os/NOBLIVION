@@ -317,8 +317,11 @@ def _limit_inside(block: str, inside: int, fill: str, tail: str | None = None) -
     return pad + block.encode() + (fill * 2000 if tail is None else tail).encode()
 
 
+_BIG = "reference_big.md"
+
+
 def _stored(tmp_path: Path, raw: bytes) -> str:
-    path = tmp_path / "reference_big.md"
+    path = tmp_path / _BIG
     path.write_bytes(raw)
     prep = indexer._prepare(indexer.FileEntry("proj-demo", path.name, path, ""), None)
     assert prep is not None and prep.cut
@@ -413,6 +416,42 @@ def test_the_stored_head_keeps_no_part_of_a_secret_at_the_cut(tmp_path, case):
     assert len(stored.encode()) > indexer.MAX_FILE_BYTES // 2  # the head is still stored
 
 
+def test_the_wider_part_holds_60000_bytes_after_the_limit(tmp_path):
+    # The END line of a key block in a quote is 60000 bytes after the limit:
+    # a number, not CUT_CONTEXT_BYTES, so a smaller wider part fails here.
+    end = f"> {secret_forms.end_line('RSA')}\n"
+    lines = [secret_forms.begin_line("RSA"), *(_KEY_LINES * 80)]
+    block = "\n" + "".join(f"> {line}\n" for line in lines) + end
+    raw = _limit_inside(block, block.index(end) - 60_000, _LINES_FILL)
+    assert raw.index(end.encode()) == indexer.MAX_FILE_BYTES + 60_000
+    assert len(indexer._head(raw)) > indexer.MAX_FILE_BYTES - 100
+    whole = redaction.redact_at_rest(raw.decode("utf-8"))
+    assert not any(_holds_part(whole, line, 16) for line in _KEY_LINES)
+    stored = _stored(tmp_path, raw)
+    assert not any(_holds_part(stored, line, 16) for line in _KEY_LINES)
+    assert len(stored.encode()) > indexer.MAX_FILE_BYTES // 2
+
+
+def test_a_head_cut_back_near_half_the_limit_keeps_no_part_of_a_secret(tmp_path):
+    # Review round 3: the head ends at its last line end, here near 128 KB,
+    # inside a <password> element whose end tag is 140 KB further on. The
+    # wider part ran 64 KB from the end of the head, not from the limit, so
+    # it missed the end tag and the stored head kept the password.
+    block = f"\n<password>\n{secret_forms.PASSWORD}\n" + "w " * 70_000 + "</password> end\n"
+    raw = _limit_inside(block, indexer.MAX_FILE_BYTES - 131_200, _LINES_FILL, _LINES_FILL * 24)
+    head = indexer._head(raw)
+    assert len(head) < 132_000 < indexer.MAX_FILE_BYTES < len(raw) < 280_000
+    assert head.endswith(secret_forms.PASSWORD.encode())
+    assert len(head) + 64 * 1024 < raw.index(b"</password>") < indexer.MAX_FILE_BYTES + 64 * 1024
+    text = raw.decode("utf-8")
+    whole = redaction.redact_at_rest(indexer.build_content(_BIG, indexer.parse_file(_BIG, text)))
+    assert not _holds_part(whole, secret_forms.PASSWORD, 8)
+    stored = _stored(tmp_path, raw)
+    assert not _holds_part(stored, secret_forms.PASSWORD, 8)
+    # A file of up to 320 KB stores a start of the redaction of the whole file.
+    assert whole.startswith(stored) and stored.endswith("<password>")
+
+
 def test_a_file_one_byte_over_the_limit_is_cut_in_front_of_its_last_line():
     raw = _key_case("> ", tail="")[0]
     assert len(raw) == indexer.MAX_FILE_BYTES + 1
@@ -439,16 +478,45 @@ def test_a_hard_cut_inside_a_character_stores_no_replacement_character(tmp_path)
     ids=["plain", "double quotes", "single quotes", "CRLF"],
 )
 def test_a_kind_line_after_the_wider_part_masks_the_data_lines(tmp_path, kind, end):
+    raw, value = _secret_with_a_far_kind_line(kind, end)
+    stored = _stored(tmp_path, raw)
+    assert f"  db0.conf: {redaction.FIELD_TOKEN}{end}" in stored
+    assert value not in stored
+
+
+def _secret_with_a_far_kind_line(kind: str, end: str = "\n") -> tuple[bytes, str]:
+    """Data lines of a cluster Secret across the limit, and the kind line
+    after the wider part."""
     value = base64.b64encode(b"example-db-password-0123456789").decode()
     data = f"{end}apiVersion: v1{end}data:{end}" + "".join(
         f"  db{i}.conf: {value}{end}" for i in range(400)
     )
     after = _LINES_FILL * (indexer.CUT_CONTEXT_BYTES // len(_LINES_FILL) + 100)
     raw = _limit_inside(data, len(data) // 2, _LINES_FILL, after + kind + end)
-    assert raw.index(kind.encode()) > len(indexer._head(raw)) + indexer.CUT_CONTEXT_BYTES
+    assert raw.index(kind.encode()) > indexer.MAX_FILE_BYTES + indexer.CUT_CONTEXT_BYTES
+    return raw, value
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "kind:\xa0Secret",
+        "kind: Secret",
+        "kind:\x1cSecret",
+        "kind: ſecret",
+        "Kind: Secret",
+        "kind: Secreté",
+    ],
+    ids=["U+00A0", "U+2003", "U+001C", "U+017F", "U+212A", "a letter after"],
+)
+def test_a_far_kind_line_masks_what_the_whole_file_masks(tmp_path, kind):
+    # Review round 3: the text rule read the kind line as Unicode and the
+    # byte test as ASCII. For the first five forms the whole file masked the
+    # data lines and the stored head kept them. Now both read ASCII only.
+    raw, value = _secret_with_a_far_kind_line(kind)
+    whole = redaction.redact_at_rest(raw.decode("utf-8"))
     stored = _stored(tmp_path, raw)
-    assert f"  db0.conf: {redaction.FIELD_TOKEN}{end}" in stored
-    assert value not in stored
+    assert (value in stored) == (value in whole) == (kind != "kind: Secreté")
 
 
 @pytest.mark.parametrize(

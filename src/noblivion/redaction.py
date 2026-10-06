@@ -251,8 +251,13 @@ _BEARER_FIELD_RE = re.compile(
 _K8S_SECRET_DATA_RE = re.compile(
     r"(?m)(?:\A|(?<=\S)[^\S\n]*\n)(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})(?=\r?$)"
 )
+# The kind line is read as ASCII only: `\s`, `\b` and the case folding of the
+# text rule match what the byte rule (``holds_secret_kind``) matches. With
+# Unicode reading, the text rule also took a no-break space, an em space,
+# U+001C, the long s and the Kelvin sign, and the byte rule did not, so the
+# stored head of a large file kept data lines that the whole file masked.
 _K8S_KIND = r"kind:\s*[\"']?secret\b"
-_K8S_KIND_RE = re.compile(_K8S_KIND, re.IGNORECASE)
+_K8S_KIND_RE = re.compile(_K8S_KIND, re.IGNORECASE | re.ASCII)
 _K8S_KIND_BYTES_RE = re.compile(_K8S_KIND.encode(), re.IGNORECASE)
 
 # -- Connection URL password. The match is anchored right after each "://",

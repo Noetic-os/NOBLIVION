@@ -759,13 +759,16 @@ the source of truth. The indexer never writes a memory file.
   end also drops the text after the last quote mark in the second half.
   The head can still end inside a secret whose rule needs the part after
   the cut: the END line of a key block, the end tag of a `<password>`
-  element, the rest of a token. So the indexer also redacts the head with
-  the next 64 KB of the file (`CUT_CONTEXT_BYTES`), and stores only the
-  text on which the two redactions agree, cut back to the start of a
-  marker that it would split. The wider part is a plain byte count, not a
-  cut at a line end, so it holds 64 KB after the head also when the next
-  line is very long. A secret that runs on for more than 64 KB after the
-  cut is not covered. A rule that needs a fact from the rest of the file
+  element, the rest of a token. So the indexer also redacts the first
+  320 KB of the file: the limit and the next 64 KB (`CUT_CONTEXT_BYTES`).
+  It stores only the text on which the two redactions agree, cut back to
+  the start of a marker that it would split. The wider part is a plain
+  byte count from the start of the file, not a cut at a line end and not a
+  count from the end of the head. So it holds 64 KB after the limit also
+  when the next line is very long, and when the head is cut back to a line
+  end near 128 KB. A file of up to 320 KB thus stores a start of the
+  redaction of the whole file. A secret that runs on for more than 64 KB
+  after the limit is not covered. A rule that needs a fact from the rest of the file
   reads it from the whole file (section 5.7). So a row fits in a search
   answer, and the redactor time stays bounded: it reads at most 256 KB and
   320 KB. The hash stays the hash of the whole
@@ -932,7 +935,10 @@ a differential run of 500000 texts per rule found no difference.
 
 The cluster secret data rule masks only in a text that holds
 `kind: Secret`, also with the kind in quotes, and it allows a CRLF line
-end after the value (redactor version 3). For the head of a large file
+end after the value (redactor version 3). It reads the kind line as ASCII
+only, as the byte test below does: a no-break space or U+001C is not a
+space there, and the long s or the Kelvin sign is not a letter of the
+kind. For the head of a large file
 (section 5.1) the indexer reads that fact from the bytes of the whole file
 (`redaction.holds_secret_kind`): `kubectl get secret -o yaml` puts `data:`
 before `kind:`, and a cut between them kept the data lines unmasked. The answer paths redact the stored head again
