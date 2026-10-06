@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
@@ -11,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import secret_forms
-from noblivion import config, db, indexer, redaction
+from noblivion import config, db, indexer, redaction, rest
 
 
 @pytest.fixture
@@ -201,8 +202,16 @@ def test_a_large_file_is_stored_by_its_head(conn, tmp_path):
 
     lines = [f"line {i}: run the tests with the venv python\n" for i in range(30_000)]
     text = "---\nname: big note\n---\n" + "".join(lines)
-    folder = make_folder(tmp_path, "proj-demo", {"reference_big.md": text})
-    assert indexer.scan(conn, [folder]).inserted == 1
+    folder = make_folder(tmp_path, "proj-demo", {"reference_big.md": text, "user_a.md": "a\n"})
+    result = indexer.scan(conn, [folder])
+    assert result.inserted == 2
+    # The scan names the cut file (review of NOBLIVION-62): it gave no sign.
+    assert result.cut == ["proj-demo/reference_big.md"]
+    assert result.to_dict()["files_cut"] == 1
+    assert result.cut_lines() == [
+        "proj-demo/reference_big.md is larger than 256 KB: only its head is stored "
+        "and found by recall; split it into smaller notes"
+    ]
     row = rows(conn)[("proj-demo", "reference_big.md")]
     assert row["hash"] == hashlib.sha256(text.encode()).hexdigest()  # the whole file
     head = "# big note\n\n[claude_code_md: reference_big.md]\n\n"
@@ -224,6 +233,67 @@ def test_a_large_file_is_stored_by_its_head(conn, tmp_path):
 def test_the_head_of_a_large_file_ends_at_a_line_or_a_word(raw, head):
     assert indexer._head(raw) == head
     assert indexer._head(b"short\n") == b"short\n"
+
+
+def test_a_cut_between_the_data_and_the_kind_of_a_secret_keeps_no_data(conn, tmp_path):
+    # `kubectl get secret -o yaml` sorts the keys, so `data:` comes before
+    # `kind: Secret`. The data rule reads the kind line, and a cut between the
+    # two kept the data lines unmasked. The answer paths redact the stored
+    # head again and missed them too, so search and fetch returned them.
+    value = base64.b64encode(b"example-db-password-0123456789").decode()
+    prose = "".join(f"line {i}: notes about the deploy steps and the tests\n" for i in range(4800))
+    data = "apiVersion: v1\ndata:\n" + "".join(f"  db{i}.conf: {value}\n" for i in range(400))
+    text = prose + data + "kind: Secret\nmetadata:\n  name: app-db\ntype: Opaque\n"
+    assert len(prose.encode()) < indexer.MAX_FILE_BYTES < len((prose + data).encode())
+    assert value not in redaction.redact_at_rest(text)  # the whole file: all masked
+    folder = make_folder(tmp_path, "proj-demo", {"reference_db_secret.md": text})
+    assert indexer.scan(conn, [folder]).cut == ["proj-demo/reference_db_secret.md"]
+    row = rows(conn)[("proj-demo", "reference_db_secret.md")]
+    assert "\ndata:\n" in row["content"] and "kind: Secret" not in row["content"]
+    assert f"\n  db0.conf: {redaction.FIELD_TOKEN}\n" in row["content"]
+    assert value not in row["content"]
+    assert value not in rest.safe_text(row["content"])  # each search hit
+    answer = rest.fetch_answer(conn, str(row["id"]), config.DEFAULT_NAMESPACE)
+    assert answer["reason"] is None and "db0.conf" in answer["text"]
+    assert value not in answer["text"]
+
+
+@pytest.mark.parametrize(
+    ("item", "kept"),
+    [('"x",', '"x"'), ("x,", "x,")],
+    ids=["quoted items", "bare items"],
+)
+def test_a_hard_cut_keeps_no_part_of_a_token(conn, tmp_path, item, kept):
+    # No line end and no space near the limit: the cut is hard at 256 KB. It
+    # split a token below the 20 characters its rule needs, and the part was
+    # stored. 16 characters of the token are in front of the limit here. The
+    # cut drops the token characters; after quoted items, also the text after
+    # the last quote.
+    token = "gh" + "p_" + "Q7xkP2mN9vR4tY8wB3cD6fG1hJ5kL0zX"
+    count = (indexer.MAX_FILE_BYTES - 16) // len(item)
+    text = item * count + token + ",x" * 100
+    assert text.index(token) + 16 == indexer.MAX_FILE_BYTES
+    head = indexer._head(text.encode())
+    assert head == (item * (count - 1) + kept).encode()
+    folder = make_folder(tmp_path, "proj-demo", {"reference_tokens.md": text})
+    indexer.scan(conn, [folder])
+    content = rows(conn)[("proj-demo", "reference_tokens.md")]["content"]
+    assert token[:10] not in content
+
+
+def test_a_space_cut_keeps_no_part_of_a_quoted_value(conn, tmp_path):
+    # One line longer than 128 KB: the cut is at the last space. Inside a
+    # quoted value it dropped the closing quote, so the rule masked only the
+    # first word of the value and kept the next ones.
+    filler = ("word " * 52_423)[: indexer.MAX_FILE_BYTES - 31] + " "
+    secret = '{"password": "correct horse battery staple"}'
+    text = filler + secret + " and more words" * 100
+    assert text.index("battery") < indexer.MAX_FILE_BYTES < text.index("staple")
+    assert indexer._head(text.encode()) == (filler + '{"password": "').encode()
+    folder = make_folder(tmp_path, "proj-demo", {"reference_json.md": text})
+    indexer.scan(conn, [folder])
+    content = rows(conn)[("proj-demo", "reference_json.md")]["content"]
+    assert "correct" not in content and "horse" not in content
 
 
 def test_hash_skip_and_update_in_place(conn, tmp_path):

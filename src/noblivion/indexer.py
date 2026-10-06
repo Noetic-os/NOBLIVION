@@ -91,6 +91,11 @@ STAT_CACHE_MIN_AGE_NS = 2_000_000_000
 # a search answer (512 KB) and costs the redactor a bounded time. The hash
 # stays the hash of the whole file.
 MAX_FILE_BYTES = 256 * 1024
+# The bytes that can go on a token or a password: every visible ASCII
+# character but the quote marks, the backtick, "," ";" ":" and the brackets,
+# and every byte of a multi-byte UTF-8 character. A hard cut drops a run of
+# them at its end (``_head``).
+_VALUE_BYTES = bytes(b for b in range(0x21, 0x100) if b != 0x7F and chr(b) not in "\"'`,;:()[]{}<>")
 
 # -- frontmatter and content ---------------------------------------------------
 
@@ -409,6 +414,7 @@ class ScanResult:
     deletes_cancelled: int = 0
     deletes_held: dict[str, int] = field(default_factory=dict)  # root -> deletes a skip held
     content_rev: int = 0
+    cut: list[str] = field(default_factory=list)  # files stored by their head (_head)
 
     @property
     def changed(self) -> int:
@@ -430,6 +436,7 @@ class ScanResult:
             "block_reason": self.block_reason,
             "deletes_cancelled": self.deletes_cancelled,
             "deletes_held": dict(self.deletes_held),
+            "files_cut": len(self.cut),
             "content_rev": self.content_rev,
         }
 
@@ -451,19 +458,46 @@ class ScanResult:
             lines.append(f"root {root}: {n} delete(s) wait until {files} can be read and redacted")
         return lines
 
+    def cut_lines(self) -> list[str]:
+        """One line per file that this scan stored by its head only."""
+        return [
+            f"{name} is larger than {MAX_FILE_BYTES // 1024} KB: only its head is stored "
+            "and found by recall; split it into smaller notes"
+            for name in self.cut
+        ]
+
 
 def _head(raw: bytes) -> bytes:
     """The bytes of a file that the indexer stores: all of them up to
-    ``MAX_FILE_BYTES``, else the head up to its last line end, or up to its
-    last space when the second half of the head holds no line end. So a cut
-    does not split a line or a word that holds a secret."""
+    ``MAX_FILE_BYTES``, else the head up to its last line end. When the
+    second half of the head holds no line end, the cut is at its last space;
+    when it holds no space either, the cut is hard at the limit, and the run
+    of token characters there (``_VALUE_BYTES``) is dropped too, unless that
+    run starts in the first half. A cut that is not at a line end also drops
+    the text after the last quote mark in the second half.
+
+    A rule masks a token, a password or a quoted value only when it is
+    whole: a part of one can be too short for its rule, and a quoted value
+    with no closing quote is masked only up to its first space. So the cut
+    keeps no such part."""
     if len(raw) <= MAX_FILE_BYTES:
         return raw
+    half = MAX_FILE_BYTES // 2
     head = raw[:MAX_FILE_BYTES]
-    cut = head.rfind(b"\n", MAX_FILE_BYTES // 2)
-    if cut == -1:
-        cut = head.rfind(b" ", MAX_FILE_BYTES // 2)
-    return head[:cut] if cut != -1 else head
+    cut = head.rfind(b"\n", half)
+    if cut != -1:
+        return head[:cut]
+    cut = head.rfind(b" ", half)
+    if cut != -1:
+        head = head[:cut]
+    else:
+        # A run that starts in the first half stays: its kept part is
+        # longer than any rule needs.
+        kept = head.rstrip(_VALUE_BYTES)
+        if len(kept) >= half:
+            head = kept
+    quote = max(head.rfind(b'"', half), head.rfind(b"'", half))
+    return head[: quote + 1] if quote != -1 else head
 
 
 @dataclass(frozen=True)
@@ -472,6 +506,7 @@ class _Prepared:
     category: str
     content: str
     labels: str
+    cut: bool  # the file is larger than MAX_FILE_BYTES: only its head is stored
 
 
 def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
@@ -484,9 +519,18 @@ def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
         return None
     # The file may have changed since it was listed; store what is on disk now.
     entry = FileEntry(entry.root, entry.path, entry.abspath, hashlib.sha256(raw).hexdigest())
-    text = _head(raw).decode("utf-8", errors="replace")
+    head = _head(raw)
+    cut = len(head) < len(raw)
+    text = head.decode("utf-8", errors="replace")
     parsed = parse_file(entry.path, text)
-    content = redaction.redact_at_rest(build_content(entry.path, parsed))
+    content = build_content(entry.path, parsed)
+    if cut:
+        # A rule that reads a fact from anywhere in the file (a cluster
+        # Secret's "kind: Secret" line) reads it from the whole file, not
+        # from the head alone.
+        content = redaction.redact_cut(content, raw.decode("utf-8", errors="replace"))
+    else:
+        content = redaction.redact_at_rest(content)
     if content == redaction.REDACTION_FAILED_TOKEN:
         return None
     labels = None
@@ -495,7 +539,7 @@ def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
             labels = list(labeller(text, Path(entry.path).stem))
         except Exception:  # noqa: BLE001 - one labeller fault never stops the scan
             labels = None
-    return _Prepared(entry, parsed.category, content, labels_json(labels, parsed.category))
+    return _Prepared(entry, parsed.category, content, labels_json(labels, parsed.category), cut)
 
 
 def _apply_batch(
@@ -645,6 +689,8 @@ def scan(
             if stat_cache is not None:
                 stat_cache.pop(str(op.entry.abspath), None)  # retry it next scan
             continue
+        if prep.cut:
+            result.cut.append(f"{op.entry.root}/{op.entry.path}")
         work.append((op, prep))
 
     held_roots = {name.split("/", 1)[0] for name in result.skipped}
@@ -790,6 +836,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     for name in result.skipped:
         print(f"noblivion index: skipped {name} (not readable or not redactable)", file=sys.stderr)
     for line in result.held_lines():
+        print(f"noblivion index: {line}", file=sys.stderr)
+    for line in result.cut_lines():
         print(f"noblivion index: {line}", file=sys.stderr)
     if result.blocked:
         print(f"noblivion index: {result.block_reason}", file=sys.stderr)

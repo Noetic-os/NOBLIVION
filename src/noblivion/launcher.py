@@ -41,7 +41,13 @@ from noblivion import __version__, config
 PROOF_PREFIX = "noblivion-health:"
 PROBE_TIMEOUT_S = 0.3
 SPAWN_STAMP_MAX_AGE_S = 30.0
-RESTART_LOCK_WAIT_S = 10.0
+# How long a new store waits for the lock of the store it replaces. The old
+# store may need up to about 71 s to stop after SIGTERM: 5 s for open
+# requests, 60 s for the jobs thread to end its batch, 1 s per model thread
+# and 5 s for the database. A shorter wait gave up while the old store still
+# stopped, and no store ran (NOBLIVION-57). A test checks this sum against the
+# store's constants.
+RESTART_LOCK_WAIT_S = 90.0
 TOKEN_RE = re.compile(r"[0-9a-f]{64}")
 NONCE_RE = re.compile(r"[0-9a-fA-F]{32,128}")
 

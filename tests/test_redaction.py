@@ -8,6 +8,7 @@ secret-shaped literal sits in the repository for a leak scanner to find.
 from __future__ import annotations
 
 import itertools
+import random
 import re
 import time
 
@@ -290,6 +291,68 @@ def test_cluster_secret_data_only_in_a_secret_manifest():
     config_map = f"apiVersion: v1\nkind: ConfigMap\ndata:\n  db-conn: {value}\n"
     assert redact_at_rest(config_map) == config_map
     assert f"  db-pass: {FIELD_TOKEN}" in redact_at_rest(config_map.replace("db-conn", "db-pass"))
+
+
+def test_redact_cut_reads_the_kind_line_from_the_whole_text():
+    # `kubectl get secret -o yaml` sorts the keys: data before kind. The
+    # indexer stores the head of a large file, and the kind line may be cut
+    # off. The data rule reads that fact from the whole file.
+    value = fake("", 24, "QWxhZGRpbjpvcGVuIHNlc2FtZQ")
+    head = f"apiVersion: v1\ndata:\n  db-conn: {value}\n"
+    whole = head + "kind: Secret\nmetadata:\n  name: app-db\n"
+    assert redact_at_rest(head) == head  # the head alone holds no kind line
+    assert redaction.redact_cut(head, whole) == head.replace(value, FIELD_TOKEN)
+    config_map = whole.replace("kind: Secret", "kind: ConfigMap")
+    assert redaction.redact_cut(head, config_map) == head
+    assert redact_at_rest(head, secret_manifest=True) == head.replace(value, FIELD_TOKEN)
+
+
+# The two rules as they were before they were made linear (NOBLIVION-62
+# review). The new ones must mask the same text.
+_OLD_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_.\-]+")
+_OLD_SECRET_DATA_RE = re.compile(r"^(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})$", re.MULTILINE)
+_JWT_PIECES = ["eyJ", "eyJ", ".", ".", "a", "Zb", "09", "_", "-", "abcd", "eyJhbGci", "+", "/"]
+_JWT_PIECES += ["=", " ", "\n", "e", "y", "J", "yJ", ".eyJ", "é", "@"]
+_DATA_PIECES = ["data:\n", "\n", "\n", " ", "  ", "\t", "\r", "\r\n", "\x0b", "\x0c", "\xa0"]
+_DATA_PIECES += [" ", "\x85", "key", "db.conf", "a-b", ":", ": ", ":\n", "QUJD", "x", "é"]
+_DATA_PIECES += ["QUJDREVGR0hJSktMTU5PUA==", "ABCDEFGHIJKLMNOP", "=", "==", "===", "+", "/", "#"]
+
+
+def test_the_linear_jwt_and_secret_data_rules_mask_what_the_old_ones_masked():
+    # 20000 texts per rule here; the review ran 500000 per rule with no
+    # difference. Each text is up to 40 pieces of the rule's own tokens.
+    jwt = next(rule for rule in redaction._SHAPE_PATTERNS if rule[0] is redaction._JWT_RE)
+    rng = random.Random(62)
+    for _ in range(20_000):
+        text = "".join(rng.choice(_JWT_PIECES) for _ in range(rng.randint(1, 40)))
+        assert jwt[0].sub(jwt[1], text) == _OLD_JWT_RE.sub(REDACTION_TOKEN, text), repr(text)
+        text = "".join(rng.choice(_DATA_PIECES) for _ in range(rng.randint(1, 40)))
+        old = _OLD_SECRET_DATA_RE.sub(lambda m: m.group(1) + FIELD_TOKEN, text)
+        new = redaction._K8S_SECRET_DATA_RE.sub(redaction._mask_secret_data, text)
+        assert new == old, repr(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "eyJ" * (64 * 1024 // 3),
+        "a" * 64 * 1024 + "eyJ",
+        "kind: Secret\n" + "\n" * 64 * 1024,
+        "kind: Secret\n" + " \n" * (32 * 1024),
+        "kind: Secret\n" + "\t\n" * (32 * 1024),
+        "kind: Secret\n a:" + " \n" * (32 * 1024),
+    ],
+    ids=["eyJ runs", "a run and one eyJ", "blank lines", "space lines", "tab lines", "a key"],
+)
+def test_the_jwt_and_secret_data_rules_run_in_linear_time(text):
+    # 64 KB: the old JWT rule took 1.1 s on "eyJ" runs, the old data rule
+    # 34 s on blank lines. Now each takes about 3 ms here; the bound allows
+    # for a CI runner 4 times slower with a wide margin. "a run and one eyJ"
+    # guards the new JWT form: it reads the run in front of the first "eyJ".
+    start = time.perf_counter()
+    redaction._JWT_RE.sub("", text)
+    redaction._K8S_SECRET_DATA_RE.sub("", text)
+    assert time.perf_counter() - start < 0.25
 
 
 def test_word_boundary_created_by_a_replacement_still_settles():

@@ -203,7 +203,8 @@ unless `embedding.allow_download` is `true`.
 - A large memory folder takes longer to index the first time. Run
   `noblivion index` once by hand.
 - A note larger than 256 KB is stored by its first 256 KB only. Split it
-  into smaller notes.
+  into smaller notes. `noblivion index` names each such file, and the
+  store log names it once.
 
 ## The index does not delete removed files
 
@@ -219,6 +220,10 @@ The index also deletes nothing in a project folder while a file of that
 folder cannot be read or redacted. `noblivion index` names the file, and
 `--json` shows the held deletes per folder in `deletes_held`. Fix the
 permissions of the file, or remove it. The next scan runs the deletes.
+
+`--json` also shows `files_cut`: the count of files of this scan that are
+larger than 256 KB and stored by their head only. `noblivion index` names
+them.
 
 ## Hooks run twice
 

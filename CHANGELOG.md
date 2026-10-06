@@ -33,11 +33,19 @@ All notable changes to NOBLIVION. The format follows
   store reads `config.json` and loads the model only at its start. So a
   user who turned the embedding model on later, as docs/install.md says,
   kept keyword search only, with no sign. New option
-  `noblivion ensure-running --restart`.
+  `noblivion ensure-running --restart`. The new store waits up to 90 s
+  for the old one to stop, because a busy store needs up to about 71 s
+  after `SIGTERM`. A wait of 10 s gave up while the old store still
+  stopped, and then no store ran.
 - `install.sh --no-embed` sets `embedding.backend` to `none` in
   `config.json` (NOBLIVION-57). Before, the default backend `fastembed`
   stayed, but the package was not installed. The store then reported
-  `degraded` for good and logged a warning every hour.
+  `degraded` for good and logged a warning every hour. It does this also
+  when `config.json` names another backend, and it prints the value it
+  replaced. A `config.json` that is not valid JSON, or whose `embedding`
+  is not an object, stays as it is: one line names the file and the
+  install goes on, with no Python traceback. With a backend other than
+  `fastembed`, the script no longer prints "embedding model ready".
 - A relevance floor that is not a cosine (`nan`, `inf`, or a value outside
   -1..1) in `NOBLIVION_RECALL_MIN_SCORE` or `NOBLIVION_ERROR_RECALL_MIN_SCORE`
   now counts as unset. Before, `nan` dropped every scored hit.
@@ -64,8 +72,19 @@ All notable changes to NOBLIVION. The format follows
     "No memories available." with smaller hits in the pool. Now only the
     entry that does not fit is left out, and a stored text too large to
     fit is left out before it is redacted.
-  - The indexer stores the first 256 KB of a larger memory file, up to its
-    last whole line. Before, it stored the whole file.
+  - The indexer stores the first 256 KB of a larger memory file. Before,
+    it stored the whole file. The cut is at the last line end. When the
+    last 128 KB in front of the limit hold no line end, the cut is at the
+    last space; when they hold no space either, the cut is hard at the
+    limit and drops the token characters there. A cut that is not at a
+    line end also drops the text after the last quote mark. So no part of
+    a token or of a quoted value is stored that its rule would not mask.
+    The data lines of a cluster Secret are masked when `kind: Secret` is
+    anywhere in the file, also in the part that is cut off: `kubectl get
+    secret -o yaml` puts `data:` before `kind:`. `noblivion index` names
+    each file that it stored by its head, `noblivion index --json` counts
+    them in the new key `files_cut`, and the store log names each one
+    once.
   - `/api/memories/fetch/{id}` cuts a text that would make the answer
     larger than 512 KB, with `…` at the cut. Before, it had no limit.
   - The connection URL rule and the email rule of the store redactor now
@@ -74,6 +93,13 @@ All notable changes to NOBLIVION. The format follows
     each search that hit the note, and 100 KB of letters cost minutes. Now
     100 KB costs less than 0.1 s. The rules mask the same text as before,
     so the redactor version stays 2.
+  - The JWT rule and the cluster Secret data rule of the store redactor
+    now read each run of characters once. Before, 256 KB of `eyJ` cost
+    18.5 s, and `kind: Secret` with 64 K blank lines after it cost 34 s.
+    Now the two rules take about 5 ms together on 128 KB of such text, and
+    the time grows in line with the length. A differential run of
+    500000 texts per rule gave the same output as the old rules, so the
+    redactor version stays 2.
 - A common word no longer counts as a keyword match (NOBLIVION-76). Before,
   a word such as "the" matched nearly every note, so while the store was
   still computing vectors, the query "how do I deploy the service" brought

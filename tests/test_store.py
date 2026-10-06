@@ -753,6 +753,30 @@ def test_second_store_is_refused_by_the_lock(tmp_path):
     third.close()
 
 
+def test_a_replacement_store_waits_until_a_busy_old_store_has_stopped(tmp_path):
+    # NOBLIVION-57 review: after SIGTERM the old store finishes open requests
+    # (5 s), waits for the jobs thread (60 s), each model thread (1 s) and the
+    # database (5 s). The new store waited 10 s for the lock, gave up and
+    # exited 0, so no store ran. A fake clock: the old store holds the lock
+    # for its longest stop, and the new store must still get it.
+    stop_s = store.DRAIN_TIMEOUT_S + store.JOB_JOIN_TIMEOUT_S + 2 * 1.0 + db.BUSY_TIMEOUT_MS / 1000
+    assert launcher.RESTART_LOCK_WAIT_S > stop_s + 5.0  # a margin for the checkpoint
+    lock = tmp_path / config.STORE_LOCK_FILE
+    old = store.acquire_lock(lock)
+    now = [0.0]
+
+    def sleep(seconds: float) -> None:
+        nonlocal old
+        now[0] += seconds
+        if old is not None and now[0] >= stop_s:
+            os.close(old)  # the old store has stopped
+            old = None
+
+    fd = store.acquire_lock(lock, launcher.RESTART_LOCK_WAIT_S, clock=lambda: now[0], sleep=sleep)
+    os.close(fd)
+    assert stop_s <= now[0] < stop_s + 1.0
+
+
 def test_port_in_use_fails_and_releases_the_lock(tmp_path):
     with socket.socket() as taken:
         taken.bind(("127.0.0.1", 0))
@@ -835,6 +859,36 @@ def test_a_scan_logs_the_file_that_holds_back_the_deletes_of_its_root(
         "-work-proj-demo/reference_ci.md can be read and redacted"
     )
     assert held in [r.getMessage() for r in caplog.records]
+
+
+def test_a_scan_logs_a_file_stored_by_its_head_once(tmp_path, caplog):
+    # One info line names a file over 256 KB. The store scans every 30 s and
+    # reads the file again after each change: the line is not repeated.
+    st = make_store(tmp_path)
+    folder = st.settings.memory_dirs[0]
+    folder.mkdir(parents=True)
+    big = "".join(f"line {i}: run the tests with the venv python\n" for i in range(8000))
+    (folder / "reference_big.md").write_text(big, encoding="utf-8")
+    name = "-work-proj-demo/reference_big.md"
+
+    def cut_lines(level: str) -> list[str]:
+        return [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelname == level and "reference_big.md" in r.getMessage()
+        ]
+
+    with closing(db.open_db(st.settings.db_path, create=True)) as conn:
+        with caplog.at_level("DEBUG", logger="noblivion.store"):
+            assert st.scan_once(conn).cut == [name]
+            assert cut_lines("INFO") == [
+                f"index scan: larger than 256 KB, only the head is stored: {name}"
+            ]
+            (folder / "reference_big.md").write_text(big + "one more line\n", encoding="utf-8")
+            assert st.scan_once(conn).cut == [name]
+            assert st.scan_once(conn).cut == []  # unchanged: not read again
+    assert len(cut_lines("INFO")) == 1
+    assert cut_lines("DEBUG") == [f"index scan: cut again: {name}"]
 
 
 def test_index_command_changes_get_vectors_with_periodic_scans_off(tmp_path):

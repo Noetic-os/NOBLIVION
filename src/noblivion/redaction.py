@@ -59,6 +59,20 @@ _NOT_A_MARKER = r"(?!\*\*\*REDACTED|\[REDACTED)"
 
 _Replacement = Callable[["re.Match[str]"], str]
 
+# -- JWT: ``eyJ<part>.eyJ<part>.<signature>``, each first two parts at least 4
+# base64url characters. The text it masks is the text that the plain form
+# ``eyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_.\-]+`` masks, but
+# in linear time. Every "eyJ" in one run of base64url characters has the same
+# run end, so when the first one does not start a JWT, no later one does. The
+# plain form tried each of them and read the run again from each: "eyJ" * N
+# cost N squared. Here a match starts only at the start of a run (the
+# lookbehind) and reads up to the first "eyJ" in it once (the lookahead holds
+# no backtrack point; the group 1 copy consumes it).
+_JWT_RUN = r"[A-Za-z0-9_-]"
+_JWT_RE = re.compile(
+    rf"(?<!{_JWT_RUN})(?=({_JWT_RUN}*?eyJ))\1{_JWT_RUN}{{4,}}\.eyJ{_JWT_RUN}{{4,}}\.[A-Za-z0-9_.\-]+"
+)
+
 # -- Shapes that the hook redactor removes too: ``(pattern, flags)`` rows. The
 # hooks run on the user's python3 without this package, so
 # ``hooks/memory_text.py`` holds a copy of this table (``_SHARED_SHAPES``). A
@@ -126,10 +140,8 @@ _SHAPE_PATTERNS: list[tuple[re.Pattern[str], _Replacement]] = [
         lambda m: f"Bearer {REDACTION_TOKEN}",
     ),
     # JWT: three base64url parts, the first two start with a JSON object.
-    (
-        re.compile(r"eyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_.\-]+"),
-        lambda m: REDACTION_TOKEN,
-    ),
+    # Group 1 is the run of base64url characters in front of the first "eyJ".
+    (_JWT_RE, lambda m: m.group(1)[: -len("eyJ")] + REDACTION_TOKEN),
     # sk- keys, including the hyphenated project form.
     (re.compile(r"sk-[A-Za-z0-9_-]{16,}"), lambda m: REDACTION_TOKEN),
     # GitHub tokens: fine-grained and classic prefixes.
@@ -226,8 +238,18 @@ _BEARER_FIELD_RE = re.compile(
 )
 
 # -- Cluster Secret manifest data: an indented `key: <base64>` line. Applied only
-# when the text holds `kind: Secret`.
-_K8S_SECRET_DATA_RE = re.compile(r"^(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})$", re.MULTILINE)
+# when the text holds `kind: Secret`, or the caller says the whole file does
+# (``redact_cut``). The text it masks is the text that the plain form
+# ``^(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})$`` masks, but in linear
+# time. In the plain form ``\s+`` runs over line ends too, so a key line
+# matched from each line start of the blank lines above it, and N blank
+# lines cost N squared. All those starts end at the same key, so only the
+# first line start in a run of whitespace counts: the match starts at the end
+# of the text in front of the run (the lookbehind), or at the start of the
+# text. Group 1 is the indent, the key and the space in front of the value.
+_K8S_SECRET_DATA_RE = re.compile(
+    r"(?m)(?:\A|(?<=\S)[^\S\n]*\n)(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})$"
+)
 _K8S_KIND_RE = re.compile(r"kind:\s*secret\b", re.IGNORECASE)
 
 # -- Connection URL password. The match is anchored right after each "://",
@@ -304,7 +326,13 @@ def _mask_field(m: re.Match[str]) -> str:
     return f"{m.group(1)}{quote}{FIELD_TOKEN}{quote}"
 
 
-def _redact_once(text: str) -> str:
+def _mask_secret_data(m: re.Match[str]) -> str:
+    # Keep the text in front of the value (the line end in front of the run
+    # of whitespace, group 1), mask the value.
+    return m.string[m.start() : m.start(2)] + FIELD_TOKEN
+
+
+def _redact_once(text: str, secret_manifest: bool = False) -> str:
     out = text
     for pattern, repl in _SHAPE_PATTERNS:
         out = pattern.sub(repl, out)
@@ -313,28 +341,47 @@ def _redact_once(text: str) -> str:
     out = _SECRET_FIELD_RE.sub(_mask_field, out)
     out = _BEARER_FIELD_RE.sub(lambda m: m.group(1) + FIELD_TOKEN, out)
     out = _redact_conn_str_urls(out)
-    if _K8S_KIND_RE.search(out):
-        out = _K8S_SECRET_DATA_RE.sub(lambda m: m.group(1) + FIELD_TOKEN, out)
+    if secret_manifest or _K8S_KIND_RE.search(out):
+        out = _K8S_SECRET_DATA_RE.sub(_mask_secret_data, out)
     return _redact_emails(out)
 
 
-def redact_at_rest(text: str) -> str:
+def redact_at_rest(text: str, *, secret_manifest: bool = False) -> str:
     """Return ``text`` with every covered secret shape masked.
+
+    ``secret_manifest`` masks the data lines of a cluster Secret also when
+    ``text`` holds no ``kind: Secret`` line (``redact_cut``).
 
     Returns ``REDACTION_FAILED_TOKEN`` when the text does not settle within
     ``MAX_PASSES`` passes or when a pattern raises. Never returns the raw text
     on failure.
     """
     try:
-        out = _redact_once(text)
+        out = _redact_once(text, secret_manifest)
         for _ in range(MAX_PASSES - 1):
-            nxt = _redact_once(out)
+            nxt = _redact_once(out, secret_manifest)
             if nxt == out:
                 return out
             out = nxt
-        return out if _redact_once(out) == out else REDACTION_FAILED_TOKEN
+        return out if _redact_once(out, secret_manifest) == out else REDACTION_FAILED_TOKEN
     except Exception:  # noqa: BLE001 - fail closed, never the raw text
         return REDACTION_FAILED_TOKEN
+
+
+def redact_cut(text: str, whole: str) -> str:
+    """``redact_at_rest`` for ``text``, a part of the longer text ``whole``
+    (the indexer stores the head of a large file).
+
+    One rule reads a fact from anywhere in the text: the data lines of a
+    cluster Secret are masked only in a text that holds ``kind: Secret``.
+    ``kubectl get secret -o yaml`` sorts the keys, so ``data:`` comes before
+    ``kind:``, and a cut between them kept the data lines unmasked. Here the
+    fact comes from ``whole``. The other rules read only the text next to
+    what they mask. The indexer cuts at a line end, or drops the part of a
+    token or of a quoted value at the cut (``indexer._head``), and a key
+    block that lost its END line is masked by its BEGIN line.
+    """
+    return redact_at_rest(text, secret_manifest=_K8S_KIND_RE.search(whole) is not None)
 
 
 def would_change(text: str) -> bool:

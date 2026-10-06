@@ -53,19 +53,41 @@ run() {
     fi
 }
 
-# Set embedding.backend to none in config.json: keyword search only.
+# Set embedding.backend to none in config.json: keyword search only. This is
+# the one key of an existing config.json that the script changes. It prints
+# the value it replaced. A config.json that is not valid JSON, or whose
+# "embedding" is not an object, stays as it is: one line says so, and the
+# install goes on.
 backend_none() {
-    NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/python" - <<'PY'
-import json, os
+    NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/python" - "$1" <<'PY'
+import json, os, sys
 from noblivion import config
 
+why = sys.argv[1]
 path = config.data_dir() / "config.json"
-doc = json.loads(path.read_text()) if path.exists() else {}
-doc.setdefault("embedding", {})["backend"] = "none"
+try:
+    doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+except (OSError, ValueError) as exc:
+    doc = exc
+embedding = doc.get("embedding", {}) if isinstance(doc, dict) else None
+if not isinstance(embedding, dict):
+    problem = "is not valid JSON" if isinstance(doc, Exception) else (
+        "is not a JSON object" if not isinstance(doc, dict) else 'has an "embedding" that is not an object'
+    )
+    print(
+        f"noblivion install: {path} {problem}; embedding.backend not changed. "
+        f"Fix the file and set embedding.backend to none ({why})."
+    )
+    sys.exit(0)
+old = embedding.get("backend")
+embedding["backend"] = "none"
+doc["embedding"] = embedding
 tmp = path.with_suffix(".tmp")
-tmp.write_text(json.dumps(doc, indent=2) + "\n")
+tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 os.chmod(tmp, 0o600)
 os.replace(tmp, path)
+was = f"; it was {old}" if old is not None and old != "none" else ""
+print(f"noblivion install: {why}: set embedding.backend to none in {path}{was} (keyword search only)")
 PY
 }
 
@@ -129,9 +151,12 @@ run rm -f "$REQS"
 run uv pip install --quiet --python "$VENV/bin/python" --no-deps --reinstall-package noblivion "$ROOT"
 
 # 3. The default config file, unless one exists. It holds the shipped recall
-#    tuning (recall.env). The user's file is never overwritten.
+#    tuning (recall.env). An existing file is not replaced. Step 4 can change
+#    one key in it: embedding.backend (--no-embed, or a failed download).
 if [ ! -e "$DATA_DIR/config.json" ]; then
     run install -m 600 "$ROOT/config/config.default.json" "$DATA_DIR/config.json"
+elif [ "$EMBED" = 0 ]; then
+    say "config.json exists, kept as it is except embedding.backend (--no-embed, next step)"
 else
     say "config.json exists, kept as it is"
 fi
@@ -139,17 +164,18 @@ fi
 # 4. The embedding model. A failure is not fatal: keyword search still works.
 #    Without fastembed the backend is none, else the store tries to load it,
 #    reports "degraded" and logs a warning every hour (NOBLIVION-57).
+#    --no-embed sets the backend to none also when the user chose another
+#    one; the line says which value it replaced.
 if [ "$EMBED" = 0 ]; then
     if [ "$DRY_RUN" = 1 ]; then
-        say "would set embedding.backend to none (keyword search only)"
+        say "would set embedding.backend to none in config.json (keyword search only)"
     else
-        say "--no-embed: setting embedding.backend to none (keyword search only)"
-        backend_none
+        backend_none "--no-embed" || say "could not change embedding.backend in $DATA_DIR/config.json"
     fi
 elif [ "$MODEL" = 1 ]; then
     if [ "$DRY_RUN" = 1 ]; then
         say "would download the embedding model to $DATA_DIR/models"
-    elif NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/python" - <<'PY'
+    elif ! NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/python" - <<'PY'
 from noblivion import config, embedding
 
 s = embedding.load_embedding_settings()
@@ -158,12 +184,14 @@ if s.backend == "fastembed":
     embedding.FastEmbedEmbedder(
         s.model, models_dir=config.data_dir() / "models", allow_download=True
     ).load()
+    print("noblivion install: embedding model ready")
+else:
+    print(f"noblivion install: embedding.backend is {s.backend}: no model to download")
 PY
     then
-        say "embedding model ready"
-    else
-        say "the model download failed: setting embedding.backend to none (keyword search only)"
-        backend_none
+        say "the model download failed (keyword search only)"
+        backend_none "the model download failed" \
+            || say "could not change embedding.backend in $DATA_DIR/config.json"
     fi
 fi
 

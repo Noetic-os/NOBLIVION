@@ -137,8 +137,10 @@ empty `noblivion.db` again.
    store runs. Proof good and a different version: the hook sends `SIGTERM`
    to the pid in `store.json`, because an old store may run an old
    redactor, and goes to step 4 (it skips the stamp check). The new store
-   gets `--lock-wait 10`, so it waits up to 10 s for the old store to
-   release `store.lock` instead of exiting at step 5. No proof: go to
+   gets `--lock-wait 90`, so it waits up to 90 s for the old store to
+   release `store.lock` instead of exiting at step 5. A busy old store can
+   need about 71 s to stop: 5 s for open requests, 60 s for the jobs
+   thread, 1 s per model thread and 5 s for the database. No proof: go to
    step 3.
 3. The hook checks `spawn.stamp`. If its mtime is less than 30 s old,
    another hook started the store already. The hook stops. The check and
@@ -750,9 +752,18 @@ the source of truth. The indexer never writes a memory file.
 - In each folder: only top-level `*.md` files, sorted by name. It skips
   `.archive/`, backup files, and files that are empty or only whitespace.
 - A file larger than 256 KB is stored by its head: up to its last line end
-  inside 256 KB, or up to its last space when the second half of the head
-  holds no line end. So a row fits in a search answer, and the redactor
-  time stays bounded. The hash stays the hash of the whole file.
+  inside 256 KB. When the second half of the head holds no line end, the
+  cut is at its last space; when it holds no space either, the cut is hard
+  at 256 KB, and the run of token characters at the cut is dropped too
+  (unless that run starts in the first half). A cut that is not at a line
+  end also drops the text after the last quote mark in the second half. So
+  the head keeps no part of a token or of a quoted value that its rule
+  would not mask. A rule that needs a fact from the rest of the file reads
+  it from the whole file (section 5.7). So a row fits in a search answer,
+  and the redactor time stays bounded. The hash stays the hash of the whole
+  file. `noblivion index` names each file that it stored by its head, and
+  `--json` counts them in `files_cut`. The store logs one info line per
+  scan with the new names, each file once per process.
 - `root` is the key of the folder: the name of its parent folder (the
   Claude Code project folder name). `path` is the file name relative to the
   folder.
@@ -905,7 +916,19 @@ text is stable. If it does not settle or raises, it returns its fail
 token. It runs before the content is stored, embedded, or sent anywhere.
 The connection URL rule starts at each `://` and the email rule at each
 `@`, so a long run of letters or digits is read once, not once for each of
-its characters (NOBLIVION-62).
+its characters (NOBLIVION-62). For the same reason the JWT rule starts only
+at the start of a run of base64url characters and reads up to its first
+`eyJ` once, and the cluster secret data rule starts only at the first line
+start in a run of whitespace. They mask the same text as the plain forms;
+a differential run of 500000 texts per rule found no difference.
+
+The cluster secret data rule masks only in a text that holds
+`kind: Secret`. For the head of a large file (section 5.1) the indexer
+reads that fact from the whole file (`redaction.redact_cut`): `kubectl get
+secret -o yaml` puts `data:` before `kind:`, and a cut between them kept
+the data lines unmasked. The answer paths redact the stored head again
+without the fact; that is harmless, because the stored head is masked
+already.
 
 Three rules keep the text of a note that is not a secret:
 
@@ -1955,9 +1978,14 @@ docs/
    store dependencies (`uv export --frozen --extra embed` from `uv.lock`),
    then the package itself with `--no-deps`. `--no-embed` leaves out numpy
    and fastembed: keyword search only. It sets `embedding.backend = none`
-   in the config, else the store reports `degraded` (NOBLIVION-57).
+   in the config, else the store reports `degraded` (NOBLIVION-57). It does
+   this also when the user chose another backend, and prints the value it
+   replaced. A config that is not valid JSON, or whose `embedding` is not
+   an object, stays as it is: one line names the file, and the install goes
+   on.
 3. Copy `config/config.default.json` to `<data dir>/config.json` when that
-   file is missing. It ships the reference recall tuning in `recall.env`
+   file is missing. An existing file is not replaced; only
+   `embedding.backend` can change in it (steps 2 and 4). It ships the reference recall tuning in `recall.env`
    (the ranked index, apply lines, hygiene, re-rank, rule rows, row dedupe,
    drop rows with no rule, the label leg and the shown set) and
    `recall.index_k = 30`. It does not ship the reference index score floor
@@ -1968,7 +1996,9 @@ docs/
    Trust flags stay with E5.
 4. Download the embedding model to `<data dir>/models/` (`--no-model`
    skips it). On failure, set `embedding.backend = none` in the config and
-   say so. Keyword search still works.
+   say so. Keyword search still works. With a backend other than
+   `fastembed` there is no model to download, and the script says that
+   instead of "embedding model ready".
 5. Write the `token` file (mode 0600) if missing.
 6. Write `venv/noblivion-install.json` (plugin version and root).
 7. Run `noblivion index` once and `noblivion migrate-from-legacy` as a dry

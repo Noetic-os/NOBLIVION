@@ -63,8 +63,10 @@ The store scans the memory folders at start and then every 30 seconds.
 - **Files.** Each non-empty `*.md` file at the top of a folder. Files in
   sub-folders and files whose names start with `.` are skipped.
 - **Size.** The indexer stores the first 256 KB of a larger file, up to
-  the last whole line. Recall and `/fetch` show that part only. Split a
-  note that is larger than 256 KB.
+  the last whole line. A line longer than 128 KB is cut at a space, else
+  hard at 256 KB without the token there. Recall and `/fetch` show that
+  part only, and `noblivion index` names the file. Split a note that is
+  larger than 256 KB.
 - **Root.** The name of the project folder that holds the memory folder.
   Each note belongs to one root.
 - **Fields.** The `name` and `description` fields of the front matter, and

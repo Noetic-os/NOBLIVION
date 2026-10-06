@@ -198,6 +198,25 @@ def test_cli_names_the_file_that_holds_back_the_deletes_of_its_root(home, capsys
     assert f"noblivion index: {held}\n" in captured.err
 
 
+def test_cli_names_a_file_that_is_stored_by_its_head(home, capsys):
+    # A file over 256 KB is stored by its head. Before, nothing said so.
+    folder = make_folder(home, "proj-a", 1)
+    big = "".join(f"line {i}: run the tests with the venv python\n" for i in range(8000))
+    (folder / "reference_big.md").write_text(big, encoding="utf-8")
+    assert indexer.main(["--json"]) == indexer.EXIT_OK
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["files_cut"] == 1
+    line = (
+        "noblivion index: proj-a/reference_big.md is larger than 256 KB: only its head "
+        "is stored and found by recall; split it into smaller notes\n"
+    )
+    assert captured.err == line
+    (folder / "reference_big.md").write_text("small now\n", encoding="utf-8")
+    assert indexer.main(["--json"]) == indexer.EXIT_OK
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["files_cut"] == 0 and captured.err == ""
+
+
 def test_cli_explicit_memory_dir_and_db(home, tmp_path):
     folder = make_folder(tmp_path / "x", "proj-x", 2)
     db_path = tmp_path / "other" / "store.db"

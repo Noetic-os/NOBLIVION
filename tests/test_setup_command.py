@@ -222,6 +222,62 @@ def test_install_no_embed_sets_the_backend_to_none_so_the_store_is_not_degraded(
 
 
 @pytest.mark.skipif(BASH is None, reason="bash not found")
+def test_install_no_embed_says_which_backend_it_replaced(tmp_path):
+    # NOBLIVION-57 review: the script said "config.json exists, kept as it
+    # is", then --no-embed changed a backend that the user chose.
+    data = tmp_path / "plugin-data"
+    data.mkdir(mode=0o700)
+    doc = {"embedding": {"backend": "ollama", "model": "example-model"}, "recall": {"index_k": 7}}
+    (data / "config.json").write_text(json.dumps(doc), encoding="utf-8")
+    proc = _install(_install_env(tmp_path), data, "--no-embed", "--no-start")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "kept as it is\n" not in proc.stdout
+    assert "config.json exists, kept as it is except embedding.backend" in proc.stdout
+    line = f"--no-embed: set embedding.backend to none in {data / 'config.json'}; it was ollama"
+    assert line in proc.stdout, proc.stdout
+    doc["embedding"]["backend"] = "none"  # only this key changes
+    assert json.loads((data / "config.json").read_text(encoding="utf-8")) == doc
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not found")
+@pytest.mark.parametrize(
+    ("text", "problem"),
+    [
+        ('{"embedding": ', "is not valid JSON"),
+        ("[1, 2]", "is not a JSON object"),
+        ('{"embedding": "fastembed"}', 'has an "embedding" that is not an object'),
+    ],
+    ids=["not JSON", "not an object", "embedding not an object"],
+)
+def test_install_no_embed_goes_on_with_a_broken_config(tmp_path, text, problem):
+    # Before, a Python traceback, and set -e stopped the install after the venv.
+    data = tmp_path / "plugin-data"
+    data.mkdir(mode=0o700)
+    (data / "config.json").write_text(text, encoding="utf-8")
+    proc = _install(_install_env(tmp_path), data, "--no-embed", "--no-start")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Traceback" not in proc.stdout + proc.stderr
+    line = (
+        f"noblivion install: {data / 'config.json'} {problem}; embedding.backend not "
+        "changed. Fix the file and set embedding.backend to none (--no-embed).\n"
+    )
+    assert line in proc.stdout, proc.stdout
+    assert (data / "config.json").read_text(encoding="utf-8") == text
+    assert "done. The store starts at the next Claude Code session." in proc.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not found")
+def test_install_with_backend_none_does_not_say_the_model_is_ready(tmp_path):
+    data = tmp_path / "plugin-data"
+    data.mkdir(mode=0o700)
+    (data / "config.json").write_text(json.dumps({"embedding": {"backend": "none"}}))
+    proc = _install(_install_env(tmp_path), data, "--no-start")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "embedding model ready" not in proc.stdout
+    assert "embedding.backend is none: no model to download" in proc.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not found")
 def test_install_again_restarts_the_store_so_it_reads_the_new_config(tmp_path):
     """docs/install.md: to turn the model on later, set embedding.backend and
     run /noblivion:setup again. The store reads its config once, at start, so

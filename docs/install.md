@@ -165,13 +165,18 @@ So the plugin install needs at most two sessions: the one where you ran
 3. It makes the venv in `<data dir>/venv` with Python 3.11 or newer. It
    installs the locked store dependencies (`numpy` and `fastembed`) and
    the `noblivion` package.
-4. It copies the default config to `<data dir>/config.json`. It never
-   overwrites a `config.json` that exists.
+4. It copies the default config to `<data dir>/config.json`. It does not
+   replace a `config.json` that exists. Only step 5 can change one key in
+   it: `embedding.backend`.
 5. It downloads the default embedding model to `<data dir>/models/`.
    When the download fails, it sets `embedding.backend` to `none` in
    `config.json`. Recall then works with keyword search only. With
    `--no-embed`, it downloads nothing and sets `embedding.backend` to
-   `none`.
+   `none`, also when you chose another backend; it prints the value it
+   replaced. When `config.json` is not valid JSON, or its `embedding` is
+   not an object, the script changes nothing in it, prints one line that
+   names the file, and goes on. With
+   a backend other than `fastembed` there is no model to download.
 6. It writes the `token` file with mode 0600, unless one exists.
 7. It writes an install stamp in the venv with the plugin version.
 8. It indexes your memory files once with `noblivion index`.
@@ -189,7 +194,7 @@ So the plugin install needs at most two sessions: the one where you ran
 | Option | Effect |
 | --- | --- |
 | `--data-dir DIR` | Use `DIR` as the data dir. |
-| `--no-embed` | Do not install `numpy` and `fastembed`. Set `embedding.backend` to `none` in `config.json`. Recall uses keyword search only. No model is downloaded. |
+| `--no-embed` | Do not install `numpy` and `fastembed`. Set `embedding.backend` to `none` in `config.json`, also when it names another backend (the script prints the old value). Recall uses keyword search only. No model is downloaded. |
 | `--no-model` | Install the packages, but do not download the model now. |
 | `--no-start` | Do not start the store now. The next session starts it. |
 | `--dry-run` | Print the steps. Change nothing. |

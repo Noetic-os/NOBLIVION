@@ -138,10 +138,17 @@ def ensure_token(data_dir: Path) -> str:
     return token
 
 
-def acquire_lock(path: Path, wait_s: float = 0.0) -> int:
-    """``flock(LOCK_EX | LOCK_NB)`` on ``store.lock``; returns the fd to keep open."""
+def acquire_lock(
+    path: Path,
+    wait_s: float = 0.0,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """``flock(LOCK_EX | LOCK_NB)`` on ``store.lock``; returns the fd to keep open.
+    ``wait_s``: how long to wait for a store that stops (``--lock-wait``)."""
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-    deadline = time.monotonic() + max(0.0, wait_s)
+    deadline = clock() + max(0.0, wait_s)
     while True:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -150,10 +157,10 @@ def acquire_lock(path: Path, wait_s: float = 0.0) -> int:
             if exc.errno not in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
                 os.close(fd)
                 raise
-            if time.monotonic() >= deadline:
+            if clock() >= deadline:
                 os.close(fd)
                 raise StoreLockedError("another store holds the lock") from None
-            time.sleep(0.1)
+            sleep(0.1)
 
 
 # -- the store --------------------------------------------------------------------
@@ -200,6 +207,7 @@ class Store:
         self._threads: list[threading.Thread] = []
         self._model_thread: threading.Thread | None = None
         self._stat_cache: indexer.StatCache = {}
+        self._cut_logged: set[str] = set()  # files stored by their head, logged at info once
         self.stop_reason = ""
 
     # -- paths
@@ -481,6 +489,21 @@ class Store:
             log.info("index scan: %s", result.summary())
         for line in result.held_lines():
             log.warning("index scan: %s", line)
+        new_cut = [name for name in result.cut if name not in self._cut_logged]
+        if new_cut:
+            # One line per scan, and each file once per process: a scan reads
+            # a cut file again after each change, and a note that the user
+            # keeps editing must not fill the log.
+            self._cut_logged.update(new_cut)
+            log.info(
+                "index scan: larger than %d KB, only the head is stored: %s",
+                indexer.MAX_FILE_BYTES // 1024,
+                ", ".join(new_cut),
+            )
+        if len(new_cut) < len(result.cut):
+            log.debug(
+                "index scan: cut again: %s", ", ".join(sorted(set(result.cut) - set(new_cut)))
+            )
         return result
 
     def backfill_once(self, conn: sqlite3.Connection) -> None:
