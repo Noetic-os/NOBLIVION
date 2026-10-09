@@ -6,6 +6,20 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- `noblivion_remember` works in Claude Code with no extra setting
+  (NOBLIVION-94). Before, the tool needed `NOBLIVION_MEMORY_DIR`, but the
+  plugin does not set it, so every save failed with "NOBLIVION_MEMORY_DIR
+  must name the shared memory folder". Now, when the variable is not set
+  and the client is Claude Code, the tool saves the note in the session's
+  memory folder: the same folder that the hooks and the store use. The
+  tool creates that folder (mode 0700) when it does not exist yet, as
+  Claude Code does. `NOBLIVION_MEMORY_DIR` still wins. Codex still needs
+  the variable, which its installer sets.
+
 ## 0.1.8 - 2026-10-09
 
 Adds the command `noblivion import`, which imports memories from a JSONL

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import stat
 import sys
 from pathlib import Path
@@ -150,3 +151,62 @@ def test_remember_call_uses_the_same_mcp_endpoint(
     assert reply["id"] == 3
     assert reply["result"]["isError"] is False
     assert len(list(memory_dir.glob("*.md"))) == 1
+
+
+@pytest.fixture
+def claude_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
+    """A Claude Code session with no NOBLIVION_MEMORY_DIR (NOBLIVION-94)."""
+    config = tmp_path / "config"
+    project = tmp_path / "project"
+    config.mkdir(mode=0o700)
+    project.mkdir()
+    env = {
+        "CLAUDE_CONFIG_DIR": str(config),
+        "CLAUDE_PROJECT_DIR": str(project),
+        "NOBLIVION_MEMORY_SYNC_OFF": "1",
+        "HOME": str(tmp_path),
+    }
+    slug = re.sub(r"[^A-Za-z0-9]", "-", str(project))
+    return env, project, config / "projects" / slug / "memory"
+
+
+def test_claude_remember_without_memory_dir_uses_the_session_folder(
+    claude_env: tuple[dict[str, str], Path, Path],
+) -> None:
+    env, _, expected = claude_env
+    mcp = _mcp()
+    result = mcp.noblivion_remember(_lesson(), env)
+    assert result["isError"] is False, result
+
+    files = list(expected.glob("reference_claude_code_*.md"))
+    assert len(files) == 1
+    assert stat.S_IMODE(expected.stat().st_mode) == 0o700
+    hook_config = importlib.util.spec_from_file_location(
+        "_hook_config_94", ROOT / "hooks" / "hook_config.py"
+    )
+    assert hook_config is not None and hook_config.loader is not None
+    hc = importlib.util.module_from_spec(hook_config)
+    hook_config.loader.exec_module(hc)
+    assert hc.resolve_memory_dir(None, env) == expected
+
+
+def test_claude_invalid_save_without_memory_dir_creates_no_folder(
+    claude_env: tuple[dict[str, str], Path, Path],
+) -> None:
+    env, _, expected = claude_env
+    args = _lesson()
+    del args["evidence"]
+    result = _mcp().noblivion_remember(args, env)
+    assert result["isError"] is True
+    assert not expected.exists()
+
+
+def test_codex_remember_without_memory_dir_still_fails(
+    claude_env: tuple[dict[str, str], Path, Path],
+) -> None:
+    env, _, expected = claude_env
+    env["NOBLIVION_SOURCE_CLIENT"] = "codex"
+    result = _mcp().noblivion_remember(_lesson(), env)
+    assert result["isError"] is True
+    assert "NOBLIVION_MEMORY_DIR" in result["content"][0]["text"]
+    assert not expected.exists()

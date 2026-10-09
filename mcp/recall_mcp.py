@@ -177,6 +177,20 @@ REMEMBER_SCHEMA: Dict[str, Any] = {
 }
 
 
+def _session_memory_dir(env: Mapping[str, str]) -> Optional[Path]:
+    """The session's memory folder by the hooks' rule (``resolve_memory_dir``
+    in ``hooks/hook_config.py``), for the project in ``CLAUDE_PROJECT_DIR``,
+    else this process's cwd. Loaded by path, so sys.path is never touched."""
+    spec = importlib.util.spec_from_file_location(
+        "noblivion_mcp_hook_config", _HOOKS / "hook_config.py"
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("hook_config")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.resolve_memory_dir(os.getcwd(), env)
+
+
 def _redactor():
     """Load the store's stdlib redactor without importing its venv package."""
     path = Path(__file__).resolve().parent.parent / "src" / "noblivion" / "redaction.py"
@@ -193,12 +207,29 @@ def noblivion_remember(
 ) -> Dict[str, Any]:
     """Save a redacted note as a source file. The existing indexer owns DB writes."""
     env = os.environ if environ is None else environ
+    source = env.get("NOBLIVION_SOURCE_CLIENT", "claude_code").strip()
+    if source not in ("codex", "claude_code"):
+        return _tool_error("NOBLIVION_SOURCE_CLIENT must be codex or claude_code")
     raw_dir = env.get("NOBLIVION_MEMORY_DIR", "").strip()
-    if not raw_dir:
+    session_dir = False
+    if raw_dir:
+        folder = Path(os.path.expanduser(raw_dir))
+        if not folder.is_absolute() or not folder.is_dir():
+            return _tool_error("NOBLIVION_MEMORY_DIR must be an existing absolute folder")
+    elif source == "claude_code":
+        # NOBLIVION-94: the plugin's .mcp.json sets no NOBLIVION_MEMORY_DIR,
+        # so use the session's memory folder, the one the hooks and the store
+        # use. Claude Code creates it on the first memory write; so do we,
+        # after the note is valid.
+        try:
+            resolved = _session_memory_dir(env)
+        except Exception as exc:  # noqa: BLE001 - fail closed before any file write
+            return _tool_error(f"memory folder lookup failed ({type(exc).__name__})")
+        if resolved is None or not resolved.is_absolute():
+            return _tool_error("no memory folder: set NOBLIVION_MEMORY_DIR or CLAUDE_PROJECT_DIR")
+        folder, session_dir = resolved, True
+    else:
         return _tool_error("NOBLIVION_MEMORY_DIR must name the shared memory folder")
-    folder = Path(os.path.expanduser(raw_dir))
-    if not folder.is_absolute() or not folder.is_dir():
-        return _tool_error("NOBLIVION_MEMORY_DIR must be an existing absolute folder")
     if not isinstance(args, dict) or set(args) != set(REMEMBER_SCHEMA["inputSchema"]["required"]):
         return _tool_error("title, rule, apply, body, and evidence are required; no other fields")
     caps = {"title": 160, "rule": 400, "apply": 1200, "body": 6000, "evidence": 1500}
@@ -215,9 +246,13 @@ def noblivion_remember(
             values[name] = clean
     except Exception as exc:  # noqa: BLE001 - fail closed before any file write
         return _tool_error(f"note validation failed ({type(exc).__name__})")
-    source = env.get("NOBLIVION_SOURCE_CLIENT", "claude_code").strip()
-    if source not in ("codex", "claude_code"):
-        return _tool_error("NOBLIVION_SOURCE_CLIENT must be codex or claude_code")
+    if session_dir:
+        try:
+            folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as exc:
+            return _tool_error(f"memory folder create failed ({type(exc).__name__})")
+        if not folder.is_dir():
+            return _tool_error("the session's memory folder is not a folder")
     ident = hashlib.sha256(values["title"].encode("utf-8")).hexdigest()[:16]
     path = folder.resolve() / f"reference_{source}_{ident}.md"
     front = {
