@@ -33,7 +33,10 @@ common words, and the time that the store redactor needs for large notes.
   row. `noblivion import --remove FILE.jsonl --apply` marks the rows of
   that file as deleted; the store deletes them after the grace period.
   The trust report names an imported row by a short hash and counts its
-  age from its first trust event in the store. See [docs/import.md](docs/import.md).
+  age from its first trust event in the store. The report counts the rows
+  that wait for a vector, plain and mined rows apart: a backend that sends
+  text off the machine embeds mined rows only with
+  `embedding.remote_include_mined`. See [docs/import.md](docs/import.md).
 
 ### Fixed
 

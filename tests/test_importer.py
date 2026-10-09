@@ -423,7 +423,7 @@ def test_the_backfill_embeds_live_imported_rows(conn, tmp_path):
     assert report.vectors_waiting == 1
     embedding.backfill(conn, FakeEmbedder(), finish=False)
     ids = [r["id"] for r in rows(conn)]
-    assert importer.count_without_vector(conn, ids) == (0, 0)
+    assert importer.count_without_vector(conn, ids) == (0, 0, 0)
 
 
 # -- the indexer ------------------------------------------------------------------
@@ -487,7 +487,7 @@ def test_cli_dry_run_by_default_then_apply(cli_env, tmp_path, capsys):
     with closing(db.connect(cli_env / "noblivion.db")) as c:
         assert json.loads(rows(c)[0]["labels"]) == ["batch"]
     assert cli_main(["import", str(src), "--apply"]) == 0
-    assert "inserted=0" in capsys.readouterr().out
+    assert "new=0 revived=0" in capsys.readouterr().out
 
 
 def test_cli_dry_run_and_apply_together_is_a_usage_error(cli_env, tmp_path, capsys):
@@ -665,15 +665,59 @@ def test_remove_soft_deletes_the_rows_of_the_file(conn, tmp_path):
     assert [r["content"].split("\n")[0] for r in rows(conn)] == ["# Keep me."]
 
 
+def _vector_ids(conn):
+    return {int(r[0]) for r in conn.execute("SELECT memory_id FROM vectors")}
+
+
 def test_a_new_import_revives_a_removed_row(conn, tmp_path):
-    src = write_jsonl(tmp_path / "in.jsonl", [{"content": "Come back."}])
-    do_import(conn, src)
+    first = write_jsonl(
+        tmp_path / "v1.jsonl",
+        [{"content": "Come back.", "labels": ["v1"], "created_at": "2030-01-01T00:00:00Z"}],
+    )
+    do_import(conn, first)
+    fake = FakeEmbedder()
+    embedding.backfill(conn, fake, finish=False)
     (before,) = rows(conn)
-    importer.run(conn, src, project="claude_code", apply=True, remove=True)
-    again = do_import(conn, src)
-    assert (again.to_revive, again.revived, again.inserted) == (1, 1, 1)
-    (after,) = rows(conn)
-    assert after["id"] == before["id"] and after["deleted_at"] is None
+    assert _vector_ids(conn) == {before["id"]}
+    importer.run(conn, first, project="claude_code", apply=True, remove=True)
+
+    second = write_jsonl(
+        tmp_path / "v2.jsonl",
+        [
+            {
+                "content": "Come back.",
+                "labels": ["v2"],
+                "created_at": "2031-02-03T04:05:06Z",
+                "updated_at": "2031-03-04T05:06:07Z",
+                "pinned": True,
+            }
+        ],
+    )
+    rev = db.revisions(conn)[0]
+    back = do_import(conn, second, archived=True, labels=["batch-2"])
+    assert (back.to_insert, back.to_revive, back.inserted, back.revived) == (0, 1, 0, 1)
+    assert "new=0 revived=1" in back.summary()
+    (row,) = rows(conn)
+    assert row["id"] == before["id"] and row["deleted_at"] is None
+    assert row["archived_at"] is not None
+    assert back.content_rev == rev + 1 == db.revisions(conn)[0] == row["rev"]
+    assert json.loads(row["labels"]) == ["v2", "batch-2"]
+    assert (row["created_at"], row["updated_at"], row["pinned"]) == (
+        "2031-02-03T04:05:06.000000Z",
+        "2031-03-04T05:06:07.000000Z",
+        1,
+    )
+
+    # Removed again, then back as a live row whose vector is gone.
+    importer.run(conn, second, project="claude_code", apply=True, remove=True)
+    with db.write_tx(conn):
+        conn.execute("DELETE FROM vectors")
+    live = do_import(conn, second)
+    assert (live.revived, live.vectors_waiting) == (1, 1)
+    (row,) = rows(conn)
+    assert row["archived_at"] is None and row["deleted_at"] is None
+    assert embedding.backfill(conn, fake, finish=False).embedded == 1
+    assert _vector_ids(conn) == {before["id"]}
 
 
 def test_cli_remove_dry_run_apply_and_usage(cli_env, tmp_path, capsys):
@@ -735,3 +779,111 @@ def test_trust_retire_age_of_an_imported_row_starts_at_its_first_event():
     assert trust.build_report(md, now=now)["retire"][0]["reason"].endswith(
         "first indexed 900 days ago"
     )
+
+
+# -- review round 2 ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "ok"),
+    [
+        ("1000-01-01T00:00:00Z", True),
+        ("9999-12-31T23:59:59Z", True),
+        ("1000-01-01T00:30:00+01:00", False),  # 0999 in UTC
+        ("0999-12-31", False),
+        ("0001-01-01", False),
+    ],
+)
+def test_the_year_range_does_not_depend_on_strftime(raw, ok):
+    if ok:
+        assert importer.parse_time(raw, "created_at", "d").startswith(raw[:4])
+    else:
+        with pytest.raises(importer.LineError, match="out of range"):
+            importer.parse_time(raw, "created_at", "d")
+
+
+def test_an_oversized_line_is_refused_before_the_redactor(conn, tmp_path, monkeypatch):
+    seen: list[int] = []
+    real = importer.miner.scrub
+
+    def scrub(text: str) -> str:
+        seen.append(len(text))
+        return real(text)
+
+    monkeypatch.setattr(importer.miner, "scrub", scrub)
+    big = "a" * (10 * 1024 * 1024)
+    src = write_jsonl(tmp_path / "in.jsonl", [{"content": big}, {"content": "small"}])
+    report = do_import(conn, src)
+    assert report.invalid_lines == [{"line": 1, "reason": "content larger than 256 KB"}]
+    assert seen == [len("small")]
+
+
+def test_a_mask_that_grows_the_text_past_the_cap_is_refused(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(importer.miner, "scrub", lambda text: text + "x" * 2)
+    exact = "a" * importer.MAX_CONTENT_BYTES
+    report = do_import(conn, write_jsonl(tmp_path / "in.jsonl", [{"content": exact}]))
+    assert report.invalid_lines == [{"line": 1, "reason": "content larger than 256 KB"}]
+
+
+MIXED = [
+    {"content": "Plain row."},
+    {"content": "Mined row.", "source_type": "mined"},
+    {"content": "Another plain row."},
+]
+
+
+def test_mined_rows_wait_for_a_vector_apart_from_plain_rows(conn, tmp_path):
+    local = embedding.EmbeddingSettings(backend="fastembed")
+    report = importer.run(
+        conn,
+        write_jsonl(tmp_path / "in.jsonl", MIXED),
+        project="claude_code",
+        apply=True,
+        embed_settings=local,
+    )
+    d = report.to_dict()["embedding"]
+    assert (d["vectors_waiting"], d["mined_vectors_waiting"], d["mined_embedded"]) == (2, 1, True)
+    assert "2 plain row(s) wait for a vector; 1 mined row(s) wait for a vector" in (
+        report.vector_line()
+    )
+
+
+@pytest.mark.parametrize(
+    ("settings", "mined_embedded"),
+    [
+        (embedding.EmbeddingSettings(backend="openrouter"), False),
+        (embedding.EmbeddingSettings(backend="openrouter", remote_include_mined=True), True),
+        (embedding.EmbeddingSettings(backend="ollama", ollama_url="http://192.0.2.7:11434"), False),
+        (embedding.EmbeddingSettings(backend="ollama"), True),
+    ],
+)
+def test_a_remote_backend_gives_mined_rows_no_vector(conn, tmp_path, settings, mined_embedded):
+    assert importer.mined_get_vectors(settings) is mined_embedded
+    report = importer.run(
+        conn,
+        write_jsonl(tmp_path / "in.jsonl", MIXED),
+        project="claude_code",
+        apply=True,
+        embed_settings=settings,
+    )
+    assert report.mined_vectors_waiting == 1
+    line = report.vector_line()
+    assert ("1 mined row(s) get no vector" in line) is (not mined_embedded)
+    assert ("remote_include_mined" in line) is (not mined_embedded)
+    # The store's backfill agrees: a remote backend skips the mined row.
+    skipped = embedding.backfill(
+        conn, FakeEmbedder(), include_mined=mined_embedded, finish=False
+    ).skipped_mined
+    assert skipped == (0 if mined_embedded else 1)
+
+
+def test_backend_none_says_no_row_gets_a_vector(conn, tmp_path):
+    report = importer.run(
+        conn,
+        write_jsonl(tmp_path / "in.jsonl", MIXED),
+        project="claude_code",
+        apply=False,
+        embed_settings=embedding.EmbeddingSettings(backend="none"),
+    )
+    assert "backend is none" in report.vector_line()
+    assert report.to_dict()["embedding"]["backend"] == "none"

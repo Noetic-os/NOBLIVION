@@ -58,7 +58,9 @@ imported rows with the same hashes (archived ones too). The delete purge
 Vectors: the command does not embed. Each write batch bumps
 ``content_rev``, and the running store embeds the new live rows on its next
 backfill pass, with its own model and its own consent rules. The report
-says how many inserted rows still wait for a vector.
+says how many written rows still wait for a vector, plain and mined rows
+apart: with a backend that sends text off the machine, the backfill embeds
+mined rows only when ``embedding.remote_include_mined`` is true.
 
 Exit codes: 0 done; 1 refused (the file is missing or cannot be read, the
 lock file cannot be opened, or ``--apply`` found no line it can import or
@@ -81,7 +83,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from noblivion import config, db, indexer, miner, redaction
+from noblivion import config, db, embedding, indexer, miner, redaction
 
 IMPORT_LOCK_FILE = "import.lock"
 
@@ -219,8 +221,12 @@ def parse_time(value: object, name: str, default: str) -> str:
             int((fraction or "0")[:6].ljust(6, "0")),
             tzinfo=_zone(zone),
         )
-        text = db.format_ts(moment)
-        db.parse_ts(text)  # the store's readers must read it back
+        utc = moment.astimezone(timezone.utc)
+        # The store format needs a four-digit year. strftime pads a year
+        # below 1000 on some platforms and not on others, so check it here.
+        if not 1000 <= utc.year <= 9999:
+            raise ValueError("year out of range")
+        text = db.format_ts(utc)
     except (ValueError, OverflowError) as exc:
         raise LineError(f"{name} is out of range") from exc
     return text
@@ -268,9 +274,9 @@ class Report:
     labels_dropped: int = 0
     duplicates_in_file: int = 0
     already_present: int = 0
-    to_insert: int = 0
-    to_revive: int = 0  # of to_insert: rows that --remove soft-deleted
-    inserted: int = 0  # new rows and revived rows
+    to_insert: int = 0  # new rows
+    to_revive: int = 0  # rows that --remove soft-deleted, written again
+    inserted: int = 0  # new rows only
     revived: int = 0
     to_remove: int = 0
     removed: int = 0
@@ -278,9 +284,17 @@ class Report:
     already_removed: int = 0
     by_source_type: Counter = field(default_factory=Counter)
     content_rev: int | None = None
-    vectors_waiting: int | None = None
+    embed_backend: str = ""  # the configured backend; "" when not known
+    mined_embedded: bool = True  # the backfill embeds mined rows
+    vectors_waiting: int | None = None  # live plain rows written without a vector
+    mined_vectors_waiting: int | None = None  # live mined rows written without a vector
     archived_without_vector: int | None = None
     refused: str = ""
+
+    @property
+    def to_write(self) -> int:
+        """New rows plus revived rows."""
+        return self.to_insert + self.to_revive
 
     @property
     def usable(self) -> int:
@@ -333,12 +347,15 @@ class Report:
                     db.SOURCE_MINED: self.by_source_type.get(db.SOURCE_MINED, 0),
                 },
                 "by_archived": {
-                    "archived": self.to_insert if self.archived else 0,
-                    "live": 0 if self.archived else self.to_insert,
+                    "archived": self.to_write if self.archived else 0,
+                    "live": 0 if self.archived else self.to_write,
                 },
                 "embedding": {
                     "mode": EMBED_MODE,
+                    "backend": self.embed_backend or None,
+                    "mined_embedded": self.mined_embedded,
                     "vectors_waiting": self.vectors_waiting,
+                    "mined_vectors_waiting": self.mined_vectors_waiting,
                     "archived_without_vector": self.archived_without_vector,
                 },
             }
@@ -367,7 +384,7 @@ class Report:
             out += [
                 f"labels_dropped={self.labels_dropped} duplicates_in_file="
                 f"{self.duplicates_in_file} already_present={self.already_present} "
-                f"would_insert={self.to_insert} (revive={self.to_revive})",
+                f"would_insert={self.to_insert} would_revive={self.to_revive}",
                 f"by_source_type: {db.SOURCE_MD}={src[db.SOURCE_MD]} "
                 f"{db.SOURCE_MINED}={src[db.SOURCE_MINED]}",
                 f"by_archived: archived={d['by_archived']['archived']} "
@@ -387,23 +404,34 @@ class Report:
                 )
             return out
         if self.apply:
-            out.append(f"inserted={self.inserted} revived={self.revived}")
-            note = (
-                f"; {self.archived_without_vector} archived row(s) get no vector"
-                if self.archived_without_vector
-                else ""
-            )
-            out.append(
-                "vectors: this command does not embed; the running store embeds new live rows "
-                f"on its next backfill pass. {self.vectors_waiting} inserted row(s) wait for "
-                f"a vector{note}"
-            )
-        else:
-            out.append(
-                "vectors: this command does not embed; after --apply the running store "
-                "embeds the new live rows on its next backfill pass"
-            )
+            out.append(f"new={self.inserted} revived={self.revived}")
+        out.append(self.vector_line())
         return out
+
+    def vector_line(self) -> str:
+        if self.embed_backend == "none":
+            return (
+                "vectors: the embedding backend is none, so no row gets a vector; "
+                "recall finds the rows by keyword"
+            )
+        head = "vectors: this command does not embed; the running store embeds"
+        if not self.apply:
+            mined = "" if self.mined_embedded else " (plain rows only: " + _MINED_NOTE + ")"
+            return f"{head} the new live rows on its next backfill pass{mined}"
+        parts = [f"{self.vectors_waiting} plain row(s) wait for a vector"]
+        if self.mined_embedded:
+            parts.append(f"{self.mined_vectors_waiting} mined row(s) wait for a vector")
+        else:
+            parts.append(f"{self.mined_vectors_waiting} mined row(s) get no vector: {_MINED_NOTE}")
+        if self.archived_without_vector:
+            parts.append(f"{self.archived_without_vector} archived row(s) get no vector")
+        return f"{head} live rows on its next backfill pass. " + "; ".join(parts)
+
+
+_MINED_NOTE = (
+    "a backend that sends text off the machine skips mined rows unless "
+    "embedding.remote_include_mined is true"
+)
 
 
 def parse_line(
@@ -446,6 +474,11 @@ def parse_line(
     return entry
 
 
+def _check_size(text: str) -> None:
+    if len(text.encode("utf-8", "surrogatepass")) > MAX_CONTENT_BYTES:
+        raise LineError(f"content larger than {MAX_CONTENT_BYTES // 1024} KB")
+
+
 def _entry(
     line_no: int, doc: dict, extra_labels: Sequence[str], now: str
 ) -> tuple[Entry | None, int]:
@@ -467,14 +500,16 @@ def _entry(
     created_at = parse_time(doc.get("created_at"), "created_at", now)
     updated_at = parse_time(doc.get("updated_at"), "updated_at", now)
 
+    # The cap twice: before the redactor, so a huge line costs no scrub,
+    # and after it, because a mask can be longer than the text it hides.
+    _check_size(content.strip())
     clean = miner.scrub(content.strip())
     if clean == redaction.REDACTION_FAILED_TOKEN:
         return None, 0
     clean = clean.strip()
     if not clean:
         return None, 0
-    if len(clean.encode("utf-8", "surrogatepass")) > MAX_CONTENT_BYTES:
-        raise LineError(f"content larger than {MAX_CONTENT_BYTES // 1024} KB")
+    _check_size(clean)
     mined = source.lower() in MINED_NAMES
     tail = []
     if source and source.lower() not in KNOWN_SOURCES:
@@ -538,8 +573,8 @@ def plan(entries: Sequence[Entry], present: dict[str, bool], report: Report) -> 
     """The entries to write: new hashes, and hashes whose row is soft-deleted."""
     todo = [e for e in entries if present.get(e.path) is not False]  # new, or soft-deleted
     report.already_present = len(entries) - len(todo)
-    report.to_insert = len(todo)
     report.to_revive = sum(1 for e in todo if e.path in present)
+    report.to_insert = len(todo) - report.to_revive
     report.by_source_type = Counter(e.source_type for e in todo)
     return todo
 
@@ -602,7 +637,7 @@ def store_entries(
                     (project, db.IMPORT_ROOT, e.path, *_row_values(e, archived_at, rev)),
                 )
                 ids.append(int(cur.lastrowid))
-            report.inserted += len(todo)
+            report.inserted += len(todo) - sum(1 for e in todo if current[e.path] is not None)
             report.content_rev = rev
     return ids
 
@@ -646,23 +681,33 @@ def remove_entries(
             report.content_rev = rev
 
 
-def count_without_vector(conn: sqlite3.Connection, ids: Sequence[int]) -> tuple[int, int]:
-    """``(live, archived)``: the rows of ``ids`` that have no vector yet."""
-    live = archived = 0
+def count_without_vector(conn: sqlite3.Connection, ids: Sequence[int]) -> tuple[int, int, int]:
+    """``(live plain, live mined, archived)``: the rows of ``ids`` that have
+    no vector yet."""
+    plain = mined = archived = 0
     with db.read_tx(conn):
         for start in range(0, len(ids), db.BATCH_ROWS):
             chunk = ids[start : start + db.BATCH_ROWS]
             marks = ",".join("?" * len(chunk))
-            for (archived_at,) in conn.execute(
-                f"SELECT m.archived_at FROM memories m WHERE m.id IN ({marks}) "
+            for archived_at, source_type in conn.execute(
+                f"SELECT m.archived_at, m.source_type FROM memories m WHERE m.id IN ({marks}) "
                 "AND NOT EXISTS (SELECT 1 FROM vectors v WHERE v.memory_id = m.id)",
                 chunk,
             ):
-                if archived_at is None:
-                    live += 1
-                else:
+                if archived_at is not None:
                     archived += 1
-    return live, archived
+                elif source_type == db.SOURCE_MINED:
+                    mined += 1
+                else:
+                    plain += 1
+    return plain, mined, archived
+
+
+def mined_get_vectors(settings: embedding.EmbeddingSettings) -> bool:
+    """False when the backfill skips mined rows: a backend that sends text
+    off the machine embeds them only with ``embedding.remote_include_mined``
+    (``EmbeddingService.include_mined``)."""
+    return not embedding.needs_consent(settings) or settings.remote_include_mined
 
 
 def _check_schema(conn: sqlite3.Connection) -> None:
@@ -687,11 +732,15 @@ def run(
     archived: bool = False,
     extra_labels: Sequence[str] = (),
     remove: bool = False,
+    embed_settings: embedding.EmbeddingSettings | None = None,
 ) -> Report:
     """One import (or removal). ``apply=False`` reads the store and writes
     nothing. ``apply=True`` with no usable line writes nothing and sets
     ``refused``."""
     report = Report(file=str(path), apply=apply, archived=archived, remove=remove)
+    if embed_settings is not None:
+        report.embed_backend = embed_settings.backend
+        report.mined_embedded = mined_get_vectors(embed_settings)
     entries = read_entries(path, extra_labels=extra_labels, report=report, now=db.utc_now())
     present = present_rows(conn, project)
     if remove:
@@ -708,7 +757,11 @@ def run(
         remove_entries(conn, project, todo, report)
         return report
     ids = store_entries(conn, project, todo, report, archived=archived)
-    report.vectors_waiting, report.archived_without_vector = count_without_vector(conn, ids)
+    (
+        report.vectors_waiting,
+        report.mined_vectors_waiting,
+        report.archived_without_vector,
+    ) = count_without_vector(conn, ids)
     return report
 
 
@@ -824,6 +877,7 @@ def _run_cli(db_path: Path, path: Path, project: str, args: argparse.Namespace) 
             archived=args.archived,
             extra_labels=args.label,
             remove=args.remove,
+            embed_settings=embedding.load_embedding_settings(),
         )
     finally:
         conn.close()

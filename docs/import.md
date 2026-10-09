@@ -49,6 +49,10 @@ grace period (`delete_grace_days`). The report counts `would_remove`,
 `removed`, `not_present` (no imported row has this text) and
 `already_removed`.
 
+`--remove` matches rows by their text (the hash of the redacted text), not
+by the file they came from. So when two files hold the same text, removing
+one file removes the row for both.
+
 An import of the same text before the store deletes the row brings the
 row back, with the same id and its trust history.
 
@@ -131,12 +135,17 @@ The key of a row is the SHA-256 hash of its redacted text.
   copies as `duplicates_in_file`.
 - A text that an earlier import stored is not stored again. The report
   counts it as `already_present`. A row that `--remove` deleted comes back
-  instead (`would_revive`, `revived`).
+  instead, with the fields of the new line and the new options.
+- The report counts new rows and revived rows apart: `would_insert` and
+  `would_revive` in a dry run, `new=` and `revived=` after `--apply`. In
+  the JSON report, `inserted` counts new rows only and `revived` counts the
+  revived rows. The two never overlap.
 - An import never changes or deletes a live row. It only adds rows, or
-  brings back a removed row. So a second import of the same text with other labels,
-  or with `--archived`, does not change the first row.
-- The first import of a text decides its source type. A later line with
-  the same text and another source type is a duplicate.
+  brings back a removed row. So a second import of the same text with
+  other labels, or with `--archived`, does not change the first row.
+- While a row is live, the first import of its text decides its source
+  type. A later line with the same text and another source type is a
+  duplicate.
 - A memory file with the same text is not a match. The import compares
   only with rows that an earlier import stored.
 
@@ -206,8 +215,22 @@ on its next backfill pass, with its own model and its own consent rules
 (see `noblivion consent embeddings`). Until then, recall finds the rows by
 keyword only.
 
-After `--apply`, the report shows how many inserted rows still wait for a
-vector (`vectors_waiting`). If no store runs, start it:
+After `--apply`, the report shows how many written rows (new and revived)
+still wait for a vector. It counts the rows in three groups:
+
+- `vectors_waiting`: live plain rows. The backfill embeds them.
+- `mined_vectors_waiting`: live mined rows. With a local backend
+  (`fastembed`, or Ollama on this machine) the backfill embeds them. With a
+  backend that sends text off the machine (OpenRouter, or Ollama on
+  another machine) it embeds them only when
+  `embedding.remote_include_mined` is true. Else they get no vector, and
+  recall finds them by keyword. The JSON report says which in
+  `mined_embedded`.
+- `archived_without_vector`: archived rows. The backfill never embeds them.
+
+With the embedding backend `none`, no row gets a vector.
+
+If no store runs, start it:
 
 ```sh
 noblivion ensure-running
