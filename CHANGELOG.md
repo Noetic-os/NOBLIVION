@@ -6,7 +6,19 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.7 - 2026-10-09
+
+Changes defaults and the redactor version. The label rows at prompt time
+are on with the shipped config file: up to 3 rows, at most 2400
+characters per prompt. The relevance floor of the subagent rules hook is
+0.68, not 0.52. It was measured on short prompts, so the longer text of a
+real subagent task can score below it. A store that accepts a connection
+but does not answer pauses its callers for 30 seconds. `install.sh`
+restarts a store that runs. The redactor version is 3, so the first index
+scan after the update writes the notes again. A memory file over 256 KB
+is stored by its head. Also fixes the switches of the label rows, the
+deletes of a folder that holds an unreadable note, keyword matches on
+common words, and the time that the store redactor needs for large notes.
 
 ### Fixed
 
