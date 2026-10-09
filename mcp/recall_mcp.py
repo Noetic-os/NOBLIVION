@@ -15,9 +15,10 @@ section 11.3) lists candidates from the ranked index with the
 transcript-mined rows included (``GET /api/memories/index?include_mined=1``);
 the model reads one with ``fetch_id``.
 
-``noblivion_remember`` saves a verified, redacted Markdown note in the
-configured shared memory folder. The same indexer then serves it to both
-Codex and Claude Code.
+``noblivion_remember`` saves a verified, redacted Markdown note in
+``NOBLIVION_MEMORY_DIR``, else in the session's project memory folder (the
+folder the hooks read). The same indexer then serves it to both Codex and
+Claude Code.
 
 The server is stdlib only, so it speaks the MCP stdio transport directly: one
 JSON-RPC 2.0 message per line on stdin, one per line on stdout. Methods:
@@ -188,17 +189,43 @@ def _redactor():
     return mod
 
 
+def _remember_folder(env: Mapping[str, str]) -> Path | Dict[str, Any]:
+    """The folder ``noblivion_remember`` writes to, or a tool error.
+
+    ``NOBLIVION_MEMORY_DIR`` when it is set. Else the session's memory
+    folder by the hooks' own rule (``hook_config.resolve_memory_dir``): the
+    project dir is ``CLAUDE_PROJECT_DIR``, which Claude Code passes to this
+    server, else the server's working dir. The tool never makes the folder.
+    """
+    raw_dir = env.get("NOBLIVION_MEMORY_DIR", "").strip()
+    if raw_dir:
+        folder = Path(os.path.expanduser(raw_dir))
+        if not folder.is_absolute() or not folder.is_dir():
+            return _tool_error("NOBLIVION_MEMORY_DIR must be an existing absolute folder")
+        return folder
+    try:
+        cfg = _load_hook()._sibling_module("hook_config")
+        found = cfg.resolve_memory_dir(os.getcwd(), env)
+    except Exception as exc:  # noqa: BLE001 - fail closed before any file write
+        return _tool_error(f"memory folder lookup failed ({type(exc).__name__})")
+    if found is None or not found.is_absolute():
+        return _tool_error("no project memory folder found; set NOBLIVION_MEMORY_DIR")
+    if not found.is_dir():
+        return _tool_error(
+            f"the project memory folder {found} does not exist; create it, "
+            "or set NOBLIVION_MEMORY_DIR to an existing absolute folder"
+        )
+    return found
+
+
 def noblivion_remember(
     args: Dict[str, Any], environ: Optional[Dict[str, str]] = None
 ) -> Dict[str, Any]:
     """Save a redacted note as a source file. The existing indexer owns DB writes."""
     env = os.environ if environ is None else environ
-    raw_dir = env.get("NOBLIVION_MEMORY_DIR", "").strip()
-    if not raw_dir:
-        return _tool_error("NOBLIVION_MEMORY_DIR must name the shared memory folder")
-    folder = Path(os.path.expanduser(raw_dir))
-    if not folder.is_absolute() or not folder.is_dir():
-        return _tool_error("NOBLIVION_MEMORY_DIR must be an existing absolute folder")
+    folder = _remember_folder(env)
+    if isinstance(folder, dict):
+        return folder
     if not isinstance(args, dict) or set(args) != set(REMEMBER_SCHEMA["inputSchema"]["required"]):
         return _tool_error("title, rule, apply, body, and evidence are required; no other fields")
     caps = {"title": 160, "rule": 400, "apply": 1200, "body": 6000, "evidence": 1500}
@@ -256,7 +283,11 @@ def noblivion_remember(
     except OSError as exc:
         return _tool_error(f"note save failed ({type(exc).__name__})")
     # The existing sync hook schedules the normal indexer. The store's periodic
-    # scan remains the fallback if this short hook call fails.
+    # scan remains the fallback if this short hook call fails. The hook gets
+    # the note's folder as the override: its ``cwd`` is that folder, so it
+    # cannot derive the session's folder from it.
+    sync_env = dict(env)
+    sync_env["NOBLIVION_MEMORY_DIR"] = str(folder)
     sync_event = {
         "hook_event_name": "PostToolUse",
         "session_id": "mcp-memory-write",
@@ -270,7 +301,7 @@ def noblivion_remember(
             input=json.dumps(sync_event),
             text=True,
             capture_output=True,
-            env=dict(env),
+            env=sync_env,
             timeout=5,
             check=False,
         )

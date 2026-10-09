@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import stat
 import sys
 from pathlib import Path
@@ -150,3 +151,113 @@ def test_remember_call_uses_the_same_mcp_endpoint(
     assert reply["id"] == 3
     assert reply["result"]["isError"] is False
     assert len(list(memory_dir.glob("*.md"))) == 1
+
+
+# NOBLIVION-94: the plugin's .mcp.json sets no NOBLIVION_MEMORY_DIR, so with
+# no override the tool must use the project memory folder the hooks use.
+
+
+@pytest.fixture
+def project_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[dict[str, str], Path, Path]:
+    """An env with no NOBLIVION_MEMORY_DIR, a project folder, and the folder
+    Claude Code keeps for that project (not created here)."""
+    project = tmp_path / "work" / "project"
+    # A .git folder makes the project its own repository root, so no folder
+    # above tmp_path can change the project name.
+    (project / ".git").mkdir(parents=True)
+    config = tmp_path / "claude-config"
+    slug = re.sub(r"[^A-Za-z0-9]", "-", str(project))
+    folder = config / "projects" / slug / "memory"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(mode=0o700)
+    env = {
+        "NOBLIVION_DATA_DIR": str(data_dir),
+        "CLAUDE_CONFIG_DIR": str(config),
+        "NOBLIVION_MEMORY_SYNC_OFF": "1",
+        "HOME": str(tmp_path),
+    }
+    no_policy = tmp_path / "no-managed-settings.json"
+    cfg = _mcp()._load_hook()._sibling_module("hook_config")
+    monkeypatch.setattr(cfg, "managed_settings_path", lambda: no_policy)
+    return env, project, folder
+
+
+@pytest.mark.parametrize("via", ["CLAUDE_PROJECT_DIR", "working dir"])
+def test_remember_without_override_saves_in_the_project_memory_folder(
+    project_env: tuple[dict[str, str], Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    via: str,
+) -> None:
+    env, project, folder = project_env
+    folder.mkdir(parents=True)
+    if via == "CLAUDE_PROJECT_DIR":
+        env["CLAUDE_PROJECT_DIR"] = str(project)
+        monkeypatch.chdir(tmp_path)  # the env var wins over the working dir
+    else:
+        monkeypatch.chdir(project)
+    result = _mcp().noblivion_remember(_lesson(), env)
+    assert result["isError"] is False, result
+    saved = list(folder.glob("reference_claude_code_*.md"))
+    assert len(saved) == 1
+    assert _lesson()["rule"] in saved[0].read_text(encoding="utf-8")
+
+
+def test_override_wins_over_the_project_memory_folder(
+    project_env: tuple[dict[str, str], Path, Path], tmp_path: Path
+) -> None:
+    env, project, folder = project_env
+    folder.mkdir(parents=True)
+    override = tmp_path / "override"
+    override.mkdir()
+    env["CLAUDE_PROJECT_DIR"] = str(project)
+    env["NOBLIVION_MEMORY_DIR"] = str(override)
+    assert _mcp().noblivion_remember(_lesson(), env)["isError"] is False
+    assert len(list(override.glob("*.md"))) == 1
+    assert list(folder.iterdir()) == []
+
+
+@pytest.mark.parametrize("value", ["relative/memory", "absent"])
+def test_bad_override_is_refused(
+    project_env: tuple[dict[str, str], Path, Path], tmp_path: Path, value: str
+) -> None:
+    env, project, folder = project_env
+    folder.mkdir(parents=True)
+    env["CLAUDE_PROJECT_DIR"] = str(project)
+    env["NOBLIVION_MEMORY_DIR"] = value if value != "absent" else str(tmp_path / "absent")
+    result = _mcp().noblivion_remember(_lesson(), env)
+    assert result["isError"] is True
+    assert (
+        "NOBLIVION_MEMORY_DIR must be an existing absolute folder" in result["content"][0]["text"]
+    )
+    assert list(folder.iterdir()) == []
+
+
+def test_missing_project_memory_folder_is_named_and_not_created(
+    project_env: tuple[dict[str, str], Path, Path],
+) -> None:
+    env, project, folder = project_env
+    env["CLAUDE_PROJECT_DIR"] = str(project)
+    result = _mcp().noblivion_remember(_lesson(), env)
+    assert result["isError"] is True
+    text = result["content"][0]["text"]
+    assert str(folder) in text and "does not exist" in text
+    assert "NOBLIVION_MEMORY_DIR" in text
+    assert not folder.exists() and not folder.parent.exists()
+
+
+def test_sync_hook_gets_the_folder_of_the_note(
+    project_env: tuple[dict[str, str], Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env, project, folder = project_env
+    folder.mkdir(parents=True)
+    env["CLAUDE_PROJECT_DIR"] = str(project)
+    mcp = _mcp()
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(mcp.subprocess, "run", lambda *a, **kw: calls.append(kw["env"]))
+    assert mcp.noblivion_remember(_lesson(), env)["isError"] is False
+    assert len(calls) == 1
+    assert calls[0]["NOBLIVION_MEMORY_DIR"] == str(folder)
+    assert "NOBLIVION_MEMORY_DIR" not in env

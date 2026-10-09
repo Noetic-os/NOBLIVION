@@ -73,7 +73,12 @@ repository the session is in now. In a linked worktree `CLAUDE_PROJECT_DIR` is
 the worktree, and step 3 gives its main checkout. `--add-dir` does not change
 it. Codex does not set it, so there the event `cwd` is used.
 
-1. `NOBLIVION_MEMORY_DIR` (or `NOBLIVION_RECALL_MEMORY_DIR`), when set.
+The MCP tool `noblivion_remember` saves a note in the same folder. Claude
+Code passes `CLAUDE_PROJECT_DIR` to the MCP server too. Without it, the
+project dir is the server's working dir. The tool reads only
+`NOBLIVION_MEMORY_DIR` as the override, not `NOBLIVION_RECALL_MEMORY_DIR`.
+It never makes the folder. When the folder does not exist, the tool returns
+an error that names the folder, and saves nothing.
 
 1. `NOBLIVION_MEMORY_DIR` (or `NOBLIVION_RECALL_MEMORY_DIR`), when set.
 2. `autoMemoryDirectory` from the first Claude Code settings file that sets
@@ -319,7 +324,7 @@ See [guards.md](guards.md) for what each guard does.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_MEMORY_DIR` | none | the session's memory folder (see "The session's memory folder") | One fixed memory folder for every hook and every session. It wins over the folder of the session's `cwd`. When it is set, the store indexes this folder too, in addition to `NOBLIVION_MEMORY_DIRS`. |
+| `NOBLIVION_MEMORY_DIR` | none | the session's memory folder (see "The session's memory folder") | One fixed memory folder for every hook, the `noblivion_remember` tool and every session. It wins over the folder of the session's `cwd`. When it is set, the store indexes this folder too, in addition to `NOBLIVION_MEMORY_DIRS`. |
 | `NOBLIVION_GUARD_TABLE` | none | `<data dir>/guard-tables/<slug of the memory folder>.json` | The guard table file. By default each project has its own table. When this is set, every session uses this one file, and the guard hook does not rebuild it when a memory file changes outside a session start or a memory write. |
 | `NOBLIVION_GUARD_LOG` | none | `<data dir>/guard-log.jsonl` | The guard log. |
 | `NOBLIVION_GUARD_STATE_DIR` | none | `<data dir>/guard-state` | State per agent and session. |

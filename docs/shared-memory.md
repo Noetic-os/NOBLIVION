@@ -67,6 +67,12 @@ A note saved with `noblivion_remember` records `source_client: codex` or
 `source_client: claude_code`. The source label says who saved it. It does
 not create a separate database or project namespace.
 
+The tool saves the note in `NOBLIVION_MEMORY_DIR` when it is set. Else it
+saves the note in the project's memory folder, the folder the hooks read
+(see "The session's memory folder" in
+[configuration.md](configuration.md)). The folder must exist; the tool
+does not make it. The Codex installer sets `NOBLIVION_MEMORY_DIR`.
+
 Session files stay separate. They hold short lived context for one task,
 such as which rules that task has seen. They are not shared as live chat
 history between Claude Code and Codex.

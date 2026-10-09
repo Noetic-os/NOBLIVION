@@ -16,8 +16,9 @@ release.
 - **Recall.** On each prompt, a client hook asks the local store for notes
   that match. The hook adds the best notes to the prompt context.
 - **Recall on request.** The MCP tool `noblivion_recall` lets either client
-  search notes and fetch one full note by ID. Codex can also save a reviewed
-  note with `noblivion_remember`.
+  search notes and fetch one full note by ID. Either client can also save a
+  reviewed note with `noblivion_remember`. In Claude Code the note goes to
+  the project's memory folder, so it needs no setting.
 - **Error recall.** When a shell command fails, a hook looks for notes
   about that error.
 - **Guards.** Hooks read rules from your notes. Before a tool call, they

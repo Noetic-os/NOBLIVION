@@ -6,6 +6,19 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- The MCP tool `noblivion_remember` no longer fails in a default Claude
+  Code install (NOBLIVION-94). It needed `NOBLIVION_MEMORY_DIR`, but the
+  plugin does not set it. With no override, the tool now saves the note in
+  the project's memory folder, the folder the hooks read. It finds the
+  folder with the hooks' own rule, from `CLAUDE_PROJECT_DIR`, else from the
+  server's working dir. When that folder does not exist, the tool returns
+  an error that names it and saves nothing. `NOBLIVION_MEMORY_DIR` is still
+  the override, with the same checks.
+
 ## 0.1.8 - 2026-10-09
 
 Adds the command `noblivion import`, which imports memories from a JSONL
