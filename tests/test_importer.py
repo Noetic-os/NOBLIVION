@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from hookload import load_hook
-from noblivion import config, db, dedup, embedding, importer, indexer, ranking, redaction
+from noblivion import config, db, dedup, embedding, importer, indexer, ranking, redaction, trust
 from noblivion.__main__ import main as cli_main
 from store_helpers import FakeEmbedder
 
@@ -501,7 +501,7 @@ def test_cli_dry_run_and_apply_together_is_a_usage_error(cli_env, tmp_path, caps
 def test_cli_apply_refuses_a_file_with_no_valid_line(cli_env, tmp_path, capsys):
     src = write_jsonl(tmp_path / "in.jsonl", ["", "nope", {"content": ""}])
     assert cli_main(["import", str(src), "--apply"]) == importer.EXIT_REFUSED
-    assert "no valid line" in capsys.readouterr().err
+    assert "no line it can import" in capsys.readouterr().err
     with closing(db.connect(cli_env / "noblivion.db")) as c:
         assert rows(c) == [] and db.revisions(c)[0] == 0
 
@@ -529,3 +529,209 @@ def test_cli_dry_run_never_creates_a_schema(cli_env, tmp_path):
     assert cli_main(["import", str(src), "--db", str(empty)]) == importer.EXIT_SCHEMA
     with closing(db.connect(empty)) as c:
         assert db.user_version(c) == 0
+
+
+# -- review round 1 ------------------------------------------------------------------
+
+
+def test_a_deep_or_out_of_range_line_is_invalid_and_the_run_goes_on(conn, tmp_path):
+    src = write_jsonl(
+        tmp_path / "in.jsonl",
+        [
+            "[" * 100000,
+            {"content": "a", "created_at": "9999-12-31T23:59:59-01:00"},
+            {"content": "b", "updated_at": "0999-01-01T00:00:00Z"},
+            {"content": "c", "created_at": "2030-02-30"},
+            {"content": "d", "created_at": "2030-01-01T10:00:00+24:00"},
+            {"content": "Keep this one."},
+        ],
+    )
+    report = do_import(conn, src)
+    assert [(i["line"], i["reason"]) for i in report.invalid_lines] == [
+        (1, "not JSON"),
+        (2, "created_at is out of range"),
+        (3, "updated_at is out of range"),
+        (4, "created_at is out of range"),
+        (5, "created_at is out of range"),
+    ]
+    assert report.inserted == 1
+
+
+@pytest.mark.parametrize(
+    ("raw", "stored"),
+    [
+        ("2030-01-02T03:04:05+00", "2030-01-02T03:04:05.000000Z"),
+        ("2030-01-02T03:04:05+0130", "2030-01-02T01:34:05.000000Z"),
+        ("2030-01-02 03:04", "2030-01-02T03:04:00.000000Z"),
+        ("2030-01-02T03:04:05.1Z", "2030-01-02T03:04:05.100000Z"),
+        ("2030-01-02T03:04:05.123456789z", "2030-01-02T03:04:05.123456Z"),
+    ],
+)
+def test_more_time_forms_read_the_same_on_every_python(raw, stored):
+    assert importer.parse_time(raw, "created_at", "default") == stored
+
+
+@pytest.mark.parametrize("raw", ["20300102T030405", "2030-01-02T03", "2030-W01-1", "2030-01-02Z"])
+def test_other_time_forms_are_refused(raw):
+    with pytest.raises(importer.LineError):
+        importer.parse_time(raw, "created_at", "default")
+
+
+def test_a_bom_on_the_first_line_is_accepted(conn, tmp_path):
+    src = tmp_path / "in.jsonl"
+    src.write_bytes(importer.BOM + b'{"content": "Label the jars."}\n{"content": "x"}\n')
+    report = do_import(conn, src)
+    assert (report.valid, report.invalid, report.inserted) == (2, 0, 2)
+
+
+def test_content_over_the_size_cap_is_invalid(conn, tmp_path):
+    big = "a" * (importer.MAX_CONTENT_BYTES + 1)
+    src = write_jsonl(
+        tmp_path / "in.jsonl",
+        [{"content": big}, {"content": "a" * importer.MAX_CONTENT_BYTES}],
+    )
+    report = do_import(conn, src)
+    assert report.invalid_lines == [{"line": 1, "reason": "content larger than 256 KB"}]
+    assert report.inserted == 1
+
+
+def test_only_a_claude_code_md_marker_passes_through(conn, tmp_path):
+    src = write_jsonl(
+        tmp_path / "in.jsonl",
+        [
+            {"content": "Mined quote\n[transcript_mined: s1#4]\nThe valve stuck."},
+            {"content": "# Kept\n\n[claude_code_md: feedback_kept.md]\n\nAs exported."},
+        ],
+    )
+    do_import(conn, src)
+    first, second = rows(conn)
+    assert first["content"].startswith(f"# Mined quote\n\n[claude_code_md: {first['path']}]")
+    assert second["content"] == "# Kept\n\n[claude_code_md: feedback_kept.md]\n\nAs exported."
+    hook = load_hook("recall_hook", "_recall_hook_import_marker_test")
+    assert hook.hit_from_text(first["content"]).md
+
+
+def test_apply_refuses_when_every_valid_line_fails_redaction(
+    cli_env, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(redaction, "redact_at_rest", lambda t: redaction.REDACTION_FAILED_TOKEN)
+    src = write_jsonl(tmp_path / "in.jsonl", [{"content": "one"}, {"content": "two"}])
+    assert cli_main(["import", str(src), "--apply"]) == importer.EXIT_REFUSED
+    assert "no line it can import" in capsys.readouterr().err
+    with closing(db.connect(cli_env / "noblivion.db")) as c:
+        assert db.revisions(c)[0] == 0
+
+
+def test_a_row_written_between_plan_and_store_counts_as_present(conn, tmp_path):
+    src = write_jsonl(tmp_path / "in.jsonl", [{"content": "Race one."}, {"content": "Race two."}])
+    report = importer.Report(file=str(src), apply=True)
+    entries = importer.read_entries(src, extra_labels=(), report=report, now=db.utc_now())
+    todo = importer.plan(entries, importer.present_rows(conn, "claude_code"), report)
+    assert report.to_insert == 2
+    do_import(conn, write_jsonl(tmp_path / "other.jsonl", [{"content": "Race one."}]))
+    importer.store_entries(conn, "claude_code", todo, report, archived=False)
+    assert (report.inserted, report.already_present) == (1, 1)
+    assert len(rows(conn)) == 2
+
+
+def test_remove_soft_deletes_the_rows_of_the_file(conn, tmp_path):
+    src = write_jsonl(
+        tmp_path / "in.jsonl",
+        [{"content": "Drop me."}, {"content": "Drop me too.", "source_type": "mined"}],
+    )
+    do_import(conn, src)
+    do_import(conn, write_jsonl(tmp_path / "arch.jsonl", [{"content": "Old one."}]), archived=True)
+    keep = do_import(conn, write_jsonl(tmp_path / "keep.jsonl", [{"content": "Keep me."}]))
+    assert keep.inserted == 1
+    gone = write_jsonl(
+        tmp_path / "gone.jsonl",
+        [{"content": "Drop me."}, {"content": "Drop me too."}, {"content": "Old one."}, "bad"],
+    )
+    gone_rows = write_jsonl(tmp_path / "missing.jsonl", [{"content": "Never imported."}])
+    dry = importer.run(conn, gone, project="claude_code", apply=False, remove=True)
+    assert (dry.to_remove, dry.removed, dry.invalid) == (3, 0, 1)
+    assert all(r["deleted_at"] is None for r in rows(conn))
+    rev = db.revisions(conn)[0]
+    done = importer.run(conn, gone, project="claude_code", apply=True, remove=True)
+    assert (done.removed, done.content_rev) == (3, rev + 1)
+    by_text = {r["hash"]: r for r in rows(conn)}
+    assert sum(1 for r in by_text.values() if r["deleted_at"] is not None) == 3
+    again = importer.run(conn, gone, project="claude_code", apply=True, remove=True)
+    assert (again.removed, again.already_removed) == (0, 3)
+    other = importer.run(conn, gone_rows, project="claude_code", apply=False, remove=True)
+    assert other.not_present == 1
+    later = datetime.now(timezone.utc) + timedelta(days=3650)
+    assert db.purge_deleted(conn, 0, now=later) == 3
+    assert [r["content"].split("\n")[0] for r in rows(conn)] == ["# Keep me."]
+
+
+def test_a_new_import_revives_a_removed_row(conn, tmp_path):
+    src = write_jsonl(tmp_path / "in.jsonl", [{"content": "Come back."}])
+    do_import(conn, src)
+    (before,) = rows(conn)
+    importer.run(conn, src, project="claude_code", apply=True, remove=True)
+    again = do_import(conn, src)
+    assert (again.to_revive, again.revived, again.inserted) == (1, 1, 1)
+    (after,) = rows(conn)
+    assert after["id"] == before["id"] and after["deleted_at"] is None
+
+
+def test_cli_remove_dry_run_apply_and_usage(cli_env, tmp_path, capsys):
+    src = write_jsonl(tmp_path / "in.jsonl", [{"content": "Short lived."}])
+    assert cli_main(["import", str(src), "--apply"]) == 0
+    capsys.readouterr()
+    assert cli_main(["import", "--remove", str(src), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert (report["action"], report["mode"], report["would_remove"]) == ("remove", "dry_run", 1)
+    assert cli_main(["import", "--remove", str(src), "--apply"]) == 0
+    assert "removed=1" in capsys.readouterr().out
+    for extra in (["--archived"], ["--label", "x"]):
+        with pytest.raises(SystemExit) as exc:
+            cli_main(["import", "--remove", str(src), *extra])
+        assert exc.value.code == importer.EXIT_USAGE
+    empty = write_jsonl(tmp_path / "empty.jsonl", ["nope"])
+    assert cli_main(["import", "--remove", str(empty), "--apply"]) == importer.EXIT_REFUSED
+    assert "no line it can remove" in capsys.readouterr().err
+
+
+def test_a_lock_file_error_names_the_lock_file(cli_env, tmp_path, monkeypatch, capsys):
+    src = write_jsonl(tmp_path / "in.jsonl", [{"content": "a"}])
+
+    def broken(path, timeout_s=60.0):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(importer.indexer, "index_lock", broken)
+    assert cli_main(["import", str(src), "--apply"]) == importer.EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert importer.IMPORT_LOCK_FILE in err and "data dir" in err and "in.jsonl" not in err
+
+
+def _report_inputs(root: str, path: str, created_days: int, first_shown_days: int):
+    now = datetime(2031, 6, 1, tzinfo=timezone.utc)
+    files = (trust.FileRow(7, root, path, "reference", now - timedelta(days=created_days)),)
+    agg = trust.EventAgg(
+        first_ts=now - timedelta(days=first_shown_days),
+        shown_sessions=25,
+        use_sessions=0,
+        trials=0,
+        contradictions=0,
+        last_use=None,
+    )
+    return trust.ReportInputs(files, {}, {7: agg}, {}, ()), now
+
+
+def test_trust_retire_age_of_an_imported_row_starts_at_its_first_event():
+    hash_ = "ab" * 32
+    young, now = _report_inputs(db.IMPORT_ROOT, hash_, created_days=900, first_shown_days=10)
+    assert trust.build_report(young, now=now)["retire"] == []
+    old, now = _report_inputs(db.IMPORT_ROOT, hash_, created_days=900, first_shown_days=40)
+    report = trust.build_report(old, now=now)
+    assert report["retire"][0]["reason"].endswith("first shown 40 days ago")
+    text = trust.render_report(report)
+    assert f"- imported row {hash_[:12]} (id 7)" in text and db.IMPORT_ROOT not in text
+    hook = load_hook("trust_report", "_trust_report_import_test")
+    assert f"- imported row {hash_[:12]} (id 7)" in hook.render(report)
+    md, now = _report_inputs(SESSION_ROOT, "a.md", created_days=900, first_shown_days=10)
+    assert trust.build_report(md, now=now)["retire"][0]["reason"].endswith(
+        "first indexed 900 days ago"
+    )

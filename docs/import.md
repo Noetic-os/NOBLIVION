@@ -26,12 +26,42 @@ The command runs on your machine. It sends nothing off the machine.
 You can run the import again. It inserts only the rows that are not in the
 database yet.
 
+## Remove an import
+
+`--remove` undoes an import. It reads the file with the same rules and
+finds the imported rows with the same text.
+
+1. Check what it would remove. This is a dry run:
+
+   ```sh
+   noblivion import --remove memories.jsonl
+   ```
+
+2. Remove the rows:
+
+   ```sh
+   noblivion import --remove memories.jsonl --apply
+   ```
+
+The command marks the rows as deleted, archived rows too. Recall stops
+returning them at once. The store deletes them for good after the delete
+grace period (`delete_grace_days`). The report counts `would_remove`,
+`removed`, `not_present` (no imported row has this text) and
+`already_removed`.
+
+An import of the same text before the store deletes the row brings the
+row back, with the same id and its trust history.
+
+`--remove` does not take `--label` or `--archived`. The command stops
+with a usage error when you give them.
+
 ## Options
 
 | Option | What it does |
 | --- | --- |
 | `--dry-run` | Print the report and write nothing. This is the default. |
-| `--apply` | Write the rows. You cannot use it together with `--dry-run`. |
+| `--apply` | Write the changes. You cannot use it together with `--dry-run`. |
+| `--remove` | Remove the rows of an earlier import of this file. See [Remove an import](#remove-an-import). |
 | `--label L` | Add the label `L` to every row. Repeat it for more labels. |
 | `--archived` | Store the rows as archived. Recall does not return them. |
 | `--json` | Print the report as JSON. |
@@ -41,22 +71,38 @@ database yet.
 ## The file format
 
 The file holds one JSON object per line. The command skips a blank line
-and does not count it as invalid.
+and does not count it as invalid. A UTF-8 byte order mark at the start of
+the file is allowed.
 
 | Field | Required | What it holds |
 | --- | --- | --- |
-| `content` | yes | The memory text. It must not be empty. |
+| `content` | yes | The memory text. It must not be empty, and it must not be larger than 256 KB after redaction. |
 | `source_type` | no | `transcript_mined` (or `mined`) for a note mined from a transcript. Any other value, or none, makes a plain memory. |
 | `category` | no | A category name. |
 | `labels` | no | A list of strings. |
-| `created_at` | no | An ISO-8601 time, for example `2030-01-02T03:04:05Z`. A time without a zone is UTC. Default: now. |
-| `updated_at` | no | An ISO-8601 time. Default: now. |
+| `created_at` | no | A time, for example `2030-01-02T03:04:05Z`. See [Times](#times). Default: now. |
+| `updated_at` | no | A time. Default: now. |
 | `pinned` | no | `true` or `false`. |
 
 The command ignores other fields.
 
-A line is invalid when it is not a JSON object, when `content` is missing
-or empty, or when a field has the wrong type. A time that the command
+### Times
+
+The command reads these forms of ISO-8601. It reads them the same way on
+every Python version.
+
+- A date: `2030-01-02`. The time is midnight UTC.
+- A date, then `T` or a space, then `HH:MM`, `HH:MM:SS` or `HH:MM:SS.f`.
+  The fraction has 1 to 9 digits. The command keeps 6.
+- An optional zone after the time: `Z`, `+HH`, `+HHMM` or `+HH:MM`, or the
+  same with `-`. A time without a zone is UTC.
+
+The command stores every time in UTC. A time that is not in one of these
+forms is invalid. A time that the store cannot hold (a year before 1000 or
+after 9999 in UTC) is invalid too.
+
+A line is invalid when it is not a JSON object, when `content` is missing,
+empty or too large, or when a field has the wrong type. A time that the command
 cannot read also makes the line invalid. The command counts each invalid
 line and shows the first 20 line numbers with the reason. An invalid line
 does not stop the import.
@@ -84,9 +130,10 @@ The key of a row is the SHA-256 hash of its redacted text.
 - The same text twice in one file is stored once. The report counts the
   copies as `duplicates_in_file`.
 - A text that an earlier import stored is not stored again. The report
-  counts it as `already_present`.
-- An import never changes or deletes a row that is in the database. It
-  only adds rows. So a second import of the same text with other labels,
+  counts it as `already_present`. A row that `--remove` deleted comes back
+  instead (`would_revive`, `revived`).
+- An import never changes or deletes a live row. It only adds rows, or
+  brings back a removed row. So a second import of the same text with other labels,
   or with `--archived`, does not change the first row.
 - The first import of a text decides its source type. A later line with
   the same text and another source type is a duplicate.
@@ -125,7 +172,9 @@ row.
 
 - **Plain memory.** It is stored like a memory file (`claude_code_md`).
   The text gets the layout of an indexed file: `# <title>` from the first
-  line, a source marker line, then the rest of the text. Recall treats the
+  line, a `[claude_code_md: <hash>]` marker line, then the rest of the text.
+  A text that already holds a `[claude_code_md: ...]` line is stored as it
+  is. Recall treats the
   row like a note in a shared root: every session searches it, and the
   prompt hooks can show it. It goes through the same redaction as every
   other note before the store returns it.
@@ -139,6 +188,11 @@ row.
 
 The duplicate sweep merges memory files. It never pairs an imported row,
 because no file backs it.
+
+The trust report names an imported row as `imported row <short hash>`.
+Its retire rule counts the age of an imported row from its first trust
+event (a recall or a use) in this store. It does not use `created_at`,
+which can be long before the import.
 
 The redactor of the index scan does not run again on imported rows. When a
 new release changes the redaction rules, the imported rows keep the text
@@ -161,15 +215,15 @@ noblivion ensure-running
 
 ## Locks and exit codes
 
-`--apply` holds the lock file `import.lock` in the data dir, so two imports
+`--apply` holds the lock file `import.lock` in the data dir, so two runs
 do not run at the same time. Each write batch is one database transaction,
 so the import does not conflict with the store or with the index scan.
 
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Done. |
-| 1 | Refused: the file is missing or cannot be read, or `--apply` found no valid line. |
-| 2 | Usage error, for example `--dry-run` together with `--apply`. |
+| 1 | Refused: the file is missing or cannot be read, the lock file cannot be opened, or `--apply` found no line it can import or remove. |
+| 2 | Usage error, for example `--dry-run` together with `--apply`, or `--remove` with `--label`. |
 | 3 | The database schema does not match this version. Start the store once. |
 | 4 | Another import holds `import.lock`. |
 | 5 | A database error. Try again later. |

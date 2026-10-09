@@ -7,7 +7,8 @@ opt-in duplicate sweep, see ``noblivion.dedup``), ``serve`` (the store
 in the foreground, see ``noblivion.store``), ``ensure-running`` (start
 the store in the background unless it runs, see ``noblivion.launcher``),
 ``mine`` (the transcript miner, see ``noblivion.miner``), ``import``
-(import memories from a JSONL file, see ``noblivion.importer``), ``trust
+(import memories from a JSONL file, or ``--remove`` them again, see
+``noblivion.importer``), ``trust
 report`` (print the trust report), ``trust recompute`` (the trust repair),
 see ``noblivion.trust``, ``trust timesplit`` (the time-split test, see
 ``noblivion.trust_timesplit``), and ``stop report`` (count the stop check decisions,
@@ -33,6 +34,7 @@ USAGE = (
     "       noblivion mine [--since YYYY-MM-DD] [--max-seconds S] [--json]\n"
     "       noblivion import FILE.jsonl [--dry-run | --apply] [--label L ...] [--archived] "
     "[--json]\n"
+    "       noblivion import --remove FILE.jsonl [--dry-run | --apply] [--json]\n"
     "       noblivion migrate-from-legacy [--apply | --undo] [--json]"
 )
 

@@ -203,6 +203,11 @@ def _contradicted(row: Mapping[str, Any]) -> str:
     return f", contradicted in {n}" if isinstance(n, int) and n > 0 else ""
 
 
+# The root of the rows of ``noblivion import`` (``noblivion.db.IMPORT_ROOT``):
+# they have no file, so the report names them by a short hash.
+IMPORT_ROOT = "noblivion/import"
+
+
 def render(report: Mapping[str, Any], limit: int = 50) -> str:
     lines = [
         f"Memory trust report for persona {PERSONA}: generated "
@@ -214,7 +219,10 @@ def render(report: Mapping[str, Any], limit: int = 50) -> str:
         lines.append("")
         lines.append(f"{HEADINGS[name]}: {len(rows)}")
         for r in rows[:limit]:
-            where = f"{r['root']}/{r['path']}" if r.get("root") else r["path"]
+            if r.get("root") == IMPORT_ROOT:
+                where = "imported row %s" % str(r.get("path") or "")[:12]
+            else:
+                where = f"{r['root']}/{r['path']}" if r.get("root") else r["path"]
             lines.append(
                 f"- {where} (id {r['mv_id']}): trust {_fmt(r.get('trust'), '.2f')}, "
                 f"trials {_fmt(r.get('trials'))}, shown in {_fmt(r.get('shown_sessions'))} "

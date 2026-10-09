@@ -2,16 +2,22 @@
 """Import memories from a JSONL file: ``noblivion import FILE.jsonl``.
 
 The input holds one JSON object per line. A blank line is skipped and is
-not counted as invalid. The fields:
+not counted as invalid. A UTF-8 byte order mark at the start of the file is
+accepted. The fields:
 
-- ``content`` (required): the memory text, a non-empty string after strip;
+- ``content`` (required): the memory text, a non-empty string after strip,
+  at most ``indexer.MAX_FILE_BYTES`` (256 KB) after redaction;
 - ``source_type``: ``transcript_mined`` (or its alias ``mined``) stores the
   row like a row of the transcript miner. Any other value, or none, makes a
   plain imported memory;
 - ``category``: a string;
 - ``labels``: a list of strings;
-- ``created_at``, ``updated_at``: ISO-8601 times, kept on the row (a time
-  without a zone is UTC). Default: now;
+- ``created_at``, ``updated_at``: times, kept on the row. Default: now.
+  Accepted forms (``parse_time``): ``YYYY-MM-DD``, or ``YYYY-MM-DD`` then
+  ``T`` or a space, then ``HH:MM``, ``HH:MM:SS`` or ``HH:MM:SS.f`` (1 to 9
+  fraction digits), then an optional zone: ``Z``, ``+HH``, ``+HHMM`` or
+  ``+HH:MM`` (or ``-``). No zone means UTC. The parser is our own, so every
+  Python version reads a file the same way;
 - ``pinned``: true or false.
 
 Unknown fields are ignored. A line that is not a JSON object, or that fails
@@ -25,11 +31,13 @@ Rows (see ``docs/import.md``):
 - A plain imported memory is stored as ``claude_code_md``: recall treats it
   like a memory file in a shared root. Its content gets the layout of an
   indexed file: ``# <title>``, the ``[claude_code_md: <path>]`` marker line,
-  then the rest of the text.
+  then the rest of the text. A text that already holds a
+  ``[claude_code_md: ...]`` line is stored as it is.
 - A ``transcript_mined`` row keeps its text as it is. Recall returns it only
   on request, like a miner row.
 - The path is the row hash: sha256 of the redacted content. So a second run
   inserts nothing, and the same content twice in one file is stored once.
+  A row that ``--remove`` soft-deleted comes back (same id) on a new import.
 - ``category``, when it is one of the indexer's file categories (feedback,
   project, reference, user), goes to the row's category column; else the
   column is ``reference``. A given category is also kept as the label
@@ -38,33 +46,39 @@ Rows (see ``docs/import.md``):
   values, ``source:<value>`` (a source type the store does not know), then
   ``category:<value>``. A label the redactor would change is dropped.
 - ``--archived`` sets ``archived_at``: the row stays out of recall, the
-  duplicate sweep and the vector backfill. No purge removes it: the archive
-  purge removes only rows that a done dedup action archived.
+  duplicate sweep and the vector backfill. The archive purge never removes
+  it: it removes only rows that a done dedup action archived.
 - Redaction: secrets, then injection patterns, as the miner does
   (``miner.scrub``). A line whose text gives the fail token is skipped.
+
+``--remove``: read the file with the same rules and soft-delete the
+imported rows with the same hashes (archived ones too). The delete purge
+(``db.purge_deleted``) removes them after the grace period.
 
 Vectors: the command does not embed. Each write batch bumps
 ``content_rev``, and the running store embeds the new live rows on its next
 backfill pass, with its own model and its own consent rules. The report
 says how many inserted rows still wait for a vector.
 
-Exit codes: 0 done; 1 refused (the file is missing or cannot be read, or
-``--apply`` found no valid line); 2 usage error; 3 the database schema
-refuses this tool; 4 another import holds ``import.lock``; 5 SQLite error;
-6 no database.
+Exit codes: 0 done; 1 refused (the file is missing or cannot be read, the
+lock file cannot be opened, or ``--apply`` found no line it can import or
+remove); 2 usage error; 3 the database schema refuses this tool; 4 another
+import holds ``import.lock``; 5 SQLite error; 6 no database.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from noblivion import config, db, indexer, miner, redaction
@@ -85,8 +99,18 @@ COLUMN_CATEGORIES = frozenset({"feedback", "project", "reference", "user"})
 CATEGORY_FALLBACK = "reference"
 INVALID_LIST_MAX = 20
 TITLE_MAX_CHARS = 120
+MAX_CONTENT_BYTES = indexer.MAX_FILE_BYTES
+BOM = b"\xef\xbb\xbf"
 
 EMBED_MODE = "store_backfill"
+
+_TIME_RE = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})"
+    r"(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?"
+    r"(Z|z|[+-]\d{2}(?::?\d{2})?)?)?",
+    re.ASCII,
+)
+_MD_MARKER = f"[{db.SOURCE_MD}:"
 
 
 # -- parse and validate -------------------------------------------------------
@@ -94,6 +118,14 @@ EMBED_MODE = "store_backfill"
 
 class LineError(ValueError):
     """One input line breaks the format. The text is the reason."""
+
+
+class InputReadError(RuntimeError):
+    """The input file cannot be read."""
+
+
+class LockFileError(RuntimeError):
+    """The lock file in the data dir cannot be opened."""
 
 
 @dataclass
@@ -121,17 +153,20 @@ class Entry:
     def content(self) -> str:
         """The stored text. A plain row gets the layout of an indexed file,
         so the recall hook reads it as one memory; a mined row stays as is."""
-        if self.source_type == db.SOURCE_MINED or _has_marker(self.text):
+        if self.source_type == db.SOURCE_MINED or _has_md_marker(self.text):
             return self.text
         return render_plain(self.path, self.text)
 
 
-def _has_marker(text: str) -> bool:
-    return any(
-        line.strip().startswith(("[claude_code_md:", "[transcript_mined:"))
-        and line.strip().endswith("]")
-        for line in text.splitlines()
-    )
+def _has_md_marker(text: str) -> bool:
+    """True when a line is a ``[claude_code_md: ...]`` marker. Only that
+    marker makes the recall hook read the entry as a memory, so any other
+    text (a ``[transcript_mined: ...]`` line too) gets the plain layout."""
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith(_MD_MARKER) and line.endswith("]"):
+            return True
+    return False
 
 
 def render_plain(path: str, text: str) -> str:
@@ -152,22 +187,43 @@ def render_plain(path: str, text: str) -> str:
     return "\n\n".join(parts)
 
 
+def _zone(text: str | None) -> timezone:
+    if not text or text in ("Z", "z"):
+        return timezone.utc
+    sign = -1 if text[0] == "-" else 1
+    digits = text[1:].replace(":", "")
+    hours, minutes = int(digits[:2]), int(digits[2:] or 0)
+    if hours > 23 or minutes > 59:
+        raise ValueError("zone out of range")
+    return timezone(sign * timedelta(hours=hours, minutes=minutes))
+
+
 def parse_time(value: object, name: str, default: str) -> str:
-    """An ISO-8601 time in the store format. A time without a zone is UTC."""
+    """A time in the store format (UTC, ``db.format_ts``). See the module
+    docstring for the accepted forms. A time the store cannot write and read
+    back (out of range) is refused too."""
     if value is None:
         return default
-    if not isinstance(value, str) or not value.strip():
+    match = _TIME_RE.fullmatch(value.strip()) if isinstance(value, str) else None
+    if match is None:
         raise LineError(f"{name} is not an ISO-8601 time")
-    text = value.strip()
-    if text[-1:] in ("Z", "z"):
-        text = text[:-1] + "+00:00"
+    year, month, day, hour, minute, second, fraction, zone = match.groups()
     try:
-        moment = datetime.fromisoformat(text)
-    except ValueError as exc:
-        raise LineError(f"{name} is not an ISO-8601 time") from exc
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    return db.format_ts(moment)
+        moment = datetime(
+            int(year),
+            int(month),
+            int(day),
+            int(hour or 0),
+            int(minute or 0),
+            int(second or 0),
+            int((fraction or "0")[:6].ljust(6, "0")),
+            tzinfo=_zone(zone),
+        )
+        text = db.format_ts(moment)
+        db.parse_ts(text)  # the store's readers must read it back
+    except (ValueError, OverflowError) as exc:
+        raise LineError(f"{name} is out of range") from exc
+    return text
 
 
 def _optional_str(doc: dict, name: str) -> str:
@@ -200,7 +256,8 @@ def merge_labels(*groups: Iterable[str]) -> tuple[list[str], int]:
 class Report:
     file: str
     apply: bool
-    archived: bool
+    archived: bool = False
+    remove: bool = False
     lines: int = 0
     blank: int = 0
     valid: int = 0
@@ -212,11 +269,23 @@ class Report:
     duplicates_in_file: int = 0
     already_present: int = 0
     to_insert: int = 0
-    inserted: int = 0
+    to_revive: int = 0  # of to_insert: rows that --remove soft-deleted
+    inserted: int = 0  # new rows and revived rows
+    revived: int = 0
+    to_remove: int = 0
+    removed: int = 0
+    not_present: int = 0
+    already_removed: int = 0
     by_source_type: Counter = field(default_factory=Counter)
     content_rev: int | None = None
     vectors_waiting: int | None = None
     archived_without_vector: int | None = None
+    refused: str = ""
+
+    @property
+    def usable(self) -> int:
+        """Valid lines that redaction did not skip."""
+        return self.valid - self.redaction_skipped
 
     def note_invalid(self, line_no: int, reason: str) -> None:
         self.invalid += 1
@@ -224,9 +293,9 @@ class Report:
             self.invalid_lines.append({"line": line_no, "reason": reason})
 
     def to_dict(self) -> dict:
-        state = "archived" if self.archived else "live"
-        return {
+        out = {
             "file": self.file,
+            "action": "remove" if self.remove else "import",
             "mode": "apply" if self.apply else "dry_run",
             "lines": self.lines,
             "blank": self.blank,
@@ -236,59 +305,98 @@ class Report:
             "invalid_lines_shown_max": INVALID_LIST_MAX,
             "redacted": self.redacted,
             "redaction_skipped": self.redaction_skipped,
-            "labels_dropped": self.labels_dropped,
             "duplicates_in_file": self.duplicates_in_file,
-            "already_present": self.already_present,
-            "would_insert": self.to_insert,
-            "inserted": self.inserted,
-            "by_source_type": {
-                db.SOURCE_MD: self.by_source_type.get(db.SOURCE_MD, 0),
-                db.SOURCE_MINED: self.by_source_type.get(db.SOURCE_MINED, 0),
-            },
-            "by_archived": {
-                "archived": self.to_insert if self.archived else 0,
-                "live": 0 if self.archived else self.to_insert,
-            },
-            "state": state,
             "root": db.IMPORT_ROOT,
             "content_rev": self.content_rev,
-            "embedding": {
-                "mode": EMBED_MODE,
-                "vectors_waiting": self.vectors_waiting,
-                "archived_without_vector": self.archived_without_vector,
-            },
+            "refused": self.refused or None,
         }
+        if self.remove:
+            out.update(
+                {
+                    "would_remove": self.to_remove,
+                    "removed": self.removed,
+                    "not_present": self.not_present,
+                    "already_removed": self.already_removed,
+                }
+            )
+            return out
+        out.update(
+            {
+                "labels_dropped": self.labels_dropped,
+                "already_present": self.already_present,
+                "would_insert": self.to_insert,
+                "would_revive": self.to_revive,
+                "inserted": self.inserted,
+                "revived": self.revived,
+                "by_source_type": {
+                    db.SOURCE_MD: self.by_source_type.get(db.SOURCE_MD, 0),
+                    db.SOURCE_MINED: self.by_source_type.get(db.SOURCE_MINED, 0),
+                },
+                "by_archived": {
+                    "archived": self.to_insert if self.archived else 0,
+                    "live": 0 if self.archived else self.to_insert,
+                },
+                "embedding": {
+                    "mode": EMBED_MODE,
+                    "vectors_waiting": self.vectors_waiting,
+                    "archived_without_vector": self.archived_without_vector,
+                },
+            }
+        )
+        return out
 
     def summary(self) -> list[str]:
         d = self.to_dict()
-        src = d["by_source_type"]
-        mode = "apply" if self.apply else "dry run (nothing written; use --apply to write)"
+        action = "remove" if self.remove else "import"
+        if self.apply:
+            mode = f"{action}, apply"
+        else:
+            mode = f"{action}, dry run (nothing written; use --apply to write)"
         out = [
             f"mode: {mode}",
             f"lines={self.lines} blank={self.blank} valid={self.valid} invalid={self.invalid}",
-            f"redacted={self.redacted} redaction_skipped={self.redaction_skipped} "
-            f"labels_dropped={self.labels_dropped}",
-            f"duplicates_in_file={self.duplicates_in_file} "
-            f"already_present={self.already_present} would_insert={self.to_insert}",
-            f"by_source_type: {db.SOURCE_MD}={src[db.SOURCE_MD]} "
-            f"{db.SOURCE_MINED}={src[db.SOURCE_MINED]}",
-            f"by_archived: archived={d['by_archived']['archived']} live={d['by_archived']['live']}",
+            f"redacted={self.redacted} redaction_skipped={self.redaction_skipped}",
         ]
+        if self.remove:
+            out.append(
+                f"duplicates_in_file={self.duplicates_in_file} would_remove={self.to_remove} "
+                f"not_present={self.not_present} already_removed={self.already_removed}"
+            )
+        else:
+            src = d["by_source_type"]
+            out += [
+                f"labels_dropped={self.labels_dropped} duplicates_in_file="
+                f"{self.duplicates_in_file} already_present={self.already_present} "
+                f"would_insert={self.to_insert} (revive={self.to_revive})",
+                f"by_source_type: {db.SOURCE_MD}={src[db.SOURCE_MD]} "
+                f"{db.SOURCE_MINED}={src[db.SOURCE_MINED]}",
+                f"by_archived: archived={d['by_archived']['archived']} "
+                f"live={d['by_archived']['live']}",
+            ]
         for item in self.invalid_lines:
             out.append(f"invalid line {item['line']}: {item['reason']}")
         if self.invalid > len(self.invalid_lines):
             out.append(f"... and {self.invalid - len(self.invalid_lines)} more invalid lines")
+        if self.refused:
+            return out
+        if self.remove:
+            if self.apply:
+                out.append(
+                    f"removed={self.removed}; the delete purge removes the rows after the "
+                    "grace period"
+                )
+            return out
         if self.apply:
-            out.append(f"inserted={self.inserted}")
+            out.append(f"inserted={self.inserted} revived={self.revived}")
+            note = (
+                f"; {self.archived_without_vector} archived row(s) get no vector"
+                if self.archived_without_vector
+                else ""
+            )
             out.append(
                 "vectors: this command does not embed; the running store embeds new live rows "
                 f"on its next backfill pass. {self.vectors_waiting} inserted row(s) wait for "
-                "a vector"
-                + (
-                    f"; {self.archived_without_vector} archived row(s) get no vector"
-                    if self.archived_without_vector
-                    else ""
-                )
+                f"a vector{note}"
             )
         else:
             out.append(
@@ -307,6 +415,8 @@ def parse_line(
     report: Report,
 ) -> Entry | None:
     """One line to an ``Entry``. ``None`` for a blank, invalid or unredactable line."""
+    if line_no == 1 and raw.startswith(BOM):
+        raw = raw[len(BOM) :]
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -317,7 +427,7 @@ def parse_line(
         return None
     try:
         doc = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         report.note_invalid(line_no, "not JSON")
         return None
     if not isinstance(doc, dict):
@@ -363,6 +473,8 @@ def _entry(
     clean = clean.strip()
     if not clean:
         return None, 0
+    if len(clean.encode("utf-8", "surrogatepass")) > MAX_CONTENT_BYTES:
+        raise LineError(f"content larger than {MAX_CONTENT_BYTES // 1024} KB")
     mined = source.lower() in MINED_NAMES
     tail = []
     if source and source.lower() not in KNOWN_SOURCES:
@@ -390,40 +502,61 @@ def read_entries(
     """Every valid line, in file order, the first of each hash only."""
     entries: list[Entry] = []
     seen: set[str] = set()
-    with path.open("rb") as fh:
-        for line_no, raw in enumerate(fh, start=1):
-            report.lines += 1
-            entry = parse_line(line_no, raw, extra_labels=extra_labels, now=now, report=report)
-            if entry is None:
-                continue
-            if entry.redacted:
-                report.redacted += 1
-            if entry.hash in seen:
-                report.duplicates_in_file += 1
-                continue
-            seen.add(entry.hash)
-            entries.append(entry)
+    try:
+        with path.open("rb") as fh:
+            for line_no, raw in enumerate(fh, start=1):
+                report.lines += 1
+                entry = parse_line(line_no, raw, extra_labels=extra_labels, now=now, report=report)
+                if entry is None:
+                    continue
+                if entry.redacted:
+                    report.redacted += 1
+                if entry.hash in seen:
+                    report.duplicates_in_file += 1
+                    continue
+                seen.add(entry.hash)
+                entries.append(entry)
+    except OSError as exc:
+        raise InputReadError(f"cannot read {path} ({exc.strerror or type(exc).__name__})") from exc
     return entries
 
 
 # -- the store ----------------------------------------------------------------
 
 
-def present_paths(conn: sqlite3.Connection, project: str) -> set[str]:
-    """The paths (row hashes) of every imported row of a namespace."""
+def present_rows(conn: sqlite3.Connection, project: str) -> dict[str, bool]:
+    """``{path: soft-deleted}`` for every imported row of a namespace."""
     with db.read_tx(conn):
         cur = conn.execute(
-            "SELECT path FROM memories WHERE project = ? AND root = ?", (project, db.IMPORT_ROOT)
+            "SELECT path, deleted_at FROM memories WHERE project = ? AND root = ?",
+            (project, db.IMPORT_ROOT),
         )
-        return {str(r[0]) for r in cur.fetchall()}
+        return {str(r[0]): r[1] is not None for r in cur.fetchall()}
 
 
-def plan(entries: Sequence[Entry], present: set[str], report: Report) -> list[Entry]:
-    todo = [e for e in entries if e.path not in present]
+def plan(entries: Sequence[Entry], present: dict[str, bool], report: Report) -> list[Entry]:
+    """The entries to write: new hashes, and hashes whose row is soft-deleted."""
+    todo = [e for e in entries if present.get(e.path) is not False]  # new, or soft-deleted
     report.already_present = len(entries) - len(todo)
     report.to_insert = len(todo)
+    report.to_revive = sum(1 for e in todo if e.path in present)
     report.by_source_type = Counter(e.source_type for e in todo)
     return todo
+
+
+def _row_values(e: Entry, archived_at: str | None, rev: int) -> tuple:
+    return (
+        e.source_type,
+        e.category,
+        e.content(),
+        e.hash,
+        1 if e.pinned else 0,
+        json.dumps(e.labels),
+        archived_at,
+        rev,
+        e.created_at,
+        e.updated_at,
+    )
 
 
 def store_entries(
@@ -436,42 +569,81 @@ def store_entries(
 ) -> list[int]:
     """Insert in batches of ``db.BATCH_ROWS``; each batch is one ``BEGIN
     IMMEDIATE`` transaction that bumps ``content_rev`` once, like the miner.
-    A row that appeared since the plan counts as already present."""
+    A live row that appeared since the plan counts as already present; a
+    soft-deleted row at the key is revived in place (same id)."""
     ids: list[int] = []
     for start in range(0, len(entries), db.BATCH_ROWS):
         batch = entries[start : start + db.BATCH_ROWS]
         with db.write_tx(conn):
-            todo = [e for e in batch if db.row_at(conn, project, db.IMPORT_ROOT, e.path) is None]
+            current = {e.path: db.row_at(conn, project, db.IMPORT_ROOT, e.path) for e in batch}
+            todo = [e for e in batch if current[e.path] is None or current[e.path].deleted_at]
             report.already_present += len(batch) - len(todo)
             if not todo:
                 continue
             rev = db.bump_rev(conn, "content_rev")
             now = db.utc_now()
+            archived_at = now if archived else None
             for e in todo:
+                row = current[e.path]
+                if row is not None:
+                    conn.execute(
+                        "UPDATE memories SET source_type = ?, category = ?, content = ?, "
+                        "hash = ?, pinned = ?, labels = ?, archived_at = ?, deleted_at = NULL, "
+                        "rev = ?, created_at = ?, updated_at = ? WHERE id = ?",
+                        (*_row_values(e, archived_at, rev), row.id),
+                    )
+                    ids.append(row.id)
+                    report.revived += 1
+                    continue
                 cur = conn.execute(
                     "INSERT INTO memories (project, root, path, source_type, category, "
                     "content, hash, pinned, labels, archived_at, rev, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        project,
-                        db.IMPORT_ROOT,
-                        e.path,
-                        e.source_type,
-                        e.category,
-                        e.content(),
-                        e.hash,
-                        1 if e.pinned else 0,
-                        json.dumps(e.labels),
-                        now if archived else None,
-                        rev,
-                        e.created_at,
-                        e.updated_at,
-                    ),
+                    (project, db.IMPORT_ROOT, e.path, *_row_values(e, archived_at, rev)),
                 )
                 ids.append(int(cur.lastrowid))
             report.inserted += len(todo)
             report.content_rev = rev
     return ids
+
+
+def remove_plan(entries: Sequence[Entry], present: dict[str, bool], report: Report) -> list[Entry]:
+    todo = [e for e in entries if present.get(e.path) is False]
+    report.not_present = sum(1 for e in entries if e.path not in present)
+    report.already_removed = sum(1 for e in entries if present.get(e.path) is True)
+    report.to_remove = len(todo)
+    return todo
+
+
+def remove_entries(
+    conn: sqlite3.Connection, project: str, entries: Sequence[Entry], report: Report
+) -> None:
+    """Soft-delete the imported rows of ``entries``, archived ones too, in
+    batches; each batch bumps ``content_rev`` once. ``db.soft_delete`` skips
+    archived rows, so this is its own statement."""
+    for start in range(0, len(entries), db.BATCH_ROWS):
+        batch = entries[start : start + db.BATCH_ROWS]
+        with db.write_tx(conn):
+            marks = ",".join("?" * len(batch))
+            live = [
+                int(r[0])
+                for r in conn.execute(
+                    f"SELECT id FROM memories WHERE project = ? AND root = ? AND path IN ({marks}) "
+                    "AND deleted_at IS NULL",
+                    (project, db.IMPORT_ROOT, *(e.path for e in batch)),
+                )
+            ]
+            report.already_removed += len(batch) - len(live)
+            if not live:
+                continue
+            rev = db.bump_rev(conn, "content_rev")
+            now = db.utc_now()
+            conn.executemany(
+                "UPDATE memories SET deleted_at = ?, rev = ?, updated_at = ? WHERE id = ?",
+                [(now, rev, now, memory_id) for memory_id in live],
+            )
+            report.removed += len(live)
+            report.content_rev = rev
 
 
 def count_without_vector(conn: sqlite3.Connection, ids: Sequence[int]) -> tuple[int, int]:
@@ -514,16 +686,29 @@ def run(
     apply: bool,
     archived: bool = False,
     extra_labels: Sequence[str] = (),
+    remove: bool = False,
 ) -> Report:
-    """One import. ``apply=False`` reads the store and writes nothing."""
-    report = Report(file=str(path), apply=apply, archived=archived)
+    """One import (or removal). ``apply=False`` reads the store and writes
+    nothing. ``apply=True`` with no usable line writes nothing and sets
+    ``refused``."""
+    report = Report(file=str(path), apply=apply, archived=archived, remove=remove)
     entries = read_entries(path, extra_labels=extra_labels, report=report, now=db.utc_now())
-    todo = plan(entries, present_paths(conn, project), report)
-    if apply and todo:
-        ids = store_entries(conn, project, todo, report, archived=archived)
-        report.vectors_waiting, report.archived_without_vector = count_without_vector(conn, ids)
-    elif apply:
-        report.vectors_waiting, report.archived_without_vector = 0, 0
+    present = present_rows(conn, project)
+    if remove:
+        todo = remove_plan(entries, present, report)
+    else:
+        todo = plan(entries, present, report)
+    if not apply:
+        return report
+    if report.usable == 0:
+        what = "remove" if remove else "import"
+        report.refused = f"the file has no line it can {what}; nothing was written"
+        return report
+    if remove:
+        remove_entries(conn, project, todo, report)
+        return report
+    ids = store_entries(conn, project, todo, report, archived=archived)
+    report.vectors_waiting, report.archived_without_vector = count_without_vector(conn, ids)
     return report
 
 
@@ -539,12 +724,18 @@ def _label(text: str) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="noblivion import",
-        description="Import memories from a JSONL file. A dry run unless --apply.",
+        description="Import memories from a JSONL file, or remove an earlier import. "
+        "A dry run unless --apply.",
     )
     parser.add_argument("file", type=Path, help="the JSONL file, one JSON object per line")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="print what would happen (default)")
-    mode.add_argument("--apply", action="store_true", help="write the rows")
+    mode.add_argument("--apply", action="store_true", help="write the changes")
+    parser.add_argument(
+        "--remove",
+        action="store_true",
+        help="soft-delete the imported rows of this file instead of importing",
+    )
     parser.add_argument(
         "--label",
         action="append",
@@ -566,40 +757,43 @@ def _err(text: str) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.remove and (args.label or args.archived):
+        parser.error("--remove does not take --label or --archived")
     settings = config.load_settings()
     db_path = args.db or settings.db_path
     path: Path = args.file.expanduser()
     if not path.is_file():
         _err(f"no file at {path}")
         return EXIT_REFUSED
-    try:
-        with path.open("rb"):
-            pass
-    except OSError as exc:
-        _err(f"cannot read {path} ({exc.strerror or type(exc).__name__})")
-        return EXIT_REFUSED
     # Like the miner: this command never makes a database (NOBLIVION-28).
     if not db_path.is_file():
         _err(f"no database at {db_path}; run install.sh")
         return EXIT_NO_DB
+    lock_path = db_path.parent / IMPORT_LOCK_FILE
     try:
-        if args.apply:
-            with indexer.index_lock(db_path.parent / IMPORT_LOCK_FILE, args.lock_timeout):
-                report = _run_cli(db_path, path, settings.namespace, args)
-        else:
+        with contextlib.ExitStack() as stack:
+            if args.apply:
+                try:
+                    stack.enter_context(indexer.index_lock(lock_path, args.lock_timeout))
+                except OSError as exc:
+                    raise LockFileError(
+                        f"cannot open the lock file {lock_path} in the data dir "
+                        f"({exc.strerror or type(exc).__name__})"
+                    ) from exc
             report = _run_cli(db_path, path, settings.namespace, args)
     except db.SchemaError as exc:
         _err(str(exc))
         return EXIT_SCHEMA
     except indexer.LockTimeoutError:
-        _err(f"another import holds {IMPORT_LOCK_FILE}")
+        _err(f"another import holds {lock_path}")
         return EXIT_LOCKED
     except db.DatabaseMissing:
         _err(f"no database at {db_path}; run install.sh")
         return EXIT_NO_DB
-    except OSError as exc:
-        _err(f"cannot read {path} ({exc.strerror or type(exc).__name__})")
+    except (InputReadError, LockFileError) as exc:
+        _err(str(exc))
         return EXIT_REFUSED
     except sqlite3.Error as exc:
         _err(f"database error ({exc}); try again later")
@@ -609,8 +803,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         for line in report.summary():
             print(f"noblivion import: {line}")
-    if args.apply and report.valid == 0:
-        _err("the file has no valid line; nothing was written")
+    if report.refused:
+        _err(report.refused)
         return EXIT_REFUSED
     return EXIT_OK
 
@@ -629,6 +823,7 @@ def _run_cli(db_path: Path, path: Path, project: str, args: argparse.Namespace) 
             apply=args.apply,
             archived=args.archived,
             extra_labels=args.label,
+            remove=args.remove,
         )
     finally:
         conn.close()

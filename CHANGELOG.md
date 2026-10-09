@@ -30,7 +30,10 @@ common words, and the time that the store redactor needs for large notes.
   imported memory enters recall in every session; a row with the source
   type `transcript_mined` comes back only on request. `--archived`
   stores the rows out of recall. The index scan never deletes an imported
-  row. See [docs/import.md](docs/import.md).
+  row. `noblivion import --remove FILE.jsonl --apply` marks the rows of
+  that file as deleted; the store deletes them after the grace period.
+  The trust report names an imported row by a short hash and counts its
+  age from its first trust event in the store. See [docs/import.md](docs/import.md).
 
 ### Fixed
 

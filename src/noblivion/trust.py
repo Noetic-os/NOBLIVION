@@ -673,9 +673,17 @@ def build_report(inputs: ReportInputs, *, now: datetime | None = None) -> dict:
                 reason = f"linked from MEMORY.md, no use in the last {DEMOTE_NO_USE_DAYS} days"
                 demote.append({**row, "reason": f"{reason} ({when})"})
             continue
-        age = _days(now - f.created_at)
+        if f.root == db.IMPORT_ROOT:
+            # An imported row keeps the created_at of its source, which can
+            # be years before the import. Its age here starts at its first
+            # event in this store, which is never before the import, so it
+            # gets at least the full grace period from the import.
+            start, since_what = (agg.first_ts if agg else now), "first shown"
+        else:
+            start, since_what = f.created_at, "first indexed"
+        age = _days(now - start)
         if shown >= RETIRE_MIN_SHOWN_SESSIONS and used == 0 and age >= RETIRE_MIN_FILE_AGE_DAYS:
-            reason = f"shown in {shown} sessions, used in none; first indexed {age} days ago"
+            reason = f"shown in {shown} sessions, used in none; {since_what} {age} days ago"
             retire.append({**row, "reason": reason})
             continue
         if agg and trust >= PROMOTE_MIN_TRUST and trials >= PROMOTE_MIN_TRIALS:
@@ -730,6 +738,15 @@ def _contradicted(row: Mapping[str, object]) -> str:
     return f", contradicted in {n}" if isinstance(n, int) and n > 0 else ""
 
 
+def where_of(row: Mapping[str, object]) -> str:
+    """Where a report row lives: ``root/path``, or ``imported row <short
+    hash>`` for a row of ``noblivion import``, which has no file."""
+    root, path = row.get("root"), str(row.get("path") or "")
+    if root == db.IMPORT_ROOT:
+        return f"imported row {path[:12]}"
+    return f"{root}/{path}" if root else path
+
+
 def render_report(answer: Mapping[str, object], limit: int = 50) -> str:
     """The report as text: one heading per list, one line per note."""
     lines = [
@@ -742,9 +759,8 @@ def render_report(answer: Mapping[str, object], limit: int = 50) -> str:
         lines.append("")
         lines.append(f"{heading}: {len(rows)}")
         for r in rows[:limit]:
-            where = f"{r['root']}/{r['path']}" if r.get("root") else r["path"]
             lines.append(
-                f"- {where} (id {r['mv_id']}): trust {r['trust']:.2f}, trials {r['trials']}, "
+                f"- {where_of(r)} (id {r['mv_id']}): trust {r['trust']:.2f}, trials {r['trials']}, "
                 f"shown in {r['shown_sessions']} sessions, used in {r['use_sessions']}"
                 f"{_contradicted(r)}. {r.get('reason') or ''}".rstrip()
             )
