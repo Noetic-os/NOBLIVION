@@ -6,7 +6,11 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.9 - 2026-10-09
+
+Fixes `noblivion_remember` in Claude Code: it now saves a note with no
+extra setting. After the plugin update, type `/noblivion:setup` in the
+next session, so that the store restarts with 0.1.9.
 
 ### Fixed
 
