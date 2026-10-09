@@ -6,7 +6,8 @@ Commands in this version: ``index`` (see ``noblivion.indexer``),
 opt-in duplicate sweep, see ``noblivion.dedup``), ``serve`` (the store
 in the foreground, see ``noblivion.store``), ``ensure-running`` (start
 the store in the background unless it runs, see ``noblivion.launcher``),
-``mine`` (the transcript miner, see ``noblivion.miner``), ``trust
+``mine`` (the transcript miner, see ``noblivion.miner``), ``import``
+(import memories from a JSONL file, see ``noblivion.importer``), ``trust
 report`` (print the trust report), ``trust recompute`` (the trust repair),
 see ``noblivion.trust``, ``trust timesplit`` (the time-split test, see
 ``noblivion.trust_timesplit``), and ``stop report`` (count the stop check decisions,
@@ -30,6 +31,8 @@ USAGE = (
     "       noblivion serve [--port PORT] [--lock-wait SECONDS]\n"
     "       noblivion ensure-running [--json] [--wait SECONDS] [--restart]\n"
     "       noblivion mine [--since YYYY-MM-DD] [--max-seconds S] [--json]\n"
+    "       noblivion import FILE.jsonl [--dry-run | --apply] [--label L ...] [--archived] "
+    "[--json]\n"
     "       noblivion migrate-from-legacy [--apply | --undo] [--json]"
 )
 
@@ -60,6 +63,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from noblivion import miner
 
         return miner.main(rest)
+    if command == "import":
+        from noblivion import importer
+
+        return importer.main(rest)
     if command == "trust":
         from noblivion import trust
 

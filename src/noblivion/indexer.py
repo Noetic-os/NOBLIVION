@@ -712,7 +712,9 @@ def scan(
     """Run one index scan and return what it did."""
     folders = discover(memory_dirs, stat_cache)
     with db.read_tx(conn):
-        rows = db.md_rows(conn, project)
+        # The imported rows have no file, so the scan must never delete,
+        # move or rewrite them (``db.IMPORT_ROOT``).
+        rows = [r for r in db.md_rows(conn, project) if r.root != db.IMPORT_ROOT]
         stored_version = db.get_meta(conn, _version_key(project))
         if stored_version is None:
             stored_version = db.get_meta(conn, LEGACY_VERSION_KEY)

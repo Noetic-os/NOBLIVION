@@ -100,6 +100,10 @@ After Claude Code writes a memory file, the memory sync hook runs
 
 The store ranks the notes of the session's root and of the shared roots.
 
+It also ranks the notes that `noblivion import` added (see
+[Import memories from a JSONL file](import.md)). They belong to no
+project folder, so every session searches them.
+
 1. **Keyword score.** BM25, a standard keyword score, over the note text.
 2. **Vector score.** The cosine similarity between the vector of the
    prompt and the vector of each note.

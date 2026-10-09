@@ -139,6 +139,7 @@ for the full steps and limits.
 - [Trust](docs/trust.md)
 - [Duplicate sweep and privacy](docs/dedup-and-privacy.md)
 - [Transcript miner](docs/transcript-miner.md)
+- [Import memories from a JSONL file](docs/import.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Architecture (design document)](docs/design/0001-architecture.md)
 - [Contributing](CONTRIBUTING.md)

@@ -20,6 +20,18 @@ is stored by its head. Also fixes the switches of the label rows, the
 deletes of a folder that holds an unreadable note, keyword matches on
 common words, and the time that the store redactor needs for large notes.
 
+### Added
+
+- New command `noblivion import FILE.jsonl` imports memories from a JSONL
+  file, one JSON object per line (NOBLIVION-93). It is a dry run by
+  default: it prints what it would do and writes nothing. `--apply`
+  writes the rows. A second run inserts nothing. The rows are redacted
+  like the miner's rows, and the running store embeds them. A plain
+  imported memory enters recall in every session; a row with the source
+  type `transcript_mined` comes back only on request. `--archived`
+  stores the rows out of recall. The index scan never deletes an imported
+  row. See [docs/import.md](docs/import.md).
+
 ### Fixed
 
 - The label rows at prompt time now read their switches from the

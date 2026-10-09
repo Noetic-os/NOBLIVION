@@ -280,7 +280,9 @@ class RankIndex:
         if cached is not None:
             return cached
         project, root, shared, include_mined = key
-        roots = None if root is None else {root, *shared}
+        # The imported rows (``db.IMPORT_ROOT``) belong to no project
+        # folder, so every session searches them, like a shared root.
+        roots = None if root is None else {root, *shared, db.IMPORT_ROOT}
         rows = [
             r
             for r in snap.rows.values()

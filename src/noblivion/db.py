@@ -33,6 +33,11 @@ BUSY_TIMEOUT_MS = 5000
 KEEP_BACKUPS = 3
 SOURCE_MD = "claude_code_md"
 SOURCE_MINED = "transcript_mined"
+# The root of the rows that ``noblivion import`` writes (``noblivion.importer``).
+# A root is the name of a memory folder's parent folder, and a folder name
+# cannot hold a "/", so no memory folder ever has this root. The indexer
+# leaves these rows alone: no file backs them.
+IMPORT_ROOT = "noblivion/import"
 
 WAL_PRAGMA = "PRAGMA journal_mode = WAL"
 _CONNECTION_PRAGMAS = (
