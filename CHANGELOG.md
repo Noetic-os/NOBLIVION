@@ -6,7 +6,15 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.8 - 2026-10-09
+
+Adds the command `noblivion import`, which imports memories from a JSONL
+file. It is a dry run by default, and `--apply` writes the rows. A plain
+imported memory enters recall in every session. `noblivion import --remove`
+takes the rows of a file out again. The trust report names an imported
+row by a short hash. See [docs/import.md](docs/import.md). After the plugin
+update, type `/noblivion:setup` in the next session, so that the store
+restarts with 0.1.8.
 
 ### Added
 
