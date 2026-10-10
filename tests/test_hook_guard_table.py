@@ -11,6 +11,9 @@ What these tests hold:
    and the other guards still build.
 4. MATCH TESTS EACH SHELL SEGMENT: the anchored stash regex fires on
    ``cd x && git stash pop``; quoted text and heredoc bodies do not fire.
+11. A SHELL READS ITS HEREDOC AS CODE (NOBLIVION-52): the body of
+   ``bash <<EOF``, ``ssh host <<EOF``, ``cat <<EOF | bash`` and the text of
+   ``bash <<< "..."`` fire; the same body for ``cat > f`` or ``tee`` does not.
 5. THE CLI FAILS OPEN: ``--rebuild`` exits 0 and prints nothing, on success and
    on failure; a failure never replaces a good table.
 8. A SKIPPED RULE IS NAMED (NOBLIVION-50): when the build skipped a rule,
@@ -883,6 +886,111 @@ def test_review_8_a_wrapper_word_or_a_line_continuation_does_not_hide_the_comman
 )
 def test_review_8_adds_no_hit_on_other_forms(cmd):
     assert gt.match(cmd, REVIEW_TABLE) == []
+
+
+# 11. NOBLIVION-52: a heredoc or here-string that a shell reads is code --------
+SHELL_TABLE = {
+    "entries": [
+        {"id": "push_force", "violates": r"git\s+push\b.*--force", "rule": "r", "apply": "a"},
+        {"id": "stash_pop", "violates": STASH, "rule": "r", "apply": "a"},
+    ]
+}
+BODY = "\ngit push --force origin main\nEOF"
+
+
+def _sids(cmd):
+    return sorted(h["id"] for h in gt.match(cmd, SHELL_TABLE))
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # the reproducer of the ticket
+        "bash <<'EOF'" + BODY,
+        "bash <<EOF" + BODY,
+        "sh -s <<'EOF'" + BODY,
+        "ssh host <<'EOF'" + BODY,
+        "sudo bash <<EOF" + BODY,
+        # other shells, a path, wrappers and shell options
+        "zsh <<EOF" + BODY,
+        "dash <<EOF" + BODY,
+        "ksh <<EOF" + BODY,
+        "/bin/bash <<EOF" + BODY,
+        "sudo -u bob -H bash <<'EOF'" + BODY,
+        "env -i PATH=/bin bash <<EOF" + BODY,
+        "command bash <<EOF" + BODY,
+        "exec bash <<EOF" + BODY,
+        "nohup sh <<EOF" + BODY,
+        "timeout 30 bash <<EOF" + BODY,
+        "bash -e -o pipefail <<EOF" + BODY,
+        "bash -s -- a b <<EOF" + BODY,
+        "bash <<EOF > /tmp/log 2>&1" + BODY,
+        "bash <<-EOF\n\tgit push --force origin main\n\tEOF",
+        # elevated and remote shells
+        "sudo -i <<EOF" + BODY,
+        "su - bob <<EOF" + BODY,
+        "ssh -p 22 -i key host <<EOF" + BODY,
+        "ssh host bash -s <<EOF" + BODY,
+        "ssh host 'sudo bash' <<EOF" + BODY,
+        # cat passes the body to a shell through a pipe
+        "cat <<'EOF' | bash" + BODY,
+        "cat <<EOF | ssh host" + BODY,
+        "cat <<EOF |" + BODY + "\nbash",
+        # inside $( ), after another command, nested
+        "x=$(bash <<'EOF'" + BODY + "\n)",
+        "echo a && bash <<EOF" + BODY + "\necho b",
+        "bash <<'A'\nbash <<'B'\ngit push --force origin main\nB\nA",
+        # here-strings
+        'bash <<< "git push --force origin main"',
+        "bash <<<'git push --force origin main'",
+        'sudo bash <<< "cd x && git push --force origin main"',
+    ],
+)
+def test_a_heredoc_or_here_string_that_a_shell_reads_is_matched_as_commands(cmd):
+    assert _sids(cmd) == ["push_force"]
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # the same text read by a program that stores or prints it is data
+        "cat > notes.md <<'EOF'" + BODY,
+        "cat <<EOF > notes.md" + BODY,
+        "git commit -F - <<'EOF'" + BODY,
+        "tee notes.md <<EOF" + BODY,
+        "sudo tee notes.md <<EOF" + BODY,
+        "python3 <<'EOF'" + BODY,
+        "gh pr create --body-file - <<'EOF'" + BODY,
+        # a shell that runs a script file or a -c string reads its stdin as data
+        "bash script.sh <<EOF" + BODY,
+        "bash -c 'cat > f' <<EOF" + BODY,
+        "su -c 'cat > f' bob <<EOF" + BODY,
+        "ssh host 'cat > f' <<EOF" + BODY,
+        # cat that reads a file, or no pipe to a shell
+        "cat f <<EOF | bash" + BODY,
+        "cat <<EOF | tee f" + BODY,
+        "cat <<EOF || bash" + BODY,
+        "cat <<EOF; bash" + BODY,
+        # a heredoc on another descriptor is not stdin
+        "bash 3<<EOF" + BODY,
+        # here-strings to a program that is not a shell
+        "grep x <<< 'git push --force origin main'",
+        "cat <<< 'git push --force origin main' > f",
+    ],
+)
+def test_a_heredoc_or_here_string_that_a_program_reads_stays_data(cmd):
+    assert _sids(cmd) == []
+
+
+def test_the_body_a_shell_reads_is_its_own_view_and_segment():
+    views = gt.command_views("bash <<'EOF'\ncd x\ngit stash pop\nEOF")
+    assert [v[0] for v in views][1:] == ["cd x\ngit stash pop\n"]
+    hits = gt.match("bash <<'EOF'\ncd x\ngit stash pop\nEOF", SHELL_TABLE)
+    assert [(h["id"], h["via"], h["segment"]) for h in hits] == [
+        ("stash_pop", "segment", "git stash pop")
+    ]
+    # the body is still cut from the command line itself
+    assert gt.without_heredoc_bodies("bash <<'EOF'" + BODY + "\necho b") == "bash <<'EOF'\necho b"
 
 
 # 8. NOBLIVION-50: a skipped rule is named at session start --------------------

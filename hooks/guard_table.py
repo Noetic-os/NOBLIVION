@@ -38,7 +38,9 @@ what the hook calls on a failed Bash call.
 ``violates`` regex once and applies it to the raw Bash command AND to each shell
 segment of it (split on ``&&``, ``||``, ``;``, ``|``, ``&``, bare parentheses and
 newlines, outside quotes; heredoc bodies are data and are dropped from the
-segments, and the whole-command test skips them too). So
+segments, and the whole-command test skips them too, except a body or a
+here-string that a shell reads, which is matched as a command line of its
+own, NOBLIVION-52). So
 ``^git\\s+stash\\s+pop\\s*$`` also fires on
 ``cd x && git stash pop``. A segment is also tried with its leading ``VAR=value``
 assignments removed. Each hit records whether a segment or only the whole
@@ -489,18 +491,24 @@ def segments(command: str) -> List[str]:
 
 def without_heredoc_bodies(command: str) -> str:
     """``command`` with every heredoc body (and its terminator line) removed.
-    A body is data (a file, a script, a commit message), not a command. A
-    backslash-newline outside single quotes and heredoc bodies is removed too:
-    the shell joins those lines."""
+    A body is data (a file, a script, a commit message), not a command, unless
+    a shell reads it: ``command_views`` then matches it as a command line of
+    its own (NOBLIVION-52). A backslash-newline outside single quotes and
+    heredoc bodies is removed too: the shell joins those lines."""
     return _lex(command)[1]
 
 
-def _lex(command: str) -> Tuple[List[str], str]:
+def _lex(command: str) -> Tuple[List[str], str, Dict[int, str]]:
+    """``(segments, text, bodies)``: the segments, the text without heredoc
+    bodies and line continuations, and each heredoc body keyed by the index of
+    its ``<<`` operator in that text (for ``<<-`` with the leading tabs
+    removed)."""
     out: List[str] = []
     cut: List[Tuple[int, int]] = []  # heredoc body ranges and line continuations
     cur: List[str] = []
     stack: List[str] = []  # "'", '"', "(" for $( ), <( ), >( )
-    pending: List[Tuple[str, bool]] = []  # heredoc terminators waiting for a newline
+    pending: List[Tuple[str, bool, int]] = []  # heredoc terminators waiting for a newline
+    bodies: List[Tuple[int, str]] = []  # (index of the ``<<`` in ``command``, body)
     i, n = 0, len(command)
 
     def flush() -> None:
@@ -551,20 +559,28 @@ def _lex(command: str) -> Tuple[List[str], str]:
         if c == "<" and command.startswith("<<", i) and not command.startswith("<<<", i):
             m = _HEREDOC.match(command, i)
             if m:
-                pending.append((_heredoc_word(m), m.group(1) == "-"))
+                pending.append((_heredoc_word(m), m.group(1) == "-", i))
                 cur.append(m.group(0))
                 i = m.end()
                 continue
         if c == "\n" and pending:
             i += 1
             start = i
-            for word, dash in pending:  # skip each body up to its terminator
+            for word, dash, op in pending:  # skip each body up to its terminator
+                b0, b1 = i, n
                 while i <= n:
                     j = command.find("\n", i)
                     line = command[i:] if j < 0 else command[i:j]
-                    i = n if j < 0 else j + 1
-                    if (line.lstrip("\t") if dash else line) == word or j < 0:
+                    a, i = i, (n if j < 0 else j + 1)
+                    if (line.lstrip("\t") if dash else line) == word:
+                        b1 = a
                         break
+                    if j < 0:
+                        break
+                body = command[b0:b1]
+                if dash:
+                    body = "\n".join(x.lstrip("\t") for x in body.split("\n"))
+                bodies.append((op, body))
             pending.clear()
             cut.append((start, i))
             if not stack:
@@ -612,7 +628,14 @@ def _lex(command: str) -> Tuple[List[str], str]:
         kept.append(command[last:a])
         last = b
     kept.append(command[last:])
-    return out, "".join(kept)
+    at: Dict[int, str] = {}  # the ``<<`` index moves left by the cuts before it
+    k, shift = 0, 0
+    for op, body in bodies:
+        while k < len(cut) and cut[k][1] <= op:
+            shift += cut[k][1] - cut[k][0]
+            k += 1
+        at[op - shift] = body
+    return out, "".join(kept), at
 
 
 _ASSIGN = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S*)\s+)+")
@@ -752,13 +775,136 @@ def _executes(words: List[str]) -> bool:
     return False
 
 
-class _Scan:
-    """One pass over a command line (heredoc bodies already removed). Sets
-    ``dead[i]`` for quoted text that is data and ``comment[i]`` for comment
-    text; collects the executed strings in ``execd``."""
+# NOBLIVION-52: a heredoc body or a here-string is data, except when a shell
+# reads it from stdin: ``bash <<EOF``, ``sh -s <<'X'``, ``sudo bash <<EOF``,
+# ``ssh host <<EOF``, ``bash <<< "..."``, ``cat <<EOF | bash``. Then the shell
+# runs it, so it is matched as a command line of its own. ``cat > f <<EOF``,
+# ``git commit -F - <<EOF``, ``python3 <<EOF``, ``bash script.sh <<EOF`` and
+# ``bash -c '...' <<EOF`` keep it as data.
+_STDIN_SHELLS = _SHELLS - {"su"}
+_KEYWORDS = frozenset(("if", "then", "else", "elif", "while", "until", "do", "{", "!"))
+_SSH_ARG_OPTS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")  # ssh options that take a value
+_SUDO_ARG_OPTS = frozenset("CDghpRrTtUu")  # sudo and doas options that take a value
+_REDIR_WORD = re.compile(r"(?:\d+|&)?(?:>>|>\||>&|<&|<>|>|<)(.*)", re.S)
+_NUMBER = re.compile(r"\d+(?:\.\d+)?[smhd]?")
+_NAME_EQ = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
-    def __init__(self, s: str, depth: int):
+
+def _without_redirections(argv: List[str]) -> List[str]:
+    """``argv`` without ``>f``, ``2> f``, ``<f`` and their targets."""
+    out: List[str] = []
+    skip = False
+    for w in argv:
+        if skip:
+            skip = False
+            continue
+        m = _REDIR_WORD.fullmatch(w)
+        if m:
+            skip = not m.group(1)
+            continue
+        out.append(w)
+    return out
+
+
+def _shell_reads_stdin(args: List[str]) -> bool:
+    """True when ``bash ARGS`` (or sh, zsh, dash, ksh) reads its commands from
+    stdin: no ``-c``, and ``-s`` or no script file."""
+    k, s_flag = 0, False
+    while k < len(args):
+        w = args[k]
+        if w in ("-", "--"):
+            k += 1
+            break
+        if w.startswith("--"):
+            k += 2 if w in ("--rcfile", "--init-file") else 1
+            continue
+        if len(w) > 1 and w[0] in "-+":
+            if w[0] == "-" and "c" in w:
+                return False
+            s_flag = s_flag or (w[0] == "-" and "s" in w)
+            k += 2 if ("o" in w or "O" in w) else 1  # -o pipefail, +O extglob
+            continue
+        break
+    return s_flag or k >= len(args)
+
+
+def _ssh_reads_stdin(args: List[str]) -> bool:
+    """True when ``ssh ARGS`` gives its stdin to a shell: no remote command (the
+    login shell reads it), or a remote command that is a shell reading stdin."""
+    k = 0
+    while k < len(args):
+        w = args[k]
+        if w == "--":
+            k += 1
+            break
+        if len(w) < 2 or w[0] != "-":
+            break
+        for p, ch in enumerate(w[1:], 1):
+            if ch in _SSH_ARG_OPTS:
+                k += p == len(w) - 1  # the value is the next word
+                break
+        k += 1
+    if k >= len(args):
+        return False  # no host
+    rest = " ".join(args[k + 1 :]).split()  # ssh joins the words for the remote shell
+    return not rest or _stdin_reader(rest) == "shell"
+
+
+def _stdin_reader(argv: List[str]) -> str:
+    """Who reads the stdin of a simple command (``argv``: its words with the
+    quotes removed). ``"shell"`` when a shell runs it as commands (``bash``,
+    ``sh``, ``zsh``, ``dash``, ``ksh``, ``su``, ``sudo -s``/``-i``, ``ssh``,
+    also by path and behind ``sudo``, ``env``, ``nohup``, ``exec`` and the
+    other lead words), ``"cat"`` when ``cat`` with no file passes it on,
+    ``""`` otherwise."""
+    words = _without_redirections(argv)
+    lead, after_opt, login = "", False, False
+    for k, w in enumerate(words):
+        b = _base(w)
+        if b in _STDIN_SHELLS:
+            return "shell" if _shell_reads_stdin(words[k + 1 :]) else ""
+        if b == "su":
+            rest = words[k + 1 :]
+            run = any(
+                x.startswith("--command") or re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", x) for x in rest
+            )
+            return "" if run else "shell"
+        if b == "ssh":
+            return "shell" if _ssh_reads_stdin(words[k + 1 :]) else ""
+        if b in _LEAD_WORDS or w in _KEYWORDS:
+            lead, after_opt = b, False
+        elif w.startswith("-") and lead:
+            after_opt = True
+            if lead in ("sudo", "doas"):
+                if w in ("--shell", "--login"):
+                    login = True
+                elif not w.startswith("--"):
+                    for ch in w[1:]:
+                        if ch in "si":
+                            login = True
+                        if ch in _SUDO_ARG_OPTS:
+                            break
+        elif _NAME_EQ.match(w) or _NUMBER.fullmatch(w):
+            after_opt = False
+        elif after_opt:
+            after_opt = False  # the value of a wrapper option (``sudo -u bob``)
+        else:
+            if b == "cat" and all(x.startswith("-") for x in words[k + 1 :]):
+                return "cat"
+            return ""
+    return "shell" if login else ""
+
+
+class _Scan:
+    """One pass over a command line (heredoc bodies already removed; ``bodies``
+    maps the index of each ``<<`` to its body). Sets ``dead[i]`` for quoted
+    text that is data and ``comment[i]`` for comment text; collects the
+    executed strings in ``execd``, with each heredoc body and here-string that
+    a shell reads (``_stdin_reader``)."""
+
+    def __init__(self, s: str, depth: int, bodies: Optional[Dict[int, str]] = None):
         self.s, self.depth = s, depth
+        self.bodies = bodies or {}
         self.dead = bytearray(len(s))
         self.comment = bytearray(len(s))
         self.execd: List[str] = []
@@ -781,27 +927,68 @@ class _Scan:
         self.dead[off : off + len(text)] = inner.dead
         self.comment[off : off + len(text)] = inner.comment
 
+    def _feed(
+        self, argv: List[str], stdin: List[Tuple[int, str]], pipe: bool
+    ) -> List[Tuple[int, str]]:
+        """The end of a simple command with the words ``argv`` and the stdin
+        texts ``stdin`` (``(index, text)``: a here-string in ``s`` at
+        ``index``; ``-1`` for a heredoc body or text not in ``s``). A shell
+        reader runs them; ``cat`` before a ``|`` passes them on (returned)."""
+        if not stdin:
+            return []
+        reader = _stdin_reader(argv)
+        if reader == "shell":
+            for off, text in stdin:
+                if off >= 0:
+                    self._sub(off, text)
+                elif self.depth < EXEC_DEPTH:
+                    self.execd.append(text)
+        return list(stdin) if reader == "cat" and pipe else []
+
     def cmd(self, i: int, stop: str) -> int:
         """Scan command text from ``i`` up to ``stop`` (``)`` or a backtick;
         ``""`` for the end). Returns the index after ``stop``."""
         s, n = self.s, len(self.s)
         words: List[str] = []
         cur: List[str] = []
+        argv: List[str] = []  # the words with the quotes removed
+        arg: List[str] = []
+        stdin: List[Tuple[int, str]] = []  # heredoc bodies and here-strings
+        carry: List[Tuple[int, str]] = []  # what ``cat`` pipes to the next command
+        here = False  # the next word is a here-string (``<<< word``)
         depth = 0
 
         def end_word() -> None:
+            nonlocal here
             if cur:
                 words.append("".join(cur))
+                if here:
+                    stdin.append((-1, "".join(arg)))
+                else:
+                    argv.append("".join(arg))
                 cur.clear()
+                arg.clear()
+                here = False
+
+        def end_cmd(pipe: bool) -> None:
+            nonlocal carry
+            end_word()
+            if argv or stdin:  # an empty command (``|&``, ``|`` newline) keeps the carry
+                carry = self._feed(argv, stdin or carry, pipe)
+            argv.clear()
+            stdin.clear()
 
         while i < n:
             c = s[i]
             if stop == ")" and c == ")" and depth == 0:
+                end_cmd(False)
                 return i + 1
             if stop == "`" and c == "`":
+                end_cmd(False)
                 return i + 1
             if c == "\\":
                 cur.append(s[i : i + 2])
+                arg.append(s[i + 1 : i + 2])
                 i += 2
                 continue
             if c in " \t":
@@ -822,6 +1009,7 @@ class _Scan:
                 else:
                     self._mark(self.dead, i + 1, j)
                 cur.append("'")
+                arg.append(s[i + 1 : j])
                 i = j + 1
                 continue
             if c == '"':
@@ -835,42 +1023,76 @@ class _Scan:
                     else:
                         self._sub(i + 1, body)
                 cur.append('"')
+                arg.append(_DQ_UNESCAPE.sub(r"\1", s[i + 1 : max(i + 1, j - 1)]))
                 i = j
                 continue
             if c == "$" and s.startswith("$(", i):
-                i = self.cmd(i + 2, ")")
+                j = self.cmd(i + 2, ")")
                 cur.append("$")
+                arg.append(s[i:j])
+                i = j
                 continue
             if c == "`":
-                i = self.cmd(i + 1, "`")
+                j = self.cmd(i + 1, "`")
                 cur.append("`")
+                arg.append(s[i:j])
+                i = j
                 continue
-            if c == "<" and s.startswith("<<", i) and not s.startswith("<<<", i):
+            if c == "<" and s.startswith("<<<", i):  # a here-string: its word is stdin
+                end_word()
+                i += 3
+                while i < n and s[i] in " \t":
+                    i += 1
+                if i < n and s[i] == "'":
+                    j = s.find("'", i + 1)
+                    j = n if j < 0 else j
+                    self._mark(self.dead, i + 1, j)
+                    stdin.append((i + 1, s[i + 1 : j]))
+                    i = j + 1
+                elif i < n and s[i] == '"':
+                    j = self.dq(i, live=False)
+                    body = s[i + 1 : j - 1] if j - 1 > i else ""
+                    unesc = _DQ_UNESCAPE.sub(r"\1", body)
+                    stdin.append((i + 1, body) if "\\" not in body else (-1, unesc))
+                    i = j
+                else:
+                    here = True
+                continue
+            if c == "<" and s.startswith("<<", i):
                 m = _HEREDOC.match(s, i)
                 if m:  # the body is gone; hide the operator too
                     self._mark(self.dead, i, m.end())
+                    fd = "".join(arg) if cur and not here and "".join(arg).isdigit() else ""
                     end_word()
+                    if fd:
+                        argv.pop()  # ``3<<EOF``: the number names the descriptor
+                    body = self.bodies.get(i)
+                    if body is not None and fd in ("", "0"):
+                        stdin.append((-1, body))
                     i = m.end()
                     continue
             if c in ";|&\n":
-                end_word()
+                # a pipe passes what ``cat`` read to the next command; ``||`` does not
+                end_cmd(c == "|" and not s.startswith("||", i) and s[i - 1 : i] != "|")
                 words.clear()
                 i += 1
                 continue
             if c == "(":
                 depth += 1
-                end_word()
+                end_cmd(False)
                 words.clear()
                 i += 1
                 continue
             if c == ")":
                 depth = max(0, depth - 1)
-                end_word()
+                end_cmd(False)
                 words.clear()
                 i += 1
                 continue
             cur.append(c)
+            arg.append(c)
             i += 1
+        end_cmd(False)
         return n
 
     def dq(self, i: int, live: bool) -> int:
@@ -904,9 +1126,10 @@ def command_views(command: str, depth: int = 0) -> List[Tuple[str, str, bytearra
     """``[(masked, raw, dead)]``: the command line and, after it, each string
     it executes (``bash -c '...'`` ...), recursively. ``raw`` is the line
     without heredoc bodies and with comments masked; ``masked`` also masks the
-    quoted data; ``dead[i]`` is set where ``raw`` holds quoted data."""
-    body = _lex(command)[1]
-    sc = _Scan(body, depth).run()
+    quoted data; ``dead[i]`` is set where ``raw`` holds quoted data. A heredoc
+    body or a here-string that a shell reads is an executed string too."""
+    _segs, body, bodies = _lex(command)
+    sc = _Scan(body, depth, bodies).run()
     raw = "".join(MASK if sc.comment[k] else ch for k, ch in enumerate(body))
     masked = "".join(MASK if (sc.comment[k] or sc.dead[k]) else ch for k, ch in enumerate(body))
     out = [(masked, raw, sc.dead)]

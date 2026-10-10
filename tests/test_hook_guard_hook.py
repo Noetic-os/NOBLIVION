@@ -220,6 +220,16 @@ def test_compliant_command_is_not_denied(env):
     assert out is None or "permissionDecision" not in out
 
 
+def test_a_heredoc_that_a_shell_reads_is_denied_and_a_file_body_is_not(env):
+    # NOBLIVION-52: the body of ``bash <<EOF`` is code; the body of ``cat > f <<EOF`` is data
+    body = "\ngit push --force origin main\nEOF"
+    out = call(env, bash("bash <<'EOF'" + body))
+    assert out["permissionDecision"] == "deny"
+    assert out["permissionDecisionReason"].startswith("Never force-push.")
+    out = call(env, bash("cat > notes.md <<'EOF'" + body))
+    assert out is None or "permissionDecision" not in out
+
+
 # 2. budget ----------------------------------------------------------------
 def test_budget_spent_retry_is_still_denied_and_escalates(env):
     """Arm G trap t06 (RESULT-G.md): the model retried after 2 denies and the

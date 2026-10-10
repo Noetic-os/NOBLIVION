@@ -12,6 +12,15 @@ All notable changes to NOBLIVION. The format follows
 
 - Codex-generated project instructions and environment context no longer enter
   background learning as direct user evidence (NOBLIVION-98).
+- A deny rule now also checks a heredoc body or a here-string that a shell
+  reads (NOBLIVION-52). Before, the guard removed every heredoc body as
+  data, so `bash <<'EOF'` with `git push --force` in the body was not
+  denied. The body is code when its reader is `bash`, `sh`, `zsh`, `dash`
+  or `ksh` (also by path, with `-s`, and behind `sudo`, `env`, `exec`,
+  `nohup`, `timeout` and the like), `su`, `sudo -s`, `sudo -i`, or `ssh`
+  with no remote command or with a remote shell. `cat <<EOF | bash` and
+  `bash <<< "..."` count too. A body for any other reader, such as
+  `cat > file`, `tee`, `git commit -F -` or `python3`, stays data.
 
 ## 0.1.11 - 2026-10-12
 

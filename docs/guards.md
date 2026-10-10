@@ -140,9 +140,23 @@ command. The reason names the rule.
   command list.
 - It removes wrappers first, such as `env`, `sudo`, `timeout` and
   `VAR=value` prefixes.
-- It ignores heredoc bodies, quoted data and comments.
+- It ignores quoted data and comments.
 - It checks the command inside `bash -c`, `eval` and `ssh host '...'` as a
   command of its own.
+- A heredoc body or a here-string (`<<< "..."`) is data, so the hook
+  ignores it, unless a shell reads it. Then the body is code, and the hook
+  checks it as a command of its own. These readers make a body code:
+  - `bash`, `sh`, `zsh`, `dash` and `ksh`, also by path (`/bin/bash`),
+    behind a wrapper (`sudo`, `env`, `command`, `exec`, `nohup`,
+    `timeout`, `nice`, `VAR=value`) and with `-s`. With `-c` or a script
+    file, the shell reads the body as data.
+  - `su` without `-c`, `sudo -s` and `sudo -i`.
+  - `ssh host` with no remote command, or with a remote shell
+    (`ssh host bash -s`).
+  - `cat` with no file, when it pipes to one of these readers
+    (`cat <<EOF | bash`).
+- Every other reader keeps the body as data, for example `cat > file`,
+  `tee`, `git commit -F -`, `gh pr create --body-file -` and `python3`.
 
 Edit, Write and MultiEdit calls get rows only. They are never blocked.
 
