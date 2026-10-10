@@ -24,8 +24,9 @@ Bash
   * A ``violates:`` hit (``guard_table.match``; it strips the git
     global options and the env/sudo/nohup/setsid/timeout wrappers, ignores
     heredoc bodies, masks quoted data and ``#`` comments, and matches the
-    string of ``bash -c '...'``, ``eval``, ``ssh host '...'`` as a command
-    line of its own) prints ``permissionDecision: deny`` with the reason
+    string of ``bash -c '...'``, ``eval``, ``ssh host '...'``, and a heredoc
+    body or here-string that a shell reads (``bash <<EOF``, NOBLIVION-52), as
+    a command line of its own) prints ``permissionDecision: deny`` with the reason
     ``<rule>\\nApply: <apply>\\nMemory: <id>`` and one last line that gives the
     override syntax. With several hits the memory denied least often in this
     agent leads and the others are listed after it.
