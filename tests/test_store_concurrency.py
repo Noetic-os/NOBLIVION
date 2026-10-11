@@ -403,7 +403,9 @@ def test_read_then_write_transactions_lose_no_update(tmp_path, fake_ollama):
     rng = random.Random(3)
     try:
         time.sleep(max(0.0, start_at - time.time()))
-        while any(proc.poll() is None for proc, _ in rmw):
+        # At least one indexer run, even when a slow runner lets the workers
+        # finish before this loop first looks at them (macOS CI, 2026-10-09).
+        while not cli_runs or any(proc.poll() is None for proc, _ in rmw):
             note = rng.randrange(FILLERS)
             write_note(
                 folder,
