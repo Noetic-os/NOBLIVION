@@ -119,16 +119,18 @@ def _text(value: Any) -> str:
     )
 
 
-def _codex_injected_context(text: str) -> bool:
-    """Codex serializes project instructions and environment as user messages."""
-    return text.lstrip().startswith(
-        (
-            "# AGENTS.md instructions",
-            "<environment_context>",
-            "<permissions instructions>",
-            "<skills_instructions>",
-        )
-    )
+def _codex_context_items(payload: dict, count: int) -> set:
+    """Use native block provenance; text prefixes cannot prove who authored it."""
+    metadata = payload.get("internal_chat_message_metadata_passthrough")
+    kinds = metadata.get("content_item_kinds") if isinstance(metadata, dict) else None
+    if not isinstance(kinds, list) or len(kinds) != count:
+        return set()
+    return {
+        index
+        for index, kind in enumerate(kinds)
+        if isinstance(kind, str)
+        and kind in {"agents_md.instructions", "environments.environment_context"}
+    }
 
 
 def normalized(row: dict, client: str) -> list[dict]:
@@ -171,8 +173,11 @@ def normalized(row: dict, client: str) -> list[dict]:
         content = [{"type": "text", "text": content}]
     if not isinstance(content, list):
         return []
+    injected = _codex_context_items(payload, len(content)) if client == "codex" else set()
     out = []
-    for block in content:
+    for index, block in enumerate(content):
+        if role == "user" and index in injected:
+            continue
         if not isinstance(block, dict):
             continue
         item = {**common, "role": role, "phase": str(payload.get("phase") or "")}
@@ -196,13 +201,6 @@ def normalized(row: dict, client: str) -> list[dict]:
             )
         else:
             # Nontext content is not model evidence. Its type stays visible, with no bitmap bytes.
-            continue
-        if (
-            client == "codex"
-            and item["role"] == "user"
-            and item["kind"] == "message"
-            and _codex_injected_context(item["content"])
-        ):
             continue
         if item["content"]:
             out.append(item)

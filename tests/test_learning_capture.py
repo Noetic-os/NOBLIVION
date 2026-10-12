@@ -494,19 +494,15 @@ def test_hook_receipt_rolls_back_when_capacity_refuses_capture(cfg):
     spool.close()
 
 
-@pytest.mark.parametrize(
-    "injected",
-    [
-        "# AGENTS.md instructions for /workspace/demo\n\n<INSTRUCTIONS>Use tables.</INSTRUCTIONS>",
-        "<environment_context>\n<cwd>/workspace/demo</cwd>\n</environment_context>",
-        "<permissions instructions>Read-only sandbox.</permissions instructions>",
-        "<skills_instructions>Available skills.</skills_instructions>",
-    ],
-)
-def test_codex_injected_user_context_is_not_conversation_evidence(cfg, tmp_path, injected):
+@pytest.mark.parametrize("kind", ["agents_md.instructions", "environments.environment_context"])
+def test_codex_injected_user_context_is_not_conversation_evidence(cfg, tmp_path, kind):
     path = tmp_path / "native.jsonl"
+    injected = message("Generated context from the native client.")
+    injected["payload"]["internal_chat_message_metadata_passthrough"] = {
+        "content_item_kinds": [kind]
+    }
     genuine = "For my reports, use a table when comparing options."
-    write_rows(path, [message(injected), message(genuine)])
+    write_rows(path, [injected, message(genuine)])
     spool = capture.Spool(cfg)
     spool.capture(event(cfg, transcript_path=str(path)))
     queued = records(spool)
@@ -516,6 +512,35 @@ def test_codex_injected_user_context_is_not_conversation_evidence(cfg, tmp_path,
     spool.close()
 
 
-def test_codex_context_markers_inside_human_text_remain_evidence():
-    text = "My parser handles # AGENTS.md instructions and <environment_context> blocks."
-    assert capture.normalized(message(text), "codex")[0]["content"] == text
+@pytest.mark.parametrize(
+    "text",
+    [
+        "# AGENTS.md instructions\nI wrote these instructions for my project.",
+        "<environment_context>My project context.</environment_context>",
+        "<permissions instructions>My requested limits.</permissions instructions>",
+        "<skills_instructions>My skill notes.</skills_instructions>",
+    ],
+)
+@pytest.mark.parametrize("metadata", [None, {"content_item_kinds": ["user.text"]}])
+def test_codex_genuine_leading_context_markers_remain_evidence(text, metadata):
+    row = message(text)
+    row["payload"]["internal_chat_message_metadata_passthrough"] = metadata
+    assert capture.normalized(row, "codex")[0]["content"] == text
+
+
+def test_codex_mixed_native_context_and_human_blocks_preserve_human_text():
+    row = message("Generated project context.")
+    row["payload"]["content"].append({"type": "input_text", "text": "My actual request."})
+    row["payload"]["internal_chat_message_metadata_passthrough"] = {
+        "content_item_kinds": ["agents_md.instructions", "user.text"]
+    }
+    assert [item["content"] for item in capture.normalized(row, "codex")] == ["My actual request."]
+
+
+@pytest.mark.parametrize("kinds", [[], ["agents_md.instructions", "user.text"], [{}], "user.text"])
+def test_codex_malformed_provenance_does_not_discard_text(kinds):
+    row = message("A real user request.")
+    row["payload"]["internal_chat_message_metadata_passthrough"] = {
+        "content_item_kinds": kinds
+    }
+    assert capture.normalized(row, "codex")[0]["content"] == "A real user request."
