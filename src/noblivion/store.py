@@ -200,6 +200,7 @@ class Store:
         self.index_blocked = False
         self._lock_fd: int | None = None
         self._stop = threading.Event()
+        self._signal_stop_reason = ""
         self._jobs_stop = threading.Event()
         self._activity = threading.Lock()
         self._active = 0
@@ -600,6 +601,14 @@ class Store:
             self.stop_reason = reason
             self._stop.set()
 
+    def request_signal_stop(self, reason: str) -> None:
+        """Record a signal without taking a lock in the interrupted main thread."""
+        # Event.set() can deadlock if a signal interrupts Event.wait() while
+        # its non-reentrant condition lock is held. The serve loop consumes
+        # this flag outside that lock, including signals received during open().
+        if not self._signal_stop_reason:
+            self._signal_stop_reason = reason
+
     def serve(self) -> int:
         """Answer requests until a stop or the idle limit; then shut down cleanly."""
         assert self.server is not None, "open() first"
@@ -613,7 +622,9 @@ class Store:
         idle_limit = self.store_settings.idle_exit_s
         tick = min(0.25, idle_limit / 4) if idle_limit else 0.25
         while not self._stop.wait(tick):
-            if idle_limit and self.idle_for() >= idle_limit:
+            if self._signal_stop_reason:
+                self.request_stop(self._signal_stop_reason)
+            elif idle_limit and self.idle_for() >= idle_limit:
                 self.request_stop("idle")
             elif not self.data_dir.is_dir():
                 # An uninstall deleted the data dir: stop and make nothing
@@ -731,12 +742,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     store = Store(settings, store_settings, lock_wait_s=args.lock_wait)
 
     def on_signal(signum: int, _frame: object) -> None:
-        store.request_stop(signal.Signals(signum).name)
+        store.request_signal_stop(signal.Signals(signum).name)
 
     # Install the handlers before open() writes store.json (NOBLIVION-20): a
     # caller that sees store.json may send SIGTERM at once. With the default
     # action the process dies and leaves a stale store.json; with the handler
-    # serve() stops at once and close() deletes store.json.
+    # serve() consumes the pending signal and close() deletes store.json.
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
     try:

@@ -1383,6 +1383,48 @@ def test_process_serves_and_stops_on_sigterm(tmp_path):
             child.wait(10)
 
 
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+def test_signal_while_stop_event_lock_is_held_exits_cleanly(tmp_path, signum):
+    """A signal can interrupt Event.wait while its non-reentrant lock is held."""
+    script = f"""
+import faulthandler
+import signal
+from noblivion import store
+
+original_serve = store.Store.serve
+
+def serve_with_interrupted_wait(self):
+    original_wait = self._stop.wait
+
+    def interrupted_wait(timeout=None):
+        self._stop.wait = original_wait
+        faulthandler.dump_traceback_later(5, exit=True)
+        with self._stop._cond:
+            signal.raise_signal({int(signum)})
+        faulthandler.cancel_dump_traceback_later()
+        return original_wait(timeout)
+
+    self._stop.wait = interrupted_wait
+    return original_serve(self)
+
+store.Store.serve = serve_with_interrupted_wait
+raise SystemExit(store.main([]))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env=store_env(tmp_path),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    data = tmp_path / "data"
+    assert not (data / "store.json").exists()
+    log = (data / "logs" / "store.log").read_text()
+    assert f"store stopping: {signum.name}" in log
+
+
 def test_spawn_store_starts_a_detached_process(tmp_path, monkeypatch):
     env = store_env(tmp_path)
     for key, value in env.items():

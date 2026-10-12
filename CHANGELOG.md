@@ -17,6 +17,8 @@ All notable changes to NOBLIVION. The format follows
 
 ### Fixed
 
+- Signal-triggered store shutdown no longer reacquires the main thread’s stop-event
+  lock, preventing a deadlock when SIGTERM or SIGINT interrupts a wait.
 - Concurrent database upgrades use distinct backup files and publish each backup
   only after the copy completes, preventing startup collisions and partial backups.
 - Superseded and excluded memories stay out of recall across repeated index
