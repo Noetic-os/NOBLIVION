@@ -6,7 +6,12 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.10 - 2026-10-12
+
+Fixes lost recall after an idle stop: the first prompt after the store has
+stopped for idleness now waits for the store to start, so it gets its
+memories. After the plugin update, type `/noblivion:setup` in the next
+session, so that the store restarts with 0.1.10.
 
 ### Fixed
 
