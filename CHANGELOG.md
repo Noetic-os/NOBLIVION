@@ -6,7 +6,7 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.11 - 2026-10-12
 
 ### Added
 
@@ -17,6 +17,8 @@ All notable changes to NOBLIVION. The format follows
 
 ### Fixed
 
+- Concurrent database upgrades use distinct backup files and publish each backup
+  only after the copy completes, preventing startup collisions and partial backups.
 - Superseded and excluded memories stay out of recall across repeated index
   scans and cached searches. Root-scoped fetches enforce project boundaries.
 - Codex adapter upgrades preserve existing command enforcement prefixes and

@@ -129,6 +129,50 @@ def test_store_mode_migrates_an_old_schema_with_backup(tmp_path):
     assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
 
 
+def test_backups_in_one_clock_tick_are_distinct_complete_snapshots(tmp_path, monkeypatch):
+    path = tmp_path / "noblivion.db"
+    conn = db.open_db(path, create=True)
+
+    class FrozenTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 12, 18, 16, 8, 446608, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(db, "datetime", FrozenTime)
+    try:
+        db.set_meta(conn, "backup_marker", "before")
+        first = db._backup(conn, path, 1)
+        db.set_meta(conn, "backup_marker", "after")
+        second = db._backup(conn, path, 1)
+        assert first != second
+        for backup, marker in ((first, "before"), (second, "after")):
+            assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+            snapshot = sqlite3.connect(backup)
+            try:
+                assert snapshot.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+                assert db.get_meta(snapshot, "backup_marker") == marker
+            finally:
+                snapshot.close()
+        assert not list((tmp_path / "backups").glob("*.tmp"))
+    finally:
+        conn.close()
+
+
+def test_failed_backup_is_never_published_or_left_as_a_completed_copy(tmp_path):
+    folder = tmp_path / "backups"
+
+    class FailedSource:
+        def backup(self, destination):
+            assert not list(folder.glob("noblivion-v*-*.db"))
+            assert len(list(folder.glob("*.tmp"))) == 1
+            destination.execute("CREATE TABLE incomplete (value TEXT)")
+            raise sqlite3.OperationalError("injected backup failure")
+
+    with pytest.raises(sqlite3.OperationalError, match="injected backup failure"):
+        db._backup(FailedSource(), tmp_path / "noblivion.db", 1)
+    assert list(folder.iterdir()) == []
+
+
 def test_refuses_a_newer_schema(tmp_path):
     path = tmp_path / "noblivion.db"
     db.open_db(path, create=True).close()
@@ -162,6 +206,27 @@ def test_prune_backups_keeps_three(tmp_path):
     db.prune_backups(tmp_path)
     left = sorted(p.name for p in tmp_path.iterdir())
     assert left == [f"noblivion-v1-2026010{i}T000000000000Z.db" for i in (2, 3, 4)]
+
+
+def test_prune_tolerates_another_pruner_removing_a_listed_backup(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    copies = [tmp_path / f"noblivion-v1-{i}.db" for i in range(4)]
+    for copy in copies:
+        copy.write_bytes(b"complete")
+    staging = tmp_path / "noblivion-v1-in-progress.tmp"
+    staging.write_bytes(b"incomplete")
+    original_stat = Path.stat
+
+    def concurrent_removal(path, *args, **kwargs):
+        if path == copies[0]:
+            path.unlink(missing_ok=True)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", concurrent_removal)
+    db.prune_backups(tmp_path, keep=2)
+    assert len(list(tmp_path.glob("*.db"))) == 2
+    assert staging.read_bytes() == b"incomplete"
 
 
 def test_ids_start_at_a_random_base(tmp_path):

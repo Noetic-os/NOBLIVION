@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import sqlite3
+import tempfile
 import time
 import urllib.parse
 from collections.abc import Iterator, Sequence
@@ -260,21 +261,39 @@ def _backup(conn: sqlite3.Connection, db_path: Path, old_version: int) -> Path:
     folder = db_path.parent / "backups"
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    target = folder / f"noblivion-v{old_version}-{stamp}.db"
-    fd = os.open(target, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    # Concurrent openers can share a clock tick before taking the migration
+    # lock. Reserve a unique 0600 file, and keep it outside the completed-backup
+    # glob until SQLite has closed it so another opener cannot prune it early.
+    fd, name = tempfile.mkstemp(
+        prefix=f"noblivion-v{old_version}-{stamp}-", suffix=".tmp", dir=folder
+    )
     os.close(fd)
-    dest = sqlite3.connect(str(target))
+    staging = Path(name)
+    target = staging.with_suffix(".db")
     try:
-        conn.backup(dest)
+        dest = sqlite3.connect(str(staging))
+        try:
+            conn.backup(dest)
+        finally:
+            dest.close()
+        os.replace(staging, target)
     finally:
-        dest.close()
+        staging.unlink(missing_ok=True)
     prune_backups(folder)
     return target
 
 
 def prune_backups(folder: Path, keep: int = KEEP_BACKUPS) -> None:
-    copies = sorted(folder.glob("noblivion-v*-*.db"), key=lambda p: p.stat().st_mtime)
-    for old in copies[:-keep] if keep > 0 else copies:
+    copies = []
+    for path in folder.glob("noblivion-v*-*.db"):
+        try:
+            modified = path.stat().st_mtime
+        except FileNotFoundError:
+            # Another migration can prune a backup after this directory walk.
+            continue
+        copies.append((modified, path))
+    copies.sort(key=lambda item: item[0])
+    for _, old in copies[:-keep] if keep > 0 else copies:
         old.unlink(missing_ok=True)
 
 
