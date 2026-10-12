@@ -858,6 +858,21 @@ def fetch_url(base: str, memory_id: Any, project: str = PERSONA, root: Optional[
     return f"{base}/api/memories/fetch/{mid}?{qs}"
 
 
+def _wait_for_started_store(env: Mapping[str, str], probe: Any, probe_s: float) -> Tuple[str, str]:
+    """Poll ``store_client.connect`` until the store that was just asked to
+    start answers its proof, at most ``START_WAIT_S``. Raises
+    ``RecallError("store_down")`` when it never does, and the store's own reason
+    for any other failure (``no_token``, ``foreign_listener``)."""
+    deadline = time.monotonic() + _STORE.START_WAIT_S
+    while True:
+        try:
+            return _STORE.connect(env, probe, probe_s)
+        except _STORE.StoreUnavailable as exc:
+            if exc.reason != _STORE.DOWN or time.monotonic() >= deadline:
+                raise RecallError(exc.reason) from None
+        time.sleep(_STORE.HOOK_POLL_S)
+
+
 def store_get(build: Any, environ: Optional[Mapping[str, str]], timeout_s: float) -> Any:
     """GET one store route and decode its JSON, within ``timeout_s`` TOTAL.
 
@@ -893,8 +908,14 @@ def store_get(build: Any, environ: Optional[Mapping[str, str]], timeout_s: float
     try:
         base, token = _STORE.connect(env, _probe, probe_s)
     except _STORE.StoreUnavailable as exc:
-        _STORE.request_start(env)
-        raise RecallError(exc.reason) from None
+        started = _STORE.request_start(env)
+        if exc.reason != _STORE.DOWN or started not in ("spawned", "starting"):
+            raise RecallError(exc.reason) from None
+        # NOBLIVION-97: the store stops itself when idle. The launcher is on its
+        # way, so wait a short time for the new store instead of losing this
+        # prompt's recall. The wait is its own budget, apart from the HTTP one.
+        base, token = _wait_for_started_store(env, _probe, probe_s)
+        t0 = time.monotonic()
     url = build(base)
     reason = transport_reason(url, env)
     if reason:

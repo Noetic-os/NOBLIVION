@@ -14,7 +14,9 @@ client side of ``noblivion.launcher``:
    (``proof_ok``). Only a proven listener gets the token, as
    ``Authorization: Bearer <token>``.
 3. A store that is down is started by ``<venv>/bin/noblivion ensure-running``
-   (``request_start``): a detached child, never waited for. The launcher
+   (``request_start``): a detached child, never waited for. A recall hook then
+   polls for the new store up to START_WAIT_S (NOBLIVION-97: the store stops
+   itself when idle, and the first prompt after that must not lose its recall). The launcher
    checks the proof and the version, and runs the atomic start check
    (``flock`` on ``spawn.stamp``, design doc section 3.2) itself. The hook
    only reads the stamp's age; it never touches or locks it.
@@ -70,6 +72,7 @@ SPAWN_STAMP_FILE = "spawn.stamp"
 STORE_ERROR_FILE = "store.error"  # why the last start failed (noblivion.launcher)
 HOOK_WAIT_S = 5.0  # SessionStart waits this long for ensure-running (hook timeout 10 s)
 HOOK_POLL_S = 0.05
+START_WAIT_S = 2.0  # a recall hook waits this long for a store it just asked to start
 START_REASON_MAX_CHARS = 240
 PROOF_PREFIX = "noblivion-health:"
 PROBE_TIMEOUT_S = 0.3

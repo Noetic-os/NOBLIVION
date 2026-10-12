@@ -226,10 +226,48 @@ def test_a_store_down_asks_the_launcher(rh, tmp_path, monkeypatch):
     env = hook_env(tmp_path, NOBLIVION_STORE_AUTOSTART="1")
     asked = []
     monkeypatch.setattr(rh._STORE, "request_start", lambda e, **kw: asked.append(e) or "spawned")
+    monkeypatch.setattr(rh._STORE, "START_WAIT_S", 0.0)
     with pytest.raises(rh.RecallError) as err:
         rh.recall_index("anything", 5, env)
     assert err.value.reason == "store_down"
     assert len(asked) == 1
+
+
+def test_a_store_that_comes_up_after_the_start_request_still_answers(rh, tmp_path, monkeypatch):
+    """NOBLIVION-97: the first prompt after an idle stop must get its recall."""
+    env = hook_env(tmp_path, NOBLIVION_STORE_AUTOSTART="1")
+    data = Path(env["NOBLIVION_DATA_DIR"])
+    with FakeStore(data, write_files=False) as fake:
+        fake.route("/api/memories/index", index_answer([index_row(1, 7, "x")]))
+
+        def start(e, **kw):
+            fake.write_files()  # the store comes up as the launcher runs
+            return "spawned"
+
+        monkeypatch.setattr(rh._STORE, "request_start", start)
+        rows = rh.recall_index("anything", 5, env)
+    assert rows
+
+
+def test_a_start_that_never_finishes_fails_open_within_the_wait(rh, tmp_path, monkeypatch):
+    env = hook_env(tmp_path, NOBLIVION_STORE_AUTOSTART="1")
+    monkeypatch.setattr(rh._STORE, "request_start", lambda e, **kw: "starting")
+    monkeypatch.setattr(rh._STORE, "START_WAIT_S", 0.3)
+    t0 = rh.time.monotonic()
+    with pytest.raises(rh.RecallError) as err:
+        rh.recall_index("anything", 5, env)
+    assert err.value.reason == "store_down"
+    assert rh.time.monotonic() - t0 < 1.5
+
+
+def test_autostart_off_does_not_wait(rh, tmp_path, monkeypatch):
+    env = hook_env(tmp_path, NOBLIVION_STORE_AUTOSTART="0")
+    monkeypatch.setattr(rh._STORE, "START_WAIT_S", 30.0)
+    t0 = rh.time.monotonic()
+    with pytest.raises(rh.RecallError) as err:
+        rh.recall_index("anything", 5, env)
+    assert err.value.reason == "store_down"
+    assert rh.time.monotonic() - t0 < 2.0
 
 
 def test_transport_guard_is_loopback_only(rh):

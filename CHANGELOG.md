@@ -6,6 +6,18 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- The first prompt after the store stops for idleness no longer loses its
+  recall (NOBLIVION-97). The store stops itself after about 30 minutes
+  without use. The next prompt asked for a start, but the recall hook did
+  not wait for the new store, so that prompt got no memories (11 of 164
+  prompts in one measured week). Now the hook waits up to 2 seconds for the
+  store it just asked to start, then asks again. With autostart off, or when
+  the store never comes up, the hook still fails open at once.
+
 ## 0.1.9 - 2026-10-11
 
 Fixes `noblivion_remember` in Claude Code: it now saves a note with no
