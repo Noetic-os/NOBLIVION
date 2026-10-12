@@ -492,3 +492,30 @@ def test_hook_receipt_rolls_back_when_capacity_refuses_capture(cfg):
     assert spool.capture(prompt)["chunks"] == 1
     assert spool.conn.execute("SELECT count(*) FROM hook_receipts").fetchone()[0] == 1
     spool.close()
+
+
+@pytest.mark.parametrize(
+    "injected",
+    [
+        "# AGENTS.md instructions for /workspace/demo\n\n<INSTRUCTIONS>Use tables.</INSTRUCTIONS>",
+        "<environment_context>\n<cwd>/workspace/demo</cwd>\n</environment_context>",
+        "<permissions instructions>Read-only sandbox.</permissions instructions>",
+        "<skills_instructions>Available skills.</skills_instructions>",
+    ],
+)
+def test_codex_injected_user_context_is_not_conversation_evidence(cfg, tmp_path, injected):
+    path = tmp_path / "native.jsonl"
+    genuine = "For my reports, use a table when comparing options."
+    write_rows(path, [message(injected), message(genuine)])
+    spool = capture.Spool(cfg)
+    spool.capture(event(cfg, transcript_path=str(path)))
+    queued = records(spool)
+    assert [record["content"] for record in queued] == [genuine]
+    assert queued[0]["metadata"]["direct_user"] is True
+    assert spool.conn.execute("SELECT offset FROM cursors").fetchone()[0] == path.stat().st_size
+    spool.close()
+
+
+def test_codex_context_markers_inside_human_text_remain_evidence():
+    text = "My parser handles # AGENTS.md instructions and <environment_context> blocks."
+    assert capture.normalized(message(text), "codex")[0]["content"] == text

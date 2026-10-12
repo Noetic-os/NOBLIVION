@@ -119,6 +119,18 @@ def _text(value: Any) -> str:
     )
 
 
+def _codex_injected_context(text: str) -> bool:
+    """Codex serializes project instructions and environment as user messages."""
+    return text.lstrip().startswith(
+        (
+            "# AGENTS.md instructions",
+            "<environment_context>",
+            "<permissions instructions>",
+            "<skills_instructions>",
+        )
+    )
+
+
 def normalized(row: dict, client: str) -> list[dict]:
     """Keep messages, function/custom calls, results, IDs and original tool JSON."""
     payload = row.get("payload", {}) if row.get("type") == "response_item" else row
@@ -184,6 +196,13 @@ def normalized(row: dict, client: str) -> list[dict]:
             )
         else:
             # Nontext content is not model evidence. Its type stays visible, with no bitmap bytes.
+            continue
+        if (
+            client == "codex"
+            and item["role"] == "user"
+            and item["kind"] == "message"
+            and _codex_injected_context(item["content"])
+        ):
             continue
         if item["content"]:
             out.append(item)
