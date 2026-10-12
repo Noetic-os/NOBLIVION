@@ -63,21 +63,64 @@ def _kill(pid: int) -> None:
 
 
 def _delete_running_data_dir(path: Path, timeout: float = 5.0) -> None:
-    """Delete a data dir that a live store may still write into. A file the
-    store writes during the walk makes rmtree fail with "Directory not empty",
-    so retry until the folder is gone. The tests check afterwards that nothing
-    comes back, so a retry cannot hide the bug they guard."""
+    """Delete a data dir that a live store may still write into. A file can
+    appear or disappear during rmtree's walk, so retry errors while the root
+    still exists. In Python before 3.13, a missing child raises FileNotFoundError
+    even when the root remains. Stop retrying once deletion succeeds; the tests
+    then check that nothing comes back."""
     deadline = time.monotonic() + timeout
     while True:
         try:
             shutil.rmtree(path)
             return
-        except FileNotFoundError:
-            return
         except OSError:
+            if not path.exists():
+                return
             if time.monotonic() > deadline:
                 raise
             time.sleep(0.05)
+
+
+def test_delete_retries_when_a_child_disappears_but_the_root_remains(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    child = data / "store.json"
+    child.write_text("{}", encoding="utf-8")
+    (data / "logs").mkdir()
+    (data / "venv").mkdir()
+    original_rmtree = shutil.rmtree
+    calls = []
+
+    def lose_child(path):
+        calls.append(path)
+        if len(calls) == 1:
+            child.unlink()
+            # Python <=3.12 propagates a child that disappears during the walk.
+            # Inject that outcome explicitly so newer Python tests it as well.
+            raise FileNotFoundError(2, "No such file or directory", str(child))
+        original_rmtree(path)
+
+    monkeypatch.setattr(shutil, "rmtree", lose_child)
+    _delete_running_data_dir(data)
+    assert calls == [data, data]
+    assert not data.exists()
+
+
+def test_delete_fails_at_the_deadline_if_the_root_remains(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    error = FileNotFoundError(2, "No such file or directory", str(data / "store.json"))
+
+    def lose_child(path):
+        raise error
+
+    times = iter([0.0, 1.0])
+    monkeypatch.setattr(shutil, "rmtree", lose_child)
+    monkeypatch.setattr(time, "monotonic", lambda: next(times))
+    with pytest.raises(FileNotFoundError) as caught:
+        _delete_running_data_dir(data, timeout=0.5)
+    assert caught.value is error
+    assert data.is_dir()
 
 
 # -- the reproducer -----------------------------------------------------------------
