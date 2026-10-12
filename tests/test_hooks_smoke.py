@@ -27,6 +27,7 @@ ENTRY_POINTS = [
     ("memory_fields_hook.py", []),
     ("memory_sync_hook.py", []),
     ("trust_session_line.py", []),
+    ("version_check.py", []),
     ("guard_table.py", ["--rebuild"]),
     ("recall_hook.py", []),
     ("recall_hook.py", ["--reset-rows"]),
@@ -94,6 +95,7 @@ def test_every_moved_module_is_present() -> None:
         "trust_report",
         "trust_session_line",
         "trust_signals",
+        "version_check",  # NOBLIVION-99: old-session notice
     }
     expected.add("learning_summary")
     expected.add("mine_session_end")  # SessionEnd trigger of the transcript miner (E10)

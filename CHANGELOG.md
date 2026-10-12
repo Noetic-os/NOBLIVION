@@ -6,6 +6,19 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## 0.1.13 - 2026-10-12
+
+### Added
+
+- A session that runs an older NOBLIVION than the installed one now says so. The
+  new `version_check` hook prints one line, once for each session and installed
+  version: `NOBLIVION X is installed, but this session runs Y. Run /reload-plugins
+  to switch.` It stays silent outside the plugin cache layout (NOBLIVION-99).
+- `scripts/noblivion_mcp_launcher.py` starts the MCP server of the installed
+  version. An MCP client outside Claude Code, such as one that connects over SSH,
+  runs a copy of it at a fixed path and follows each update without a config
+  change. See [Update](docs/install.md#update).
+
 ## 0.1.12 - 2026-10-12
 
 ### Fixed

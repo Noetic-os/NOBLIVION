@@ -230,6 +230,40 @@ the machine. Read [dedup-and-privacy.md](dedup-and-privacy.md) first.
    replaces the old store with the new one. Your database, config and
    token stay.
 
+### Update on its own
+
+Claude Code does not update a plugin from a third-party marketplace unless you
+turn it on:
+
+- In Claude Code, run `/plugin`, open **Marketplaces**, choose `noblivion` and
+  select **Enable auto-update**. Or set `"autoUpdate": true` on the `noblivion`
+  entry of `extraKnownMarketplaces` in `settings.json`.
+- On a machine that must stay current without a person, run
+  `claude plugin marketplace update noblivion` and then
+  `claude plugin update noblivion@noblivion` from a timer.
+
+An update puts a new version folder on disk. A session that is already open
+keeps the old version. When the installed version is newer than the one a
+session runs, the `version_check` hook prints one line that names
+`/reload-plugins`. Run that command in the session, or start a new one.
+Monitors need a new session.
+
+### An MCP client outside Claude Code
+
+A client that starts the MCP server itself, for example over SSH, must not name
+a version folder such as `.../cache/noblivion/noblivion/0.1.11/mcp/recall_mcp.py`.
+It would run that one version for ever, and Claude Code deletes the folder 14
+days after an update.
+
+1. Copy `scripts/noblivion_mcp_launcher.py` to a fixed path on the machine that
+   holds the plugin, for example `~/.local/bin/noblivion-mcp`, and make it
+   executable.
+2. Make the client run that path. The copy holds no version. Each start reads
+   `installed_plugins.json` and runs `mcp/recall_mcp.py` of the installed
+   version.
+
+Set `CLAUDE_CONFIG_DIR` when the Claude config folder is not `~/.claude`.
+
 ## Uninstall
 
 The steps below keep your database (the memory index and the trust

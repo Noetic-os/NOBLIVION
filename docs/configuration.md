@@ -56,6 +56,7 @@ Every on/off switch reads its value the same way. The Default column says
 | --- | --- | --- | --- |
 | `NOBLIVION_DATA_DIR` | none | `CLAUDE_PLUGIN_DATA`, else `$XDG_DATA_HOME/noblivion`, else `~/.local/share/noblivion` | The folder for the database, the token, the config, the venv, the logs and the caches. |
 | `NOBLIVION_CONFIG` | none | `<data dir>/config.json` | The path of the config file. |
+| `NOBLIVION_PLUGIN_KEY` | none | `noblivion@noblivion` | The plugin key that `scripts/noblivion_mcp_launcher.py` looks up in `installed_plugins.json` to find the installed server. |
 
 `CLAUDE_PLUGIN_DATA` is set by Claude Code for an installed plugin. When a
 `noblivion` command runs from the store venv, it also finds the data dir
