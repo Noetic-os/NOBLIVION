@@ -20,6 +20,23 @@ All notable changes to NOBLIVION. The format follows
 - Superseded and excluded memories stay out of recall across repeated index
   scans and cached searches. Root-scoped fetches enforce project boundaries.
 
+## 0.1.10 - 2026-10-12
+
+Fixes lost recall after an idle stop: the first prompt after the store has
+stopped for idleness now waits for the store to start, so it gets its
+memories. After the plugin update, type `/noblivion:setup` in the next
+session, so that the store restarts with 0.1.10.
+
+### Fixed
+
+- The first prompt after the store stops for idleness no longer loses its
+  recall (NOBLIVION-97). The store stops itself after about 30 minutes
+  without use. The next prompt asked for a start, but the recall hook did
+  not wait for the new store, so that prompt got no memories (11 of 164
+  prompts in one measured week). Now the hook waits up to 2 seconds for the
+  store it just asked to start, then asks again. With autostart off, or when
+  the store never comes up, the hook still fails open at once.
+
 ## 0.1.9 - 2026-10-11
 
 Fixes `noblivion_remember` in Claude Code: it now saves a note with no
