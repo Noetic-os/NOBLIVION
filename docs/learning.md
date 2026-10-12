@@ -149,7 +149,10 @@ controls. The same rule applies to each source root of shared general memories,
 and to search, fetch and summary. This protects clients whose native memory-tool
 process does not receive a session ID; it can also suppress recall for other
 unidentified sessions in that root. Session IDs are client-supplied routing
-metadata, not authenticated identities. Contribution settings are unchanged.
+metadata, not authenticated identities. Public MCP reads always use this
+unknown-session fallback: the MCP process removes inherited session IDs because
+they may be static or belong to another conversation. Native hooks continue to
+use the session ID in their event payload. Contribution settings are unchanged.
 Root-scoped fetches cannot read another project's note. Superseded, excluded and forgotten facts remain
 out of current recall after repeated scans and warm-cache requests.
 

@@ -350,11 +350,21 @@ def tool_schema(environ: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
 
 
 def tool_env(hook: Any, environ: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
-    """The env with the session's memory folder and root filled in, from
-    ``CLAUDE_PROJECT_DIR`` or the working dir (``recall_hook.session_env``)."""
-    env = os.environ if environ is None else environ
+    """Resolve the memory root, but never infer a chat identity from process env.
+
+    A stdio MCP process can inherit a stale or static session ID. Its reads use
+    the store's conservative unknown-session controls. Native hook payloads
+    still supply their genuine session ID through the separate hook entry point.
+    """
+    env = dict(os.environ if environ is None else environ)
+    identity_keys = ("_learning_session_id", "CODEX_THREAD_ID", "CODEX_SESSION_ID")
+    for key in identity_keys:
+        env.pop(key, None)
     cwd = env.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    return hook.session_env(env, {"cwd": cwd})
+    resolved = dict(hook.session_env(env, {"cwd": cwd}))
+    for key in identity_keys:
+        resolved.pop(key, None)
+    return resolved
 
 
 def noblivion_recall(
