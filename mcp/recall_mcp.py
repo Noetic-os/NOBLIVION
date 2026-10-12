@@ -148,6 +148,10 @@ TOOL_SCHEMA: Dict[str, Any] = {
                     "they quote other sessions). Read one with fetch_id."
                 ),
             },
+            "read_capability": {
+                "type": "string",
+                "description": "Reserved for the native host hook; omit this argument.",
+            },
         },
         # `query` is not required, because a fetch has no
         # query. Exactly one of the two is required, which a JSON Schema this
@@ -373,6 +377,8 @@ def noblivion_recall(
     environ: Optional[Dict[str, str]] = None,
     fetch_id: Any = None,
     include_mined: Any = False,
+    read_capability: Any = None,
+    _call_arguments: Any = None,
 ) -> Dict[str, Any]:
     """The tool body. Returns an MCP tools/call result dict.
 
@@ -382,6 +388,43 @@ def noblivion_recall(
     """
     hook = _load_hook()
     environ = tool_env(hook, environ)
+    if isinstance(read_capability, str) and read_capability:
+        # Only the authenticated proven store may turn the host's opaque token
+        # into a session. Inherited IDs and model-supplied plain IDs stay unknown.
+        try:
+            path = Path(__file__).resolve().parent.parent / "src/noblivion/read_capability.py"
+            spec = importlib.util.spec_from_file_location("_mcp_read_capability", path)
+            if spec is None or spec.loader is None:
+                raise ImportError("read_capability")
+            capability = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(capability)
+            arguments = (
+                _call_arguments
+                if isinstance(_call_arguments, dict)
+                else {"query": query, "k": k, "fetch_id": fetch_id, "include_mined": include_mined}
+            )
+            answer = capability.request(
+                environ,
+                capability.RESOLVE_PATH,
+                {
+                    "namespace": hook.recall_project(environ),
+                    "root": environ.get("NOBLIVION_RECALL_ROOT", ""),
+                    "client": "codex",
+                    "arguments": arguments,
+                    "read_capability": read_capability,
+                },
+            )
+            session = answer.get("session_id")
+            if isinstance(session, str) and session:
+                environ["_learning_session_id"] = session
+        except Exception:  # noqa: BLE001 - unknown-session privacy guard remains authoritative
+            pass
+    if environ.get("NOBLIVION_MCP_REQUIRE_CAPABILITY") == "1" and not environ.get(
+        "_learning_session_id"
+    ):
+        return _tool_error(
+            "native recall routing unavailable; enable the NOBLIVION PreToolUse hook"
+        )
     if not isinstance(include_mined, bool):
         return _tool_error("include_mined must be true or false")
     if fetch_id is not None:
@@ -682,6 +725,8 @@ def handle(message: Any, environ: Optional[Dict[str, str]] = None) -> Optional[D
                 environ,
                 fetch_id=args.get("fetch_id"),
                 include_mined=args.get("include_mined", False),
+                read_capability=args.get("read_capability"),
+                _call_arguments=args,
             ),
         )
     return _error(req_id, -32601, f"Method not found: {method}")

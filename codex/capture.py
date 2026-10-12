@@ -119,6 +119,13 @@ def _text(value: Any) -> str:
     )
 
 
+def _scrub(value):
+    module = load_module(
+        Path(__file__).resolve().parents[1] / "src/noblivion/redaction.py", "_capture_redaction"
+    )
+    return module.scrub_read_capabilities(value)
+
+
 def _codex_context_items(payload: dict, count: int) -> set:
     """Use native block provenance; text prefixes cannot prove who authored it."""
     metadata = payload.get("internal_chat_message_metadata_passthrough")
@@ -135,6 +142,7 @@ def _codex_context_items(payload: dict, count: int) -> set:
 
 def normalized(row: dict, client: str) -> list[dict]:
     """Keep messages, function/custom calls, results, IDs and original tool JSON."""
+    row = _scrub(row)
     payload = row.get("payload", {}) if row.get("type") == "response_item" else row
     if not isinstance(payload, dict):
         return []
@@ -224,6 +232,7 @@ def observation(content: str) -> dict:
 
 
 def hook_records(event: dict) -> list[dict]:
+    event = _scrub(event)
     name = event.get("hook_event_name")
     common = {"observed_at": str(event.get("timestamp") or ""), "kind": "message"}
     if name == "UserPromptSubmit":
@@ -394,6 +403,7 @@ class Spool:
     def _parts(self, identity: str, items: list[dict]) -> list[dict]:
         records = []
         for index, item in enumerate(items):
+            item = _scrub(item)
             content = item["content"]
             item = {
                 **item,

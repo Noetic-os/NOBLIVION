@@ -6,6 +6,23 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- One Codex chat's memory opt-out no longer blocks recall in another chat when
+  the native PreToolUse hook is active. The hook binds each MCP recall to its
+  own session with a short-lived, one-use store capability. The Codex installer
+  adds the recall tool matcher and requires a valid capability before any MCP
+  memory read. Other clients keep the conservative unknown-session privacy
+  guard. Every read checks current project and session controls (NOBLIVION-100).
+- Ephemeral recall capabilities are removed from NOBLIVION journals, learning
+  capture, spools and at-rest text without dropping the rest of a contribution.
+- Portable Codex stdio forwarding now carries native PreToolUse through the
+  remote adapter and requires a per-call capability at the remote MCP server.
+  Explicit workspace mappings and independent local contribution controls also
+  apply to this path. See [Codex setup](docs/codex.md) (NOBLIVION-100).
+
 ## 0.1.13 - 2026-10-12
 
 ### Added

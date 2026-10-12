@@ -32,7 +32,7 @@ EVENTS = (
 )
 TOOL_MATCHER = (
     r"Bash|exec_command|shell_command|apply_patch|Read|Grep|Glob|Edit|Write|MultiEdit|"
-    r"spawn_agent|Agent|Task|mcp__.*read.*"
+    r"spawn_agent|Agent|Task|mcp__.*read.*|mcp__noblivion__noblivion_recall"
 )
 POST_MATCHER = r".*"
 
@@ -174,6 +174,7 @@ def _mcp_block(repo: Path, data: Path, memory: Path, namespace: str, root: str) 
         "NOBLIVION_RECALL_ROOT": root,
         "NOBLIVION_PROJECT": namespace,
         "NOBLIVION_SOURCE_CLIENT": "codex",
+        "NOBLIVION_MCP_REQUIRE_CAPABILITY": "1",
     }
     # MCP's cwd is the active project. The hook adapter uses the same folder
     # and namespace through its private config file.

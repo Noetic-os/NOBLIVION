@@ -7,6 +7,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -48,6 +49,20 @@ def test_upgrade_preserves_existing_environment_and_interpreter_prefix():
         prefix + "/new/release/codex/adapter.py --config /new/adapter.json"
     )
     assert installer._merge_hooks(merged, command) == merged
+
+
+def test_generated_pretool_matcher_routes_actual_noblivion_recall():
+    installer = _installer()
+    generated = json.loads(
+        installer._merge_hooks(
+            "{}", "python3 /repo/codex/adapter.py --config /private/adapter.json"
+        )
+    )
+    groups = generated["hooks"]["PreToolUse"]
+    assert any(
+        re.fullmatch(group["matcher"], "mcp__noblivion__noblivion_recall") for group in groups
+    )
+    assert any(re.fullmatch(group["matcher"], "mcp__fs__read_file") for group in groups)
 
 
 def test_upgrade_preserves_foreign_hook_siblings_and_distinct_launchers():
@@ -286,6 +301,7 @@ def test_installer_is_idempotent_and_keeps_foreign_hooks(cfg: dict, tmp_path: Pa
     assert toml.count("[mcp_servers.noblivion]") == 1
     assert 'model = "gpt-6-sol"' in toml
     assert 'NOBLIVION_SOURCE_CLIENT = "codex"' in toml
+    assert 'NOBLIVION_MCP_REQUIRE_CAPABILITY = "1"' in toml
     installed_cfg = json.loads((codex_home / "noblivion/config.json").read_text(encoding="utf-8"))
     assert installed_cfg["recall_root"] == Path(cfg["memory_dir"]).parent.name
     assert f'NOBLIVION_RECALL_ROOT = "{installed_cfg["recall_root"]}"' in toml

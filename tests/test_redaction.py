@@ -331,10 +331,10 @@ def test_cluster_secret_data_with_crlf_or_a_quoted_kind(manifest):
     assert out == manifest.format(FIELD_TOKEN, FIELD_TOKEN)
 
 
-def test_the_redactor_version_is_3():
-    # A rule changed in version 3 (the cluster Secret data rule), so the
+def test_the_redactor_version_is_4():
+    # Version 4 also removes ephemeral recall capabilities, so the
     # indexer writes every row again once.
-    assert redaction.REDACTOR_VERSION == "3"
+    assert redaction.REDACTOR_VERSION == "4"
 
 
 # The two rules as they were before they were made linear (NOBLIVION-62

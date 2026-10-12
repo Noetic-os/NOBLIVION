@@ -43,7 +43,30 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-REDACTOR_VERSION = "3"
+REDACTOR_VERSION = "4"
+
+_READ_CAPABILITY = re.compile(r"nobrc1_[A-Za-z0-9_-]+")
+
+
+def scrub_read_capabilities(value):
+    """Remove ephemeral routing credentials before journaling or learning.
+
+    The inert marker does not classify the rest of a contribution as a secret.
+    Also remove a reserved argument's value even if it has an invalid shape.
+    """
+    if isinstance(value, str):
+        return _READ_CAPABILITY.sub("[capability removed]", value)
+    if isinstance(value, dict):
+        return {
+            scrub_read_capabilities(k): "[capability removed]"
+            if k == "read_capability"
+            else scrub_read_capabilities(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [scrub_read_capabilities(v) for v in value]
+    return value
+
 
 REDACTION_TOKEN = "***REDACTED***"
 FIELD_TOKEN = "[REDACTED]"
@@ -341,7 +364,7 @@ def _mask_secret_data(m: re.Match[str]) -> str:
 
 
 def _redact_once(text: str, secret_manifest: bool = False) -> str:
-    out = text
+    out = scrub_read_capabilities(text)
     for pattern, repl in _SHAPE_PATTERNS:
         out = pattern.sub(repl, out)
     for pattern, repl in _KEYVALUE_PATTERNS:

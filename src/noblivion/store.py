@@ -210,6 +210,9 @@ class Store:
         self._stat_cache: indexer.StatCache = {}
         self._cut_logged: set[str] = set()  # files stored by their head, logged at info once
         self.stop_reason = ""
+        from noblivion.read_capability import Authority
+
+        self.read_capabilities = Authority(clock=clock)
 
     # -- paths
 

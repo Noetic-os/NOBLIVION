@@ -9,8 +9,8 @@ explicitly saved note. Codex hooks add prompt recall, guards and task
 continuity. The adapter translates Codex events into calls to the shared
 NOBLIVION code. It does not create another database.
 
-The store, database and Markdown files must be on the same host as both
-clients. The clients must run as the same operating system user. Read
+For a direct connection, the store, database and Markdown files must be on the
+same host as both clients. The clients must run as the same operating system user. Read
 [shared memory](shared-memory.md) before you set up two clients.
 
 ## Requirements
@@ -64,6 +64,116 @@ The MCP server is registered at the user level. Its tools are available in
 all Codex workspaces, including unrelated projects. They use the data
 folder, memory folder and namespace from this install. Call these tools
 only for the intended project. The workspace filter applies to the hooks.
+
+For native Codex MCP recall, the PreToolUse hook replaces the reserved
+`read_capability` argument with an opaque capability issued by the authenticated
+local store. The capability binds this chat, namespace, project root and exact
+recall arguments. It expires after 15 seconds, works once and becomes invalid
+when the store restarts. The model should omit this reserved argument. Search,
+ranked index and fetch all check the chat's current memory-use controls again
+when they read. Disabling use in one chat therefore does not block an enabled
+chat with a valid native hook route. Contribution remains an independent control.
+
+The Codex installer sets `NOBLIVION_MCP_REQUIRE_CAPABILITY=1`. In this mode a
+missing, expired, replayed or altered capability returns a tool error before
+reading memory, even if a hook is disabled or fails and the store has not seen
+a local opt-out. Process environment session IDs and plain model-supplied IDs
+never establish the current chat. Keep the PreToolUse hook enabled and trusted
+to get independent per-chat recall. Re-run the Codex installer when upgrading
+an older setup so it adds this mode and the recall tool matcher.
+
+Other MCP clients retain the conservative unknown-session guard when they have
+no capability. In that case an opted-out chat in the same scope can block recall.
+
+A custom stdio forwarder must run the hook, MCP server and store from compatible
+versions on the store host. Forward the native `session_id`, workspace scope,
+tool name and complete tool arguments to the adapter. Return its complete hook
+output to Codex, including `permissionDecision` and `updatedInput`. Launch the
+forwarded MCP server with `NOBLIVION_MCP_REQUIRE_CAPABILITY=1` and the same data
+folder, namespace and root used by the hook. The capability issuer and resolver
+stay on the store host; the forwarder needs no new signing key. Local use-off
+must deny recall, and a failed or absent hook must never disable the required
+capability mode. Do not remove an older conservative connection guard until
+that mode and complete hook forwarding are verified together. An inherited
+session environment variable does not satisfy this contract.
+
+This routing trusts the native hook and the existing local-store authentication
+under the same operating system user. It does not attest a session against a
+hostile process that controls that user's account. NOBLIVION removes capabilities
+from its journal, learning capture and stored text; the client's own transcript
+is controlled by Codex.
+
+## Forward to a store on another host
+
+`codex/remote_bridge.py` and `codex/remote_gateway.py` provide the same scoped
+hook and stdio MCP paths over an existing authenticated SSH connection. Keep
+the same NOBLIVION release on both hosts. The gateway runs as the operating
+system user that owns the remote store. It opens no additional network listener.
+Use absolute paths and private configuration files.
+
+The client configuration identifies native workspaces and an explicit gateway
+argument list. For example, `/absolute/client/remote-client.json`:
+
+```json
+{
+  "repo_root": "/absolute/client/NOBLIVION",
+  "state_dir": "/absolute/client/state",
+  "learning": {"contribute": false},
+  "project_mappings": [
+    {"workspace": "/absolute/client/project", "namespace": "shared", "root": "project"}
+  ],
+  "gateway_argv": [
+    "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+    "-o", "StrictHostKeyChecking=yes", "configured-ssh-alias",
+    "python3", "/absolute/server/NOBLIVION/codex/remote_gateway.py",
+    "--config", "/absolute/server/remote-server.json"
+  ]
+}
+```
+
+The server configuration maps those exact client workspace paths onto remote
+notes. The namespace and root must agree with the client configuration:
+
+```json
+{
+  "repo_root": "/absolute/server/NOBLIVION",
+  "data_dir": "/absolute/server/store-data",
+  "memory_dir": "/absolute/server/project/memory",
+  "state_dir": "/absolute/server/client-state",
+  "project_mappings": [
+    {"workspace": "/absolute/client/project", "namespace": "shared", "root": "project"}
+  ]
+}
+```
+
+Register the client MCP server in Codex with this command and argument list:
+
+```toml
+[mcp_servers.noblivion]
+command = "python3"
+args = ["/absolute/client/NOBLIVION/codex/remote_bridge.py", "--config", "/absolute/client/remote-client.json", "mcp"]
+```
+
+For native hooks, use the same events and matchers generated by
+`scripts/install_codex.py`, replacing the adapter command with
+`python3 /absolute/client/NOBLIVION/codex/remote_bridge.py --config /absolute/client/remote-client.json hook`.
+The PreToolUse matcher must include `mcp__noblivion__noblivion_recall`. Review and
+trust the commands in Codex, then start a new chat. Both scripts accept
+`--config`; without it they read the corresponding `remote-client.json` or
+`remote-server.json` beside the script.
+
+The gateway always starts MCP with required-capability mode. It forwards native
+PreToolUse through the real adapter and returns its complete input rewrite.
+Unmapped or mismatched scopes are refused. A local use-off chat denies recall
+even when contribution is disabled. A failed remote hook also denies recall.
+Other chats can share the connection without inheriting that chat's opt-out.
+
+Local capture remains independent. To enable it, set client
+`learning.contribute` to `true` and set `learning.delivery_argv` to the same
+gateway argument list followed by `receive`. The client owns native transcript
+access and its durable spool. The gateway accepts only mapped capture scopes
+and does not create a second remote transcript capture spool. Capability values
+are removed before local capture, remote journaling and delivery.
 
 The installer reads the store's `namespace` from its shared `config.json`
 by default. If Claude Code sets `NOBLIVION_PROJECT` in its environment to
