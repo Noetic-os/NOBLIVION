@@ -540,7 +540,5 @@ def test_codex_mixed_native_context_and_human_blocks_preserve_human_text():
 @pytest.mark.parametrize("kinds", [[], ["agents_md.instructions", "user.text"], [{}], "user.text"])
 def test_codex_malformed_provenance_does_not_discard_text(kinds):
     row = message("A real user request.")
-    row["payload"]["internal_chat_message_metadata_passthrough"] = {
-        "content_item_kinds": kinds
-    }
+    row["payload"]["internal_chat_message_metadata_passthrough"] = {"content_item_kinds": kinds}
     assert capture.normalized(row, "codex")[0]["content"] == "A real user request."
