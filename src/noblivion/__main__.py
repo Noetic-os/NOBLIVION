@@ -21,7 +21,8 @@ import sys
 from collections.abc import Sequence
 
 USAGE = (
-    "usage: noblivion index [--force] [--allow-shrink] [--memory-dir DIR] [--json]\n"
+    "usage: noblivion learning status|inspect|controls|edit|exclude|forget|summary|retry\n"
+    "       noblivion index [--force] [--allow-shrink] [--memory-dir DIR] [--json]\n"
     "       noblivion consent embeddings [--revoke]\n"
     "       noblivion dedup pairs|plan [--dry-run] [--yes]|apply RUN_ID|undo RUN_ID\n"
     "       noblivion dedup consent [--revoke]|clear-latch\n"
@@ -65,6 +66,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from noblivion import miner
 
         return miner.main(rest)
+    if command == "learning":
+        from noblivion import learning_cli
+
+        return learning_cli.main(rest)
     if command == "import":
         from noblivion import importer
 

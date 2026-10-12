@@ -33,6 +33,71 @@ def _installer():
     return installer
 
 
+def test_upgrade_preserves_existing_environment_and_interpreter_prefix():
+    installer = _installer()
+    prefix = '/usr/bin/env "NOBLIVION_CONFIG=/private/client settings.json" '
+    prefix += "NOBLIVION_STOP_CHECK_MODE=enforce NOBLIVION_STOP_CHECKS=commit,tests python3 -u "
+    previous = prefix + "/old/release/codex/adapter.py --config /private/adapter.json"
+    command = "python3 /new/release/codex/adapter.py --config /new/adapter.json"
+    foreign = {"matcher": "Bash", "hooks": [{"type": "command", "command": "guard-script"}]}
+    original = {"hooks": {"Stop": [foreign, {"hooks": [{"type": "command", "command": previous}]}]}}
+    merged = installer._merge_hooks(json.dumps(original), command)
+    hooks = json.loads(merged)["hooks"]["Stop"]
+    assert hooks[0] == foreign
+    assert hooks[1]["hooks"][0]["command"] == (
+        prefix + "/new/release/codex/adapter.py --config /new/adapter.json"
+    )
+    assert installer._merge_hooks(merged, command) == merged
+
+
+def test_upgrade_preserves_foreign_hook_siblings_and_distinct_launchers():
+    installer = _installer()
+    foreign = {"type": "command", "command": "sibling-guard", "timeout": 8}
+    original = {
+        "hooks": {
+            "PostToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "env GUARD=one python3 /old/codex/adapter.py --config /a",
+                        },
+                        foreign,
+                        {
+                            "type": "command",
+                            "command": "env GUARD=two python3 /old/codex/adapter.py --config /a",
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+    hooks = json.loads(
+        installer._merge_hooks(json.dumps(original), "python3 /new/codex/adapter.py --config /b")
+    )["hooks"]["PostToolUse"]
+    assert hooks[0] == {"matcher": "Bash", "hooks": [foreign]}
+    assert [group["hooks"][0]["command"] for group in hooks[1:]] == [
+        "env GUARD=one python3 /new/codex/adapter.py --config /b",
+        "env GUARD=two python3 /new/codex/adapter.py --config /b",
+    ]
+
+
+@pytest.mark.parametrize(
+    "previous",
+    [
+        "python3 /old/codex/adapter.py --config /a && another-guard",
+        "python3 /old/codex/adapter.py --config /a; another-guard",
+        "python3 /old/codex/adapter.py --config /a --custom-guard",
+    ],
+)
+def test_upgrade_refuses_to_discard_compound_or_unknown_guard_arguments(previous):
+    installer = _installer()
+    original = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": previous}]}]}}
+    with pytest.raises(ValueError, match="review"):
+        installer._merge_hooks(json.dumps(original), "python3 /new/codex/adapter.py --config /b")
+
+
 @pytest.fixture
 def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     for name in tuple(os.environ):
@@ -266,11 +331,16 @@ def test_only_worktrees_of_selected_git_repo_are_active(
     assert cfg["workspace_git_dirs"] == [adapter._git_common(str(selected))]
     assert adapter._git_common(str(sibling)) == cfg["workspace_git_dirs"][0]
     assert adapter._git_common(str(unrelated)) != cfg["workspace_git_dirs"][0]
-    monkeypatch.setattr(adapter, "_invoke", lambda *args: {})
+    called = []
+    monkeypatch.setattr(adapter, "_invoke", lambda cfg, env, name, *args: called.append(name) or {})
     adapter.handle_hook(
         cfg,
         event(cfg, "UserPromptSubmit", cwd=str(sibling), prompt="Worktree task"),
     )
+    assert called == ["stop_checks"]  # no unmapped root recall
+    called.clear()
+    adapter.handle_hook(cfg, event(cfg, "SessionStart", cwd=str(sibling), source="startup"))
+    assert called == ["store_client", "guard_table"]  # guards remain active
     journals = list(Path(cfg["state_dir"]).rglob("codex-*.jsonl"))
     assert len(journals) == 1
     assert "Worktree task" in journals[0].read_text(encoding="utf-8")

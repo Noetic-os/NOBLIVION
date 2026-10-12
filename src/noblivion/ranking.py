@@ -54,6 +54,7 @@ class PoolRow:
     content: str
     weight: float
     tokens: tuple[str, ...] = field(repr=False, compare=False)
+    is_general: bool = False
 
 
 @dataclass(frozen=True)
@@ -220,12 +221,25 @@ class RankIndex:
         with db.read_tx(conn):
             content_rev, vector_rev = db.revisions(conn)
             changed_rows = []
+            live_ids = None
             if content_rev > old.content_rev:
                 changed_rows = conn.execute(
-                    "SELECT id, project, root, path, source_type, content, weight, "
-                    "archived_at, deleted_at FROM memories WHERE rev > ?",
+                    "SELECT m.id, m.project, m.root, m.path, m.source_type, m.content, m.weight, "
+                    "m.archived_at, m.deleted_at, EXISTS (SELECT 1 FROM learning_notes n "
+                    "WHERE n.project=m.project AND n.root=m.root AND n.path=m.path "
+                    "AND n.file_hash=m.hash AND n.status='active' AND n.scope='general' "
+                    "AND n.category IN ('preference','workflow')) is_general "
+                    "FROM memories m WHERE m.rev > ?",
                     (old.content_rev,),
                 ).fetchall()
+                # A physical forget has no changed row to reload. Remove old
+                # cached rows by checking live identities in this same snapshot.
+                live_ids = {
+                    int(row[0])
+                    for row in conn.execute(
+                        "SELECT id FROM memories WHERE archived_at IS NULL AND deleted_at IS NULL"
+                    )
+                }
             changed_vectors = []
             if model is not None and vector_rev > old.vector_rev:
                 changed_vectors = conn.execute(
@@ -234,7 +248,7 @@ class RankIndex:
                 ).fetchall()
         new = _Snapshot(content_rev=content_rev, vector_rev=vector_rev)
         if content_rev > old.content_rev:
-            rows = dict(old.rows)
+            rows = {mid: row for mid, row in old.rows.items() if mid in live_ids}
             for r in changed_rows:
                 if r["archived_at"] is None and r["deleted_at"] is None:
                     rows[int(r["id"])] = PoolRow(
@@ -246,6 +260,7 @@ class RankIndex:
                         content=r["content"],
                         weight=float(r["weight"]),
                         tokens=tuple(bm25.tokenize(r["content"])),
+                        is_general=bool(r["is_general"]),
                     )
                 else:
                     rows.pop(int(r["id"]), None)
@@ -263,6 +278,9 @@ class RankIndex:
             new.vectors, new.dims = old.vectors, old.dims
             if content_rev == old.content_rev:
                 new.matrices = old.matrices
+        if content_rev > old.content_rev:
+            new.vectors = {mid: value for mid, value in new.vectors.items() if mid in new.rows}
+            new.dims = {mid: value for mid, value in new.dims.items() if mid in new.rows}
         return new
 
     # -- pools ----------------------------------------------------------------
@@ -287,7 +305,7 @@ class RankIndex:
             r
             for r in snap.rows.values()
             if r.project == project
-            and (roots is None or r.root in roots)
+            and (roots is None or r.root in roots or r.is_general)
             and (include_mined or r.source_type != db.SOURCE_MINED)
         ]
         if root is not None and shared:

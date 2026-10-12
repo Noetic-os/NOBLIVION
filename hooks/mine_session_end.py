@@ -56,7 +56,12 @@ def _env(environ: Optional[Mapping[str, str]]) -> Mapping[str, str]:
 
 
 def is_enabled(environ: Optional[Mapping[str, str]] = None) -> bool:
-    return bool(_CFG.switch(ENABLED_ENV, False, _env(environ), ENABLED_KEY))
+    env = _env(environ)
+    # Once the durable learner is configured, its opt-outs must not fall
+    # through to the historical transcript miner, even for malformed config.
+    if (_CFG.data_dir(env) / "learning-client.json").exists():
+        return False
+    return bool(_CFG.switch(ENABLED_ENV, False, env, ENABLED_KEY))
 
 
 def command(environ: Optional[Mapping[str, str]] = None) -> Optional[List[str]]:

@@ -396,6 +396,7 @@ def test_user_prompt_submit_k5_project_root_and_query(daemon, env):
         "project": "claude_code",
         "top_k": "15",
         "root": ROOT,
+        "session_id": "sess-1",
     }
     assert out.startswith(head(2))
     assert not out.lstrip().startswith("{")  # plain text for this event

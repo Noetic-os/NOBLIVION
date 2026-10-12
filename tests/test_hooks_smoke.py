@@ -78,6 +78,7 @@ def test_every_moved_module_is_present() -> None:
         "guard_table",
         "hook_config",
         "label_rows",
+        "learning_capture",
         "memory_fields",
         "memory_fields_hook",
         "memory_labels",
@@ -94,6 +95,7 @@ def test_every_moved_module_is_present() -> None:
         "trust_session_line",
         "trust_signals",
     }
+    expected.add("learning_summary")
     expected.add("mine_session_end")  # SessionEnd trigger of the transcript miner (E10)
     assert set(MODULES) == expected
 

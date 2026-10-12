@@ -1,5 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
+Background learning uses the separate, opt-in `learning.json` store file and
+explicit client project mappings. See [background learning](learning.md) for
+its local provider, budget, scope and independent use/contribution controls.
+
 # Configuration
 
 This page lists every setting. The tables come from the code. A test,

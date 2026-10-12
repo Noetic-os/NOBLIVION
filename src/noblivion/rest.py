@@ -269,7 +269,14 @@ def index_answer(
     return answer
 
 
-def fetch_answer(conn: sqlite3.Connection | None, raw_id: str, namespace: str) -> dict:
+def fetch_answer(
+    conn: sqlite3.Connection | None,
+    raw_id: str,
+    namespace: str,
+    root: str | None = None,
+    session_id: str = "",
+    shared_roots: Sequence[str] = (),
+) -> dict:
     """Section 4.4. Archived, deleted and other-namespace rows are not found.
     The answer stays below 512 KB: a longer text is cut, with ``…`` at the cut."""
     if not _ID_RE.fullmatch(raw_id):
@@ -295,11 +302,26 @@ def fetch_answer(conn: sqlite3.Connection | None, raw_id: str, namespace: str) -
     if memory_id > MAX_ROW_ID:
         return missing
     row = conn.execute(
-        "SELECT id, content FROM memories WHERE id = ? AND project = ? "
+        "SELECT id, content, root, path, hash FROM memories WHERE id = ? AND project = ? "
         "AND archived_at IS NULL AND deleted_at IS NULL",
         (memory_id, namespace),
     ).fetchone()
     if row is None:
+        return missing
+    from noblivion.learning_runtime import use_allowed
+
+    if root is not None and row["root"] not in {root, *shared_roots, db.IMPORT_ROOT}:
+        general = conn.execute(
+            "SELECT 1 FROM learning_notes WHERE project=? AND root=? AND path=? "
+            "AND file_hash=? AND status='active' AND scope='general' "
+            "AND category IN ('preference','workflow')",
+            (namespace, row["root"], row["path"], row["hash"]),
+        ).fetchone()
+        if not general:
+            return missing
+    if not use_allowed(conn, namespace, root or row["root"], session_id):
+        return missing
+    if not use_allowed(conn, namespace, row["root"], session_id):
         return missing
     content = str(row["content"])
     title, _ = title_and_summary(content, memory_id)
@@ -448,6 +470,30 @@ class Handler(BaseHTTPRequestHandler):
         if not self._token_ok():
             return 401, {"detail": "missing or wrong token"}
 
+        if path.startswith("/learning/"):
+            from noblivion import learning_runtime
+
+            try:
+                if path == "/learning/capture" and method == "POST":
+                    return 200, learning_runtime.capture(self.store, self._json_body())
+                if path == "/learning/control" and method == "POST":
+                    return 200, learning_runtime.controls(self.store, self._json_body())
+                if path == "/learning/summary" and method == "GET":
+                    return 200, learning_runtime.summary(
+                        self.store,
+                        namespace_of(params, self.store.namespace),
+                        root_of(params) or "",
+                        first(params, "session_id"),
+                    )
+                if path == "/learning/status" and method == "GET":
+                    from noblivion.learning import LearningLedger
+
+                    with self.store.connection() as conn:
+                        return 200, LearningLedger(conn).status()
+                return 405, {"detail": "method not allowed"}
+            except (ValueError, TypeError, KeyError):
+                return 400, {"detail": "invalid learning request"}
+
         if path == FEEDBACK_PATH:
             if method != "POST":
                 return 405, {"detail": "method not allowed"}
@@ -473,7 +519,13 @@ class Handler(BaseHTTPRequestHandler):
         namespace = namespace_of(params, store.namespace)
         query = first(params, "q")[:MAX_Q_CHARS]
         top_k = clamp_int(first(params, "top_k"), 5, 1, 50)
-        result = store.rank(query, namespace, top_k=top_k, root=root_of(params))
+        result = store.rank(
+            query,
+            namespace,
+            top_k=top_k,
+            root=root_of(params),
+            session_id=first(params, "session_id"),
+        )
         answer = search_answer(result, namespace, store.model())
         if result is None:
             answer["reason"] = INTERNAL_REASON
@@ -486,7 +538,12 @@ class Handler(BaseHTTPRequestHandler):
         top_k = clamp_int(first(params, "top_k"), 35, 1, 200)
         include_mined = first(params, "include_mined").strip() == "1"
         result = store.rank(
-            query, namespace, top_k=top_k, root=root_of(params), include_mined=include_mined
+            query,
+            namespace,
+            top_k=top_k,
+            root=root_of(params),
+            include_mined=include_mined,
+            session_id=first(params, "session_id"),
         )
         trust = None
         if result is not None and store.store_settings.trust_ranking in ("shadow", "on"):
@@ -507,7 +564,14 @@ class Handler(BaseHTTPRequestHandler):
         namespace = namespace_of(params, store.namespace)
         try:
             with store.connection() as conn:
-                return fetch_answer(conn, raw_id, namespace)
+                return fetch_answer(
+                    conn,
+                    raw_id,
+                    namespace,
+                    root_of(params),
+                    first(params, "session_id"),
+                    store.store_settings.shared_roots,
+                )
         except (sqlite3.Error, OSError) as exc:
             log.error("fetch failed: %s", type(exc).__name__)
             return fetch_answer(None, raw_id, namespace)

@@ -688,3 +688,10 @@ def test_session_end_hook_script_exits_zero_and_prints_nothing(tmp_path):
         check=False,
     )
     assert (proc.returncode, proc.stdout) == (0, "")
+
+
+@pytest.mark.parametrize("content", ['{"learning":{"contribute":false}}', "{invalid"])
+def test_new_learner_controls_cannot_fall_through_to_historical_miner(tmp_path, content):
+    (tmp_path / "learning-client.json").write_text(content)
+    env = {"NOBLIVION_DATA_DIR": str(tmp_path), "NOBLIVION_MINER": "1"}
+    assert load_hook("mine_session_end").is_enabled(env) is False

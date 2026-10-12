@@ -229,7 +229,42 @@ fi
 
 # 7. A first index of the memory files, then the check for old hand-installed
 #    hooks (a dry run: it only prints what --apply would remove).
-run env NOBLIVION_DATA_DIR="$DATA_DIR" CLAUDE_PLUGIN_ROOT="$ROOT" "$VENV/bin/noblivion" index
+# Only the store migrates an existing database, after stopping the old process.
+# The index CLI deliberately refuses an older schema. Detect that case without
+# opening a write connection; --no-start must leave a running old store intact.
+INDEX_READY=1
+if [ "$DRY_RUN" != 1 ] && [ -f "$DATA_DIR/noblivion.db" ]; then
+    if "$VENV/bin/python" - "$DATA_DIR/noblivion.db" <<'PY'
+import pathlib, sqlite3, sys
+from noblivion import db
+
+path = pathlib.Path(sys.argv[1]).resolve()
+conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+try:
+    current = int(conn.execute("PRAGMA user_version").fetchone()[0])
+finally:
+    conn.close()
+latest = db.latest_version()
+if current > latest:
+    print("noblivion install: database schema is newer than this release", file=sys.stderr)
+    sys.exit(11)
+sys.exit(10 if current < latest else 0)
+PY
+    then
+        :
+    else
+        schema_status=$?
+        if [ "$schema_status" = 10 ]; then
+            INDEX_READY=0
+            say "database migration and first index pending: the replacement store performs both after restart"
+        else
+            die "database schema check failed; the store was not restarted"
+        fi
+    fi
+fi
+if [ "$INDEX_READY" = 1 ]; then
+    run env NOBLIVION_DATA_DIR="$DATA_DIR" CLAUDE_PLUGIN_ROOT="$ROOT" "$VENV/bin/noblivion" index
+fi
 run env NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/noblivion" migrate-from-legacy
 
 # 8. Start the store now (design doc section 3.2, ensure-running), so the

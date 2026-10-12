@@ -394,3 +394,29 @@ def holds_secret_kind(raw: bytes) -> bool:
 def would_change(text: str) -> bool:
     """True when the redactor would change ``text`` (used to drop labels)."""
     return redact_at_rest(text) != text
+
+
+# Conservative learning-only rule. Raw credentials are rejected, never sent to
+# a model even when the usual at-rest redactor would retain their prose form.
+NATURAL_SECRET_PATTERN = (
+    r"(?i)\b(?:password|passphrase|passwd|api[ _-]?key|access[ _-]?token|"
+    r"private[ _-]?key|client[ _-]?secret|recovery[ _-]?code)\b"
+    r"[^\n.!?]{0,50}\b(?:is|was|equals|set\s+to|use)\b\s*\S+"
+)
+_NATURAL_SECRET = re.compile(NATURAL_SECRET_PATTERN)
+
+
+def contains_secret(text: str) -> bool:
+    """Return True for unsafe or already-redacted input; no raw value escapes."""
+    if not isinstance(text, str):
+        return True
+    try:
+        redacted = redact_at_rest(text)
+    except Exception:
+        return True
+    return (
+        redacted != text
+        or bool(_NATURAL_SECRET.search(text))
+        or "REDACTED" in text
+        or "REDACTION_FAILED" in text
+    )

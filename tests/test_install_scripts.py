@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -122,6 +123,94 @@ def test_install_refuses_an_unknown_option(tmp_path):
     proc = _run(INSTALL, ["--bogus"], tmp_path)
     assert proc.returncode == 1
     assert "unknown option --bogus" in proc.stderr
+
+
+def _installed_fixture(tmp_path, version):
+    """An isolated existing store; package installation and launcher stay fake."""
+    data = tmp_path / "data"
+    venv_bin = data / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").symlink_to(sys.executable)
+    command = venv_bin / "noblivion"
+    command.write_text(
+        f"#!{sys.executable}\n"
+        "import json,os,pathlib,sys\n"
+        "data=pathlib.Path(os.environ['NOBLIVION_DATA_DIR'])\n"
+        "with (data/'commands.jsonl').open('a') as output:\n"
+        " output.write(json.dumps(sys.argv[1:])+'\\n')\n"
+        "sys.exit(int(os.environ.get('TEST_INDEX_EXIT','0')) if sys.argv[1]=='index' else 0)\n"
+    )
+    command.chmod(0o755)
+    (data / "config.json").write_text("{}")
+    (data / "token").write_text("fixture-not-a-credential")
+    conn = sqlite3.connect(data / "noblivion.db")
+    conn.execute("CREATE TABLE preserved(content TEXT)")
+    conn.execute("INSERT INTO preserved VALUES ('existing-memory')")
+    conn.execute(f"PRAGMA user_version={version}")
+    conn.commit()
+    conn.close()
+    return data
+
+
+def _installed_commands(data):
+    path = data / "commands.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def test_upgrade_no_start_defers_index_and_leaves_old_database_unchanged(tmp_path):
+    data = _installed_fixture(tmp_path, 1)
+    before = (data / "noblivion.db").read_bytes()
+    proc = _run(
+        INSTALL,
+        ["--data-dir", str(data), "--no-model", "--no-start"],
+        tmp_path,
+        extra={"PYTHONPATH": str(ROOT / "src")},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "database migration and first index pending" in proc.stdout
+    assert _installed_commands(data) == [["migrate-from-legacy"]]
+    assert (data / "noblivion.db").read_bytes() == before
+
+
+def test_upgrade_starts_replacement_before_any_index_write(tmp_path):
+    data = _installed_fixture(tmp_path, 1)
+    proc = _run(
+        INSTALL,
+        ["--data-dir", str(data), "--no-model"],
+        tmp_path,
+        extra={"PYTHONPATH": str(ROOT / "src")},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert _installed_commands(data) == [["migrate-from-legacy"], ["ensure-running", "--restart"]]
+
+
+def test_install_does_not_swallow_other_index_failures(tmp_path):
+    from noblivion import db
+
+    data = _installed_fixture(tmp_path, db.latest_version())
+    proc = _run(
+        INSTALL,
+        ["--data-dir", str(data), "--no-model"],
+        tmp_path,
+        extra={"PYTHONPATH": str(ROOT / "src"), "TEST_INDEX_EXIT": "2"},
+    )
+    assert proc.returncode == 2
+    assert _installed_commands(data) == [["index"]]
+
+
+def test_install_refuses_newer_schema_without_restart(tmp_path):
+    data = _installed_fixture(tmp_path, 99)
+    before = (data / "noblivion.db").read_bytes()
+    proc = _run(
+        INSTALL,
+        ["--data-dir", str(data), "--no-model"],
+        tmp_path,
+        extra={"PYTHONPATH": str(ROOT / "src")},
+    )
+    assert proc.returncode == 1
+    assert "database schema is newer" in proc.stderr
+    assert _installed_commands(data) == []
+    assert (data / "noblivion.db").read_bytes() == before
 
 
 def test_uninstall_dry_run_and_run_keep_the_database(tmp_path):

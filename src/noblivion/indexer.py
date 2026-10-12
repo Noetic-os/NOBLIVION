@@ -190,6 +190,7 @@ class ParsedFile:
     description: str
     category: str
     body: str
+    active: bool = True
 
 
 def parse_file(file_name: str, text: str) -> ParsedFile:
@@ -202,6 +203,8 @@ def parse_file(file_name: str, text: str) -> ParsedFile:
         description=desc.strip() if isinstance(desc, str) else "",
         category=category_for(file_name, meta),
         body=body,
+        active=str(meta.get("status", "active")).strip().lower()
+        not in ("superseded", "excluded", "forgotten"),
     )
 
 
@@ -577,6 +580,7 @@ class _Prepared:
     content: str
     labels: str
     cut: bool  # the file is larger than MAX_FILE_BYTES: only its head is stored
+    active: bool = True
 
 
 def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
@@ -605,7 +609,9 @@ def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
             labels = list(labeller(text, Path(entry.path).stem))
         except Exception:  # noqa: BLE001 - one labeller fault never stops the scan
             labels = None
-    return _Prepared(entry, parsed.category, content, labels_json(labels, parsed.category), cut)
+    return _Prepared(
+        entry, parsed.category, content, labels_json(labels, parsed.category), cut, parsed.active
+    )
 
 
 def _apply_batch(
@@ -639,6 +645,24 @@ def _apply_batch(
             # Re-check under the write lock: another writer may have changed
             # the row since the plan was made.
             current = db.row_at(conn, project, entry.root, entry.path)
+            managed = conn.execute(
+                "SELECT status, file_hash FROM learning_notes "
+                "WHERE project=? AND root=? AND path=?",
+                (project, entry.root, entry.path),
+            ).fetchone()
+            projection_active = managed is None or (
+                managed["status"] == "active" and managed["file_hash"] == entry.hash
+            )
+            if not prep.active or not projection_active:
+                # Lifecycle is a deliberate withdrawal, not a missing-file
+                # shrink. Never expose this text, even for one scan interval.
+                if current is not None and current.archived_at is None:
+                    conn.execute(
+                        "UPDATE memories SET archived_at=?, rev=?, updated_at=? WHERE id=?",
+                        (now, rev, now, current.id),
+                    )
+                    result.deleted += 1
+                continue
             target = op.row_id
             kind = op.kind
             if current is not None and current.id != target:

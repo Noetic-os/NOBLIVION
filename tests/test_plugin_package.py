@@ -78,6 +78,14 @@ HOOK_COMMAND = re.compile(
 # trust report hook (the flush refreshes the report); store_client.py (E4) and
 # mine_session_end.py (E10) are new.
 EXPECTED = {
+    ("SessionStart", "", "learning_summary.py", ""),
+    ("SessionStart", "", "learning_capture.py", ""),
+    ("UserPromptSubmit", "", "learning_capture.py", ""),
+    ("PostToolUse", "", "learning_capture.py", ""),
+    ("PostToolUseFailure", "", "learning_capture.py", ""),
+    ("Stop", "", "learning_capture.py", ""),
+    ("PreCompact", "", "learning_capture.py", ""),
+    ("SessionEnd", "", "learning_capture.py", ""),
     ("SessionStart", "", "store_client.py", ""),
     ("SessionStart", "", "guard_table.py", " --rebuild"),
     ("SessionStart", "compact", "recall_hook.py", " --reset-rows"),

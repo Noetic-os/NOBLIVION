@@ -730,6 +730,9 @@ def session_env(environ: Mapping[str, str], payload: Mapping[str, Any]) -> Dict[
     else the slug of ``cwd``.
     """
     env = dict(environ)
+    sid = payload.get("session_id")
+    if isinstance(sid, str) and sid:
+        env["_learning_session_id"] = sid
     cfg = _sibling_module("hook_config")
     for name, aliases, key in CONFIG_SETTINGS:
         if (env.get(name) or "").strip():
@@ -896,6 +899,9 @@ def store_get(build: Any, environ: Optional[Mapping[str, str]], timeout_s: float
         _STORE.request_start(env)
         raise RecallError(exc.reason) from None
     url = build(base)
+    sid = env.get("_learning_session_id") or env.get("CODEX_THREAD_ID")
+    if sid:
+        url += ("&" if "?" in url else "?") + urllib.parse.urlencode({"session_id": sid})
     reason = transport_reason(url, env)
     if reason:
         raise RecallError(reason)

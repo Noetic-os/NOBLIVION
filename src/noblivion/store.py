@@ -263,6 +263,10 @@ class Store:
         """The first index scan and the model load, then the periodic jobs."""
         self._model_thread = self._spawn(self._load_model, "noblivion-model")
         self._spawn(self._jobs, "noblivion-jobs")
+        from noblivion import learning_runtime
+
+        if (self.data_dir / "learning.json").is_file():
+            self._spawn(lambda: learning_runtime.run(self), "noblivion-learning")
 
     def _spawn(self, target: Callable[[], None], name: str) -> threading.Thread:
         thread = threading.Thread(target=target, name=name, daemon=True)
@@ -301,11 +305,16 @@ class Store:
         top_k: int,
         root: str | None = None,
         include_mined: bool = False,
+        session_id: str = "",
     ) -> ranking.RankResult | None:
         """Rank for a read route; None on an internal fault (logged, no text)."""
         try:
             with self.connection() as conn:
-                return self.ranker.search(
+                from noblivion.learning_runtime import use_allowed
+
+                if not use_allowed(conn, namespace, root or "", session_id):
+                    return ranking.RankResult(self.mode(), [], 0)
+                result = self.ranker.search(
                     conn,
                     query,
                     project=namespace,
@@ -314,6 +323,14 @@ class Store:
                     shared_roots=self.store_settings.shared_roots,
                     include_mined=include_mined,
                 )
+                # Shared roots have their own use controls. Filter against
+                # live state even when the ranker's snapshot is warm.
+                hits = [
+                    hit
+                    for hit in result.hits
+                    if use_allowed(conn, namespace, hit.row.root, session_id)
+                ]
+                return ranking.RankResult(result.mode, hits, result.pool_size)
         except Exception as exc:  # noqa: BLE001 - section 4: 200 with the fixed reason
             log.error("rank failed: %s", type(exc).__name__)
             return None
@@ -468,10 +485,14 @@ class Store:
         """One index scan under ``index.lock``. None when the CLI holds the lock."""
         self.index_state = INDEX_SCANNING
         try:
+            from noblivion import learning_runtime
+
+            folders = list(self.settings.resolved_memory_dirs())
+            folders.extend(learning_runtime.memory_dirs(self.data_dir, self.namespace))
             with indexer.index_lock(self.settings.index_lock_path, timeout_s=0.0):
                 result = indexer.scan(
                     conn,
-                    self.settings.resolved_memory_dirs(),
+                    list(dict.fromkeys(folders)),
                     project=self.namespace,
                     delete_grace_days=self.settings.delete_grace_days,
                     labeller=self._labeller_now(),  # type: ignore[arg-type]

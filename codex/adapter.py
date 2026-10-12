@@ -29,6 +29,16 @@ GUIDANCE = (
 PATCH_PATH = re.compile(r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$", re.M)
 
 
+def _capture_module():
+    path = Path(__file__).resolve().with_name("capture.py")
+    spec = importlib.util.spec_from_file_location("noblivion_codex_capture", path)
+    if spec is None or spec.loader is None:
+        raise ImportError("capture")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _key(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:32]
 
@@ -83,6 +93,8 @@ def _redact(cfg: dict, value: Any) -> Any:
         raise ImportError("redaction")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    if mod.contains_secret(value):
+        return "[REDACTED: unsafe evidence]"
     out = mod.redact_at_rest(value)
     if out == mod.REDACTION_FAILED_TOKEN:
         raise ValueError("redaction failed")
@@ -204,13 +216,19 @@ def _journal(cfg: dict, event: dict, translated: list[dict]) -> Path:
             {
                 **common,
                 "type": "user",
-                "message": {"content": str(event.get("prompt") or "")[:20000]},
+                "message": {"content": str(event.get("prompt") or "")},
             }
         )
     elif name == "PostToolUse":
         failed, body = _response(event)
-        for i, item in enumerate(translated):
-            ident = str(event.get("tool_use_id") or "") + ":" + str(i)
+        for i, item in enumerate(translated or [event]):
+            ident = str(
+                event.get("tool_use_id")
+                or event.get("call_id")
+                or _key(json.dumps(event, sort_keys=True))
+            )
+            if len(translated) > 1:
+                ident += ":" + str(i)
             rows.extend(
                 (
                     {
@@ -236,7 +254,7 @@ def _journal(cfg: dict, event: dict, translated: list[dict]) -> Path:
                                     "type": "tool_result",
                                     "tool_use_id": ident,
                                     "is_error": failed,
-                                    "content": body[:4000],
+                                    "content": body,
                                 }
                             ]
                         },
@@ -248,7 +266,7 @@ def _journal(cfg: dict, event: dict, translated: list[dict]) -> Path:
             {
                 **common,
                 "type": "assistant",
-                "message": {"content": str(event.get("last_assistant_message") or "")[:16000]},
+                "message": {"content": str(event.get("last_assistant_message") or "")},
             }
         )
     if rows:
@@ -321,6 +339,18 @@ def handle_hook(cfg: dict, event: dict) -> dict:
     if not _active(cfg, event):
         return {}
     name = str(event.get("hook_event_name") or "")
+    capture = _capture_module()
+    scoped = capture.scoped_config(cfg, event)
+    if scoped is not None:
+        cfg = scoped
+    use_memory = capture.memory_use(cfg, event["session_id"]) and (
+        not cfg.get("project_mappings") or scoped is not None
+    )
+    try:
+        capture.capture_hook(cfg, event)
+    except Exception as exc:
+        # Capture cannot block safety hooks. Source/cursor transaction stays retryable.
+        print("NOBLIVION capture deferred: " + type(exc).__name__, file=sys.stderr)
     env = environment(cfg, event)
     translated = tool_events(event)
     transcript = _journal(cfg, event, translated)
@@ -328,20 +358,23 @@ def handle_hook(cfg: dict, event: dict) -> dict:
     if name == "SessionStart":
         _invoke(cfg, env, "store_client", event)
         _invoke(cfg, env, "guard_table", event, "--rebuild")
-        if event.get("source") == "compact":
+        if use_memory and event.get("source") == "compact":
             _invoke(cfg, env, "recall_hook", event, "--reset-rows")
-        out += [
-            _invoke(cfg, env, "continuity_hook", event),
-            _invoke(cfg, env, "trust_session_line", event),
-            {"hookSpecificOutput": {"additionalContext": GUIDANCE}},
-        ]
+        if use_memory:
+            out += [
+                _invoke(cfg, env, "learning_summary", event, "--codex"),
+                _invoke(cfg, env, "continuity_hook", event),
+                _invoke(cfg, env, "trust_session_line", event),
+                {"hookSpecificOutput": {"additionalContext": GUIDANCE}},
+            ]
     elif name == "UserPromptSubmit":
         _invoke(cfg, env, "stop_checks", event, "--mark-correction")
-        out.append(_invoke(cfg, env, "recall_hook", event))
+        if use_memory:
+            out.append(_invoke(cfg, env, "recall_hook", event))
     elif name == "PreToolUse":
         for item in translated:
             out.append(_invoke(cfg, env, "guard_hook", item))
-        if event.get("tool_name") in ("spawn_agent", "Agent", "Task"):
+        if use_memory and event.get("tool_name") in ("spawn_agent", "Agent", "Task"):
             ti = event.get("tool_input") or {}
             if isinstance(ti, dict):
                 prompt = ti.get("message") or ti.get("prompt")
@@ -379,14 +412,15 @@ def handle_hook(cfg: dict, event: dict) -> dict:
                         "error": _failure_error(event, body),
                     }
                     _invoke(cfg, env, "guard_hook", data)
-                out.append(_invoke(cfg, env, "error_recall_hook", data))
+                if use_memory:
+                    out.append(_invoke(cfg, env, "error_recall_hook", data))
                 _invoke(cfg, env, "memory_sync_hook", item)
             elif tool in ("Write", "Edit", "MultiEdit") and not failed:
                 out.append(_invoke(cfg, env, "memory_fields_hook", item))
                 _invoke(cfg, env, "memory_sync_hook", item)
-    elif name == "PreCompact":
+    elif name == "PreCompact" and use_memory:
         _invoke(cfg, env, "continuity_hook", event)
-    elif name == "SubagentStart":
+    elif name == "SubagentStart" and use_memory:
         out += [
             _invoke(cfg, env, "subagent_rules_hook", event),
             {"hookSpecificOutput": {"additionalContext": GUIDANCE}},
@@ -395,7 +429,7 @@ def handle_hook(cfg: dict, event: dict) -> dict:
         stop = {**event, "transcript_path": str(transcript)}
         out.append(_invoke(cfg, env, "stop_checks", stop))
         _invoke(cfg, env, "trust_flush", stop)
-    elif name == "SessionEnd":
+    elif name == "SessionEnd" and "learning" not in cfg:
         mine_env = {
             **env,
             "NOBLIVION_MINE_CMD": shlex.join(
@@ -433,6 +467,7 @@ def main() -> int:
         if len(raw) > MAX_INPUT:
             raise ValueError("hook input too large")
         cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        cfg["source_config"] = str(Path(args.config).resolve())
         print(json.dumps(handle_hook(cfg, json.loads(raw))))
     except Exception as exc:
         print("NOBLIVION Codex adapter: " + type(exc).__name__, file=sys.stderr)

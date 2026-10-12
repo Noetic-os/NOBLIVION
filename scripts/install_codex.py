@@ -31,10 +31,10 @@ EVENTS = (
     "SessionEnd",
 )
 TOOL_MATCHER = (
-    r"Bash|apply_patch|Read|Grep|Glob|Edit|Write|MultiEdit|"
+    r"Bash|exec_command|shell_command|apply_patch|Read|Grep|Glob|Edit|Write|MultiEdit|"
     r"spawn_agent|Agent|Task|mcp__.*read.*"
 )
-POST_MATCHER = r"Bash|apply_patch|Edit|Write|MultiEdit"
+POST_MATCHER = r".*"
 FOREIGN_MCP = re.compile(r"(?m)^\s*\[\s*mcp_servers\.(?:noblivion|\"noblivion\")\s*\]")
 
 
@@ -70,7 +70,7 @@ def _hook_entries(command: str) -> dict[str, list[dict[str, Any]]]:
         hook: dict[str, Any] = {
             "type": "command",
             "command": command,
-            "timeout": 45,
+            "timeout": 3 if event == "SessionEnd" else 45,
             "statusMessage": "NOBLIVION shared memory",
         }
         if event not in ("PreCompact", "Stop", "SessionEnd"):
@@ -93,6 +93,37 @@ def _is_ours(group: Any) -> bool:
     )
 
 
+def _replace_adapter_command(previous: str, command: str) -> str:
+    """Keep the existing launcher and environment prefix verbatim.
+
+    Only the adapter path and its --config argument belong to this installer.
+    Refuse compound commands instead of silently dropping another guard.
+    """
+    lexer = shlex.shlex(previous, posix=True, punctuation_chars=";&|<>")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    parts = []
+    while True:
+        start = lexer.instream.tell()
+        token = lexer.get_token()
+        if token == lexer.eof:
+            break
+        parts.append((token, start))
+    if any(token and all(char in ";&|<>" for char in token) for token, _ in parts):
+        raise ValueError("review compound NOBLIVION hook command before upgrading")
+    matches = [
+        index for index, (token, _) in enumerate(parts) if token.endswith("/codex/adapter.py")
+    ]
+    if len(matches) != 1 or matches[0] == 0:
+        raise ValueError("cannot preserve NOBLIVION hook launcher")
+    index = matches[0]
+    tail = [token for token, _ in parts[index + 1 :]]
+    if len(tail) != 2 or tail[0] != "--config":
+        raise ValueError("review custom NOBLIVION adapter arguments before upgrading")
+    replacement = shlex.split(command)
+    return previous[: parts[index][1]] + shlex.join(replacement[1:])
+
+
 def _merge_hooks(old: str, command: str) -> str:
     doc = json.loads(old) if old.strip() else {}
     if not isinstance(doc, dict):
@@ -104,7 +135,29 @@ def _merge_hooks(old: str, command: str) -> str:
         current = hooks.get(event, [])
         if not isinstance(current, list):
             raise ValueError("hooks.json event must contain a list: " + event)
-        hooks[event] = [item for item in current if not _is_ours(item)] + entries
+        preserved = []
+        launchers = []
+        for group in current:
+            if not _is_ours(group):
+                preserved.append(group)
+                continue
+            foreign = []
+            for hook in group["hooks"]:
+                if not isinstance(hook, dict) or "/codex/adapter.py" not in str(
+                    hook.get("command", "")
+                ):
+                    foreign.append(hook)
+                    continue
+                upgraded = _replace_adapter_command(hook["command"], command)
+                if upgraded not in launchers:
+                    launchers.append(upgraded)
+            if foreign:
+                preserved.append({**group, "hooks": foreign})
+        for launcher in launchers or [command]:
+            entry = json.loads(json.dumps(entries[0]))
+            entry["hooks"][0]["command"] = launcher
+            preserved.append(entry)
+        hooks[event] = preserved
     return json.dumps(doc, indent=2) + "\n"
 
 
@@ -231,6 +284,12 @@ def install(args: argparse.Namespace) -> dict[str, str]:
     cfg_path = own / "config.json"
     hook_path = home / "hooks.json"
     toml_path = home / "config.toml"
+    previous = {}
+    if cfg_path.is_file():
+        previous = json.loads(cfg_path.read_text(encoding="utf-8"))
+    learning = {"use": True, "contribute": False, **previous.get("learning", {})}
+    if getattr(args, "contribute", None) is not None:
+        learning["contribute"] = args.contribute
     cfg = {
         "repo_root": str(repo),
         "data_dir": str(data),
@@ -238,6 +297,16 @@ def install(args: argparse.Namespace) -> dict[str, str]:
         "state_dir": str(own / "state"),
         "namespace": namespace,
         "recall_root": recall_root,
+        "learning": learning,
+        "project_mappings": [
+            {
+                "workspace": str(path),
+                "namespace": namespace,
+                "root": recall_root,
+                "memory_dir": str(memory),
+            }
+            for path in workspaces
+        ],
         "workspace_prefixes": list(dict.fromkeys(str(p) for p in workspaces)),
         "workspace_git_dirs": list(
             dict.fromkeys(common for path in workspaces if (common := _git_common(path)))
@@ -269,6 +338,13 @@ def main() -> int:
     parser.add_argument("--memory-dir", required=True)
     parser.add_argument("--workspace", action="append", required=True)
     parser.add_argument("--namespace", default=None)
+    parser.add_argument(
+        "--contribute",
+        action="store_true",
+        default=None,
+        help="capture new sessions for background learning; off by default",
+    )
+    parser.add_argument("--no-contribute", dest="contribute", action="store_false")
     parser.add_argument("--root", default=None)
     parser.add_argument("--codex-home", default=str(Path.home() / ".codex"))
     args = parser.parse_args()

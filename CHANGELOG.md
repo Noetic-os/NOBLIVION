@@ -6,6 +6,20 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- Opt-in background learning for Codex and Claude, with durable capture,
+  validated source evidence, bounded local extraction, revision history,
+  correction reconciliation, independent memory controls and index receipts
+  (NOBLIVION-98). See [background learning](docs/learning.md).
+
+### Fixed
+
+- Superseded and excluded memories stay out of recall across repeated index
+  scans and cached searches. Root-scoped fetches enforce project boundaries.
+
 ## 0.1.9 - 2026-10-11
 
 Fixes `noblivion_remember` in Claude Code: it now saves a note with no

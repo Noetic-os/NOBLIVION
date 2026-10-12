@@ -20,6 +20,18 @@ TABLES = {
     "dedup_actions",
     "dedup_vetoes",
     "miner_state",
+    "learning_controls",
+    "learning_batches",
+    "learning_cursors",
+    "learning_sources",
+    "learning_jobs",
+    "learning_job_sources",
+    "learning_budget",
+    "learning_notes",
+    "learning_revisions",
+    "learning_evidence",
+    "learning_decisions",
+    "learning_outbox",
 }
 
 
@@ -46,9 +58,9 @@ def _add_memory(conn: sqlite3.Connection, path: str = "user_alice.md") -> int:
         )
 
 
-def test_create_schema_version_1(tmp_path):
+def test_create_current_schema(tmp_path):
     conn = db.open_db(tmp_path / "noblivion.db", create=True)
-    assert db.user_version(conn) == 1
+    assert db.user_version(conn) == db.latest_version()
     assert _tables(conn) == TABLES
     assert db.get_meta(conn, "content_rev") == "0"
     assert db.get_meta(conn, "vector_rev") == "0"
@@ -82,7 +94,7 @@ def test_migrate_is_idempotent(tmp_path):
     conn.close()
     for _ in range(3):
         conn = db.open_db(path, create=True)
-        assert db.user_version(conn) == 1
+        assert db.user_version(conn) == db.latest_version()
         assert db.get_meta(conn, "db_id") == db_id
         assert conn.execute("SELECT count(*) FROM memories").fetchone()[0] == 1
         conn.close()
@@ -91,7 +103,7 @@ def test_migrate_is_idempotent(tmp_path):
 
 def test_cli_mode_creates_a_new_database(tmp_path):
     conn = db.open_db(tmp_path / "noblivion.db", allow_migrate=False, create=True)
-    assert db.user_version(conn) == 1
+    assert db.user_version(conn) == db.latest_version()
 
 
 def test_cli_mode_refuses_an_old_schema(tmp_path):
@@ -111,7 +123,7 @@ def test_store_mode_migrates_an_old_schema_with_backup(tmp_path):
     raw.commit()
     raw.close()
     conn = db.open_db(path, create=True)
-    assert db.user_version(conn) == 1
+    assert db.user_version(conn) == db.latest_version()
     backups = list((tmp_path / "backups").glob("noblivion-v0-*.db"))
     assert len(backups) == 1
     assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
