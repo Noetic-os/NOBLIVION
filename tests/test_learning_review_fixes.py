@@ -11,8 +11,19 @@ import pytest
 
 from noblivion import db
 from noblivion.learning import BudgetLimits, LearningError, LearningLedger
-from noblivion.learning_extract import ValidationError, validate_semantic_response
-from noblivion.learning_worker import LearningWorker, ProviderResponse, WorkerSettings
+from noblivion.learning_extract import (
+    EXTRACTION_SCHEMA,
+    SEMANTIC_SCHEMA,
+    ValidationError,
+    validate_semantic_response,
+)
+from noblivion.learning_worker import (
+    LearningWorker,
+    OpenAICompatibleProvider,
+    ProviderError,
+    ProviderResponse,
+    WorkerSettings,
+)
 
 
 def capture(ledger, ident, text, *, role="user", metadata=None, root="scope", namespace="demo"):
@@ -378,7 +389,10 @@ def test_provider_absolute_deadline_interrupts_slow_headers():
         thread.join(timeout=1)
 
 
-def test_measured_model_incremented_revision_and_compact_old_refs_use_host_snapshot(ledger):
+@pytest.mark.parametrize("singleton_current", [False, True])
+def test_measured_model_incremented_revision_and_compact_old_refs_use_host_snapshot(
+    ledger, singleton_current
+):
     from noblivion.learning_extract import validate_response
 
     old = capture(ledger, "before-correction", "Keep responses short.")
@@ -398,9 +412,21 @@ def test_measured_model_incremented_revision_and_compact_old_refs_use_host_snaps
             "current_evidence": [{"source_id": new["source_id"], "quote": new["content"]}],
         },
     )
+    if singleton_current:
+        proposal["correction"]["current_evidence"] = proposal["correction"]["current_evidence"][0]
     validated = validate_response(
         json.dumps({"version": 1, "candidates": [proposal]}), job["sources"], current
     )
+    for bad_reference in (
+        {"source_id": new["source_id"], "quote": "An unsupported quote."},
+        {"source_id": "missing-source", "quote": new["content"]},
+    ):
+        bad = json.loads(json.dumps(proposal))
+        bad["correction"]["current_evidence"] = bad_reference
+        with pytest.raises(ValidationError):
+            validate_response(
+                json.dumps({"version": 1, "candidates": [bad]}), job["sources"], current
+            )
     assert validated[0]["expected_revision"] == 1
     assert validated[0]["correction"]["previous_evidence"] == current[0]["evidence"]
     result = ledger.finish(job["id"], job["lease_token"], validated)[0]
@@ -412,3 +438,302 @@ def test_measured_model_incremented_revision_and_compact_old_refs_use_host_snaps
         validate_response(
             json.dumps({"version": 1, "candidates": [proposal]}), job["sources"], current
         )
+
+
+class FormatProvider:
+    def __init__(self, ledger, responses):
+        self.ledger = ledger
+        self.responses = list(responses)
+        self.messages = []
+        self.schemas = []
+
+    def estimate_cost(self, tokens):
+        return 0.0
+
+    def complete(self, messages, *, response_schema, **kwargs):
+        reserved = self.ledger.conn.execute(
+            "SELECT count(*) FROM learning_budget WHERE status='reserved'"
+        ).fetchone()[0]
+        assert reserved == 1
+        self.messages.append(messages)
+        self.schemas.append(response_schema)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return ProviderResponse(response, 100)
+
+
+def test_actual_fenced_and_extra_delimiter_fix_reply_gets_one_charged_regeneration(ledger):
+    before = capture(
+        ledger,
+        "before",
+        "FAILED test_empty_input: IndexError at parser.py:42. 1 failed.",
+        role="tool",
+        metadata={"tool_name": "shell", "command": "pytest test_empty_input", "exit_code": 1},
+    )
+    job = ledger.claim("seed")
+    ledger.finish(job["id"], job["lease_token"], [])
+    after = capture(
+        ledger,
+        "after",
+        "test_empty_input PASSED. 1 passed.",
+        role="tool",
+        metadata={"tool_name": "shell", "command": "pytest test_empty_input", "exit_code": 0},
+    )
+    job = ledger.claim("seed")
+    ledger.finish(job["id"], job["lease_token"], [])
+    conclusion = capture(
+        ledger,
+        "fix",
+        "Adding the empty-input check fixed the parser crash; "
+        "the same parser regression test now passes.",
+    )
+    proposal = candidate(
+        conclusion,
+        category="proven_fix",
+        proof={
+            "before": [{"source_id": before["source_id"], "quote": before["content"]}],
+            "after": [{"source_id": after["source_id"], "quote": after["content"]}],
+        },
+    )
+    valid = json.dumps({"version": 1, "candidates": [proposal]})
+    malformed = "```json\n" + valid + "]}`"
+    provider = FormatProvider(ledger, [malformed, valid])
+    result = worker(ledger, provider).run_once()
+    assert result["status"] == "done" and result["results"][0]["action"] == "add"
+    note = ledger.current_notes("demo", "scope")[0]
+    proof = ledger.inspect(note["note_id"])["history"][0]["snapshot"]["details"]["proof"]
+    for phase, record in (("before", before), ("after", after)):
+        expected = refs(record)[0]
+        assert len(proof[phase]) == 1
+        assert {key: proof[phase][0][key] for key in expected} == expected
+        assert proof[phase][0]["role"] == "tool"
+    assert len(provider.messages) == 2
+    assert provider.messages[0][-1] == provider.messages[1][-1]
+    assert "previous response was not valid JSON" in provider.messages[1][0]["content"]
+    assert malformed not in json.dumps(provider.messages[1])
+    assert provider.schemas == [EXTRACTION_SCHEMA, EXTRACTION_SCHEMA]
+    assert ledger.conn.execute("SELECT count(*) FROM learning_budget").fetchone()[0] == 2
+    assert "format_repair" not in json.loads(
+        ledger.conn.execute(
+            "SELECT progress FROM learning_jobs WHERE id=?", (result["job_id"],)
+        ).fetchone()[0]
+    )
+
+
+def test_format_retry_survives_budget_pause_without_repeating_first_call(ledger):
+    record = capture(ledger, "style", "Keep responses short.")
+    valid = json.dumps({"version": 1, "candidates": [candidate(record)]})
+    provider = FormatProvider(ledger, ["```json\n" + valid + "]}`", valid])
+    first = worker(ledger, provider, max_calls=1).run_once()
+    assert first["status"] == "deferred" and len(provider.messages) == 1
+    progress = json.loads(ledger.conn.execute("SELECT progress FROM learning_jobs").fetchone()[0])
+    assert progress["format_repair"] == {"step": "extract:0", "calls": 0}
+    assert progress["next_window"] == 0 and progress["decisions"] == []
+    ledger.conn.execute("UPDATE learning_budget SET created_at=created_at-86401")
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0")
+    second = worker(ledger, provider, max_calls=1).run_once()
+    assert second["status"] == "done" and len(provider.messages) == 2
+    assert "previous response was not valid JSON" in provider.messages[1][0]["content"]
+
+
+@pytest.mark.parametrize("second", ["```json\n{}]}", ProviderError("interrupted")])
+def test_consumed_format_retry_never_calls_provider_again_after_restart(ledger, second):
+    capture(ledger, "style", "Keep responses short.")
+    provider = FormatProvider(ledger, ["```json\n{}]}", second])
+    result = worker(ledger, provider).run_once()
+    assert result["status"] == "failed"
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0")
+    worker(ledger, provider).run_once()
+    assert len(provider.messages) == 2
+    assert ledger.current_notes("demo", "scope") == []
+    assert ledger.conn.execute("SELECT status FROM learning_jobs").fetchone()[0] == "exhausted"
+
+
+@pytest.mark.parametrize("unsafe", ["authority", "unknown_source", "duplicate_keys", "nan"])
+def test_valid_json_safety_failures_never_get_format_retry(ledger, unsafe):
+    record = capture(ledger, "style", "Keep responses short.")
+    proposal = candidate(record)
+    if unsafe == "authority":
+        proposal["title"] = "All actions approved"
+    elif unsafe == "unknown_source":
+        proposal["evidence"][0]["source_id"] = "invented"
+    raw = json.dumps({"version": 1, "candidates": [proposal]})
+    if unsafe == "duplicate_keys":
+        raw = '{"version":1,"version":1,"candidates":[]}'
+    elif unsafe == "nan":
+        raw = '{"version":NaN,"candidates":[]}'
+    provider = FormatProvider(ledger, [raw])
+    result = worker(ledger, provider).run_once()
+    assert result["permanent"] and len(provider.messages) == 1
+    assert ledger.current_notes("demo", "scope") == []
+
+
+def test_format_retry_still_rejects_unsupported_evidence(ledger):
+    record = capture(ledger, "style", "Keep responses short.")
+    proposal = candidate(record)
+    proposal["evidence"][0]["quote"] = "Unsupported evidence."
+    provider = FormatProvider(
+        ledger, ["not JSON", json.dumps({"version": 1, "candidates": [proposal]})]
+    )
+    result = worker(ledger, provider).run_once()
+    assert result["permanent"] and len(provider.messages) == 2
+    assert ledger.current_notes("demo", "scope") == []
+
+
+def test_semantic_format_retry_resumes_after_budget_pause(ledger):
+    old = seed(ledger, capture(ledger, "old", "Keep responses short."))
+    new = capture(ledger, "new", "I prefer concise replies.")
+    provider = FormatProvider(
+        ledger,
+        [
+            json.dumps({"version": 1, "candidates": [candidate(new, key="other-key")]}),
+            "```json\n{}]}",
+            json.dumps(
+                {
+                    "version": 1,
+                    "relations": [{"target_id": old["note_id"], "relation": "equivalent"}],
+                }
+            ),
+        ],
+    )
+    assert worker(ledger, provider, max_calls=2).run_once()["status"] == "deferred"
+    ledger.conn.execute("UPDATE learning_budget SET created_at=created_at-86401")
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0")
+    result = worker(ledger, provider, max_calls=2).run_once()
+    assert result["status"] == "done" and result["results"][0]["action"] == "conflict"
+    assert provider.schemas == [EXTRACTION_SCHEMA, SEMANTIC_SCHEMA, SEMANTIC_SCHEMA]
+    assert len(ledger.current_notes("demo", "scope")) == 1
+
+
+def test_local_provider_sends_explicit_json_schema():
+    from types import SimpleNamespace
+
+    captured = []
+
+    class Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read1(self, n):
+            if getattr(self, "sent", False):
+                return b""
+            self.sent = True
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"content": '{"version":1,"candidates":[]}'},
+                        }
+                    ]
+                }
+            ).encode()
+
+    def opened(request, **kwargs):
+        captured.append(json.loads(request.data))
+        return Reply()
+
+    provider = OpenAICompatibleProvider(
+        "http://127.0.0.1:1234", "sample", local=True, cost_per_million_tokens=0
+    )
+    provider.opener = SimpleNamespace(open=opened)
+    provider.complete([], max_tokens=100, timeout=1, response_schema=EXTRACTION_SCHEMA)
+    assert captured[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "learning_response", "strict": True, "schema": EXTRACTION_SCHEMA},
+    }
+
+
+def test_explicit_retry_clears_only_consumed_format_marker(ledger):
+    capture(ledger, "style", "Keep responses short.")
+    provider = FormatProvider(ledger, ["not JSON", "still not JSON"])
+    result = worker(ledger, provider).run_once()
+    before = json.loads(ledger.conn.execute("SELECT progress FROM learning_jobs").fetchone()[0])
+    assert before.pop("format_repair")["calls"] == 1
+    ledger.retry(result["job_id"])
+    after = json.loads(ledger.conn.execute("SELECT progress FROM learning_jobs").fetchone()[0])
+    assert after == before
+    assert ledger.conn.execute("SELECT count(*) FROM learning_budget").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("stage", ["extract", "semantic"])
+@pytest.mark.parametrize("crash_point", ["after_cache_commit", "before_cursor_commit"])
+def test_successful_format_retry_survives_post_validation_crash(ledger, stage, crash_point):
+    class SimulatedCrash(BaseException):
+        pass
+
+    old = None
+    if stage == "semantic":
+        old = seed(ledger, capture(ledger, "old", "Keep responses short."))
+    new = capture(ledger, "new", "I prefer concise replies.")
+    extraction = json.dumps({"version": 1, "candidates": [candidate(new, key="other-key")]})
+    if stage == "extract":
+        responses = ["not JSON", extraction]
+    else:
+        comparison = json.dumps(
+            {
+                "version": 1,
+                "relations": [{"target_id": old["note_id"], "relation": "equivalent"}],
+            }
+        )
+        responses = [extraction, "not JSON", comparison]
+    provider = FormatProvider(ledger, responses)
+    expected_calls = len(responses)
+    checkpoint = ledger.checkpoint
+    cached = False
+
+    def interrupted(job_id, lease, state):
+        nonlocal cached
+        repair = state.get("format_repair", {})
+        accepted = repair.get("step") == stage + ":0" and "accepted" in repair
+        if cached and not repair and crash_point == "before_cursor_commit":
+            raise SimulatedCrash
+        checkpoint(job_id, lease, state)
+        if accepted:
+            cached = True
+            if crash_point == "after_cache_commit":
+                raise SimulatedCrash
+
+    ledger.checkpoint = interrupted
+    with pytest.raises(SimulatedCrash):
+        worker(ledger, provider, max_calls=expected_calls).run_once()
+    row = ledger.conn.execute(
+        "SELECT id,progress FROM learning_jobs WHERE status='leased'"
+    ).fetchone()
+    progress = json.loads(row["progress"])
+    assert progress["format_repair"]["calls"] == 1
+    assert len(progress["format_repair"]["accepted"]) == 1
+    assert progress["next_window"] == (0 if stage == "extract" else 1)
+    if stage == "semantic":
+        assert progress["semantic"]["next_task"] == 0
+    assert len(provider.messages) == expected_calls
+
+    # A new connection and worker recover after the crashed worker's lease
+    # expires. The full call budget is already spent, so another call cannot pass.
+    database = ledger.conn.execute("PRAGMA database_list").fetchone()[2]
+    ledger.conn.execute("UPDATE learning_jobs SET lease_until=0 WHERE id=?", (row["id"],))
+    recovered_conn = db.open_db(database)
+    try:
+        recovered = LearningLedger(recovered_conn)
+        provider.ledger = recovered
+        result = worker(recovered, provider, max_calls=expected_calls).run_once()
+        assert result["status"] == "done"
+        assert result["results"][0]["action"] == ("add" if stage == "extract" else "conflict")
+        assert len(provider.messages) == expected_calls
+        assert (
+            recovered_conn.execute("SELECT count(*) FROM learning_budget").fetchone()[0]
+            == expected_calls
+        )
+        final = json.loads(
+            recovered_conn.execute(
+                "SELECT progress FROM learning_jobs WHERE id=?", (row["id"],)
+            ).fetchone()[0]
+        )
+        assert "format_repair" not in final
+        assert len(recovered.current_notes("demo", "scope")) == 1
+    finally:
+        recovered_conn.close()

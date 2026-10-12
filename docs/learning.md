@@ -128,10 +128,29 @@ and derived text while keeping an empty identity tombstone so stale files
 cannot restore the forgotten fact. This does not delete the native client transcript
 or older external backups; manage those through their own retention controls.
 
+`noblivion learning status --project <namespace> --root <root>` lists up to
+20 open conflicts and their total count. Run `noblivion learning inspect
+conflict:<id> --project <namespace> --root <root>` with an ID from that list to
+read the reason, proposed statement, target revision, owning scope and exact
+source evidence. Both scope arguments are required. Only the proposal's source
+scope or target owner scope can inspect its contents. A cross-root proposal
+appears in both its source and target scopes. Inspecting a note also lists its
+conflict history. A target revision change or note/source exclusion marks a
+conflict cleared from the open list; its retained history still explains why.
+This does not apply a proposal or establish that the correction was accepted.
+Use the existing explicit edit or exclusion commands in the owning scope.
+
 The authenticated local API exposes `/learning/capture`, `/learning/control`,
 `/learning/status` and `/learning/summary`. Recall routes accept `session_id`
-and enforce use controls on both search and fetch. Root-scoped fetches cannot
-read another project's note. Superseded, excluded and forgotten facts remain
+and enforce use controls on both search and fetch. Requests without a valid session ID use a conservative fallback:
+any explicit session use-off setting in the requested root blocks those reads
+until it is cleared. Requests with a valid session ID retain their own session
+controls. The same rule applies to each source root of shared general memories,
+and to search, fetch and summary. This protects clients whose native memory-tool
+process does not receive a session ID; it can also suppress recall for other
+unidentified sessions in that root. Session IDs are client-supplied routing
+metadata, not authenticated identities. Contribution settings are unchanged.
+Root-scoped fetches cannot read another project's note. Superseded, excluded and forgotten facts remain
 out of current recall after repeated scans and warm-cache requests.
 
 Jobs have leases, attempts, retry times and visible exhaustion. Every model

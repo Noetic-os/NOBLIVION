@@ -112,6 +112,23 @@ class LearningLedger:
             "paused": any(row["paused"] == 1 for row in rows),
         }
 
+    def read_allowed(self, project: str, root: str, session_id: str = "") -> bool:
+        """Unknown clients cannot bypass any session's explicit memory-use opt-out.
+
+        Session IDs are client-supplied routing metadata, not authenticated identity.
+        Contribution and worker reconciliation continue using effective_controls.
+        """
+        if isinstance(session_id, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,256}", session_id):
+            return self.effective_controls(project, root, session_id)["use"]
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM learning_controls WHERE project=? AND root=? "
+                "AND use_memory=0 LIMIT 1",
+                (project, root),
+            ).fetchone()
+            is None
+        )
+
     def set_controls(
         self,
         project: str,
@@ -596,13 +613,21 @@ class LearningLedger:
     def retry(self, job_id: str) -> None:
         """Explicit operator recovery; retained budget usage still applies."""
         with db.write_tx(self.conn):
-            changed = self.conn.execute(
-                "UPDATE learning_jobs SET status='pending',attempts=0,next_attempt=0,last_error='',"
-                "updated_at=? WHERE id=? AND status='exhausted'",
-                (time.time(), job_id),
-            ).rowcount
-            if not changed:
+            row = self.conn.execute(
+                "SELECT progress FROM learning_jobs WHERE id=? AND status='exhausted'",
+                (job_id,),
+            ).fetchone()
+            if row is None:
                 raise LearningError("job is not exhausted")
+            progress = json.loads(row["progress"])
+            # Explicit recovery renews only the bounded format retry. Validated
+            # windows, semantic comparisons and durable budget charges remain.
+            progress.pop("format_repair", None)
+            self.conn.execute(
+                "UPDATE learning_jobs SET status='pending',attempts=0,next_attempt=0,last_error='',"
+                "progress=?,updated_at=? WHERE id=? AND status='exhausted'",
+                (_json(progress), time.time(), job_id),
+            )
 
     def current_notes(self, project: str, root: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -749,7 +774,169 @@ class LearningLedger:
         ]
         return note
 
-    def inspect(self, note_id: str) -> dict[str, Any]:
+    def _conflict_rows(
+        self, project: str | None = None, root: str | None = None, *, note_id: str | None = None
+    ) -> list[sqlite3.Row]:
+        conditions, params = ["d.action='conflict'"], []
+        if note_id is not None:
+            conditions.append("d.note_id=?")
+            params.append(note_id)
+        # A proposal belongs to its source scope and, when known, its target owner.
+        scopes = []
+        for alias in ("j", "n"):
+            scope = []
+            for column, value in (("project", project), ("root", root)):
+                if value is not None:
+                    scope.append(f"{alias}.{column}=?")
+                    params.append(value)
+            if scope:
+                scopes.append("(" + " AND ".join(scope) + ")")
+        if scopes:
+            conditions.append("(" + " OR ".join(scopes) + ")")
+        return self.conn.execute(
+            "SELECT d.*,j.project AS source_project,j.root AS source_root "
+            "FROM learning_decisions d LEFT JOIN learning_jobs j ON j.id=d.job_id "
+            "LEFT JOIN learning_notes n ON n.note_id=d.note_id WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY d.id DESC",
+            params,
+        ).fetchall()
+
+    def _inspect_conflict(self, row: sqlite3.Row, *, compact: bool = False) -> dict[str, Any]:
+        detail = json.loads(row["detail"])
+        decision, result = detail.get("decision", {}), detail.get("result", {})
+        target_id = row["note_id"] or decision.get("note_id")
+        target = self.conn.execute(
+            "SELECT note_id,project,root,revision,status FROM learning_notes WHERE note_id=?",
+            (target_id,),
+        ).fetchone()
+        if target is None and isinstance(target_id, str) and target_id.startswith("legacy:"):
+            target = self.conn.execute(
+                "SELECT id AS note_id,project,root,rev AS revision,"
+                "CASE WHEN deleted_at IS NOT NULL "
+                "THEN 'forgotten' WHEN archived_at IS NOT NULL THEN 'excluded' ELSE 'active' END "
+                "AS status FROM memories WHERE id=?",
+                (target_id.removeprefix("legacy:"),),
+            ).fetchone()
+        expected_revision = decision.get("expected_revision")
+        recorded_revision = expected_revision
+        if target is not None and not str(target_id).startswith("legacy:"):
+            recorded = self.conn.execute(
+                "SELECT max(revision) FROM learning_revisions WHERE note_id=? AND created_at<=?",
+                (target_id, row["created_at"]),
+            ).fetchone()[0]
+            if recorded is not None:
+                recorded_revision = recorded
+        cleared_reason = None
+        if target is not None:
+            if target["status"] != "active":
+                cleared_reason = "target " + target["status"]
+            elif recorded_revision is not None and target["revision"] != recorded_revision:
+                cleared_reason = "target revision changed"
+
+        # Decisions can also record reconciliation refusals. Verify evidence at read
+        # time instead of treating every stored proposal as validated memory text.
+        evidence, unavailable = [], False
+        references = decision.get("evidence", [])
+        if not isinstance(references, list) or len(references) > 64:
+            references, unavailable = [], True
+        for reference in references:
+            if not isinstance(reference, dict):
+                unavailable = True
+                continue
+            source = self.conn.execute(
+                "SELECT * FROM learning_sources WHERE id=?", (reference.get("source_id"),)
+            ).fetchone()
+            start, end, quote = (reference.get(key) for key in ("start", "end", "quote"))
+            if (
+                source is None
+                or source["status"] == "forgotten"
+                or source["project"] != row["source_project"]
+                or source["root"] != row["source_root"]
+                or type(start) is not int
+                or type(end) is not int
+                or not 0 <= start < end <= len(source["content"])
+                or source["content"][start:end] != quote
+                or source["sha256"] != reference.get("source_hash")
+            ):
+                unavailable = True
+                continue
+            if source["status"] == "excluded":
+                cleared_reason = cleared_reason or "source excluded"
+            evidence.append(
+                {
+                    key: reference[key]
+                    for key in ("source_id", "source_hash", "start", "end", "quote")
+                }
+            )
+        reason = result.get("reason") or decision.get("reason") or "explicit resolution required"
+        statement = decision.get("statement")
+        try:
+            _safe(_json({"reason": reason, "statement": statement, "evidence": evidence}))
+        except LearningError:
+            reason, unavailable = "proposal content unavailable", True
+        if unavailable:
+            statement, evidence = None, []
+        value = {
+            "conflict_id": f"conflict:{row['id']}",
+            "decision_id": row["id"],
+            "state": "cleared" if cleared_reason else "open",
+            "cleared_reason": cleared_reason,
+            "reason": reason,
+            "note_id": target_id,
+            "target_revision": expected_revision,
+            "recorded_target_revision": recorded_revision,
+            "current_revision": target["revision"] if target else None,
+            "current_status": target["status"] if target else None,
+            "target_scope": {"project": target["project"], "root": target["root"]}
+            if target
+            else None,
+            "source_scope": {"project": row["source_project"], "root": row["source_root"]},
+            "created_at": row["created_at"],
+        }
+        if compact:
+            value["reason"] = str(reason)[:240]
+        else:
+            value.update(
+                job_id=row["job_id"],
+                proposed_statement=statement,
+                evidence=evidence,
+                evidence_unavailable=unavailable,
+                semantic_target_id=decision.get("semantic_review", {}).get("target_id"),
+            )
+        return value
+
+    def _conflict_status(self, project: str | None, root: str | None) -> dict[str, Any]:
+        pending, count = [], 0
+        for row in self._conflict_rows(project, root):
+            conflict = self._inspect_conflict(row, compact=True)
+            if conflict["state"] == "open":
+                count += 1
+                if len(pending) < 20:
+                    pending.append(conflict)
+        return {"open_count": count, "items": pending, "limit": 20}
+
+    def inspect(
+        self, note_id: str, *, project: str | None = None, root: str | None = None
+    ) -> dict[str, Any]:
+        if note_id.startswith("conflict:"):
+            if not project or not root:
+                raise LearningError("conflict inspection requires project and root")
+            # Filter before reading proposal text or evidence. A sequential decision
+            # ID is an identifier, not authorization to inspect another scope.
+            row = self.conn.execute(
+                "SELECT d.*,j.project AS source_project,j.root AS source_root "
+                "FROM learning_decisions d LEFT JOIN learning_jobs j ON j.id=d.job_id "
+                "LEFT JOIN learning_notes n ON n.note_id=d.note_id "
+                "LEFT JOIN memories m ON json_extract(d.detail,'$.decision.note_id')="
+                "'legacy:' || m.id WHERE d.id=? AND d.action='conflict' AND "
+                "((j.project=? AND j.root=?) OR (n.project=? AND n.root=?) "
+                "OR (m.project=? AND m.root=?))",
+                (note_id.removeprefix("conflict:"), project, root, project, root, project, root),
+            ).fetchone()
+            if row is None:
+                raise LearningError("unknown conflict")
+            return self._inspect_conflict(row)
         row = self.conn.execute(
             "SELECT * FROM learning_notes WHERE note_id=?", (note_id,)
         ).fetchone()
@@ -770,6 +957,10 @@ class LearningLedger:
             "SELECT * FROM learning_outbox WHERE note_id=?", (note_id,)
         ).fetchone()
         note["projection"] = dict(outbox) if outbox else None
+        note["conflicts"] = [
+            self._inspect_conflict(conflict, compact=True)
+            for conflict in self._conflict_rows(note_id=note_id)
+        ]
         return note
 
     def _evidence(
@@ -1495,12 +1686,14 @@ class LearningLedger:
     def summary(
         self, project: str, root: str, *, session_id: str = "", limit_chars: int = 6000
     ) -> str:
-        if not self.effective_controls(project, root, session_id)["use"]:
+        if not self.read_allowed(project, root, session_id):
             return ""
         if not 0 <= limit_chars <= 64000:
             raise LearningError("invalid summary size")
         lines: list[str] = []
         for note in self.semantic_notes(project, root, session_id=session_id):
+            if not self.read_allowed(project, note["root"], session_id):
+                continue
             line = f"- {note['statement']} [memory:{note['note_id']} revision:{note['revision']}]"
             if len("\n".join([*lines, line])) <= limit_chars:
                 lines.append(line)
@@ -1514,6 +1707,7 @@ class LearningLedger:
             where += " AND root=?" if where else " WHERE root=?"
             params.append(root)
         return {
+            "conflicts": self._conflict_status(project, root),
             "jobs": {
                 r[0]: r[1]
                 for r in self.conn.execute(

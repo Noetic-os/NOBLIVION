@@ -33,7 +33,9 @@ def _parser() -> argparse.ArgumentParser:
         "retry",
     ):
         command = commands.add_parser(name)
-        command.add_argument("--project", default=config.DEFAULT_NAMESPACE)
+        command.add_argument(
+            "--project", default=None if name == "inspect" else config.DEFAULT_NAMESPACE
+        )
         command.add_argument("--root", default="", help="explicit project root")
         command.add_argument("--session", default="")
         if name in {"inspect", "edit", "exclude", "forget"}:
@@ -102,7 +104,7 @@ def _run(ledger: LearningLedger, args: argparse.Namespace):
             raise LearningError("capture input too large")
         return ledger.capture_batch(json.loads(content))
     if args.command == "inspect":
-        return ledger.inspect(args.note_id)
+        return ledger.inspect(args.note_id, project=args.project, root=args.root or None)
     if args.command == "edit":
         evidence = None
         if args.evidence_json:

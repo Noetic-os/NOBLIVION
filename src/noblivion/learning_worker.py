@@ -24,8 +24,11 @@ from threading import Event, Timer
 
 from .learning import BudgetExceeded, SemanticSnapshotChanged
 from .learning_extract import (
+    EXTRACTION_SCHEMA,
     SEMANTIC_PROMPT,
+    SEMANTIC_SCHEMA,
     SYSTEM_PROMPT,
+    ResponseFormatError,
     ValidationError,
     build_windows,
     contains_secret,
@@ -35,6 +38,12 @@ from .learning_extract import (
 )
 
 LOG = logging.getLogger(__name__)
+_FORMAT_RETRY = (
+    "\nThe previous response was not valid JSON. Generate the response again from "
+    "the original evidence below. Return exactly one JSON object matching the "
+    "response schema, without Markdown fences, commentary or trailing delimiters. "
+    "All evidence and safety requirements still apply."
+)
 
 
 class ProviderError(RuntimeError):
@@ -181,7 +190,7 @@ class OpenAICompatibleProvider:
         return 0.0
 
     def complete(
-        self, messages: list[dict], *, max_tokens: int, timeout: float
+        self, messages: list[dict], *, max_tokens: int, timeout: float, response_schema=None
     ) -> ProviderResponse:
         body = json.dumps(
             {
@@ -189,7 +198,18 @@ class OpenAICompatibleProvider:
                 "messages": messages,
                 "temperature": 0,
                 "max_tokens": max_tokens,
-                "response_format": {"type": "json_object"},
+                "response_format": (
+                    {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "learning_response",
+                            "strict": True,
+                            "schema": response_schema,
+                        },
+                    }
+                    if response_schema is not None
+                    else {"type": "json_object"}
+                ),
                 "reasoning_effort": self.reasoning_effort,
             }
         ).encode()
@@ -263,8 +283,8 @@ class LearningWorker:
     def run_once(self) -> dict:
         """Claim one job and process all windows, or leave a visible failure.
 
-        There are no invisible provider retries. A retry is a new leased attempt
-        and every call reserves its budget durably. Completed windows are resumed
+        There are no invisible provider retries. Each call reserves its budget
+        durably, including the one allowed JSON format retry. Completed windows resume
         from their persisted cursor without another provider call. A reservation
         failure means no provider call occurs.
         """
@@ -321,6 +341,13 @@ class LearningWorker:
                 or not 0 <= start_window <= len(windows)
             ):
                 raise ValidationError("invalid durable window progress")
+            state = dict(
+                progress,
+                fingerprint=fingerprint,
+                next_window=start_window,
+                decisions=decisions,
+                existing_notes=existing,
+            )
             for window_index in range(start_window, len(windows)):
                 if self.stop is not None and self.stop.is_set():
                     self.ledger.defer(ident, lease, retry_delay=1, error="WorkerStopping")
@@ -337,10 +364,16 @@ class LearningWorker:
                         ),
                     },
                 ]
-                response = self._call(job, messages)
+                accepted = self._validated_call(
+                    job,
+                    messages,
+                    lambda raw: validate_response(raw, sources, existing),
+                    state,
+                    f"extract:{window_index}",
+                    EXTRACTION_SCHEMA,
+                )
                 # A window can only cite source text actually sent in it. The
                 # complete source is used for hashes and offsets after validation.
-                accepted = validate_response(response.content, sources, existing)
                 for decision in accepted:
                     for evidence in (
                         decision["evidence"]
@@ -356,16 +389,11 @@ class LearningWorker:
                         ):
                             raise ValidationError("evidence was not present in the model window")
                     decisions.append(decision)
-                self.ledger.checkpoint(
-                    ident,
-                    lease,
-                    {
-                        "fingerprint": fingerprint,
-                        "next_window": window_index + 1,
-                        "decisions": decisions,
-                        "existing_notes": existing,
-                    },
-                )
+                state["next_window"] = window_index + 1
+                # Advancing the cursor and dropping its cached retry result are
+                # one durable write. Until it commits, recovery reuses the cache.
+                state.pop("format_repair", None)
+                self.ledger.checkpoint(ident, lease, state)
             # Overlap can repeat identical candidates. Conflicting proposals in
             # one batch fail closed instead of depending on their order.
             unique = {}
@@ -389,14 +417,6 @@ class LearningWorker:
                 if key in unique and unique[key] != decision:
                     raise ValidationError("inconsistent window decisions")
                 unique[key] = decision
-            state = {
-                "fingerprint": fingerprint,
-                "next_window": len(windows),
-                "decisions": decisions,
-                "existing_notes": existing,
-            }
-            if "semantic" in progress:
-                state["semantic"] = progress["semantic"]
             reconciled = self._semantic(job, list(unique.values()), existing, state)
             result = self.ledger.finish(ident, lease, reconciled)
             return {"status": "done", "job_id": ident, "results": result}
@@ -438,10 +458,61 @@ class LearningWorker:
             )
             return {"status": "failed", "job_id": ident, "error": reason, "permanent": permanent}
 
-    def _call(self, job: dict, messages: list[dict]) -> ProviderResponse:
+    def _validated_call(self, job, messages, validate, state, step, schema):
+        """Retry invalid JSON syntax once, never repair or replay rejected text.
+
+        Reserve before marking the retry consumed, so budget deferral can resume.
+        Mark before submission, so a crash cannot cause an uncounted retry. An
+        accepted retry is cached before returning, then removed atomically with
+        caller progress. A crash before that cache commits leaves an uncertain
+        consumed retry, which fails closed and needs an explicit job retry.
+        """
+        repair = state.get("format_repair")
+        if repair is None:
+            response = self._call(job, messages, response_schema=schema)
+            try:
+                return validate(response.content)
+            except ResponseFormatError:
+                repair = {"step": step, "calls": 0}
+                state["format_repair"] = repair
+                self.ledger.checkpoint(job["id"], job["lease_token"], state)
+        if (
+            not isinstance(repair, dict)
+            or repair.get("step") != step
+            or type(repair.get("calls")) is not int
+            or repair["calls"] not in {0, 1}
+        ):
+            raise ValidationError("invalid durable format retry")
+        if "accepted" in repair:
+            if repair["calls"] != 1 or not isinstance(repair["accepted"], list):
+                raise ValidationError("invalid durable accepted retry")
+            return repair["accepted"]
+        if repair["calls"]:
+            raise ValidationError("format retry already consumed")
+
+        def consume():
+            repair["calls"] = 1
+            self.ledger.checkpoint(job["id"], job["lease_token"], state)
+
+        retry_messages = [dict(message) for message in messages]
+        retry_messages[0]["content"] += _FORMAT_RETRY
+        response = self._call(job, retry_messages, response_schema=schema, before_provider=consume)
+        try:
+            accepted = validate(response.content)
+        except ResponseFormatError as exc:
+            raise ValidationError("invalid JSON after bounded format retry") from exc
+        repair["accepted"] = accepted
+        self.ledger.checkpoint(job["id"], job["lease_token"], state)
+        return accepted
+
+    def _call(
+        self, job: dict, messages: list[dict], *, response_schema=None, before_provider=None
+    ) -> ProviderResponse:
         """One reservation per extraction or semantic call, including retries."""
         cfg = self.settings
         tokens = len(json.dumps(messages, ensure_ascii=False).encode()) + cfg.max_output_tokens
+        if response_schema is not None:
+            tokens += len(json.dumps(response_schema).encode())
         cost = self.provider.estimate_cost(tokens)
         reservation = self.ledger.reserve(
             job["id"],
@@ -451,9 +522,14 @@ class LearningWorker:
             estimated_seconds=cfg.timeout_seconds,
             estimated_cost=cost,
         )
+        if before_provider is not None:
+            before_provider()
         started = time.monotonic()
         response = self.provider.complete(
-            messages, max_tokens=cfg.max_output_tokens, timeout=cfg.timeout_seconds
+            messages,
+            max_tokens=cfg.max_output_tokens,
+            timeout=cfg.timeout_seconds,
+            response_schema=response_schema,
         )
         elapsed = time.monotonic() - started
         self.ledger.settle(
@@ -509,14 +585,17 @@ class LearningWorker:
             if candidate["action"] == "add":
                 if self.stop is not None and self.stop.is_set():
                     raise BudgetExceeded("worker stopping")
-                response = self._call(
+                relations = self._validated_call(
                     job,
                     [
                         {"role": "system", "content": SEMANTIC_PROMPT},
                         {"role": "user", "content": json.dumps(task, ensure_ascii=False)},
                     ],
+                    lambda raw, task=task: validate_semantic_response(raw, task),
+                    state,
+                    f"semantic:{index}",
+                    SEMANTIC_SCHEMA,
                 )
-                relations = validate_semantic_response(response.content, task)
                 blocked = next((r for r in relations if r["relation"] != "distinct"), None)
                 if blocked:
                     candidate.update(
@@ -535,6 +614,7 @@ class LearningWorker:
                         candidate["note_id"] = target["note_id"]
                         candidate["expected_revision"] = target["revision"]
             stage["next_task"] = index + 1
+            state.pop("format_repair", None)
             self.ledger.checkpoint(job["id"], job["lease_token"], state)
         for candidate in results:
             if candidate["action"] == "add":

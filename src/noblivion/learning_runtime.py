@@ -73,7 +73,7 @@ def memory_dirs(data_dir: Path, namespace: str) -> list[Path]:
 
 
 def use_allowed(conn, project: str, root: str, session_id: str = "") -> bool:
-    return bool(LearningLedger(conn).effective_controls(project, root, session_id)["use"])
+    return LearningLedger(conn).read_allowed(project, root, session_id)
 
 
 def summary(store, project: str, root: str, session_id: str = "") -> dict:

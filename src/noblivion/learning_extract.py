@@ -31,6 +31,84 @@ class ValidationError(ValueError):
     """A proposal or source failed closed. Messages never contain source text."""
 
 
+class ResponseFormatError(ValidationError):
+    """Only invalid JSON syntax permits a bounded, newly generated response."""
+
+
+def _schema_object(properties: dict, required: list[str] | None = None) -> dict:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties) if required is None else required,
+        "additionalProperties": False,
+    }
+
+
+# These constrain generation only. Local validation below remains authoritative
+# for evidence, roles, dates, authority, scope and reconciliation targets.
+# Large string maxLength values break some local grammar compilers. The strict
+# local validators enforce quote/statement limits; transport/output stay bounded.
+_QUOTE_SCHEMA = _schema_object({"source_id": {"type": "string"}, "quote": {"type": "string"}})
+_EVIDENCE_SCHEMA = {"type": "array", "items": _QUOTE_SCHEMA, "minItems": 1, "maxItems": 8}
+_CANDIDATE_PROPERTIES = {
+    "action": {"type": "string", "enum": sorted(ACTIONS)},
+    "logical_key": {"type": "string", "maxLength": 160},
+    "category": {"type": "string", "enum": sorted(CATEGORIES)},
+    "title": {"type": "string", "maxLength": 160},
+    "statement": {"type": "string"},
+    "scope": {"type": "string", "enum": ["project", "general"]},
+    "observed_at": {"type": "string"},
+    "effective_at": {"type": ["string", "null"]},
+    "evidence": _EVIDENCE_SCHEMA,
+}
+EXTRACTION_SCHEMA = _schema_object(
+    {
+        "version": {"type": "integer", "const": 1},
+        "candidates": {
+            "type": "array",
+            "maxItems": 12,
+            "items": _schema_object(
+                {
+                    **_CANDIDATE_PROPERTIES,
+                    "note_id": {"type": "string"},
+                    "expected_revision": {"type": "integer", "minimum": 1},
+                    "correction": _schema_object(
+                        {
+                            "previous_statement": {"type": "string"},
+                            "current_statement": {"type": "string"},
+                            "current_evidence": _EVIDENCE_SCHEMA,
+                        }
+                    ),
+                    "proof": _schema_object(
+                        {"before": _EVIDENCE_SCHEMA, "after": _EVIDENCE_SCHEMA}
+                    ),
+                },
+                list(_CANDIDATE_PROPERTIES),
+            ),
+        },
+    }
+)
+SEMANTIC_SCHEMA = _schema_object(
+    {
+        "version": {"type": "integer", "const": 1},
+        "relations": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": _schema_object(
+                {
+                    "target_id": {"type": "string"},
+                    "relation": {
+                        "type": "string",
+                        "enum": ["equivalent", "contradicts", "distinct", "uncertain"],
+                    },
+                }
+            ),
+        },
+    }
+)
+
+
 def _object(value, required: set[str], optional: set[str] | None = None) -> dict:
     if not isinstance(value, dict) or not required <= value.keys():
         raise ValidationError("missing required fields")
@@ -181,6 +259,8 @@ def validate_response(raw: str, sources: list[dict], existing_notes=()) -> list[
             object_pairs_hook=_duplicate_keys,
             parse_constant=lambda _: (_ for _ in ()).throw(ValidationError("nonfinite JSON")),
         )
+    except json.JSONDecodeError as exc:
+        raise ResponseFormatError("invalid JSON response") from exc
     except (ValueError, TypeError, RecursionError) as exc:
         raise ValidationError("invalid JSON response") from exc
     _object(doc, {"version", "candidates"})
@@ -323,7 +403,12 @@ def validate_response(raw: str, sources: list[dict], existing_notes=()) -> list[
             # reconstruction. New source quotes below remain strictly checked.
             if not previous.get("evidence"):
                 raise ValidationError("previous correction evidence unavailable")
-            current = _evidence(correction["current_evidence"], lookup)
+            current_refs = correction["current_evidence"]
+            # Some providers emit a singleton object for this redundant field.
+            # Normalize only the container; every source/quote is still checked.
+            if isinstance(current_refs, dict):
+                current_refs = [current_refs]
+            current = _evidence(current_refs, lookup)
             if not any(statement in e["quote"] for e in current):
                 raise ValidationError("missing current correction evidence")
             result["correction"] = dict(
@@ -525,6 +610,8 @@ def validate_semantic_response(raw: str, task: dict) -> list[dict]:
         raise ValidationError("unsafe semantic response")
     try:
         parsed = json.loads(raw, object_pairs_hook=_duplicate_keys)
+    except json.JSONDecodeError as exc:
+        raise ResponseFormatError("invalid semantic JSON") from exc
     except (ValueError, TypeError, RecursionError) as exc:
         raise ValidationError("invalid semantic JSON") from exc
     _object(parsed, {"version", "relations"})
