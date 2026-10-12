@@ -470,6 +470,35 @@ class Handler(BaseHTTPRequestHandler):
         if not self._token_ok():
             return 401, {"detail": "missing or wrong token"}
 
+        if path in ("/api/recall-capability/issue", "/api/recall-capability/resolve"):
+            if method != "POST":
+                return 405, {"detail": "method not allowed"}
+            from noblivion.learning_runtime import use_allowed
+            from noblivion.read_capability import ISSUE_PATH, scope
+
+            try:
+                body = self._json_body()
+                namespace, root, _, _ = scope(body)
+                issuing = path == ISSUE_PATH
+                session = (
+                    body.get("session_id")
+                    if issuing
+                    else self.store.read_capabilities.resolve(body)
+                )
+                # Unknown identity never qualifies for an issued native route.
+                if not isinstance(session, str) or not re.fullmatch(
+                    r"[A-Za-z0-9_.:-]{1,256}", session
+                ):
+                    raise ValueError("invalid native session")
+                with self.store.connection() as conn:
+                    allowed = use_allowed(conn, namespace, root, session)
+                if issuing:
+                    value = self.store.read_capabilities.issue(body) if allowed else ""
+                    return 200, {"read_capability": value}
+                return 200, {"session_id": session if allowed else ""}
+            except (ValueError, TypeError, KeyError):
+                return 400, {"detail": "invalid recall routing request"}
+
         if path.startswith("/learning/"):
             from noblivion import learning_runtime
 

@@ -159,6 +159,7 @@ not a database namespace. It does not separate the two clients' searches.
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
 | `NOBLIVION_SOURCE_CLIENT` | none | `claude_code` | Client name written by `noblivion_remember` into a new note. The Codex installer sets `codex`. Allowed values are `codex` and `claude_code`. |
+| `NOBLIVION_MCP_REQUIRE_CAPABILITY` | none | unset | When exactly `1`, MCP recall requires a valid one-use native hook capability before reading any memory. The Codex installer sets this value, and the remote gateway enforces it. Other MCP clients retain the conservative unknown-session guard. This setting does not disable contribution. |
 
 ## Store
 

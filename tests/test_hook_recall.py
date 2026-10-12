@@ -970,6 +970,7 @@ def test_mcp_initialize_list_call_round_trip(daemon, env):
         "k",
         "fetch_id",
         "include_mined",
+        "read_capability",
     }
     assert tools[0]["inputSchema"]["properties"]["k"]["default"] == 5
     res = out[2]["result"]

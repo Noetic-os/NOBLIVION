@@ -82,7 +82,10 @@ def environment(cfg: dict, event: dict) -> dict[str, str]:
 
 def _redact(cfg: dict, value: Any) -> Any:
     if isinstance(value, dict):
-        return {k: _redact(cfg, v) for k, v in value.items()}
+        return {
+            _redact(cfg, k): "[capability removed]" if k == "read_capability" else _redact(cfg, v)
+            for k, v in value.items()
+        }
     if isinstance(value, list):
         return [_redact(cfg, v) for v in value]
     if not isinstance(value, str):
@@ -93,6 +96,7 @@ def _redact(cfg: dict, value: Any) -> Any:
         raise ImportError("redaction")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    value = mod.scrub_read_capabilities(value)
     if mod.contains_secret(value):
         return "[REDACTED: unsafe evidence]"
     out = mod.redact_at_rest(value)
@@ -310,27 +314,80 @@ def _active(cfg: dict, event: dict) -> bool:
 
 def _merge(name: str, outputs: list[dict]) -> dict:
     contexts: list[str] = []
+    updated_input = None
     for out in outputs:
         if out.get("decision") == "block":
             return out
         hook = out.get("hookSpecificOutput")
         if isinstance(hook, dict):
             if hook.get("permissionDecision") == "deny":
-                return {"hookSpecificOutput": {**hook, "hookEventName": name}}
+                denied = {k: v for k, v in hook.items() if k != "updatedInput"}
+                return {"hookSpecificOutput": {**denied, "hookEventName": name}}
+            if isinstance(hook.get("updatedInput"), dict):
+                updated_input = hook["updatedInput"]
             context = hook.get("additionalContext")
             if isinstance(context, str) and context:
                 contexts.append(context)
         context = out.get("systemMessage")
         if isinstance(context, str) and context:
             contexts.append(context)
-    if contexts:
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": name,
-                "additionalContext": "\n\n".join(dict.fromkeys(contexts))[:9000],
-            }
-        }
+    if contexts or updated_input is not None:
+        result = {"hookEventName": name}
+        if contexts:
+            result["additionalContext"] = "\n\n".join(dict.fromkeys(contexts))[:9000]
+        if updated_input is not None:
+            result.update(permissionDecision="allow", updatedInput=updated_input)
+        return {"hookSpecificOutput": result}
     return {}
+
+
+def _recall_input(cfg: dict, event: dict, env: dict, use_memory: bool) -> dict:
+    """Replace model input with a host-issued, per-call recall capability.
+
+    Codex reports nested MCP calls individually to PreToolUse as well. No
+    capability is retained across tool calls or copied from a model argument.
+    """
+    name = event.get("tool_name")
+    ti = event.get("tool_input")
+    if (
+        not isinstance(name, str)
+        or not name.startswith("mcp__")
+        or not name.endswith("__noblivion_recall")
+        or not isinstance(ti, dict)
+    ):
+        return {}
+    updated = {**ti, "read_capability": ""}
+    if use_memory:
+        try:
+            path = Path(cfg["repo_root"]) / "src/noblivion/read_capability.py"
+            spec = importlib.util.spec_from_file_location("_hook_read_capability", path)
+            if spec is None or spec.loader is None:
+                raise ImportError("read_capability")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            answer = module.request(
+                env,
+                module.ISSUE_PATH,
+                {
+                    "namespace": cfg["namespace"],
+                    "root": env["NOBLIVION_RECALL_ROOT"],
+                    "client": "codex",
+                    "session_id": event["session_id"],
+                    "arguments": ti,
+                },
+            )
+            value = answer.get("read_capability")
+            if isinstance(value, str):
+                updated["read_capability"] = value
+        except Exception:  # noqa: BLE001 - always replace an untrusted supplied token
+            pass
+    output = {"updatedInput": updated}
+    if not use_memory:
+        output = {
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "Memory use disabled for this chat.",
+        }
+    return {"hookSpecificOutput": output}
 
 
 def handle_hook(cfg: dict, event: dict) -> dict:
@@ -372,6 +429,7 @@ def handle_hook(cfg: dict, event: dict) -> dict:
         if use_memory:
             out.append(_invoke(cfg, env, "recall_hook", event))
     elif name == "PreToolUse":
+        out.append(_recall_input(cfg, event, env, use_memory))
         for item in translated:
             out.append(_invoke(cfg, env, "guard_hook", item))
         if use_memory and event.get("tool_name") in ("spawn_agent", "Agent", "Task"):
