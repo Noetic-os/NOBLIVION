@@ -19,6 +19,8 @@ All notable changes to NOBLIVION. The format follows
 
 - Superseded and excluded memories stay out of recall across repeated index
   scans and cached searches. Root-scoped fetches enforce project boundaries.
+- Codex adapter upgrades preserve existing command enforcement prefixes and
+  unrelated TOML settings, including hook trust state inside an older managed block.
 
 ## 0.1.10 - 2026-10-12
 

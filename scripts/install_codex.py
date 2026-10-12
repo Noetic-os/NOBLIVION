@@ -35,7 +35,6 @@ TOOL_MATCHER = (
     r"spawn_agent|Agent|Task|mcp__.*read.*"
 )
 POST_MATCHER = r".*"
-FOREIGN_MCP = re.compile(r"(?m)^\s*\[\s*mcp_servers\.(?:noblivion|\"noblivion\")\s*\]")
 
 
 def _write_private(path: Path, text: str) -> None:
@@ -189,16 +188,88 @@ def _mcp_block(repo: Path, data: Path, memory: Path, namespace: str, root: str) 
     return "\n".join(lines)
 
 
+def _toml_table_lines(text: str) -> tuple[dict[int, tuple[str, ...]], dict[int, str]]:
+    """Find table headers without mistaking multiline values for sections."""
+    key = r"""(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')"""
+    headers: dict[int, tuple[str, ...]] = {}
+    markers: dict[int, str] = {}
+    quote, depth = "", 0
+    for number, line in enumerate(text.splitlines(keepends=True)):
+        if not quote and depth == 0:
+            if line.strip() in (BEGIN, END):
+                markers[number] = line.strip()
+            header = re.fullmatch(r"\s*(\[\[?)(.*?)(\]\]?)\s*(?:#.*)?", line)
+            if header and len(header[1]) == len(header[3]):
+                body = header[2].strip()
+                if re.fullmatch(key + r"(?:\s*\.\s*" + key + r")*", body):
+                    parts = []
+                    for part in re.findall(key, body):
+                        if part.startswith('"'):
+                            try:
+                                part = json.loads(part)
+                            except ValueError as exc:
+                                raise ValueError(
+                                    "review unsupported TOML table key encoding"
+                                ) from exc
+                        elif part.startswith("'"):
+                            part = part[1:-1]
+                        parts.append(part)
+                    headers[number] = tuple(parts)
+                    continue
+        index = 0
+        while index < len(line):
+            char = line[index]
+            if quote:
+                if quote.startswith('"') and char == "\\":
+                    index += 2
+                    continue
+                if line.startswith(quote, index):
+                    width = len(quote)
+                    if width == 3:
+                        # TOML permits one or two literal quotes immediately
+                        # before the closing triple-quote delimiter.
+                        while index + width < len(line) and line[index + width] == quote[0]:
+                            width += 1
+                    index += width
+                    quote = ""
+                    continue
+            elif char == "#":
+                break
+            elif char in "\"'":
+                quote = char * 3 if line.startswith(char * 3, index) else char
+                index += len(quote)
+                continue
+            elif char in "[{":
+                depth += 1
+            elif char in "]}":
+                depth -= 1
+            index += 1
+    return headers, markers
+
+
 def _merge_toml(old: str, block: str) -> str:
-    if BEGIN in old:
-        if END not in old:
-            raise ValueError("config.toml has an incomplete NOBLIVION block")
-        start = old.index(BEGIN)
-        end = old.index(END, start) + len(END)
-        old = old[:start] + old[end:]
-    elif FOREIGN_MCP.search(old):
+    lines = old.splitlines(keepends=True)
+    headers, markers = _toml_table_lines(old)
+    starts = [index for index, marker in markers.items() if marker == BEGIN]
+    ends = [index for index, marker in markers.items() if marker == END]
+    if starts or ends:
+        if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
+            raise ValueError("config.toml has an incomplete or repeated NOBLIVION block")
+    owned = {index for index, path in headers.items() if path[:2] == ("mcp_servers", "noblivion")}
+    if not starts and owned:
         raise ValueError("config.toml already has an unmanaged mcp_servers.noblivion section")
-    return old.rstrip() + "\n\n" + block + "\n"
+    preserved = []
+    dropping = False
+    for index, line in enumerate(lines):
+        if index in starts or index in ends:
+            continue
+        if index in headers:
+            dropping = index in owned
+        if not dropping or not line.strip() or line.lstrip().startswith("#"):
+            preserved.append(line)
+    # A marker is not ownership: Codex may insert hook trust state or other
+    # sections inside it. Their original lines remain outside the fresh block.
+    return "".join(preserved).rstrip("\r\n") + "\n\n" + block + "\n"
 
 
 def _git_common(path: Path) -> str:
