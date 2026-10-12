@@ -6,6 +6,13 @@ All notable changes to NOBLIVION. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- Codex-generated project instructions and environment context no longer enter
+  background learning as direct user evidence (NOBLIVION-98).
+
 ## 0.1.11 - 2026-10-12
 
 ### Added
