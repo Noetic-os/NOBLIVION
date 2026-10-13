@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "baseline_revision": "d911ddb136da8c1386082c3aad9ba56ee60fb39c",
+  "corpus_sha256": "8f3c1a641c2840d55cf12ff24df4b9486522836443f54afbe2a50cfbc0a1ada0",
+  "executor_sha256": "73c35d0b8b972149d86041b909ee4476153ff0b42251b52f9eb58941079730a9",
+  "frozen_settings": {
+    "worker": "WorkerSettings defaults; no automatic synthesis in extraction outcome comparison",
+    "budget": {
+      "max_calls": 256,
+      "max_tokens": 5000000,
+      "max_seconds": 10000
+    },
+    "provider_model": "fixed-extractive-fixture-v1",
+    "provider_temperature": 0,
+    "provider_tokens_per_response": 50,
+    "provider_price_per_million_tokens": 0
+  },
+  "correction_session": "A distinct session from the original source; dates preserved",
+  "baseline_hook": [
+    "hooks/learning_summary.py SessionStart",
+    "hooks/recall_hook.py UserPromptSubmit"
+  ],
+  "changed_hook": [
+    "hooks/learning_summary.py SessionStart",
+    "hooks/recall_hook.py UserPromptSubmit",
+    "hooks/learning_context.py UserPromptSubmit"
+  ],
+  "score_limit": "Fictional fixture task outcome only; no synthesis accuracy or real-user causality estimate",
+  "context_oracle": "Combined startup summary and all prompt memory outputs; negative query-hook empty and whole-session empty scored separately",
+  "embedding_fixture": {
+    "backend": "fixture",
+    "model": "fixed-bow-fixture-v1",
+    "dimensions": 16,
+    "network": false
+  }
+}

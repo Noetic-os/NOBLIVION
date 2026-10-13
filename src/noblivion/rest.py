@@ -507,6 +507,41 @@ class Handler(BaseHTTPRequestHandler):
                     return 200, learning_runtime.capture(self.store, self._json_body())
                 if path == "/learning/control" and method == "POST":
                     return 200, learning_runtime.controls(self.store, self._json_body())
+                if path == "/learning/context" and method in {"POST", "GET"}:
+                    body = (
+                        self._json_body()
+                        if method == "POST"
+                        else {
+                            "project": namespace_of(params, self.store.namespace),
+                            "root": root_of(params) or "",
+                            "session_id": first(params, "session_id"),
+                            "query": first(params, "query", first(params, "q")),
+                            "limit_chars": clamp_int(first(params, "limit_chars"), 6000, 0, 12000),
+                        }
+                    )
+                    return 200, learning_runtime.context(self.store, body)
+                if path == "/learning/claims" and method == "GET":
+                    from noblivion.learning import LearningLedger
+                    from noblivion.learning_consolidation import ConsolidationLedger
+
+                    with self.store.connection() as conn:
+                        ledger = LearningLedger(conn)
+                        project = namespace_of(params, self.store.namespace)
+                        root, session = root_of(params) or "", first(params, "session_id")
+                        if not ledger.read_allowed(project, root, session):
+                            return 200, {
+                                "claims": [],
+                                "drafts": [],
+                                "reason": "memory use disabled",
+                            }
+                        claim_id = first(params, "claim_id")
+                        consolidation = ConsolidationLedger(ledger)
+                        if claim_id:
+                            claim = consolidation.inspect(claim_id)
+                            if claim["project"] != project or claim["root"] != root:
+                                raise ValueError("invalid claim scope")
+                            return 200, claim
+                        return 200, {"drafts": consolidation.drafts(project, root)}
                 if path == "/learning/summary" and method == "GET":
                     return 200, learning_runtime.summary(
                         self.store,

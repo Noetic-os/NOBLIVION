@@ -32,6 +32,14 @@ TABLES = {
     "learning_evidence",
     "learning_decisions",
     "learning_outbox",
+    "learning_claims",
+    "learning_claim_revisions",
+    "learning_claim_supports",
+    "learning_claim_edges",
+    "learning_drafts",
+    "learning_draft_supports",
+    "learning_context_cache",
+    "learning_extraction_pages",
 }
 
 

@@ -178,3 +178,131 @@ call or a successful database connection does not establish that result.
 Native Codex memory is a separate system. Its documented eligibility delays
 and controls must be recorded when comparing results. A documentation table
 does not establish equal extraction accuracy or failure recovery.
+
+## Evidence-linked consolidation
+
+Exact accepted notes and immutable source passages remain the authority for
+background learning. Generated claims live in separate `learning_claims`,
+revision and exact-support tables. An edge names the note revision, source ID,
+SHA-256, start/end offsets and complete quoted passage. Batch membership alone
+never establishes a claim's support.
+
+Set `"worker": {"enable_consolidation": true}` in the existing `learning.json`
+to enqueue consolidation atomically with a completed extraction job. The default
+is false. Capture permission, project mapping, contribution controls and local
+provider restrictions still apply. An operator can also enqueue existing accepted
+notes with `noblivion learning consolidate --root ROOT --session SESSION`.
+This creates durable work; it makes no synchronous provider request.
+
+Consolidation uses distinct proposal, complete semantic support and equivalence
+stages. Each model request, including format repair and retry, uses the existing
+persistent budget reservation and settlement path. A valid citation is only a
+reference-integrity result. It does not establish semantic support. A claim stays
+staged or conflicted when any premise is unsupported, incomplete, contradictory
+or uncertain. An inference can establish only a project fact. It cannot create
+preferences, instructions, approvals, permissions or memory controls. Explicit
+user guidance requires an exact direct user statement and existing scope evidence.
+Dates come from the exact support, rather than the generation time.
+
+A separate complete equivalence verdict can combine supported paraphrases.
+The canonical claim receives a new revision and the union of all exact support.
+Merged predecessors retain their revisions and an equivalence lineage edge.
+Current note and claim snapshots are checked inside the merge transaction.
+Different applicability, contradictions and uncertain equivalence do not merge.
+Correction, supersession, exclusion, forgetting and root use-off synchronously
+withdraw transitive descendants before returning. Reads independently validate
+current note revisions, source eligibility, hashes and exact spans. A session
+use-off only removes that caller's context caches and serving permission. It does
+not withdraw another session's claims. Both source and destination roots must
+permit cross-root general guidance.
+
+Query context is available through:
+
+```console
+noblivion learning context --root ROOT --session SESSION --query 'service port'
+noblivion learning claim CLAIM_ID
+noblivion learning drafts --root ROOT
+noblivion learning status --root ROOT
+```
+
+The authenticated `POST /learning/context` accepts
+`{project, root, session_id, query, limit_chars}`. `GET /learning/context` accepts
+the same query parameters. The response contains `context`, `claims`, `conflicts`,
+`deferred` and `reason`. A disabled caller receives empty context. Nonempty queries
+require meaningful term overlap; unrelated queries abstain. An empty query keeps
+the startup-summary behavior. The new prompt hook supplies this bounded context
+to Codex and Claude. Existing `/learning/summary` clients remain compatible.
+
+Delivered bullets label explicit statements, observations and inferences. They
+include scope, support dates, claim/revision IDs and exact support IDs. Unresolved
+conflicts include the actual proposed value, date and affected revision, labelled
+`unresolved/not admitted`. If a complete conflict cannot fit, affected guidance
+is omitted and the response records that disposition. Content is never cut into
+a superficially complete claim to meet a size limit.
+
+Default hard limits are twelve proposals per call, 32 exact supports per claim
+(configured internal ceiling 64), 512 notes per derivation, 24,000 input characters,
+2,000 characters per generated statement, 32 context claims, 12,000 context
+characters and eight drafts per pass. Query input is limited to 8,000 characters.
+Settings, model and budget fingerprints are frozen before calls. A dense
+extraction response with twelve candidates is saturated. Durable continuation
+receipts must establish remaining coverage before atomic admission. The default
+maximum is sixteen continuations per unit, 256 pages and 512 decisions per job;
+hard ceilings are 32 continuations and 512 pages. A repeated saturated response,
+unsupported limit or omitted unit produces visible deferred/exhausted work.
+Successful JSON alone does not acknowledge coverage. Status reports include unit
+coverage, claim/draft states and deferred derivation work. Explicit retries retain
+settled and uncertain budget charges and valid completed page receipts.
+
+Context caching keeps at most one entry per caller/root, expires entries after
+ten minutes and keeps at most 256 entries globally. Every serve rebuilds against
+current evidence; a cache is never used to bypass validation. Forgetting erases
+claim text and revision snapshots, draft text and qualification snapshots,
+quoted extraction-page candidates, provider checkpoints and context caches.
+Only safe eligibility tombstones remain under the existing logical erasure policy.
+
+## Inert procedure drafts
+
+Draft qualification requires repeated independently sourced successful native
+action/outcome records, including the exact input, native tool-call ID, tool name,
+observed exit status and applicability. At least two distinct sessions, source
+families and outcome hashes are required. Overlapping chunks or copied identical
+outcomes cannot qualify by repetition. An assistant's claim of success, a missing
+native input, a one-off run or an observed failure cannot qualify. Conservative
+false negatives are intentional.
+
+Noblivion renders its own `noblivion-procedure-v1` JSON template and validates its
+parser, exact fields, declared tools, read-only command/option grammar and support.
+Only a small explicit `git`/`rg` inspection grammar qualifies as read-only;
+executable project tests such as `pytest` do not receive that classification.
+All generated drafts have `review_required` and `active=false`. Their native input
+and exact note/source support are checked again when inspected. This release adds
+no execution, automatic activation or permission path. Support changes withdraw
+the draft. A reviewable draft is evidence for human review, never operator approval.
+
+## Independent adaptation and evaluation
+
+The receiving-product implementation is owned and maintained entirely by
+Noblivion. Design references were copied for inspection from PhoenixDaemon commit
+`d7b231283a1ae0bd685e0e846ffedc6d6db77114`:
+
+| Reference | Noblivion-owned adaptation |
+| --- | --- |
+| `provenance.py` | Transactional exact-support withdrawal and scoped cache eviction in `learning_consolidation.py` |
+| `memory_versioning.py`, `sleep_cycle.py` | Claim revisions, canonical merge history and lineage in `learning_consolidation.py` |
+| `recon_mm_candidates.py`, `skill_evolution.py` | Independently verified native actions and inert linted review templates in `learning_consolidation.py` |
+| `compounding_metrics.py` | Separate work/price accounting in `tools/eval_consolidation.py` |
+
+These are independently implemented adaptations of the inspected design patterns.
+No Phoenix import, package, checkout, shared source, runtime service, data store or
+synchronized release is required. Coarse batch ancestry is used only for cleanup,
+never semantic proof. The implementation does not copy silent text truncation,
+stale insight reinforcement, fire-and-forget work or assistant-reply success scores.
+
+The frozen held-out real-store/hook/external-state evaluation extends the existing
+recall work. Its results and limits are recorded in
+[`docs/evidence/noblivion-101-heldout.md`](evidence/noblivion-101-heldout.md).
+Contract and scripted fixture outcomes are reported separately. Productive
+real-user outcome causality remains unavailable without an authorized labelled
+corpus. Unknown prices, unavailable metrics and zero-denominator factors remain
+unavailable; they never become favorable defaults.

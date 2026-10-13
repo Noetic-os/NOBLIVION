@@ -528,8 +528,9 @@ def test_format_retry_survives_budget_pause_without_repeating_first_call(ledger)
     first = worker(ledger, provider, max_calls=1).run_once()
     assert first["status"] == "deferred" and len(provider.messages) == 1
     progress = json.loads(ledger.conn.execute("SELECT progress FROM learning_jobs").fetchone()[0])
-    assert progress["format_repair"] == {"step": "extract:0", "calls": 0}
-    assert progress["next_window"] == 0 and progress["decisions"] == []
+    assert progress["format_repair"] == {"step": "extract:0:0", "calls": 0}
+    assert progress["next_window"] == 0
+    assert ledger.conn.execute("SELECT count(*) FROM learning_extraction_pages").fetchone()[0] == 0
     ledger.conn.execute("UPDATE learning_budget SET created_at=created_at-86401")
     ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0")
     second = worker(ledger, provider, max_calls=1).run_once()
@@ -689,7 +690,8 @@ def test_successful_format_retry_survives_post_validation_crash(ledger, stage, c
     def interrupted(job_id, lease, state):
         nonlocal cached
         repair = state.get("format_repair", {})
-        accepted = repair.get("step") == stage + ":0" and "accepted" in repair
+        step = "extract:0:0" if stage == "extract" else "semantic:0"
+        accepted = repair.get("step") == step and "accepted" in repair
         if cached and not repair and crash_point == "before_cursor_commit":
             raise SimulatedCrash
         checkpoint(job_id, lease, state)

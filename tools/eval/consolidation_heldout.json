@@ -1,0 +1,273 @@
+{
+  "version": 1,
+  "split": "heldout-consolidation-2026-10-13",
+  "tuning_allowed": false,
+  "fictional": true,
+  "facts": [
+    {
+      "key": "archive_partition_00",
+      "value": 1700,
+      "statement": "Set archive_partition_00 to 1700."
+    },
+    {
+      "key": "archive_partition_01",
+      "value": 1701,
+      "statement": "Set archive_partition_01 to 1701."
+    },
+    {
+      "key": "archive_partition_02",
+      "value": 1702,
+      "statement": "Set archive_partition_02 to 1702."
+    },
+    {
+      "key": "archive_partition_03",
+      "value": 1703,
+      "statement": "Set archive_partition_03 to 1703."
+    },
+    {
+      "key": "archive_partition_04",
+      "value": 1704,
+      "statement": "Set archive_partition_04 to 1704."
+    },
+    {
+      "key": "archive_partition_05",
+      "value": 1705,
+      "statement": "Set archive_partition_05 to 1705."
+    },
+    {
+      "key": "archive_partition_06",
+      "value": 1706,
+      "statement": "Set archive_partition_06 to 1706."
+    },
+    {
+      "key": "archive_partition_07",
+      "value": 1707,
+      "statement": "Set archive_partition_07 to 1707."
+    },
+    {
+      "key": "archive_partition_08",
+      "value": 1708,
+      "statement": "Set archive_partition_08 to 1708."
+    },
+    {
+      "key": "archive_partition_09",
+      "value": 1709,
+      "statement": "Set archive_partition_09 to 1709."
+    },
+    {
+      "key": "archive_partition_10",
+      "value": 1710,
+      "statement": "Set archive_partition_10 to 1710."
+    },
+    {
+      "key": "archive_partition_11",
+      "value": 1711,
+      "statement": "Set archive_partition_11 to 1711."
+    },
+    {
+      "key": "archive_partition_12",
+      "value": 1712,
+      "statement": "Set archive_partition_12 to 1712."
+    },
+    {
+      "key": "archive_partition_13",
+      "value": 1713,
+      "statement": "Set archive_partition_13 to 1713."
+    },
+    {
+      "key": "archive_partition_14",
+      "value": 1714,
+      "statement": "Set archive_partition_14 to 1714."
+    },
+    {
+      "key": "archive_partition_15",
+      "value": 1715,
+      "statement": "Set archive_partition_15 to 1715."
+    },
+    {
+      "key": "archive_partition_16",
+      "value": 1716,
+      "statement": "Set archive_partition_16 to 1716."
+    },
+    {
+      "key": "archive_partition_17",
+      "value": 1717,
+      "statement": "Set archive_partition_17 to 1717."
+    },
+    {
+      "key": "archive_partition_18",
+      "value": 1718,
+      "statement": "Set archive_partition_18 to 1718."
+    },
+    {
+      "key": "archive_partition_19",
+      "value": 1719,
+      "statement": "Set archive_partition_19 to 1719."
+    },
+    {
+      "key": "archive_partition_20",
+      "value": 1720,
+      "statement": "Set archive_partition_20 to 1720."
+    },
+    {
+      "key": "archive_partition_21",
+      "value": 1721,
+      "statement": "Set archive_partition_21 to 1721."
+    },
+    {
+      "key": "archive_partition_22",
+      "value": 1722,
+      "statement": "Set archive_partition_22 to 1722."
+    },
+    {
+      "key": "archive_partition_23",
+      "value": 1723,
+      "statement": "Set archive_partition_23 to 1723."
+    },
+    {
+      "key": "archive_partition_24",
+      "value": 1724,
+      "statement": "Set archive_partition_24 to 1724."
+    },
+    {
+      "key": "archive_partition_25",
+      "value": 1725,
+      "statement": "Set archive_partition_25 to 1725."
+    },
+    {
+      "key": "archive_partition_26",
+      "value": 1726,
+      "statement": "Set archive_partition_26 to 1726."
+    },
+    {
+      "key": "archive_partition_27",
+      "value": 1727,
+      "statement": "Set archive_partition_27 to 1727."
+    },
+    {
+      "key": "archive_partition_28",
+      "value": 1728,
+      "statement": "Set archive_partition_28 to 1728."
+    },
+    {
+      "key": "archive_partition_29",
+      "value": 1729,
+      "statement": "Set archive_partition_29 to 1729."
+    },
+    {
+      "key": "archive_partition_30",
+      "value": 1730,
+      "statement": "Set archive_partition_30 to 1730."
+    },
+    {
+      "key": "archive_partition_31",
+      "value": 1731,
+      "statement": "Set archive_partition_31 to 1731."
+    },
+    {
+      "key": "archive_partition_32",
+      "value": 1732,
+      "statement": "Set archive_partition_32 to 1732."
+    },
+    {
+      "key": "archive_partition_33",
+      "value": 1733,
+      "statement": "Set archive_partition_33 to 1733."
+    },
+    {
+      "key": "archive_partition_34",
+      "value": 1734,
+      "statement": "Set archive_partition_34 to 1734."
+    },
+    {
+      "key": "archive_partition_35",
+      "value": 1735,
+      "statement": "Set archive_partition_35 to 1735."
+    },
+    {
+      "key": "archive_partition_36",
+      "value": 1736,
+      "statement": "Set archive_partition_36 to 1736."
+    },
+    {
+      "key": "archive_partition_37",
+      "value": 1737,
+      "statement": "Set archive_partition_37 to 1737."
+    },
+    {
+      "key": "archive_partition_38",
+      "value": 1738,
+      "statement": "Set archive_partition_38 to 1738."
+    },
+    {
+      "key": "archive_partition_39",
+      "value": 1739,
+      "statement": "Set archive_partition_39 to 1739."
+    }
+  ],
+  "correction": {
+    "key": "archive_partition_02",
+    "old_value": 1702,
+    "value": 2902,
+    "statement": "Set archive_partition_02 to 2902.",
+    "observed_at": "2026-02-02T09:00:00Z"
+  },
+  "tasks": [
+    {
+      "key": "archive_partition_00",
+      "expected": 1700,
+      "query": "Configure archive_partition_00 with the remembered setting."
+    },
+    {
+      "key": "archive_partition_02",
+      "expected": 2902,
+      "query": "Configure archive_partition_02 with the remembered setting."
+    },
+    {
+      "key": "archive_partition_05",
+      "expected": 1705,
+      "query": "Configure archive_partition_05 with the remembered setting."
+    },
+    {
+      "key": "archive_partition_11",
+      "expected": 1711,
+      "query": "Configure archive_partition_11 with the remembered setting."
+    },
+    {
+      "key": "archive_partition_12",
+      "expected": 1712,
+      "query": "Configure archive_partition_12 with the remembered setting."
+    },
+    {
+      "key": "archive_partition_19",
+      "expected": 1719,
+      "query": "Configure archive_partition_19 with the remembered setting."
+    },
+    {
+      "key": "archive_partition_31",
+      "expected": 1731,
+      "query": "Configure archive_partition_31 with the remembered setting."
+    },
+    {
+      "key": "archive_partition_39",
+      "expected": 1739,
+      "query": "Configure archive_partition_39 with the remembered setting."
+    }
+  ],
+  "provider": {
+    "model": "fixed-extractive-fixture-v1",
+    "temperature": 0,
+    "tokens_per_response": 50,
+    "price_per_million_tokens": 0,
+    "external_calls": false
+  },
+  "limitations": [
+    "Fictional fixed-provider contract corpus; no real user outcome causality.",
+    "No synthesis accuracy estimate from deterministic extraction fixtures.",
+    "No threshold or model tuning uses this corpus."
+  ],
+  "negative_queries": [
+    "glacial telemetry isolation",
+    "unrelated orbital cartography"
+  ]
+}

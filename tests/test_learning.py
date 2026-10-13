@@ -545,7 +545,7 @@ def test_version_one_database_migrates_with_backup(tmp_path):
     conn.close()
     migrated = db.open_db(path)
     try:
-        assert db.user_version(migrated) == 2
+        assert db.user_version(migrated) == len(db.load_migrations())
         assert migrated.execute("SELECT count(*) FROM learning_jobs").fetchone()[0] == 0
         assert len(list((tmp_path / "backups").glob("*.db"))) == 1
     finally:
