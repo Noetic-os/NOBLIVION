@@ -147,3 +147,19 @@ def run_once(ledger: LearningLedger, settings: dict):
         allowed_scopes={(s["project"], s["root"]) for s in settings["scopes"]},
     )
     return worker.run_once()
+
+
+def context(store, body: dict) -> dict:
+    """Current, bounded source-labelled context for one caller and project root."""
+    from noblivion.learning_consolidation import ConsolidationLedger
+
+    project = body.get("project", body.get("namespace", store.namespace))
+    root = body.get("root", "")
+    query = body.get("query", body.get("q", ""))
+    session = body.get("session_id", "")
+    if project != store.namespace:
+        raise ValueError("invalid context namespace")
+    with store.connection() as conn:
+        return ConsolidationLedger(LearningLedger(conn)).context(
+            project, root, query, session_id=session, limit_chars=body.get("limit_chars", 6000)
+        )

@@ -427,6 +427,7 @@ def handle_hook(cfg: dict, event: dict) -> dict:
     elif name == "UserPromptSubmit":
         _invoke(cfg, env, "stop_checks", event, "--mark-correction")
         if use_memory:
+            out.append(_invoke(cfg, env, "learning_context", event, "--codex"))
             out.append(_invoke(cfg, env, "recall_hook", event))
     elif name == "PreToolUse":
         out.append(_recall_input(cfg, event, env, use_memory))

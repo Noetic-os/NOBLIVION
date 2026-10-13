@@ -169,6 +169,23 @@ class LearningLedger:
                     params,
                 )
                 self._expire_reservations()
+            from .learning_consolidation import withdraw
+
+            if use is False:
+                if session_id:
+                    self.conn.execute(
+                        "DELETE FROM learning_context_cache WHERE project=? AND session_id=?",
+                        (project, session_id),
+                    )
+                else:
+                    owned_notes = [
+                        row[0]
+                        for row in self.conn.execute(
+                            "SELECT note_id FROM learning_notes WHERE project=? AND root=?",
+                            (project, root),
+                        )
+                    ]
+                    withdraw(self, project=project, root=root, note_ids=owned_notes)
             db.bump_rev(self.conn)
         return self.effective_controls(project, root, session_id)
 
@@ -352,6 +369,100 @@ class LearningLedger:
                 "job_id": job_id,
             }
 
+    def enqueue_derivation(
+        self, project: str, root: str, session_id: str = "", *, kind: str = "consolidate"
+    ) -> str | None:
+        """An internal immutable receipt reuses jobs/leases/budgets; no new provider path."""
+        _text(project, "project")
+        _text(root, "root")
+        _text(session_id, "session_id", empty=True)
+        if kind not in {"consolidate", "draft"}:
+            raise LearningError("invalid derivation kind")
+        with db.write_tx(self.conn):
+            return self._enqueue_derivation(project, root, session_id, kind=kind)
+
+    def _enqueue_derivation(self, project, root, session_id, *, kind="consolidate"):
+        """Internal form runs inside an existing capture/admission transaction."""
+        from .learning_consolidation import ConsolidationSettings
+
+        controls = self.effective_controls(project, root, session_id)
+        if not controls["contribute"] or controls["paused"]:
+            return None
+        notes = self.current_notes(project, root)
+        if not notes:
+            return None
+        snapshot = sorted([[n["note_id"], n["revision"]] for n in notes])
+        controls_snapshot = [
+            tuple(row)
+            for row in self.conn.execute(
+                "SELECT session_id,use_memory,contribute,paused,updated_at "
+                "FROM learning_controls "
+                "WHERE project=? AND root=? AND session_id IN ('',?) ORDER BY session_id",
+                (project, root, session_id),
+            )
+        ]
+        digest = _hash(
+            _json(
+                [
+                    project,
+                    root,
+                    session_id,
+                    kind,
+                    snapshot,
+                    controls_snapshot,
+                    ConsolidationSettings().fingerprint,
+                ]
+            )
+        )
+        receipt = "derive:" + digest
+        existing = self.conn.execute(
+            "SELECT id FROM learning_jobs WHERE batch_id=?", (receipt,)
+        ).fetchone()
+        if existing:
+            return existing[0]
+        ident, now = _id(), time.time()
+        self.conn.execute(
+            "INSERT INTO learning_batches VALUES (?,?,?,?,?,0,?)",
+            (receipt, digest, project, root, session_id, now),
+        )
+        self.conn.execute(
+            "INSERT INTO learning_jobs "
+            "(id,batch_id,project,root,session_id,kind,progress,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?, ?,?)",
+            (ident, receipt, project, root, session_id, kind, "{}", now, now),
+        )
+        # Explicit source ancestry is used for erasing durable provider checkpoints.
+        # It never substitutes for the exact per-claim support edges.
+        sources = sorted(
+            {
+                r[0]
+                for r in self.conn.execute(
+                    "SELECT e.source_id FROM learning_evidence e JOIN learning_notes n "
+                    "ON n.note_id=e.note_id "
+                    "AND n.revision=e.revision WHERE n.project=? AND n.root=? AND "
+                    "n.status='active'",
+                    (project, root),
+                )
+            }
+        )
+        if kind == "draft":
+            sources = sorted(
+                set(sources)
+                | {
+                    r[0]
+                    for r in self.conn.execute(
+                        "SELECT id FROM learning_sources WHERE project=? AND root=? "
+                        "AND role='assistant' AND status='eligible'",
+                        (project, root),
+                    )
+                }
+            )
+        for ordinal, source in enumerate(sources):
+            self.conn.execute(
+                "INSERT INTO learning_job_sources VALUES (?,?,?)", (ident, source, ordinal)
+            )
+        return ident
+
     def _expire_reservations(self) -> None:
         self.conn.execute(
             "UPDATE learning_budget SET status='uncertain',updated_at=? WHERE status='reserved' "
@@ -391,7 +502,7 @@ class LearningLedger:
                 if not controls["contribute"] or controls["paused"]:
                     continue
                 sources = self._job_sources(row["id"])
-                if not sources:
+                if not sources and row["kind"] == "extract":
                     self.conn.execute(
                         "UPDATE learning_jobs SET status='cancelled',updated_at=? WHERE id=?",
                         (now, row["id"]),
@@ -623,6 +734,9 @@ class LearningLedger:
             # Explicit recovery renews only the bounded format retry. Validated
             # windows, semantic comparisons and durable budget charges remain.
             progress.pop("format_repair", None)
+            from .learning_pages import retry_rejected
+
+            retry_rejected(self.conn, job_id)
             self.conn.execute(
                 "UPDATE learning_jobs SET status='pending',attempts=0,next_attempt=0,last_error='',"
                 "progress=?,updated_at=? WHERE id=? AND status='exhausted'",
@@ -1104,9 +1218,14 @@ class LearningLedger:
         return result
 
     def finish(
-        self, job_id: str, lease_token: str, decisions: list[dict[str, Any]]
+        self,
+        job_id: str,
+        lease_token: str,
+        decisions: list[dict[str, Any]],
+        *,
+        enqueue_consolidation: bool = False,
     ) -> list[dict[str, Any]]:
-        if not isinstance(decisions, list) or len(decisions) > 32:
+        if not isinstance(decisions, list) or len(decisions) > 512:
             raise LearningError("invalid decision count")
         with db.write_tx(self.conn):
             job = self._lease(job_id, lease_token)
@@ -1118,6 +1237,8 @@ class LearningLedger:
                 (time.time(), job_id),
             )
             self._expire_reservations()
+            if enqueue_consolidation:
+                self._enqueue_derivation(job["project"], job["root"], job["session_id"])
             return results
 
     def _reconcile(self, decision: dict[str, Any], job: sqlite3.Row) -> dict[str, Any]:
@@ -1328,6 +1449,9 @@ class LearningLedger:
         )
 
     def _invalidate(self, note: dict[str, Any] | sqlite3.Row) -> None:
+        from .learning_consolidation import withdraw
+
+        withdraw(self, note_ids=[note["note_id"]], project=note["project"])
         rev = db.bump_rev(self.conn)
         self.conn.execute(
             "UPDATE memories SET archived_at=?,rev=?,updated_at=? WHERE project=? AND "
@@ -1467,6 +1591,9 @@ class LearningLedger:
                 )
             )
         source_ids = sorted(expanded)
+        from .learning_consolidation import withdraw
+
+        withdraw(self, source_ids=source_ids, forget=forget)
         affected: set[str] = set()
         jobs: set[str] = set()
         for source_id in source_ids:
@@ -1490,6 +1617,10 @@ class LearningLedger:
                     "SELECT job_id FROM learning_job_sources WHERE source_id=?", (source_id,)
                 )
             )
+        from .learning_pages import erase_jobs
+
+        if forget:
+            erase_jobs(self.conn, sorted(jobs))
         for job_id in jobs:
             self.conn.execute(
                 "UPDATE learning_jobs SET status='cancelled',lease_token=NULL,lease_owner=NULL,"
@@ -1519,6 +1650,9 @@ class LearningLedger:
         return {"source_id": source_id, "excluded_notes": affected}
 
     def _erase_note(self, note_id: str) -> None:
+        from .learning_consolidation import withdraw
+
+        withdraw(self, note_ids=[note_id], forget=True)
         self.conn.execute("DELETE FROM learning_evidence WHERE note_id=?", (note_id,))
         self.conn.execute("DELETE FROM learning_revisions WHERE note_id=?", (note_id,))
         self.conn.execute("DELETE FROM learning_decisions WHERE note_id=?", (note_id,))
@@ -1706,7 +1840,12 @@ class LearningLedger:
         if root is not None:
             where += " AND root=?" if where else " WHERE root=?"
             params.append(root)
+        from .learning_consolidation import derivative_status
+        from .learning_pages import coverage
+
         return {
+            "consolidation": derivative_status(self, project, root),
+            "coverage": coverage(self.conn),
             "conflicts": self._conflict_status(project, root),
             "jobs": {
                 r[0]: r[1]

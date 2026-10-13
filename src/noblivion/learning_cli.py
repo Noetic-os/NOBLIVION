@@ -23,6 +23,10 @@ def _parser() -> argparse.ArgumentParser:
         "status",
         "list",
         "summary",
+        "context",
+        "claim",
+        "drafts",
+        "consolidate",
         "controls",
         "capture-json",
         "inspect",
@@ -38,6 +42,11 @@ def _parser() -> argparse.ArgumentParser:
         )
         command.add_argument("--root", default="", help="explicit project root")
         command.add_argument("--session", default="")
+        if name == "context":
+            command.add_argument("--query", default="")
+            command.add_argument("--limit-chars", type=int, default=6000)
+        if name == "claim":
+            command.add_argument("claim_id")
         if name in {"inspect", "edit", "exclude", "forget"}:
             command.add_argument("note_id")
         if name == "edit":
@@ -62,7 +71,10 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    if args.command in {"list", "summary", "controls"} and not args.root:
+    if (
+        args.command in {"list", "summary", "context", "drafts", "consolidate", "controls"}
+        and not args.root
+    ):
         parser.error("--root is required for scoped operations")
     path = args.database or config.data_dir() / config.DB_FILE
     try:
@@ -88,6 +100,23 @@ def _run(ledger: LearningLedger, args: argparse.Namespace):
         return ledger.status(args.project, args.root or None)
     if args.command == "list":
         return ledger.current_notes(args.project, args.root)
+    if args.command in {"context", "claim", "drafts", "consolidate"}:
+        from noblivion.learning_consolidation import ConsolidationLedger
+
+        consolidation = ConsolidationLedger(ledger)
+        if args.command == "context":
+            return consolidation.context(
+                args.project,
+                args.root,
+                args.query,
+                session_id=args.session,
+                limit_chars=args.limit_chars,
+            )
+        if args.command == "claim":
+            return consolidation.inspect(args.claim_id)
+        if args.command == "drafts":
+            return consolidation.drafts(args.project, args.root)
+        return {"job_id": ledger.enqueue_derivation(args.project, args.root, args.session)}
     if args.command == "summary":
         return {"summary": ledger.summary(args.project, args.root, session_id=args.session)}
     if args.command == "controls":

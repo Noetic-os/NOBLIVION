@@ -454,7 +454,7 @@ def test_concurrent_first_open_migrates_once(tmp_path):
 # -- the store scan and a file that changes inside one clock tick ----------------------
 
 
-def test_same_size_rewrite_in_one_clock_tick_is_indexed(tmp_path):
+def test_same_size_rewrite_in_one_clock_tick_is_indexed(tmp_path, monkeypatch):
     """The store scan keeps a stat cache (size, mtime). On a file system with a
     coarse clock, a rewrite with the same size in the same tick keeps the
     mtime. The cache must not hide that change from every later scan."""
@@ -462,6 +462,10 @@ def test_same_size_rewrite_in_one_clock_tick_is_indexed(tmp_path):
     path = folder / "feedback_tick.md"
     write_note(folder, path.name, "tick", "Version one of the tick rule.", "alpha")
     first = path.stat()
+    # Keep this test inside one clock tick even when schema setup is slow.
+    monkeypatch.setattr(
+        indexer.time, "time_ns", lambda: first.st_mtime_ns + indexer.STAT_CACHE_MIN_AGE_NS // 2
+    )
     with closing(db.open_db(tmp_path / "data" / config.DB_FILE, create=True)) as conn:
         cache: indexer.StatCache = {}
         indexer.scan(conn, [folder], stat_cache=cache)

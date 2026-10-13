@@ -81,6 +81,7 @@ EXPECTED = {
     ("SessionStart", "", "learning_summary.py", ""),
     ("SessionStart", "", "learning_capture.py", ""),
     ("UserPromptSubmit", "", "learning_capture.py", ""),
+    ("UserPromptSubmit", "", "learning_context.py", ""),
     ("PostToolUse", "", "learning_capture.py", ""),
     ("PostToolUseFailure", "", "learning_capture.py", ""),
     ("Stop", "", "learning_capture.py", ""),

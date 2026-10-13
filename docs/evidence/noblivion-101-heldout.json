@@ -1,0 +1,1573 @@
+{
+  "baseline_files_verified": 199,
+  "baseline_revision": "d911ddb136da8c1386082c3aad9ba56ee60fb39c",
+  "changed_revision": "43568d942121aaa602a7b839432138a6fd66c940",
+  "corpus_sha256": "8f3c1a641c2840d55cf12ff24df4b9486522836443f54afbe2a50cfbc0a1ada0",
+  "executor_sha256": "73c35d0b8b972149d86041b909ee4476153ff0b42251b52f9eb58941079730a9",
+  "fixed_provider": {
+    "external_calls": false,
+    "model": "fixed-extractive-fixture-v1",
+    "price_per_million_tokens": 0,
+    "temperature": 0,
+    "tokens_per_response": 50
+  },
+  "harness_sha256": "9f556e5647767d68932489576468c7f062cbf05d52ea8e1af5caf62f72168fca",
+  "limitations": [
+    "Fictional fixed-provider contract corpus; no real user outcome causality.",
+    "No synthesis accuracy estimate from deterministic extraction fixtures.",
+    "No threshold or model tuning uses this corpus."
+  ],
+  "price_factor": null,
+  "price_factor_reason": "both fixture providers are free; zero denominator",
+  "real_user_outcome_effect": null,
+  "real_user_outcome_effect_reason": "no authorized labeled real-user causal corpus",
+  "required_baseline_revision": "d911ddb136da8c1386082c3aad9ba56ee60fb39c",
+  "results": {
+    "baseline_memory_off": {
+      "budget": {
+        "calls": 13,
+        "cost": 0.0,
+        "seconds": 780.0,
+        "tokens": 61858
+      },
+      "budget_measurement": "durable conservative reservations, not tokenizer or latency measurements",
+      "context_composition": "startup summary + new query context + existing prompt recall",
+      "correction": {
+        "job_id": "868c2910-6614-4791-b9d4-d5ffc5cc4023",
+        "results": [
+          {
+            "action": "update",
+            "indexed": false,
+            "note_id": "e8110f23-c1de-4f4f-88cf-9d5b9465c052",
+            "revision": 2,
+            "stored": true
+          }
+        ],
+        "status": "done"
+      },
+      "coverage": null,
+      "dense": {
+        "job_id": "85eb999f-669b-4fa9-a051-2154028479a7",
+        "results": [
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "92cb94d3-1dfb-472e-91c6-707df9612145",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "4883d623-a818-443a-860a-0067af541ffd",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "e8110f23-c1de-4f4f-88cf-9d5b9465c052",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "675d43e6-1d00-478d-8e3b-d21b71adaa0c",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "45a8f0ec-6c2f-462d-9427-8c8b29ccd96a",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "d893e2b2-7f45-407a-83af-f574d62b805e",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "dab221d2-022e-4806-9adb-df1ff91b84b5",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "2268cd29-c61a-408b-a2e8-18f98dd4b51f",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "49200593-6d43-40aa-9a23-25c1aea0b519",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "9251e15b-435f-4f01-818b-127a339e607a",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "4b8d41ed-94f3-4d6f-b7b1-31bae039e229",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "e026e17c-c407-4235-8d25-83c8b6af0bee",
+            "revision": 1,
+            "stored": true
+          }
+        ],
+        "status": "done"
+      },
+      "elapsed_seconds": 2.223227821988985,
+      "expected_particulars": 40,
+      "hook_paths": [
+        "hooks/learning_summary.py",
+        "hooks/recall_hook.py"
+      ],
+      "memory_on": false,
+      "negative_queries": [
+        {
+          "existing_prompt_recall_empty": true,
+          "full_session_empty": true,
+          "new_query_hook_empty": null,
+          "query": "glacial telemetry isolation",
+          "startup_context_chars": 0
+        },
+        {
+          "existing_prompt_recall_empty": true,
+          "full_session_empty": true,
+          "new_query_hook_empty": null,
+          "query": "unrelated orbital cartography",
+          "startup_context_chars": 0
+        }
+      ],
+      "provider_reported_fixture_tokens": 650,
+      "query_hook_zero_relevance_empty": null,
+      "recovery": {
+        "all_labels_recovered": false,
+        "duplicates": 0,
+        "first": "failed",
+        "resumed": "done",
+        "retained_particulars": 12
+      },
+      "retained_particulars": 12,
+      "stale_guidance": 0,
+      "task_count": 8,
+      "tasks": [
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1700,
+          "key": "archive_partition_00",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 2902,
+          "key": "archive_partition_02",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1705,
+          "key": "archive_partition_05",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1711,
+          "key": "archive_partition_11",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1712,
+          "key": "archive_partition_12",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1719,
+          "key": "archive_partition_19",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1731,
+          "key": "archive_partition_31",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1739,
+          "key": "archive_partition_39",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        }
+      ],
+      "tasks_completed": 0,
+      "unsupported_claims": 0,
+      "useful_recall": 0,
+      "zero_relevance_count": 2,
+      "zero_relevance_empty": 2
+    },
+    "baseline_memory_on": {
+      "budget": {
+        "calls": 13,
+        "cost": 0.0,
+        "seconds": 780.0,
+        "tokens": 61858
+      },
+      "budget_measurement": "durable conservative reservations, not tokenizer or latency measurements",
+      "context_composition": "startup summary + new query context + existing prompt recall",
+      "correction": {
+        "job_id": "85bdcb9a-b3b7-4a9d-a380-9196c55c2233",
+        "results": [
+          {
+            "action": "update",
+            "indexed": false,
+            "note_id": "b4f59464-604a-484b-9516-7209c2e02283",
+            "revision": 2,
+            "stored": true
+          }
+        ],
+        "status": "done"
+      },
+      "coverage": null,
+      "dense": {
+        "job_id": "27004113-c171-43c8-971a-c5d17af08d53",
+        "results": [
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "e26a4e5d-8987-4ccf-8b6e-675c6aed2af8",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "4bdd212d-8ded-4326-b33e-b5f05823b2d1",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "b4f59464-604a-484b-9516-7209c2e02283",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "b5ad0259-f087-4991-8055-b720f6d0eee2",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "759f3ba4-074e-4724-94ba-7761a1246a7c",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "9930cdab-2b80-4608-a8c0-1db753050a51",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "ce4ead44-c6a4-46b9-aac6-e0d732ad8bca",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "33b06383-08c6-4f96-a9ca-8c9f83f5345f",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "a938ade8-4f26-4cc7-aa11-ca6b0a7cf3b3",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "acc3efdc-b514-4ec6-bc3f-40c92baabe4f",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "1f2df04e-47c0-4b4b-a5dd-948d15b3b5a0",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "1777cb1d-cd73-46a9-ad48-bfba582082f1",
+            "revision": 1,
+            "stored": true
+          }
+        ],
+        "status": "done"
+      },
+      "elapsed_seconds": 3.3108590790070593,
+      "expected_particulars": 40,
+      "hook_paths": [
+        "hooks/learning_summary.py",
+        "hooks/recall_hook.py"
+      ],
+      "memory_on": true,
+      "negative_queries": [
+        {
+          "existing_prompt_recall_empty": false,
+          "full_session_empty": false,
+          "new_query_hook_empty": null,
+          "query": "glacial telemetry isolation",
+          "startup_context_chars": 1164
+        },
+        {
+          "existing_prompt_recall_empty": true,
+          "full_session_empty": false,
+          "new_query_hook_empty": null,
+          "query": "unrelated orbital cartography",
+          "startup_context_chars": 1164
+        }
+      ],
+      "provider_reported_fixture_tokens": 650,
+      "query_hook_zero_relevance_empty": null,
+      "recovery": {
+        "all_labels_recovered": false,
+        "duplicates": 0,
+        "first": "failed",
+        "resumed": "done",
+        "retained_particulars": 12
+      },
+      "retained_particulars": 12,
+      "stale_guidance": 0,
+      "task_count": 8,
+      "tasks": [
+        {
+          "actual": {
+            "archive_partition_00": 1700
+          },
+          "context_chars": 2738,
+          "context_sha256": "3660544f1af7ca3176c6589dd7c830103022122c31d298250e016a022cc60710",
+          "existing_prompt_recall_chars": 1573,
+          "expected": 1700,
+          "key": "archive_partition_00",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 1164,
+          "success": true,
+          "useful_recall": true
+        },
+        {
+          "actual": {
+            "archive_partition_02": 2902
+          },
+          "context_chars": 1908,
+          "context_sha256": "8576977302c6204e7aea1abc535ef013f3566b6d997476dfeb64b19c239303e0",
+          "existing_prompt_recall_chars": 743,
+          "expected": 2902,
+          "key": "archive_partition_02",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 1164,
+          "success": true,
+          "useful_recall": true
+        },
+        {
+          "actual": {
+            "archive_partition_05": 1705
+          },
+          "context_chars": 1650,
+          "context_sha256": "d5d2994c4154ae2f655f438a431d41f26cae2c07af0e293271ef6d091d942f4a",
+          "existing_prompt_recall_chars": 485,
+          "expected": 1705,
+          "key": "archive_partition_05",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 1164,
+          "success": true,
+          "useful_recall": true
+        },
+        {
+          "actual": {
+            "archive_partition_11": 1711
+          },
+          "context_chars": 1164,
+          "context_sha256": "0f003ed20048a94fa07046696021cd2275a517704ac107a0843d955afb24027a",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1711,
+          "key": "archive_partition_11",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 1164,
+          "success": true,
+          "useful_recall": true
+        },
+        {
+          "actual": {},
+          "context_chars": 1164,
+          "context_sha256": "0f003ed20048a94fa07046696021cd2275a517704ac107a0843d955afb24027a",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1712,
+          "key": "archive_partition_12",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 1164,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 1650,
+          "context_sha256": "0b928c6ea92fe8191e1eb8e321657deaeb2ffa1695db7a0d90c0131556d86ef8",
+          "existing_prompt_recall_chars": 485,
+          "expected": 1719,
+          "key": "archive_partition_19",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 1164,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 1164,
+          "context_sha256": "0f003ed20048a94fa07046696021cd2275a517704ac107a0843d955afb24027a",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1731,
+          "key": "archive_partition_31",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 1164,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 1164,
+          "context_sha256": "0f003ed20048a94fa07046696021cd2275a517704ac107a0843d955afb24027a",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1739,
+          "key": "archive_partition_39",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 1164,
+          "success": false,
+          "useful_recall": false
+        }
+      ],
+      "tasks_completed": 4,
+      "unsupported_claims": 0,
+      "useful_recall": 4,
+      "zero_relevance_count": 2,
+      "zero_relevance_empty": 0
+    },
+    "changed_memory_off": {
+      "budget": {
+        "calls": 74,
+        "cost": 0.0,
+        "seconds": 4440.0,
+        "tokens": 366520
+      },
+      "budget_measurement": "durable conservative reservations, not tokenizer or latency measurements",
+      "context_composition": "startup summary + new query context + existing prompt recall",
+      "correction": {
+        "job_id": "b551415a-6f4b-4f03-8f94-461d39b6f189",
+        "results": [
+          {
+            "action": "update",
+            "indexed": false,
+            "note_id": "21ad3f66-5527-4403-b22e-9aa7efdc3cb3",
+            "revision": 2,
+            "stored": true
+          }
+        ],
+        "status": "done"
+      },
+      "coverage": [
+        {
+          "continuation": 0,
+          "reason": "twelve candidates require continuation",
+          "status": "saturated",
+          "unit_index": 0
+        },
+        {
+          "continuation": 1,
+          "reason": "twelve candidates require continuation",
+          "status": "saturated",
+          "unit_index": 0
+        },
+        {
+          "continuation": 2,
+          "reason": "twelve candidates require continuation",
+          "status": "saturated",
+          "unit_index": 0
+        },
+        {
+          "continuation": 3,
+          "reason": "provider reported remaining lessons",
+          "status": "processed",
+          "unit_index": 0
+        }
+      ],
+      "dense": {
+        "job_id": "1f16746a-3ef1-42e7-bdbe-9505198b4e1f",
+        "results": [
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "694a3cce-7899-46b4-a7af-be6a7df6783d",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "01e7c279-05ce-44c0-9132-c1f89df0fbfb",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "21ad3f66-5527-4403-b22e-9aa7efdc3cb3",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "435cff36-6a21-4aba-bc45-f173f5001796",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "f75bc223-a38b-4fcb-99f6-0cd09922ad7f",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "edb96987-6cb0-425a-8df6-de34bd42fcd4",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "80490641-2417-4bae-a837-88b4ea48b741",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "511226fa-b193-43a2-96a9-08d05486a322",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "3a857582-11ad-47e5-a657-8969207f3c30",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "6ff815f8-10bb-412f-90b0-1acd849ea4e7",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "fd3bd32e-f504-414a-91bc-fefaa41c0d37",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "4d2bb32c-339c-4133-bf5f-adcf0687ecb7",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "6d4ef210-f661-4587-9170-a33b369362b5",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "e64d2f42-f555-4b1f-95f8-755d488bd8d3",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "9713e9f0-388f-4277-bba5-f5dd61671cd5",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "63ee33ee-c812-4358-819f-a78260b23f1a",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "9104ce3a-de79-4102-a3dd-5713e6d4bcbb",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "3fb312b0-4777-48db-a527-02b74dc7c234",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "0f98be55-e1bd-416f-a8d2-89580cafee93",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "66adc5e8-d5ae-400b-9d51-b7e14073f87c",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "bf0626d7-0ed8-4625-9820-c5e5d5d1b216",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "abf374bc-ef50-4d78-8c59-07b435af5071",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "ffe058fc-823c-4587-9366-5d4e85e98fa0",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "230bbce9-162a-42e0-8a49-712adc19afdf",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "c3b2516a-cf52-4b69-9c92-bc342a35f170",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "62c2fcbf-018d-4143-b3bd-122f5db22dd7",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "b348aa7e-940f-4c42-9a2d-b55ee601eb2a",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "e2342e10-0777-49ce-8184-e9a4dd2ff6b4",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "12a95b87-105b-4f34-8906-579f1f1fd181",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "0b3c7233-813d-4366-aef8-14ee079b0d92",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "4e1adcd8-0f8b-4b1d-a7dd-8828b3df1845",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "319f368e-cf31-419d-a881-c33f750f8e51",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "af5c14a5-5e5e-4e57-9491-7c2177d906c3",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "822c3de7-0ec8-4e12-bd62-bdc1979fff38",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "ddc1e870-082f-4cf4-82dc-755184817de2",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "bb2bb000-a418-43a1-a199-5fc9c4bb7cfa",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "5fe2eec5-b86a-4958-889f-9ff3f0b234a5",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "a9f258b1-8b74-424c-aa5e-0e5f7e79cfb3",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "ae7203aa-1e34-4031-95b5-586dde2836e8",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "f6be2a06-8c2d-4946-bc0a-45a5a38edb2e",
+            "revision": 1,
+            "stored": true
+          }
+        ],
+        "status": "done"
+      },
+      "elapsed_seconds": 3.4875221779802814,
+      "expected_particulars": 40,
+      "hook_paths": [
+        "hooks/learning_summary.py",
+        "hooks/recall_hook.py",
+        "hooks/learning_context.py"
+      ],
+      "memory_on": false,
+      "negative_queries": [
+        {
+          "existing_prompt_recall_empty": true,
+          "full_session_empty": true,
+          "new_query_hook_empty": true,
+          "query": "glacial telemetry isolation",
+          "startup_context_chars": 0
+        },
+        {
+          "existing_prompt_recall_empty": true,
+          "full_session_empty": true,
+          "new_query_hook_empty": true,
+          "query": "unrelated orbital cartography",
+          "startup_context_chars": 0
+        }
+      ],
+      "provider_reported_fixture_tokens": 3700,
+      "query_hook_zero_relevance_empty": 2,
+      "recovery": {
+        "all_labels_recovered": true,
+        "duplicates": 0,
+        "first": "failed",
+        "resumed": "done",
+        "retained_particulars": 40
+      },
+      "retained_particulars": 40,
+      "stale_guidance": 0,
+      "task_count": 8,
+      "tasks": [
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1700,
+          "key": "archive_partition_00",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 2902,
+          "key": "archive_partition_02",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1705,
+          "key": "archive_partition_05",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1711,
+          "key": "archive_partition_11",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1712,
+          "key": "archive_partition_12",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1719,
+          "key": "archive_partition_19",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1731,
+          "key": "archive_partition_31",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        },
+        {
+          "actual": {},
+          "context_chars": 0,
+          "context_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "existing_prompt_recall_chars": 0,
+          "expected": 1739,
+          "key": "archive_partition_39",
+          "query_context_chars": 0,
+          "stale_guidance": false,
+          "startup_context_chars": 0,
+          "success": false,
+          "useful_recall": false
+        }
+      ],
+      "tasks_completed": 0,
+      "unsupported_claims": 0,
+      "useful_recall": 0,
+      "zero_relevance_count": 2,
+      "zero_relevance_empty": 2
+    },
+    "changed_memory_on": {
+      "budget": {
+        "calls": 74,
+        "cost": 0.0,
+        "seconds": 4440.0,
+        "tokens": 366520
+      },
+      "budget_measurement": "durable conservative reservations, not tokenizer or latency measurements",
+      "context_composition": "startup summary + new query context + existing prompt recall",
+      "correction": {
+        "job_id": "1cb4de0c-7ba7-485d-8a04-db655f6ad666",
+        "results": [
+          {
+            "action": "update",
+            "indexed": false,
+            "note_id": "e72b7cd1-b05d-43b8-9522-1db9053d8341",
+            "revision": 2,
+            "stored": true
+          }
+        ],
+        "status": "done"
+      },
+      "coverage": [
+        {
+          "continuation": 0,
+          "reason": "twelve candidates require continuation",
+          "status": "saturated",
+          "unit_index": 0
+        },
+        {
+          "continuation": 1,
+          "reason": "twelve candidates require continuation",
+          "status": "saturated",
+          "unit_index": 0
+        },
+        {
+          "continuation": 2,
+          "reason": "twelve candidates require continuation",
+          "status": "saturated",
+          "unit_index": 0
+        },
+        {
+          "continuation": 3,
+          "reason": "provider reported remaining lessons",
+          "status": "processed",
+          "unit_index": 0
+        }
+      ],
+      "dense": {
+        "job_id": "17606a57-bf34-413f-bc10-5e9ddbb35b4b",
+        "results": [
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "728923a2-af75-4bdf-ace7-5d847d0fbe09",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "35005420-c204-478d-bcc4-632ae4bf6e28",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "e72b7cd1-b05d-43b8-9522-1db9053d8341",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "1eb114db-bc8e-4569-a102-fbf82a9c738a",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "304a2bdf-eeda-44d8-bba5-8e2eb96ee6d2",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "34ae7e88-fcab-4138-aafe-7ad1bf9673dd",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "8ccef563-f044-41dc-b77a-a85a7bdf7faf",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "ab2fa08c-d081-44a6-b96b-d7c3acffea9c",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "7ff9c4e1-09b4-465c-8109-278a452449ca",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "cb655d1f-924d-4643-b95b-2161ec45104e",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "023f0a49-91bb-480a-be44-dead475c787c",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "ea2c1bae-ee61-4bb2-b6e4-325db06ce7dc",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "73b64b31-b094-4d0c-9cb4-7775bfd9859a",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "0b2930bc-7f24-4f67-893b-2174eedfbbac",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "5da74a09-a21c-4161-ae67-1558bd2b2469",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "25de73ae-19a4-4bf0-b3de-1678fcc6f147",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "1865bed4-7efc-4247-aef1-73a4d6cf036c",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "9e96b2a0-1ded-4be3-883c-6116ce004c89",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "45e8e3de-06f7-45e1-a279-a58ce501a5d5",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "3e977854-990d-4268-a762-de1a79a6fefd",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "4db94dd1-c1ba-4a05-aed5-b2adc9007efb",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "2bd748ab-e85b-4852-989a-c5330325a8b4",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "e8dc1396-f8b2-4dce-b70e-7ed4c3fb95d6",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "b2c89eff-7ef8-43e8-941e-7125eb1b1604",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "f52f808a-69e6-4c6f-a6af-648812d35b10",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "cbbe7fbd-bb55-46c3-86e4-b40c11d4e6cb",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "7b80cd50-9199-4864-a779-12f59ada72ca",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "67af4c67-450d-46b4-9efa-6c4490ba9d9d",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "b7799aab-e5b6-4f7b-a6c6-bd92320b1aa7",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "cd681605-56ff-4489-bdaf-0650036e7d34",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "72dead74-b828-4355-b4cb-1a06a2c6f270",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "919ccf8a-6056-4270-869f-998fff343877",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "747a58d2-d664-4fa7-af57-8e8c982bc190",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "0c9bdd17-aaef-4467-ae18-1074acf46ba9",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "405fe410-7199-4c67-96cd-db6b0c3da55c",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "f800854c-7272-4bea-a624-9b62271ca5ea",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "1216da65-6b24-42b9-abe5-7ed31f806b6e",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "d1b0ae02-1fd9-408e-877b-5a62985478ce",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "c268a2d6-1e39-4a13-9d29-85ea0d73408a",
+            "revision": 1,
+            "stored": true
+          },
+          {
+            "action": "add",
+            "indexed": false,
+            "note_id": "bbf410b3-6e85-4585-8eff-9f36789ef73f",
+            "revision": 1,
+            "stored": true
+          }
+        ],
+        "status": "done"
+      },
+      "elapsed_seconds": 3.6640665840241127,
+      "expected_particulars": 40,
+      "hook_paths": [
+        "hooks/learning_summary.py",
+        "hooks/recall_hook.py",
+        "hooks/learning_context.py"
+      ],
+      "memory_on": true,
+      "negative_queries": [
+        {
+          "existing_prompt_recall_empty": false,
+          "full_session_empty": false,
+          "new_query_hook_empty": true,
+          "query": "glacial telemetry isolation",
+          "startup_context_chars": 3768
+        },
+        {
+          "existing_prompt_recall_empty": false,
+          "full_session_empty": false,
+          "new_query_hook_empty": true,
+          "query": "unrelated orbital cartography",
+          "startup_context_chars": 3768
+        }
+      ],
+      "provider_reported_fixture_tokens": 3700,
+      "query_hook_zero_relevance_empty": 2,
+      "recovery": {
+        "all_labels_recovered": true,
+        "duplicates": 0,
+        "first": "failed",
+        "resumed": "done",
+        "retained_particulars": 40
+      },
+      "retained_particulars": 40,
+      "stale_guidance": 0,
+      "task_count": 8,
+      "tasks": [
+        {
+          "actual": {
+            "archive_partition_00": 1700
+          },
+          "context_chars": 5509,
+          "context_sha256": "74bc59af794fb9f02f280d38d665994cc0bee7639efd300281aa20fd426b8fff",
+          "existing_prompt_recall_chars": 1516,
+          "expected": 1700,
+          "key": "archive_partition_00",
+          "query_context_chars": 223,
+          "stale_guidance": false,
+          "startup_context_chars": 3768,
+          "success": true,
+          "useful_recall": true
+        },
+        {
+          "actual": {
+            "archive_partition_02": 2902
+          },
+          "context_chars": 5080,
+          "context_sha256": "8e9fbcd25946b374047ba1b577068b1c7aa1291cad17593d5b12d60ffa1c2fda",
+          "existing_prompt_recall_chars": 1062,
+          "expected": 2902,
+          "key": "archive_partition_02",
+          "query_context_chars": 248,
+          "stale_guidance": false,
+          "startup_context_chars": 3768,
+          "success": true,
+          "useful_recall": true
+        },
+        {
+          "actual": {
+            "archive_partition_05": 1705
+          },
+          "context_chars": 4736,
+          "context_sha256": "914a18c25af746b46b870d5fa082afa2f9e40fb44b50bc60bb1994cea1142f44",
+          "existing_prompt_recall_chars": 743,
+          "expected": 1705,
+          "key": "archive_partition_05",
+          "query_context_chars": 223,
+          "stale_guidance": false,
+          "startup_context_chars": 3768,
+          "success": true,
+          "useful_recall": true
+        },
+        {
+          "actual": {
+            "archive_partition_11": 1711
+          },
+          "context_chars": 4480,
+          "context_sha256": "ed1d72eea7622e1e397f61e6e7ad8696a3943187ffeb7ab143714b34d93ba6c4",
+          "existing_prompt_recall_chars": 487,
+          "expected": 1711,
+          "key": "archive_partition_11",
+          "query_context_chars": 223,
+          "stale_guidance": false,
+          "startup_context_chars": 3768,
+          "success": true,
+          "useful_recall": true
+        },
+        {
+          "actual": {
+            "archive_partition_12": 1712
+          },
+          "context_chars": 4480,
+          "context_sha256": "8ef2853120ccbc2e6e9bf15d12646b582ea8dc0e4730b4e90b3e83a8023e3318",
+          "existing_prompt_recall_chars": 487,
+          "expected": 1712,
+          "key": "archive_partition_12",
+          "query_context_chars": 223,
+          "stale_guidance": false,
+          "startup_context_chars": 3768,
+          "success": true,
+          "useful_recall": true
+        },
+        {
+          "actual": {
+            "archive_partition_19": 1719
+          },
+          "context_chars": 4994,
+          "context_sha256": "7cdcfc63d0e4c8c93211ba7104bd31a6282a8cf983f885989afcd97f5a79c92d",
+          "existing_prompt_recall_chars": 1001,
+          "expected": 1719,
+          "key": "archive_partition_19",
+          "query_context_chars": 223,
+          "stale_guidance": false,
+          "startup_context_chars": 3768,
+          "success": true,
+          "useful_recall": true
+        },
+        {
+          "actual": {
+            "archive_partition_31": 1731
+          },
+          "context_chars": 4738,
+          "context_sha256": "49a0e60fe4febd4e7d59e584f9d6e5ab1b7cdb969dfdc9916cd5bd8efdae8fd5",
+          "existing_prompt_recall_chars": 745,
+          "expected": 1731,
+          "key": "archive_partition_31",
+          "query_context_chars": 223,
+          "stale_guidance": false,
+          "startup_context_chars": 3768,
+          "success": true,
+          "useful_recall": true
+        },
+        {
+          "actual": {
+            "archive_partition_39": 1739
+          },
+          "context_chars": 4480,
+          "context_sha256": "565a4f9f2b434b5ef053b56f5d2abbd85cad52991350bafe4f9f29acca27ef1c",
+          "existing_prompt_recall_chars": 487,
+          "expected": 1739,
+          "key": "archive_partition_39",
+          "query_context_chars": 223,
+          "stale_guidance": false,
+          "startup_context_chars": 3768,
+          "success": true,
+          "useful_recall": true
+        }
+      ],
+      "tasks_completed": 8,
+      "unsupported_claims": 0,
+      "useful_recall": 8,
+      "zero_relevance_count": 2,
+      "zero_relevance_empty": 0
+    }
+  },
+  "revision_note": "Digests bind tested source; revision can be the uncommitted worktree base.",
+  "sources": {
+    "baseline": {
+      "codex/adapter.py": "7d3e28c52d45d1818d7977f0117bdd3b8e6f625ff5eafd9779acac72888ff406",
+      "hooks/learning_summary.py": "216d4087d8b7f1ce6df9902217d0d361a7cb0bc01989c61234bfd51c0e6bd7b6",
+      "hooks/recall_hook.py": "ead91810351f45bbc085ac184cdfd63b3569520fff8890ea2d24ae0bef019920",
+      "src/noblivion/embedding.py": "3e0e71f00bbc6c1c6b42855120e46f9df85d933c451796584556a8997f256b5c",
+      "src/noblivion/indexer.py": "42d74a0b12b83e05285086682881384c305c5e3033153d6722cfd144d49bfdaa",
+      "src/noblivion/learning.py": "f0f45439c1205f19bf6639de8b1b9b190c8845ed71b063e96b457bb48249b5ed",
+      "src/noblivion/learning_runtime.py": "3976258dbf22cc8ad988042ad033f661d206fe4038575006a11c5b870e25a17d",
+      "src/noblivion/learning_worker.py": "66da6ba7bd4ea6092238899bcd29ef8e0c1208cf135bc1f37e2b4bba2cac7219",
+      "src/noblivion/ranking.py": "bb09acbf9d28aeb6200955b5f431e2ad624c893eb6765c13d238a7275708b1fc",
+      "src/noblivion/rest.py": "5526605912f61fdd2d38b3e9f9f9315798e4e2e949d2146aca49682e396880ff",
+      "src/noblivion/store.py": "8e1bdbda601ef24cf44e85fc174b7bf370e48f009d478a68c2fd1ab934e3d6fc"
+    },
+    "changed": {
+      "codex/adapter.py": "3624725e67a0d72e39dfc0c87deec64a5d48a2bb5147d0ddce583c02eacc1142",
+      "hooks/learning_context.py": "5a4579d5f1d5ce5a897c1b45da165641a48699f41d302a30a1a0752743575f24",
+      "hooks/learning_summary.py": "216d4087d8b7f1ce6df9902217d0d361a7cb0bc01989c61234bfd51c0e6bd7b6",
+      "hooks/recall_hook.py": "ead91810351f45bbc085ac184cdfd63b3569520fff8890ea2d24ae0bef019920",
+      "src/noblivion/embedding.py": "3e0e71f00bbc6c1c6b42855120e46f9df85d933c451796584556a8997f256b5c",
+      "src/noblivion/indexer.py": "42d74a0b12b83e05285086682881384c305c5e3033153d6722cfd144d49bfdaa",
+      "src/noblivion/learning.py": "f996e6b2036edca35e013ef057cffccf01260beed5649cd6174a09966d9be79f",
+      "src/noblivion/learning_consolidation.py": "2da6060a8d7f844676001fc93c3a5d760392efa30e9f8a68a7fce9c37b08d52a",
+      "src/noblivion/learning_pages.py": "db546fd4fbb861b11624e27a6695af5ecee2e0f52dad3588a7270775246c9278",
+      "src/noblivion/learning_runtime.py": "e1334ae12e481ac464c0bc1a357048e5c8b6fb391fe6ab5796ffae567c01c448",
+      "src/noblivion/learning_synthesis.py": "804821ff4bf0e8947099adb021d820a7e66f2ec9000b4e19ff97b655cfcb7d3c",
+      "src/noblivion/learning_worker.py": "c6dc6d4fbeeb553342785318e2082849ae69dbfb61faabc57613630fcf17cc8c",
+      "src/noblivion/ranking.py": "bb09acbf9d28aeb6200955b5f431e2ad624c893eb6765c13d238a7275708b1fc",
+      "src/noblivion/rest.py": "f9da1da858d3a5863547cc8dc069962bbcca2c7521996357842f2a3d0b8810f1",
+      "src/noblivion/store.py": "653509688b18b56859a8ca8f41f93e78b88d4c83277afc985df0632967d5e45f"
+    }
+  },
+  "synthesis_accuracy": null,
+  "synthesis_accuracy_reason": "extractive scripted fixture does not label synthesis",
+  "version": 1,
+  "work_factor": 0.17567567567567569,
+  "work_factor_definition": "baseline accounted calls / changed accounted calls; contract workload only"
+}

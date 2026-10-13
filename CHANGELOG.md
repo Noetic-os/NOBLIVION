@@ -8,6 +8,22 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+### Added
+
+- Evidence-linked generated claims, complete support/equivalence checks and
+  canonical revisions preserve exact passages, dates, correction history and
+  transitive withdrawal. Query context is available through HTTP, CLI and native
+  prompt hooks. Per-session opt-outs preserve other callers' context (NOBLIVION-101).
+- Durable extraction continuation receipts expose saturated, deferred and
+  exhausted coverage instead of silently dropping lessons after twelve proposals.
+  Extraction, synthesis and downstream draft jobs share existing leases and
+  persistent request/token/time/concurrency/spend budgets (NOBLIVION-101).
+- Repeated independently verified native action/outcome evidence can produce
+  validated inert procedure drafts requiring review. No execution, activation or
+  permission path is added. Held-out real-store fixtures measure external task
+  state and disclose causal limits. Phoenix patterns are adapted as separately
+  maintained Noblivion code with no shared runtime or release (NOBLIVION-101).
+
 ### Fixed
 
 - One Codex chat's memory opt-out no longer blocks recall in another chat when

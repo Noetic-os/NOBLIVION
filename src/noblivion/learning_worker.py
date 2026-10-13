@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from threading import Event, Timer
 
 from .learning import BudgetExceeded, SemanticSnapshotChanged
@@ -36,6 +36,7 @@ from .learning_extract import (
     validate_response,
     validate_semantic_response,
 )
+from .learning_pages import CoverageExhausted, ExtractionPages
 
 LOG = logging.getLogger(__name__)
 _FORMAT_RETRY = (
@@ -62,6 +63,10 @@ class WorkerSettings:
     max_windows: int = 128
     max_existing_chars: int = 24000
     poll_seconds: float = 5.0
+    max_pages: int = 256
+    max_continuations: int = 16
+    max_decisions: int = 512
+    enable_consolidation: bool = False
 
     def __post_init__(self):
         for name in (
@@ -71,6 +76,9 @@ class WorkerSettings:
             "window_chars",
             "max_windows",
             "max_existing_chars",
+            "max_pages",
+            "max_continuations",
+            "max_decisions",
         ):
             value = getattr(self, name)
             if type(value) is not int or value < 1:
@@ -80,6 +88,16 @@ class WorkerSettings:
             if not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError("invalid worker limits")
         if self.max_attempts > 10 or self.timeout_seconds > 300 or self.max_output_tokens > 8192:
+            raise ValueError("worker limits exceed hard bounds")
+        if (
+            self.max_pages > 512
+            or self.max_continuations > 32
+            or self.max_decisions > 512
+            or self.max_windows > 256
+            or self.window_chars > 262144
+            or self.max_existing_chars > 65536
+            or type(self.enable_consolidation) is not bool
+        ):
             raise ValueError("worker limits exceed hard bounds")
 
 
@@ -301,7 +319,20 @@ class LearningWorker:
         ):
             self.ledger.defer(ident, lease, retry_delay=3600, error="ScopeNotEnabled")
             return {"status": "deferred", "job_id": ident, "error": "ScopeNotEnabled"}
+        state = dict(job.get("progress") or {})
         try:
+            if job.get("kind", "extract") != "extract":
+                from .learning_synthesis import run_derivation
+
+                frozen = hashlib.sha256(
+                    json.dumps(self._configuration(), sort_keys=True).encode()
+                ).hexdigest()
+                if state.get("worker_fingerprint") not in {None, frozen}:
+                    raise ValidationError("derivation worker configuration changed")
+                state["worker_fingerprint"] = frozen
+                self.ledger.checkpoint(ident, lease, state)
+                job["progress"] = state
+                return run_derivation(self.ledger, job, self._validated_call)
             sources = job["sources"]
             windows = build_windows(
                 sources,
@@ -314,6 +345,7 @@ class LearningWorker:
                     {
                         "sources": [(s["id"], s["sha256"]) for s in sources],
                         "windows": windows,
+                        "configuration": self._configuration(),
                     },
                     sort_keys=True,
                     ensure_ascii=False,
@@ -333,67 +365,15 @@ class LearningWorker:
             context = json.dumps(existing, ensure_ascii=False, separators=(",", ":"))
             if len(context) > cfg.max_existing_chars or contains_secret(context):
                 raise ValidationError("existing context cannot be submitted safely within limits")
-            decisions = progress.get("decisions", [])
             start_window = progress.get("next_window", 0)
-            if (
-                not isinstance(decisions, list)
-                or type(start_window) is not int
-                or not 0 <= start_window <= len(windows)
-            ):
+            if type(start_window) is not int or not 0 <= start_window <= len(windows):
                 raise ValidationError("invalid durable window progress")
             state = dict(
-                progress,
-                fingerprint=fingerprint,
-                next_window=start_window,
-                decisions=decisions,
-                existing_notes=existing,
+                progress, fingerprint=fingerprint, next_window=start_window, existing_notes=existing
             )
-            for window_index in range(start_window, len(windows)):
-                if self.stop is not None and self.stop.is_set():
-                    self.ledger.defer(ident, lease, retry_delay=1, error="WorkerStopping")
-                    return {"status": "deferred", "job_id": ident, "error": "WorkerStopping"}
-                window = windows[window_index]
-                messages = [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {"sources": window, "existing_notes": existing},
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ),
-                    },
-                ]
-                accepted = self._validated_call(
-                    job,
-                    messages,
-                    lambda raw: validate_response(raw, sources, existing),
-                    state,
-                    f"extract:{window_index}",
-                    EXTRACTION_SCHEMA,
-                )
-                # A window can only cite source text actually sent in it. The
-                # complete source is used for hashes and offsets after validation.
-                for decision in accepted:
-                    for evidence in (
-                        decision["evidence"]
-                        + decision.get("proof", {}).get("before", [])
-                        + decision.get("proof", {}).get("after", [])
-                        + decision.get("correction", {}).get("current_evidence", [])
-                    ):
-                        if not any(
-                            str(part["id"]) == str(evidence["source_id"])
-                            and evidence["start"] >= part["offset"]
-                            and evidence["end"] <= part["offset"] + len(part["content"])
-                            for part in window
-                        ):
-                            raise ValidationError("evidence was not present in the model window")
-                    decisions.append(decision)
-                state["next_window"] = window_index + 1
-                # Advancing the cursor and dropping its cached retry result are
-                # one durable write. Until it commits, recovery reuses the cache.
-                state.pop("format_repair", None)
-                self.ledger.checkpoint(ident, lease, state)
+            self.ledger.checkpoint(ident, lease, state)
+            pages = ExtractionPages(self.ledger, job, state, fingerprint)
+            decisions = self._extract(job, sources, windows, existing, state, pages)
             # Overlap can repeat identical candidates. Conflicting proposals in
             # one batch fail closed instead of depending on their order.
             unique = {}
@@ -418,20 +398,17 @@ class LearningWorker:
                     raise ValidationError("inconsistent window decisions")
                 unique[key] = decision
             reconciled = self._semantic(job, list(unique.values()), existing, state)
-            result = self.ledger.finish(ident, lease, reconciled)
+            if cfg.enable_consolidation:
+                result = self.ledger.finish(ident, lease, reconciled, enqueue_consolidation=True)
+            else:
+                result = self.ledger.finish(ident, lease, reconciled)
             return {"status": "done", "job_id": ident, "results": result}
         except SemanticSnapshotChanged:
-            # Extraction remains valid; only the comparison snapshot is stale.
-            self.ledger.checkpoint(
-                ident,
-                lease,
-                {
-                    "fingerprint": fingerprint,
-                    "next_window": len(windows),
-                    "decisions": decisions,
-                    "existing_notes": existing,
-                },
-            )
+            # Preserve page receipts; only the comparison snapshot is stale.
+            state.pop("semantic", None)
+            state.pop("derivation", None)
+            state.pop("format_repair", None)
+            self.ledger.checkpoint(ident, lease, state)
             self.ledger.defer(ident, lease, retry_delay=1, error="SemanticSnapshotChanged")
             return {"status": "deferred", "job_id": ident, "error": "SemanticSnapshotChanged"}
         except BudgetExceeded:
@@ -457,6 +434,145 @@ class LearningWorker:
                 permanent=permanent,
             )
             return {"status": "failed", "job_id": ident, "error": reason, "permanent": permanent}
+
+    def _configuration(self):
+        return {
+            "settings": asdict(self.settings),
+            "budgets": vars(self.budget_limits),
+            "provider_type": type(self.provider).__module__
+            + "."
+            + type(self.provider).__qualname__,
+            "endpoint": getattr(self.provider, "endpoint", ""),
+            "model": getattr(self.provider, "model", ""),
+            "reasoning_effort": getattr(self.provider, "reasoning_effort", ""),
+        }
+
+    def _extract(self, job, sources, windows, existing, state, pages):
+        cfg = self.settings
+        for unit_index in range(state["next_window"], len(windows)):
+            window = windows[unit_index]
+            continuation = state.get("next_continuation", 0)
+            while True:
+                if self.stop is not None and self.stop.is_set():
+                    raise BudgetExceeded("worker stopping")
+                receipt = pages.receipt(unit_index, continuation)
+                if receipt is None:
+                    if pages.count() >= cfg.max_pages:
+                        raise CoverageExhausted(
+                            "extraction page limit reached; coverage incomplete"
+                        )
+                    previous = [
+                        d
+                        for row in pages._rows()
+                        if row["unit_index"] == unit_index
+                        for d in row["candidates"]
+                    ]
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": SYSTEM_PROMPT
+                            + "\nThis is a coverage continuation. Return only remaining lessons; "
+                            "already_returned statements must not be emitted again. A response "
+                            "with twelve candidates signals saturation and requires another page.",
+                        },
+                        {
+                            "role": "user",
+                            "content": json.dumps(
+                                {
+                                    "sources": window,
+                                    "existing_notes": existing,
+                                    "already_returned": [d["statement"] for d in previous],
+                                    "continuation": continuation,
+                                },
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                        },
+                    ]
+                    try:
+                        accepted = self._validated_call(
+                            job,
+                            messages,
+                            lambda raw: validate_response(raw, sources, existing),
+                            state,
+                            f"extract:{unit_index}:{continuation}",
+                            EXTRACTION_SCHEMA,
+                        )
+                        self._validate_window(accepted, window)
+                    except ValidationError:
+                        pages.save(
+                            unit_index,
+                            continuation,
+                            window,
+                            [],
+                            "rejected",
+                            "candidate validation failed; no coverage acknowledgement",
+                        )
+                        raise
+                    novel = [
+                        d
+                        for d in accepted
+                        if d["statement"] not in {prior["statement"] for prior in previous}
+                    ]
+                    total = {
+                        (d["scope"], d["category"], d["statement"].casefold())
+                        for d in pages.decisions() + novel
+                    }
+                    exhausted = (
+                        len(total) > cfg.max_decisions
+                        or (len(accepted) == 12 and continuation + 1 >= cfg.max_continuations)
+                        or (continuation > 0 and bool(accepted) and not novel)
+                    )
+                    status = (
+                        "exhausted"
+                        if exhausted
+                        else "saturated"
+                        if len(accepted) == 12
+                        else "processed"
+                        if previous or accepted
+                        else "no_lesson"
+                    )
+                    reason = (
+                        "hard limit or repeated saturated response; coverage incomplete"
+                        if exhausted
+                        else "twelve candidates require continuation"
+                        if status == "saturated"
+                        else "provider reported remaining lessons"
+                        if status == "processed"
+                        else "provider reported no eligible lesson"
+                    )
+                    receipt = pages.save(unit_index, continuation, window, accepted, status, reason)
+                if receipt["status"] in {"exhausted", "rejected"}:
+                    raise CoverageExhausted("extraction receipt is incomplete")
+                state.pop("format_repair", None)
+                if receipt["status"] == "saturated":
+                    continuation += 1
+                    state["next_continuation"] = continuation
+                    self.ledger.checkpoint(job["id"], job["lease_token"], state)
+                    continue
+                state["next_window"] = unit_index + 1
+                state.pop("next_continuation", None)
+                self.ledger.checkpoint(job["id"], job["lease_token"], state)
+                break
+        return pages.decisions()
+
+    @staticmethod
+    def _validate_window(accepted, window):
+        # Full sources establish hashes; exact windows establish what was submitted.
+        for decision in accepted:
+            for evidence in (
+                decision["evidence"]
+                + decision.get("proof", {}).get("before", [])
+                + decision.get("proof", {}).get("after", [])
+                + decision.get("correction", {}).get("current_evidence", [])
+            ):
+                if not any(
+                    str(part["id"]) == str(evidence["source_id"])
+                    and evidence["start"] >= part["offset"]
+                    and evidence["end"] <= part["offset"] + len(part["content"])
+                    for part in window
+                ):
+                    raise ValidationError("evidence was not present in the model window")
 
     def _validated_call(self, job, messages, validate, state, step, schema):
         """Retry invalid JSON syntax once, never repair or replay rejected text.

@@ -416,3 +416,16 @@ environment, never from the config file.
 | `NOBLIVION_MINER_STAMP_DIR` | none | `<data dir>/cache` | Folder for the miner start throttle stamp. The Codex adapter uses its own state folder so a Claude Code session does not suppress a Codex miner start. |
 | none | `miner.transcript_glob` | `~/.claude/projects/*/*.jsonl` | The transcripts to read. |
 | none | `miner.max_run_s` | `300` | The time budget of one run, in seconds. The next run goes on from where this one stopped. |
+
+
+## Controlled learning consolidation
+
+`learning.json` is separate from the legacy settings parser. Background learning
+and consolidation remain opt-in. Set `worker.enable_consolidation` to `true` only
+within an explicitly mapped learning scope to enqueue generated-claim work.
+Omitting the field keeps extraction without automatic consolidation. The worker
+uses the same finite persistent budgets and the explicitly priced zero-dollar
+loopback provider; unknown or external provider prices never permit a request.
+Worker settings and model/budget fingerprints are frozen for each durable job.
+See [Background learning](learning.md#evidence-linked-consolidation) for the full
+context API, hard bounds, extraction coverage and inert-draft policy.
