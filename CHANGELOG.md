@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.14 - 2026-10-13
+
 ### Added
 
 - Evidence-linked generated claims, complete support/equivalence checks and
