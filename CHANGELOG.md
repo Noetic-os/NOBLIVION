@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.15 - 2026-10-14
+
 ### Added
 
 - Error recall reaches the mined `tool_error` notes. In `store` and `fused` mode the hook
