@@ -42,12 +42,14 @@ import sys
 import threading
 import time
 import urllib.parse
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 import recall_helpers
 from hookload import HOOKS, load_hook
+from noblivion import db
 
 HOOK = HOOKS / "error_recall_hook.py"
 
@@ -957,6 +959,133 @@ def test_the_store_is_off_by_default(env, store):
     assert "- Memory feedback_rev_parse_needs_one_ref (" in run(fail_event(REV), env)
     assert _Store.seen == [] and _Store.probes == []
     assert log_lines(env)[-1]["source"] == "local"
+
+
+def _mined(rank, mid, rule, score=0.9, category="tool_error", **extra):
+    """One mined row of the index answer (NOBLIVION-105): no source, a category, a rule."""
+    return recall_helpers.index_row(
+        rank,
+        mid,
+        "Tool error: Bash `git rev-parse`",
+        score=score,
+        source_type="transcript_mined",
+        category=category,
+        rule=rule,
+        apply="Bash failed with this error before. Fix the cause. Do not retry the same call.",
+        **extra,
+    )
+
+
+@pytest.mark.parametrize("mode", ["store", "fused"])
+def test_the_store_is_asked_for_mined_rows(env, store, mode):
+    env = dict(env, NOBLIVION_ERROR_RECALL_MODE=mode)
+    run(fail_event(REV), env)
+    qs = urllib.parse.parse_qs(urllib.parse.urlsplit(_Store.seen[0][1]).query)
+    assert qs["include_mined"] == ["1"]
+
+
+@pytest.mark.parametrize("mode", ["store", "fused"])
+def test_a_mined_tool_error_row_that_quotes_the_error_is_shown(env, store, mode):
+    _Store.rows = [_mined(1, 7, "fatal: Needed a single revision.")]
+    env = dict(env, NOBLIVION_ERROR_RECALL_MODE=mode)
+    ctx = json.loads(run(fail_event(REV), env))["hookSpecificOutput"]["additionalContext"]
+    assert "- Memory mined-7 (" in ctx
+    assert "Rule: fatal: Needed a single revision." in ctx
+    assert "Apply: Bash failed with this error before." in ctx
+    rec = log_lines(env)[-1]
+    assert rec["decision"] == "show" and "mined-7" in rec["ids"]
+    assert rec["source"] == mode
+
+
+def test_a_mined_row_that_does_not_quote_the_error_is_not_shown(env, store):
+    # The 3-word quote gate holds for a mined row as for a memory file.
+    _Store.rows = [_mined(1, 7, "fatal: not a git repository (or any parent).")]
+    env = dict(env, NOBLIVION_ERROR_RECALL_MODE="store")
+    assert run(fail_event(REV), env) == ""
+    rec = log_lines(env)[-1]
+    assert rec["decision"] == "no-quote" and rec["ids"] == ["mined-7"]
+
+
+@pytest.mark.parametrize("category", ["correction", "review_request_changes", "reference"])
+def test_only_a_mined_tool_error_row_is_a_candidate(env, store, category):
+    _Store.rows = [_mined(1, 7, "fatal: Needed a single revision.", category=category)]
+    env = dict(env, NOBLIVION_ERROR_RECALL_MODE="store")
+    assert run(fail_event(REV), env) == ""
+    assert log_lines(env)[-1]["decision"] == "no-hit"
+
+
+def test_a_mined_row_without_an_id_or_a_score_is_left_out(env, store):
+    _Store.rows = [
+        _mined(1, "x", "fatal: Needed a single revision."),
+        _mined(2, 8, "fatal: Needed a single revision.", score=None),
+        _mined(3, 9, "fatal: Needed a single revision."),
+    ]
+    env = dict(env, NOBLIVION_ERROR_RECALL_MODE="store")
+    run(fail_event(REV), env)
+    assert log_lines(env)[-1]["ids"] == ["mined-9"]
+
+
+def test_a_mined_row_beside_a_memory_file_row_in_fused_mode(env, store):
+    _Store.rows = [
+        _mined(1, 7, "fatal: Needed a single revision."),
+        _row(2, 4, "c", 0.7, "feedback_rev_parse_needs_one_ref.md"),
+    ]
+    env = dict(env, NOBLIVION_ERROR_RECALL_MODE="fused")
+    ctx = json.loads(run(fail_event(REV), env))["hookSpecificOutput"]["additionalContext"]
+    assert "- Memory mined-7 (" in ctx
+    assert "- Memory feedback_rev_parse_needs_one_ref (" in ctx
+
+
+def test_a_mined_tool_error_row_of_a_real_store_reaches_error_recall(tmp_path, monkeypatch):
+    # NOBLIVION-105, end to end: a transcript with a failed command is mined into a real
+    # store, then the same error fails again and the hook shows the mined row.
+    from test_miner import PROJECT_DIR, assistant, mine, result, user, write
+    from test_store import Running, make_store, wait_for
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    run_ = Running(make_store(tmp_path))
+    try:
+        write(
+            tmp_path / "transcripts" / PROJECT_DIR / "s-one.jsonl",
+            [
+                user("Please water the tomato beds."),
+                assistant(
+                    "Running it.", [("tu1", "Bash", {"command": "git rev-parse --short a b"})]
+                ),
+                result("tu1", "fatal: Needed a single revision", is_error=True),
+            ],
+        )
+        with closing(db.connect(run_.store.settings.db_path, create=True)) as c:
+            assert mine(c, tmp_path / "transcripts", project="claude_code").inserted == 1
+        # The store embeds the new row, so it answers in hybrid mode (the hook needs a cosine).
+        assert wait_for(
+            lambda: (
+                run_.get("/health")[1]["embedding"]["missing_vectors"] == 0
+                and run_.get("/health")[1]["mode"] == "hybrid"
+            )
+        )
+        folder = tmp_path / "projects" / PROJECT_DIR / "memory"
+        folder.mkdir(parents=True)
+        env = recall_helpers.hook_env(
+            tmp_path,
+            NOBLIVION_ERROR_RECALL_MEMORY_DIR=str(folder),
+            NOBLIVION_ERROR_RECALL_LOG=str(tmp_path / "er.log"),
+            NOBLIVION_ERROR_RECALL_STATE_DIR=str(tmp_path / "er-state"),
+            NOBLIVION_ERROR_RECALL_MODE="fused",
+        )
+        ev = fail_event(REV, command="git rev-parse --short c d")
+        out = run(ev, env)
+        assert out, json.dumps(log_lines(env))
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert "- Memory mined-" in ctx
+        assert "Rule: fatal: Needed a single revision" in ctx
+        rec = log_lines(env)[-1]
+        assert rec["decision"] == "show" and rec["source"] == "fused"
+        # An error with other words quotes no mined row: nothing is shown.
+        other = fail_event("Exit code 128\nfatal: not a git repository", command="git status")
+        assert run(other, env) == ""
+    finally:
+        run_.stop()
 
 
 @pytest.mark.parametrize("mode", ["store", "fused"])

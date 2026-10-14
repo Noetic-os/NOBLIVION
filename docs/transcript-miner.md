@@ -69,14 +69,26 @@ miner cannot tell this text from the agent's own findings.
 - It starts with a lower trust value: `trust.prior_mined`, default `0.3`.
   A memory file starts at `0.5`.
 - It has no file. It lives only in the database.
+- A `tool_error` note has labels: the tool name, the first word of the command
+  and the error class, for example `bash`, `git` and `keyerror`. Every new note
+  has a Rule line (the first sentence of the lesson: the user's words, the error
+  or the findings) and an Apply line, both stored in the `index_text` column.
+  The index answer derives the same two lines for a note that an older miner
+  wrote.
 
 ## Who sees mined notes
 
 Transcripts can hold text from web pages, tool output and other sources
 you did not write. So mined notes are kept out of the automatic paths.
 
-- The prompt hook never adds a mined note.
+- The prompt hook never adds a mined note. A measurement found that too few
+  of the `correction` notes that it would show were useful for the prompt
+  (NOBLIVION-105), so the prompt hook stays as it is.
 - The subagent rules hook never adds a mined note.
+- The error recall hook, in `store` and `fused` mode, can add a `tool_error`
+  note. It shows the note only when the note quotes three words in a row from
+  the error message, as for a memory file. Its Rule line is the first sentence
+  of the error. The `local` mode never reads mined notes.
 - The search endpoint never returns a mined note.
 - The MCP tool `noblivion_recall` returns mined notes only when Claude
   Code asks with `include_mined: true`. It can also open a mined note by
@@ -104,7 +116,7 @@ not remove every text that looks like an instruction to the model.
 
 So a mined note can hold text that reads like an instruction. Read a mined
 note as a record of what a transcript said, not as a rule. This is one
-reason why the automatic paths never show mined notes, and why the miner
+reason why the automatic paths show mined notes only in this narrow case, and why the miner
 is off by default. Nobody has measured yet how much of such text the
 filter catches or misses in mined notes.
 

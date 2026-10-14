@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from noblivion import db, injection, ranking, redaction, trust
+from noblivion import db, injection, mined_fields, ranking, redaction, trust
 from noblivion.launcher import NONCE_RE
 from noblivion.ranking import MODE_KEYWORD
 
@@ -238,6 +238,13 @@ def index_row(hit: Hit, trust: Mapping[int, tuple[float, int]] | None, prior_min
         "chunk": row.chunk_index if row.chunk_id is not None else None,
         "heading": row.heading if row.chunk_id is not None else None,
     }
+    if row.source_type == db.SOURCE_MINED:
+        # NOBLIVION-105: a mined row has no memory file to join, so the answer carries its
+        # category and its rule and apply lines. The error recall hook reads them.
+        rule, apply = mined_fields.fields_of(row.category, row.index_text, row.content)
+        item["category"] = row.category
+        item["rule"] = _clean(rule, mined_fields.RULE_MAX_CHARS)
+        item["apply"] = _clean(apply, mined_fields.APPLY_MAX_CHARS)
     if trust is not None:
         rollup = trust.get(row.id)
         item["trust"] = round(rollup[0], 4) if rollup else None

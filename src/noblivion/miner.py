@@ -68,7 +68,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from noblivion import config, db, indexer, injection, labels, redaction
+from noblivion import config, db, indexer, injection, labels, mined_fields, redaction
 
 MINE_LOCK_FILE = "mine.lock"
 DEFAULT_ENABLED = False  # NOBLIVION-53: off until its precision is measured
@@ -372,6 +372,8 @@ class Candidate:
     title: str
     text: str
     shape: str  # dedupe key text; its sha256 is the row hash
+    # NOBLIVION-105: the tool name, the command head and the error class of a tool error.
+    labels: list[str] = field(default_factory=list)
 
     @property
     def path(self) -> str:
@@ -618,7 +620,15 @@ class Miner:
         if command:
             title += f" `{_clip(command, TITLE_COMMAND_CHARS)}`"
         text = f"Tool error on {date} in session {short}: {what} failed with: {error}"
-        cand = Candidate(KIND_TOOL_ERROR, session_id, line_no, title, text, f"{tool}\n{first_line}")
+        cand = Candidate(
+            KIND_TOOL_ERROR,
+            session_id,
+            line_no,
+            title,
+            text,
+            f"{tool}\n{first_line}",
+            mined_fields.labels_of_error(tool, command, first_line),
+        )
         return cand if self._first(cand) else None
 
 
@@ -808,9 +818,10 @@ def store_candidates(
                     category=cand.kind,
                     content=content,
                     content_hash=cand.hash,
-                    labels="[]",
+                    labels=mined_fields.join_labels(cand.labels),
                     rev=rev,
                     now=now,
+                    index_text=mined_fields.index_text(cand.kind, content),
                 )
                 stats.inserted += 1
             stats.content_rev = rev

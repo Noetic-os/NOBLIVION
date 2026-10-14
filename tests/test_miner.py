@@ -142,6 +142,38 @@ def test_extracts_each_kind_with_root_path_and_source_type(conn, projects):
     assert "[transcript_mined:" not in err  # no source marker (section 11.1)
 
 
+def test_mined_rows_carry_labels_and_a_derived_rule_and_apply_line(conn, projects):
+    # NOBLIVION-105: the tool error row names the tool, the command head and the error
+    # class; every kind gets the rule line (first sentence) and the apply line.
+    write(projects / PROJECT_DIR / "s-one.jsonl", session_one())
+    mine(conn, projects)
+    got = {
+        r["category"]: r
+        for r in conn.execute("SELECT category, labels, index_text FROM memories").fetchall()
+    }
+    assert json.loads(got["tool_error"]["labels"]) == ["bash", "make"]
+    assert json.loads(got["correction"]["labels"]) == []
+    rule, apply = got["tool_error"]["index_text"].split("\n")
+    assert rule == "make: *** No rule to make target 'water'."
+    assert apply.startswith("Bash failed with this error before.")
+    assert got["correction"]["index_text"].split("\n")[0].startswith("No, that is wrong")
+    assert got["review_request_changes"]["index_text"].split("\n")[0].startswith("1. The retry")
+    for r in got.values():
+        assert len(r["index_text"].split("\n")) == 2
+
+
+def test_a_labelled_tool_error_ranks_on_its_label(conn, projects):
+    write(projects / PROJECT_DIR / "s-one.jsonl", session_one())
+    mine(conn, projects)
+    hits = (
+        ranking.Ranker()
+        .search(conn, "make", project="claude_code", top_k=5, include_mined=True)
+        .hits
+    )
+    assert [h.row.category for h in hits] == ["tool_error"]
+    assert hits[0].row.labels == ("bash", "make")
+
+
 def test_harness_meta_and_sidechain_turns_are_not_corrections(conn, projects):
     write(
         projects / PROJECT_DIR / "s-two.jsonl",
@@ -525,6 +557,17 @@ def test_store_search_never_returns_mined_rows_and_index_only_on_request(tmp_pat
         assert run.get("/api/memories/index?q=sprinkler+water+make")[1]["results"] == []
         idx = run.get("/api/memories/index?q=sprinkler+water+make&include_mined=1")[1]
         assert idx["results"] and {r["source_type"] for r in idx["results"]} == {db.SOURCE_MINED}
+        # NOBLIVION-105: a mined row names its category and sends its rule and apply lines.
+        err = next(r for r in idx["results"] if r["category"] == "tool_error")
+        assert err["rule"] == "make: *** No rule to make target 'water'."
+        assert err["apply"].startswith("Bash failed with this error before.")
+        # A row that an older miner wrote has no stored lines: they are derived on the way out.
+        with closing(db.connect(run.store.settings.db_path)) as c, db.write_tx(c):
+            c.execute("UPDATE memories SET index_text = '', labels = '[]'")
+            db.bump_rev(c, "content_rev")
+        old = run.get("/api/memories/index?q=sprinkler+water+make&include_mined=1")[1]
+        old_err = next(r for r in old["results"] if r["category"] == "tool_error")
+        assert (old_err["rule"], old_err["apply"]) == (err["rule"], err["apply"])
     finally:
         run.stop()
 

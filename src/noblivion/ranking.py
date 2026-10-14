@@ -80,6 +80,9 @@ class PoolRow:
     heading: str = ""
     chunk_text: str = field(default="", repr=False, compare=False)
     labels: tuple[str, ...] = field(default=(), repr=False, compare=False)  # lower case
+    # NOBLIVION-105: the index answer reads these two for a mined row (rule and apply lines).
+    category: str = ""
+    index_text: str = field(default="", repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -360,8 +363,8 @@ class RankIndex:
             live_ids = None
             if content_rev > old.content_rev:
                 changed_rows = conn.execute(
-                    "SELECT m.id, m.project, m.root, m.path, m.source_type, m.content, m.weight, "
-                    "m.labels, m.index_text, m.archived_at, m.deleted_at, "
+                    "SELECT m.id, m.project, m.root, m.path, m.source_type, m.category, "
+                    "m.content, m.weight, m.labels, m.index_text, m.archived_at, m.deleted_at, "
                     "EXISTS (SELECT 1 FROM learning_notes n "
                     "WHERE n.project=m.project AND n.root=m.root AND n.path=m.path "
                     "AND n.file_hash=m.hash AND n.status='active' AND n.scope='general' "
@@ -415,6 +418,8 @@ class RankIndex:
                         tokens=tuple(bm25.tokenize(r["content"])) + field_tokens[int(r["id"])],
                         is_general=bool(r["is_general"]),
                         labels=parse_labels(r["labels"]),
+                        category=r["category"],
+                        index_text=r["index_text"],
                     )
                 else:
                     rows.pop(int(r["id"]), None)
