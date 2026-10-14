@@ -10,6 +10,16 @@ All notable changes to NOBLIVION. The format follows
 
 ### Added
 
+- Error recall reaches the mined `tool_error` notes. In `store` and `fused` mode the hook
+  asks the store for mined notes, and a mined `tool_error` note is shown when it quotes
+  three words in a row from the error, as for a memory file (the quote check is
+  unchanged). The index answer of a mined note now holds `category`, `rule` and `apply`.
+  The miner writes labels for a tool error (the tool name, the command head and the error
+  class) and a derived rule line (the first sentence of the lesson) and apply line for
+  every new note. A note from an older miner gets the same two lines at answer time. The
+  prompt index does not show mined notes: in a read-only sample of 30 shows from the
+  `correction` notes, under 0.70 were useful for the prompt, so that part is not shipped
+  (NOBLIVION-105).
 - The keyword score reads the `rule:`, `apply:` and `triggers:` lines of a memory file, in
   the store and in the hook re-rank, with double weight. The prompt index shows `rule`
   and the APPLY excerpt shows `apply`, but a word that only they held could not find the
@@ -82,6 +92,7 @@ All notable changes to NOBLIVION. The format follows
   inside a subagent) into the arguments of each recall call, and the server reads a
   subagent's files under `cache/subagent`. The id only chooses a cache file. Without an
   id the newest file is used as before, and the tool result now says so (NOBLIVION-110).
+
 ## 0.1.14 - 2026-10-13
 
 ### Added
