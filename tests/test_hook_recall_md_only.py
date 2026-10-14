@@ -220,11 +220,11 @@ def test_prompt_output_holds_only_memory_file_hits(daemon, env):
 
 def test_mined_rows_do_not_count_toward_k(daemon, env):
     """Ranked first, mined rows would take every place before the k cut."""
-    many_md = [_md(f"topic_{i}", f"body {i}") for i in range(hook.K_PROMPT + 2)]
+    many_md = [_md(f"note_{i}", f"body {i}") for i in range(hook.K_PROMPT + 2)]
     daemon.blob = _blob(*(MINED * 3), *many_md)
     lines = _heads(_run(_prompt(), env))
     assert len(lines) == hook.K_PROMPT
-    assert all(ln.startswith("- Memory topic_") for ln in lines)
+    assert all(ln.startswith("- Memory note_") for ln in lines)
 
 
 def test_only_mined_rows_print_nothing(daemon, env):

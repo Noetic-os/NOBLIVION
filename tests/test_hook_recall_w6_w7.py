@@ -395,7 +395,12 @@ def test_the_top_rows_carry_their_block_and_the_header_names_the_block(daemon, t
     assert _log_status(env) == "ok:ruled12of12:apply10of10"
 
 
-def test_a_row_and_its_block_are_one_unit_for_the_cap(daemon, tmp_path, corpus):
+def test_a_block_is_whole_or_absent_and_its_row_stays_when_it_does_not_fit(
+    daemon, tmp_path, corpus
+):
+    """NOBLIVION-109. A cap that holds row 2 but not its block keeps the row and
+    leaves the block out: a row is never shown with half its block, and a block
+    no longer takes the place of a row."""
     full = _serve(_env(daemon, tmp_path, corpus, **APPLY))
     lines = full.split("\n")
     second_row = next(i for i, line in enumerate(lines) if line.startswith("- [id 19002]"))
@@ -404,10 +409,14 @@ def test_a_row_and_its_block_are_one_unit_for_the_cap(daemon, tmp_path, corpus):
     env = _env(daemon, tmp_path, corpus, **APPLY, **{hook.INDEX_CAP_ENV: str(cap)})
     text = _serve(env)
     ids = [int(m["id"]) for m in map(ROW_RE.match, text.split("\n")) if m]
-    assert ids == [19001], "row 2 is dropped whole, and the list stops there"
+    assert ids == [19001, 19002], "row 2 stays, without its block, and the list stops there"
     assert len(text) <= cap
+    assert text.split("\n")[-1].startswith("- [id 19002]"), "no block under row 2"
+    assert "  APPLY: run the tool number 1 with --flag\n  then check the result of step 1\n" in (
+        text + "\n"
+    ), "the block of row 1 is whole"
     assert hook.INDEX_RULE_HEADER_TIERS in text.split("\n")[0]
-    assert _log_status(env) == "ok:ruled12of12:apply1of10"
+    assert _log_status(env) == "ok:ruled12of12:capcut10of12:apply1of10"
 
 
 def test_apply_and_rule_rows_leave_the_rows_fetchable_by_rank(daemon, tmp_path, corpus):

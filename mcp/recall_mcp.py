@@ -480,7 +480,7 @@ def noblivion_recall(
         return _tool_error(f"recall failed ({type(exc).__name__})")
     ms = int((time.monotonic() - t0) * 1000)
     project = hook.recall_project(environ)
-    text = hook.render(hits, ms, cap=None, project=project) or hook.HEADER.format(
+    text = hook.render(hits, ms, cap=None, project=project, query=q) or hook.HEADER.format(
         persona=project, n=0, ms=ms
     )
     return {"content": [{"type": "text", "text": text}], "isError": False}
@@ -540,7 +540,20 @@ def _resolve_fetch_id(hook: Any, value: int, env: Mapping[str, str]) -> tuple[in
     return value, ""
 
 
-def _local_rule_apply(hook: Any, env: Mapping[str, str], name: str) -> tuple[str, str]:
+class _RowKey:
+    """The two fields ``recall_hook.file_of`` reads: a fetched memory's title and
+    source."""
+
+    __slots__ = ("title", "source")
+
+    def __init__(self, title: str, source: str):
+        self.title = title
+        self.source = source
+
+
+def _local_rule_apply(
+    hook: Any, env: Mapping[str, str], name: str, source: str = ""
+) -> tuple[str, str]:
     """W6 F3: the ``rule:`` and ``apply:`` of the LOCAL file this memory came
     from, or ``("", "")``.
 
@@ -548,19 +561,22 @@ def _local_rule_apply(hook: Any, env: Mapping[str, str], name: str) -> tuple[str
     because the local file is the one source of the two fields, and the store
     row may lag behind an edit until the next index scan.
 
-    The join key is the frontmatter ``name``, which is the ``title`` the store
-    returns, exactly as the index rows join. ``load_memory_corpus`` is the one
+    The join key is the file's path, the ``source`` the store returns, and then
+    the frontmatter ``name``, which is the ``title`` the store returns, exactly
+    as the index rows join (``recall_hook.file_of``, NOBLIVION-109). The title
+    alone is redacted and cut to 120 characters, so a long name found no file.
+    ``load_memory_corpus`` is the one
     reader of the folder, shared with the hook; it costs 0.111 s over 674 files,
     measured 2026-09-29, which a tool call can pay and a 2 s hook could not.
     """
     folder = hook.memory_dir(env)
-    if not folder or not name:
+    if not folder or not (name or source):
         return "", ""
     try:
         by_name = hook.corpus_by_name(hook.load_memory_corpus(folder))
     except (OSError, ValueError):
         return "", ""
-    md = by_name.get(name)
+    md = hook.file_of(_RowKey(name, source), by_name)
     return (md.rule, md.apply_block) if md is not None else ("", "")
 
 
@@ -674,7 +690,12 @@ def _fetch_one(
     parts = [head]
     if note:
         parts.append(note)
-    rule, apply_block = _local_rule_apply(hook, env, str(answer.get("title") or ""))
+    rule, apply_block = _local_rule_apply(
+        hook,
+        env,
+        str(answer.get("title") or ""),
+        source if isinstance(source, str) else "",
+    )
     if rule:
         parts.append("RULE: " + hook._neutral(rule, FETCH_RULE_MAX_CHARS))
     if apply_block:

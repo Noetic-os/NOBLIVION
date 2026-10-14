@@ -172,7 +172,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 PERSONA = "claude_code"  # the default namespace
 PROJECT_ENV = "NOBLIVION_RECALL_PROJECT"
@@ -317,6 +317,9 @@ INDEX_ROW_NAME_MAX_CHARS = 55
 # corpus can ever produce a longer row: the rule is allotted whatever is left of
 # it after the id and the name, and cut at a word boundary.
 INDEX_ROW_MAX_CHARS = 235
+# NOBLIVION-109: the share of the index cap that the rows are guaranteed when
+# apply blocks are on. The blocks are filled from the rest (``layout_index``).
+INDEX_ROW_SHARE = 0.6
 # W8: the prefix of a row with no id (arm ET's trigger leg only, see _render_rule).
 INDEX_ROW_NO_ID = "- [no id] "
 # The header of the rule shape. W6 fixes this wording. The tiers
@@ -631,7 +634,7 @@ tokens_sub = _CORPUS.tokens_sub
 build_memory_content = _CORPUS.build_memory_content
 memory_name = _CORPUS.memory_name
 load_memory_corpus = _CORPUS.load_memory_corpus
-corpus_by_name = _CORPUS.corpus_by_name
+_corpus_by_name = _CORPUS.corpus_by_name
 MemoryFile = _CORPUS.MemoryFile
 _STORE = _sibling_module("store_client")
 
@@ -1073,7 +1076,18 @@ class Hit:
     the entry carries a ``[claude_code_md: <path>]`` marker line and does not
     open like a transcript-miner row. The hook injects only these."""
 
-    __slots__ = ("entity", "title", "body", "score", "key", "md", "mid", "description", "text")
+    __slots__ = (
+        "entity",
+        "title",
+        "body",
+        "score",
+        "key",
+        "md",
+        "mid",
+        "description",
+        "text",
+        "path",
+    )
 
     def __init__(
         self,
@@ -1086,6 +1100,7 @@ class Hit:
         mid: str = "",
         description: str = "",
         text: str = "",
+        path: str = "",
     ):
         self.entity = entity
         self.title = title
@@ -1099,13 +1114,20 @@ class Hit:
         self.mid = mid
         self.description = description
         self.text = text
+        # NOBLIVION-109: the marker path (the file's path under its root), the
+        # key the hit path joins a hit to its local file with. "" for a hit
+        # with no marker.
+        self.path = path
 
-    def render(self) -> str:
+    def render(self, query: str = "") -> str:
+        """The one-line hit. ``query`` (the MCP tool passes it) shows the part
+        of the memory that holds the query words instead of its first
+        ``BODY_MAX_CHARS`` characters (NOBLIVION-109)."""
         score = "n/a" if self.score is None else f"{self.score:.2f}"
         # Square brackets would let an entity close the ``[...]`` early.
         entity = _neutral(self.entity, ENTITY_MAX_CHARS).translate(_BRACKET) or "memory"
         title = _neutral(self.title, TITLE_MAX_CHARS) or "memory"
-        body = _neutral(self.body, BODY_MAX_CHARS)
+        body = _neutral(query_excerpt(self.text, query) if query else self.body, BODY_MAX_CHARS)
         return f"- [{entity}] {title}: {body} (score {score})"
 
 
@@ -1133,6 +1155,7 @@ class IndexLine:
         "keyword",
         "trust_ranking",
         "model",
+        "source",
     )
 
     def __init__(
@@ -1151,6 +1174,7 @@ class IndexLine:
         keyword: bool = False,
         trust_ranking: str = "",
         model: str = "",
+        source: str = "",
     ):
         self.rank = rank
         self.mid = mid
@@ -1176,6 +1200,10 @@ class IndexLine:
         # when it names none). The default index floor is for one model only
         # (see INDEX_MIN_SCORE_ENV).
         self.model = model
+        # NOBLIVION-109: the row's file path under its root (the store's
+        # ``source``), the key ``file_of`` joins the row to its local file with.
+        # "" when the answer names none.
+        self.source = source
         # W6 (F1) and W7 (F2). The two W5 fields of the LOCAL file this row
         # names, filled by ``annotate_index`` before rendering. Both are "" for
         # a row whose title names no local file and for the un-annotated corpus
@@ -1327,6 +1355,54 @@ def _collapse(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _query_words(query: str) -> List[str]:
+    """The words of ``query`` that can match a line: the shared formatter's
+    ``tokens`` (no stop words), else the plain lower-case words."""
+    try:
+        return list(_memory_text().tokens(query))
+    except Exception:  # noqa: BLE001 - no formatter: the plain words still work
+        return [w for w in re.findall(r"[a-z0-9]+", (query or "").lower()) if len(w) > 1]
+
+
+def query_excerpt(text: str, query: str, lines: int = 6, limit: int = BODY_MAX_CHARS) -> str:
+    """NOBLIVION-109. The part of ``text`` that holds the query words, as one
+    collapsed line of at most about ``limit`` characters.
+
+    The line with the most query words starts it (the first one on a tie), and
+    the next ``lines - 1`` lines follow, so a fix under a quoted error stays with
+    it. A single query word is enough, unlike ``memory_text.excerpt``, which wants
+    two. When the first query word sits past ``limit`` in that text, the excerpt
+    starts a little before it, so the cut that comes later never hides it. A text
+    with no query word at all comes back as it is, so the caller shows its head.
+    """
+    words = set(_query_words(query))
+    rows = [ln for ln in str(text or "").splitlines() if ln.strip()]
+    if not words or not rows:
+        return str(text or "")
+    try:
+        row_words = _memory_text().tokens
+    except Exception:  # noqa: BLE001
+        row_words = _query_words
+    best, best_i = 0, -1
+    for i, row in enumerate(rows):
+        n = len(words & set(row_words(row)))
+        if n > best:
+            best, best_i = n, i
+    if best_i < 0:
+        return str(text or "")
+    out = _collapse(" ".join(rows[best_i : best_i + lines]))
+    if len(out) <= limit:
+        return out
+    lower = out.lower()
+    at = min((p for p in (lower.find(w) for w in words) if p >= 0), default=0)
+    if at + 20 <= limit:
+        return out
+    start = max(0, at - 60)
+    space = out.rfind(" ", 0, start)
+    start = space + 1 if space >= 0 else start
+    return "…" + out[start:]
+
+
 def _at_word_boundary(text: str, limit: int) -> str:
     """``text`` cut to at most ``limit`` characters, at the last whole word.
 
@@ -1435,7 +1511,7 @@ def hit_from_text(
     derived_title = first[2:].strip() if first.startswith("# ") else ""
     rest = "\n".join(lines[1:]) if derived_title else text
     m = _MARKER_RE.search(text)
-    mid = description = ""
+    mid = description = path = ""
     if m:
         path = m.group("path").strip()
         entity = entity or entity_for_path(path)
@@ -1458,6 +1534,7 @@ def hit_from_text(
         mid=mid,
         description=description,
         text=rest.strip(),
+        path=path,
     )
 
 
@@ -1563,6 +1640,7 @@ def parse_index(payload: Any) -> List[IndexLine]:
             continue
         title = item.get("title")
         summary = item.get("summary")
+        source = item.get("source")
         try:
             rank = int(str(item.get("rank")).strip())
         except (TypeError, ValueError):
@@ -1581,6 +1659,7 @@ def parse_index(payload: Any) -> List[IndexLine]:
                 keyword=keyword,
                 trust_ranking=trust_ranking,
                 model=model,
+                source=source.strip() if isinstance(source, str) else "",
             )
         )
     return lines
@@ -1599,29 +1678,44 @@ def _header(n: int, ms: int, project: str = PERSONA) -> str:
 
 
 def render(
-    hits: Sequence[Hit], ms: int, cap: Optional[int] = OUTPUT_MAX_CHARS, project: str = PERSONA
+    hits: Sequence[Hit],
+    ms: int,
+    cap: Optional[int] = OUTPUT_MAX_CHARS,
+    project: str = PERSONA,
+    query: str = "",
 ) -> str:
     """The context text: header, then one line per hit. See render_capped."""
-    return render_capped(hits, ms, cap, project)[0]
+    return render_capped(hits, ms, cap, project, query)[0]
 
 
 def render_capped(
-    hits: Sequence[Hit], ms: int, cap: Optional[int], project: str = PERSONA
+    hits: Sequence[Hit],
+    ms: int,
+    cap: Optional[int],
+    project: str = PERSONA,
+    query: str = "",
 ) -> Tuple[str, List[Hit]]:
     """The context text and the hits it surfaces. Empty for zero hits. With
     ``cap`` the text never exceeds that many characters: hits are taken in
     rank order, one whose whole line no longer fits is left out, and the
     header counts the surfaced hits only. A hit that is not in the returned
-    list was never shown, so the caller must not mark it as seen."""
+    list was never shown, so the caller must not mark it as seen.
+
+    ``query`` (NOBLIVION-109) makes each line show the part of the memory that
+    holds the query words (``query_excerpt``) and not its first characters."""
     if not hits:
         return "", []
+
+    def one(h: Hit) -> str:
+        return h.render(query) if query else h.render()
+
     if cap is None:
-        return "\n".join([_header(len(hits), ms, project)] + [h.render() for h in hits]), list(hits)
+        return "\n".join([_header(len(hits), ms, project)] + [one(h) for h in hits]), list(hits)
     used = len(_header(len(hits), ms, project))  # the widest the header can be
     shown: List[Hit] = []
     lines: List[str] = []
     for h in hits:
-        line = h.render()
+        line = one(h)
         if used + 1 + len(line) <= cap:
             shown.append(h)
             lines.append(line)
@@ -1670,6 +1764,7 @@ def render_full_capped(
     query: str,
     cap: int = FULL_OUTPUT_MAX_CHARS,
     project: str = PERSONA,
+    files: Optional[Mapping[str, MemoryFile]] = None,
 ) -> Tuple[str, List[Hit]]:
     """The hook's full-text shape (WI-3f): the context text and the hits it
     surfaces, never over ``cap``. Each hit is a memory in the shape of
@@ -1678,20 +1773,26 @@ def render_full_capped(
     break ``cap``, the later ones get a shorter text, then the description
     only; a hit that still does not fit is left out from the end, so it is
     not marked seen and not counted in the header. Raises when the shared
-    formatter cannot be loaded (``run`` then uses ``render_capped``)."""
+    formatter cannot be loaded (``run`` then uses ``render_capped``).
+
+    ``files`` (NOBLIVION-109) is the local corpus map of the run: a hit that
+    finds its file (``file_of``) carries that file's ``rule:`` and ``apply:``,
+    as an index row does. Without it both stay empty."""
     if not hits:
         return "", []
     mt = _memory_text()
-    mems = [
-        {
-            "id": h.mid or h.title,
-            "rule": "",
-            "apply": "",
-            "description": h.description or h.title,
-            "body": h.text or h.body,
-        }
-        for h in hits
-    ]
+    mems = []
+    for h in hits:
+        md = file_of(h, files) if files is not None else None
+        mems.append(
+            {
+                "id": h.mid or h.title,
+                "rule": md.rule if md is not None else "",
+                "apply": md.apply_block if md is not None else "",
+                "description": h.description or h.title,
+                "body": h.text or h.body,
+            }
+        )
 
     def one(
         mem: Mapping[str, Any], q: str, compact: bool = False, text_chars: int = mt.TEXT_CHARS
@@ -2208,10 +2309,15 @@ def recall(
     environ: Optional[Mapping[str, str]] = None,
     md_only: bool = False,
     root: Optional[str] = None,
+    keep: Optional[Callable[[Hit], bool]] = None,
 ) -> List[Hit]:
     """Search the store: at most ``k`` hits, with any hit whose score is below
     the floor of ``min_score`` dropped (a scoreless hit passes). The hook and
     the MCP tool both come through here, so they share the threshold.
+
+    ``keep`` (NOBLIVION-109) is the hygiene test of the hit path: a hit it
+    refuses is dropped BEFORE the ``k`` cut, like a mined row, so it never takes
+    a place from a hit that can be shown.
 
     ``md_only`` (the hook) keeps only mirrored markdown memory files
     (``Hit.md``) and drops every other row BEFORE the ``k`` cut, so a dropped
@@ -2234,7 +2340,9 @@ def recall(
     hits = [
         h
         for h in parse_hits(payload)
-        if (floor is None or h.score is None or h.score >= floor) and (h.md or not md_only)
+        if (floor is None or h.score is None or h.score >= floor)
+        and (h.md or not md_only)
+        and (keep is None or keep(h))
     ]
     return hits[:k]
 
@@ -2427,6 +2535,46 @@ def memory_dirs(environ: Optional[Mapping[str, str]] = None) -> List[str]:
     return [f for f in (memory_dir(environ), global_memory_dir(environ)) if f]
 
 
+class CorpusIndex(Dict[str, MemoryFile]):
+    """``name -> file`` (the ``corpus_by_name`` map) that also holds ``by_path``,
+    ``rel_path -> file``. ``file_of`` joins a row on the path first and on the
+    name second (NOBLIVION-109)."""
+
+    by_path: Dict[str, MemoryFile]
+
+    def __init__(self, corpus: Sequence[MemoryFile] = ()):
+        super().__init__(_corpus_by_name(corpus))
+        self.by_path = {}
+        for md in corpus:
+            self.by_path.setdefault(md.rel_path, md)
+
+
+def corpus_by_name(corpus: Sequence[MemoryFile]) -> CorpusIndex:
+    """The join map of a corpus: by name, as before, and by path."""
+    return CorpusIndex(corpus)
+
+
+def file_of(ln: Any, by_name: Mapping[str, MemoryFile]) -> Optional[MemoryFile]:
+    """The local file a row (or a hit) names, or None.
+
+    NOBLIVION-109. The key is the file's path (the marker path the store keeps
+    in ``source``), because the store ``title`` is a redacted, whitespace-
+    collapsed text cut to 120 characters: a long or redacted name did not equal
+    the front-matter ``name``, and two files of one name collided. The path is
+    the file's own key, so the join no longer depends on how the title was
+    written. A row with no ``source``, or whose path no local file has, falls
+    back to the title, which is the join this hook had before. A map that has no
+    ``by_path`` (a plain dict) joins on the title alone.
+    """
+    by_path = getattr(by_name, "by_path", None)
+    source = getattr(ln, "source", "") or getattr(ln, "path", "")
+    if by_path and source:
+        md = by_path.get(source)
+        if md is not None:
+            return md
+    return by_name.get(getattr(ln, "title", "") or "")
+
+
 def load_session_corpus(environ: Optional[Mapping[str, str]] = None) -> List[MemoryFile]:
     """The local corpus of ``memory_dirs``. On a file name that both folders
     hold, the project file is kept and the global file is left out, as the
@@ -2566,7 +2714,7 @@ def rerank_index(
     ``joined`` counts the rows that did find their file, so a gate can see when
     the join is failing instead of reading a silently degraded ranking as a win.
     """
-    index_of = {md.name: i for i, md in enumerate(corpus)}
+    index_of = {md.rel_path: i for i, md in enumerate(corpus)}
     ids = [int(ln.mid) for ln in lines]
     # The cosine leg. -1.0 stands in for a missing score: the store's own score
     # field is a signed cosine, so -1.0 is below every real value.
@@ -2579,11 +2727,11 @@ def rerank_index(
     wanted = []
     joined = 0
     for i, ln in enumerate(lines):
-        md = by_name.get(ln.title)
-        if md is None:
+        md = file_of(ln, by_name)
+        if md is None or md.rel_path not in index_of:
             continue
         joined += 1
-        wanted.append((i, index_of[md.name]))
+        wanted.append((i, index_of[md.rel_path]))
     lexical = bm25.scores(tokens_sub(query), [j for _, j in wanted])
     row_score = {i: lexical.get(j, 0.0) for i, j in wanted}
     lists = [cosine_order]
@@ -2610,7 +2758,7 @@ def hygiene_index(lines: Sequence[IndexLine], by_name: Mapping[str, MemoryFile])
     """
     out: List[IndexLine] = []
     for ln in lines:
-        md = by_name.get(ln.title)
+        md = file_of(ln, by_name)
         if md is not None and md.dropped:
             continue
         out.append(ln)
@@ -2639,6 +2787,7 @@ def renumber(lines: Sequence[IndexLine]) -> List[IndexLine]:
             trust_prior=ln.trust_prior,
             keyword=ln.keyword,
             model=ln.model,
+            source=ln.source,
         )
         for i, ln in enumerate(lines, start=1)
     ]
@@ -2658,7 +2807,7 @@ def annotate_index(lines: Sequence[IndexLine], by_name: Mapping[str, MemoryFile]
     """
     joined = 0
     for ln in lines:
-        md = by_name.get(ln.title)
+        md = file_of(ln, by_name)
         if md is None:
             continue
         joined += 1
@@ -2768,6 +2917,24 @@ def render_index_capped(
     check_line: bool = False,
 ) -> Tuple[str, List[IndexLine]]:
     """The index text and the rows it surfaces, capped like ``render_capped``.
+    See ``layout_index`` for the rules; this returns its first two values."""
+    text, shown, _carried = layout_index(
+        lines, ms, cap, project, rule_rows, tiers, reduced, check_line
+    )
+    return text, shown
+
+
+def layout_index(
+    lines: Sequence[IndexLine],
+    ms: int,
+    cap: Optional[int],
+    project: str = PERSONA,
+    rule_rows: bool = False,
+    tiers: Sequence[Tuple[int, int]] = (),
+    reduced: bool = False,
+    check_line: bool = False,
+) -> Tuple[str, List[IndexLine], List[IndexLine]]:
+    """``(text, rows shown, rows whose apply block is in the text)``.
 
     Rows are taken in rank order and one whose whole line no longer fits is left
     out, so a cap shortens the list from the BOTTOM: the candidates the ranker
@@ -2776,10 +2943,17 @@ def render_index_capped(
     ``rule_rows`` selects W6's F1 shape for the header and for every row. It is
     False everywhere it is not passed, so arm D and a live install are untouched.
 
-    ``tiers`` is W7's F2 block: a row within the tiers carries its apply lines,
-    and the row and its lines are ONE unit for the cap, so a row is never shown
-    with half its block. Only honoured with ``rule_rows``: the arm D header
-    promises no block. The header names the last rank that actually carries one.
+    ``tiers`` is W7's F2 block: a row within the tiers may carry its apply lines.
+    Only honoured with ``rule_rows``: the arm D header promises no block.
+
+    NOBLIVION-109. With tiers, the cap is split. The rows get a guaranteed share
+    of it (``INDEX_ROW_SHARE``), and the apply blocks are filled in rank order
+    from what is left. Before, a row and its block were one unit taken in rank
+    order, so with 30 rows and tiers of 900, 300 and 200 characters the blocks of
+    the top rows used the cap and the lowest rows were dropped without a sign.
+    Now a block that does not fit is left out and its row stays; rows that the
+    share did not hold are added after the blocks, from the room that is left.
+    A block is whole or absent: a row is never shown with half its block.
 
     ``reduced`` is WI-17's: the rows are what is left after the session's row
     dedupe, so the rule header says that earlier rows still apply.
@@ -2788,25 +2962,19 @@ def render_index_capped(
     ``rule_rows``, and counted against the cap like the rest of the header.
     """
     if not lines:
-        return "", []
+        return "", [], []
     if not rule_rows:
         tiers = ()
         check_line = False
 
-    def unit(ln: IndexLine) -> str:
-        head = ln.render(rule_rows)
-        block = ln.render_apply(apply_limit(ln.rank, tiers)) if tiers else ""
-        return f"{head}\n{block}" if block else head
+    def head_of(ln: IndexLine) -> str:
+        return ln.render(rule_rows)
+
+    def block_of(ln: IndexLine) -> str:
+        return ln.render_apply(apply_limit(ln.rank, tiers)) if tiers else ""
 
     def carried(shown_rows: Sequence[IndexLine]) -> int:
-        return max(
-            (
-                ln.rank
-                for ln in shown_rows
-                if tiers and ln.render_apply(apply_limit(ln.rank, tiers))
-            ),
-            default=0,
-        )
+        return max((ln.rank for ln in shown_rows if tiers and block_of(ln)), default=0)
 
     # Budget with the longest header this call can print, so the header that is
     # printed at the end (with the real tier count) is never longer than it.
@@ -2815,26 +2983,62 @@ def render_index_capped(
         header = index_header(
             len(lines), ms, project, rule_rows, carried(lines), reduced, check_line
         )
-        return ("\n".join([header] + [unit(ln) for ln in lines]), list(lines))
-    used = len(header)
-    shown: List[IndexLine] = []
-    rendered: List[str] = []
-    for ln in lines:
-        line = unit(ln)
-        if used + 1 + len(line) > cap:
-            # STOP, do not skip. Review round 2 on #2222: continuing would let a
-            # shorter lower-ranked row in while a longer higher-ranked one is
-            # dropped, so the list would have a hole and the docstring above
-            # would be false. The rows returned are always a prefix of the rank
-            # order, which is what "shortens from the BOTTOM" means.
+        out_all: List[str] = [header]
+        with_block: List[IndexLine] = []
+        for ln in lines:
+            block = block_of(ln)
+            out_all.append(f"{head_of(ln)}\n{block}" if block else head_of(ln))
+            if block:
+                with_block.append(ln)
+        return "\n".join(out_all), list(lines), with_block
+    heads = [head_of(ln) for ln in lines]
+    blocks: List[str] = [""] * len(lines)
+    picked: List[int] = []  # the indexes of the rows shown, always a prefix
+    kept: set = set()  # the indexes whose block is shown
+    room = cap - len(header)
+    if tiers:
+        # The rows' guaranteed share of what the header leaves.
+        share = int(room * INDEX_ROW_SHARE)
+        used = 0
+        for i, head in enumerate(heads):
+            if used + 1 + len(head) > share:
+                break
+            used += 1 + len(head)
+            picked.append(i)
+        room -= used
+        # The blocks of those rows, in rank order, from the rest. A block that
+        # does not fit is left out and the next one may still fit.
+        for i in picked:
+            block = block_of(lines[i])
+            if block and 1 + len(block) <= room:
+                blocks[i] = block
+                kept.add(i)
+                room -= 1 + len(block)
+    # The rows the share did not hold, from what the blocks left. A row whose
+    # whole line no longer fits ends the list (STOP, do not skip). Review round 2
+    # on #2222: continuing would let a shorter lower-ranked row in while a longer
+    # higher-ranked one is dropped, so the list would have a hole. The rows
+    # returned are always a prefix of the rank order, which is what "shortens
+    # from the BOTTOM" means.
+    for i in range(len(picked), len(lines)):
+        if 1 + len(heads[i]) > room:
             break
-        shown.append(ln)
-        rendered.append(line)
-        used += 1 + len(line)
-    if not shown:
-        return "", []
-    header = index_header(len(shown), ms, project, rule_rows, carried(shown), reduced, check_line)
-    return "\n".join([header] + rendered), shown
+        picked.append(i)
+        room -= 1 + len(heads[i])
+        block = block_of(lines[i]) if tiers else ""
+        if block and 1 + len(block) <= room:
+            blocks[i] = block
+            kept.add(i)
+            room -= 1 + len(block)
+    if not picked:
+        return "", [], []
+    shown = [lines[i] for i in picked]
+    rendered = [f"{heads[i]}\n{blocks[i]}" if i in kept else heads[i] for i in picked]
+    with_block = [lines[i] for i in picked if i in kept]
+    header = index_header(
+        len(shown), ms, project, rule_rows, carried(with_block), reduced, check_line
+    )
+    return "\n".join([header] + rendered), shown, with_block
 
 
 def _apply_trust(
@@ -3157,13 +3361,17 @@ def _serve_index(
         else:
             note += ":check_line_off:no_rule_rows"
     ms = int((time.monotonic() - t0) * 1000)
-    text, shown = render_index_capped(
+    text, shown, with_block = layout_index(
         lines, ms, index_cap(environ), recall_project(environ), rule_rows, tiers, reduced, check_on
     )
+    if len(shown) < len(lines):
+        # NOBLIVION-109: the cap cut rows from the bottom. Said in the log.
+        note += f":capcut{len(lines) - len(shown)}of{len(lines)}"
     carried: List[str] = []
     if tiers:
-        # Counted from what was SHOWN: a row the cap dropped carried nothing.
-        carried = [ln.title for ln in shown if ln.render_apply(apply_limit(ln.rank, tiers))]
+        # Counted from what was SHOWN: a row the cap dropped carried nothing, and
+        # neither did a row whose block did not fit.
+        carried = [ln.title for ln in with_block]
         note += f":apply{len(carried)}of{apply_k(tiers)}"
     chars = emit(event, text, stdout)
     if rule_rows:
@@ -3194,6 +3402,26 @@ def _serve_index(
         with contextlib.suppress(Exception):
             prune_session_files(cache, sid, environ)
     log_line(cache, event, sid, len(shown), chars, ms, "ok" + note)
+
+
+def hit_dropped(hit: Hit, files: Optional[Mapping[str, MemoryFile]]) -> bool:
+    """P3 on the hit path (NOBLIVION-109): True for a hit the client already
+    loads or that is closed, which the index path drops with ``hygiene_index``.
+
+    A hit whose file is in the local corpus is judged by ``MemoryFile.dropped``
+    (index and topic files, ``MEMORY*``, a closed-status description). A hit
+    with no local file, or no memory folder at all, is judged by its path alone:
+    the index files and ``topic_*`` names. A hit with no path is kept.
+    """
+    md = file_of(hit, files) if files is not None else None
+    if md is not None:
+        return md.dropped
+    base = os.path.basename(hit.path)
+    if not base:
+        return False
+    return (
+        base in _INDEX_FILES or base.startswith("MEMORY") or entity_for_path(base) in _DROPPED_KINDS
+    )
 
 
 def run(stdin_text: str, stdout, environ: Dict[str, str]) -> None:
@@ -3235,11 +3463,34 @@ def run(stdin_text: str, stdout, environ: Dict[str, str]) -> None:
         _serve_index(query, event, sid, cache, t0, stdout, environ)
         return
     k = K_PROMPT if event == "UserPromptSubmit" else K_TOOL
+    # NOBLIVION-109. The same hygiene and rule attachment as the index path: the
+    # local memory folder names the files to drop and gives each hit its rule and
+    # apply. With no folder, or one that cannot be read, the hygiene goes by the
+    # hit's path alone, and the log line names a read error.
+    files: Optional[CorpusIndex] = None
+    note = ""
+    if memory_dirs(environ):
+        try:
+            files = corpus_by_name(load_session_corpus(environ))
+        except (OSError, ValueError) as exc:
+            note = f":local_off:{type(exc).__name__}"
+    dropped = 0
+
+    def keep(h: Hit) -> bool:
+        nonlocal dropped
+        if hit_dropped(h, files):
+            dropped += 1
+            return False
+        return True
+
     try:
-        hits = recall(query, k, environ, md_only=True)  # the automatic path: memory files only
+        # the automatic path: memory files only
+        hits = recall(query, k, environ, md_only=True, keep=keep)
     except RecallError as exc:
         log_line(cache, event, sid, 0, 0, int((time.monotonic() - t0) * 1000), f"fail:{exc.reason}")
         return
+    if dropped:
+        note += f":hygiene{dropped}"
     ms = int((time.monotonic() - t0) * 1000)
     sfile = session_file(cache, sid)
     with session_lock(sfile):
@@ -3247,14 +3498,14 @@ def run(stdin_text: str, stdout, environ: Dict[str, str]) -> None:
         fresh = [h for h in hits if h.key not in seen]
         if _formatter_loads():
             text, shown = render_full_capped(
-                fresh, ms, query, FULL_OUTPUT_MAX_CHARS, recall_project(environ)
+                fresh, ms, query, FULL_OUTPUT_MAX_CHARS, recall_project(environ), files
             )
         else:  # no shared formatter: the one-line shape
             text, shown = render_capped(fresh, ms, OUTPUT_MAX_CHARS, recall_project(environ))
         chars = emit(event, text, stdout)
         if shown:
             save_seen(sfile, seen | {h.key for h in shown})
-    log_line(cache, event, sid, len(shown), chars, ms, "ok")
+    log_line(cache, event, sid, len(shown), chars, ms, "ok" + note)
 
 
 def label_rows(stdin_text: str, stdout, environ: Dict[str, str]) -> None:

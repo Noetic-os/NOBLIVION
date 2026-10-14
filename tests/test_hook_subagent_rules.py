@@ -363,7 +363,12 @@ def test_the_default_cap_is_2500_characters_header_included(tmp_path, env, corpu
     _run(_pre(), env)
     text = _context(_run(_start(), env)[1])
     assert 1500 < len(text) <= 2500
-    assert 1 <= len(_rows(text)) < 8, "the cap cuts whole rows"
+    # NOBLIVION-109: the rows keep a share of the cap, so the long apply text
+    # gives way (a block that does not fit is left out, the rest is cut) before
+    # a row does.
+    assert 1 <= len(_rows(text)) <= 8
+    assert "[cut]" in text, "the long apply text is cut"
+    assert text.count("  APPLY: ") < len(_rows(text)), "some rows lost their block"
 
 
 def test_the_cap_is_settable(tmp_path, env):

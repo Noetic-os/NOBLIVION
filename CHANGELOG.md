@@ -61,6 +61,20 @@ All notable changes to NOBLIVION. The format follows
   `learning pass failed: LeaseLost` error (NOBLIVION-107).
 - The delivery drain uses the release it runs from, not a `repo_root` left in
   `learning-client.json` by an older install (NOBLIVION-107).
+- The prompt index splits its character cap between the rows and the APPLY
+  text. The rows keep a guaranteed share of 60 percent. An APPLY block that does
+  not fit is left out and its row stays, so long APPLY text no longer pushes the
+  lowest rows out. The log status says how many rows the cap cut
+  (`:capcutNofM`) (NOBLIVION-109).
+- The prompt hook without an index switch now drops `MEMORY.md`, `topic_*` and
+  closed memories, as the index does, before it takes its top hits. A hit also
+  carries its file's `rule:` and `apply:` lines (NOBLIVION-109).
+- `noblivion_recall` in query mode shows the part of each memory that holds the
+  query words, not the first 200 characters of its body (NOBLIVION-109).
+- A store row finds its local memory file by the file path the store returns,
+  then by name. A name over 120 characters, which the store cuts, and two files
+  of one name no longer lose their rule, APPLY text, hygiene and re-rank
+  (NOBLIVION-109).
 ## 0.1.14 - 2026-10-13
 
 ### Added

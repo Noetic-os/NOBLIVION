@@ -256,7 +256,11 @@ def load_snapshot(path: str) -> Snapshot:
 def _stem_of(line: Any, by_name: Mapping[str, Any]) -> Optional[str]:
     """The memory file stem a row names: its title joined to the local memory
     folder (the join ``rerank_index`` uses), or None."""
-    md = by_name.get(getattr(line, "title", "") or "")
+    by_path = getattr(by_name, "by_path", None)
+    source = getattr(line, "source", "") or ""
+    md = by_path.get(source) if by_path and source else None
+    if md is None:
+        md = by_name.get(getattr(line, "title", "") or "")
     rel = getattr(md, "rel_path", "") if md is not None else ""
     if not rel:
         return None

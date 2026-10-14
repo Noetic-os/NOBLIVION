@@ -109,7 +109,16 @@ ENTRY_C = (
     "[claude_code_md: project_kg_soak_test_sequence.md]\n\n"
     "Stage G, review, merge, then reingest."
 )
-BLOB_AB = ENTRY_A + hook.ENTRY_SEPARATOR + ENTRY_B
+# A second ordinary memory file. The hook drops ``MEMORY.md`` and ``topic_*``
+# before the k cut (NOBLIVION-109), so a test of the hook's output needs a hit
+# that stays.
+ENTRY_D = (
+    "# feedback_writing_rule\n\n"
+    "The writing rule\n\n"
+    "[claude_code_md: feedback_writing_rule.md]\n\n"
+    "## Every session\n- writing rule\n- act on your recommendation"
+)
+BLOB_AB = ENTRY_A + hook.ENTRY_SEPARATOR + ENTRY_D
 
 
 class _State:
@@ -267,7 +276,7 @@ def _base_store(monkeypatch, base: str) -> None:
 
 
 def test_render_header_and_hit_line_format():
-    hits = hook.parse_hits({"results": [BLOB_AB]})
+    hits = hook.parse_hits({"results": [ENTRY_A + hook.ENTRY_SEPARATOR + ENTRY_B]})
     text = hook.render(hits, ms=42)
     lines = text.split("\n")
     assert lines[0] == "GROUNDED MEMORY (local memory store, namespace claude_code, 2 hits, 42 ms)"
@@ -460,7 +469,7 @@ def test_query_trimmed_to_300_chars(daemon, env):
 
 def test_hits_above_k_are_dropped_client_side(daemon, env):
     daemon.blob = hook.ENTRY_SEPARATOR.join(
-        f"# t{i}\n\n[claude_code_md: topic_{i}.md]\n\nbody {i}" for i in range(8)
+        f"# t{i}\n\n[claude_code_md: note_{i}.md]\n\nbody {i}" for i in range(8)
     )
     _code, out = run_hook(_tool("Bash", {"command": "ls"}), env)
     ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
@@ -783,7 +792,7 @@ def test_a_hit_the_cap_left_out_is_not_marked_seen(daemon, env, monkeypatch):
     ~700-char hits."""
     monkeypatch.setattr(hook, "FULL_OUTPUT_MAX_CHARS", 1800)
     daemon.blob = hook.ENTRY_SEPARATOR.join(
-        f"# {'t' * 600}{i}\n\n[claude_code_md: topic_{i}.md]\n\nbody {i}"
+        f"# {'t' * 600}{i}\n\n[claude_code_md: note_{i}.md]\n\nbody {i}"
         for i in range(hook.K_PROMPT)
     )
     _c, first = run_hook(_prompt("x"), env)
@@ -857,18 +866,18 @@ def test_unsafe_session_id_writes_no_file_but_still_answers(daemon, env):
 def test_hits_below_min_score_are_skipped(daemon, env):
     daemon.model = hook.THRESHOLD_MODEL  # the default floor is for this model only
     daemon.results = [
-        {"content": "# low\n\n[claude_code_md: topic_low.md]\n\nlow body", "score": 0.10},
-        {"content": "# high\n\n[claude_code_md: topic_high.md]\n\nhigh body", "score": 0.95},
+        {"content": "# low\n\n[claude_code_md: note_low.md]\n\nlow body", "score": 0.10},
+        {"content": "# high\n\n[claude_code_md: note_high.md]\n\nhigh body", "score": 0.95},
     ]
     _c, out = run_hook(_prompt("x"), env)
     assert "1 hits" in out.split("\n")[0]
-    assert "- Memory topic_high (full text; no need to open the file):" in out
+    assert "- Memory note_high (full text; no need to open the file):" in out
     assert "  Text: high body" in out
     assert "low" not in out
 
 
 def test_min_score_env_overrides_default(daemon, env):
-    daemon.results = [{"content": "# mid\n\n[claude_code_md: topic_mid.md]\n\nmid", "score": 0.5}]
+    daemon.results = [{"content": "# mid\n\n[claude_code_md: note_mid.md]\n\nmid", "score": 0.5}]
     assert run_hook(_prompt("x"), dict(env, NOBLIVION_RECALL_MIN_SCORE="0.9"))[1] == ""
     assert (
         run_hook(_prompt("x", session="s2"), dict(env, NOBLIVION_RECALL_MIN_SCORE="0.4"))[1] != ""
@@ -1104,7 +1113,7 @@ def test_mcp_default_k_is_5_and_no_dedupe(daemon, env):
 
 def test_mcp_has_no_output_cap(daemon, env):
     daemon.blob = hook.ENTRY_SEPARATOR.join(
-        f"# t{i}\n\n[claude_code_md: topic_{i}.md]\n\n" + ("z" * 300) for i in range(20)
+        f"# t{i}\n\n[claude_code_md: note_{i}.md]\n\n" + ("z" * 300) for i in range(20)
     )
     out = _rpc([_call(1, {"query": "x", "k": 20})], env)
     assert len(out[0]["result"]["content"][0]["text"]) > hook.OUTPUT_MAX_CHARS
@@ -1114,8 +1123,8 @@ def test_mcp_applies_the_min_score_threshold(daemon, env):
     """The threshold lives in recall(), so the MCP path honours it too."""
     daemon.model = hook.THRESHOLD_MODEL  # the default floor is for this model only
     daemon.results = [
-        {"content": "# low\n\n[claude_code_md: topic_low.md]\n\nlow body", "score": 0.10},
-        {"content": "# high\n\n[claude_code_md: topic_high.md]\n\nhigh body", "score": 0.95},
+        {"content": "# low\n\n[claude_code_md: note_low.md]\n\nlow body", "score": 0.10},
+        {"content": "# high\n\n[claude_code_md: note_high.md]\n\nhigh body", "score": 0.95},
     ]
     call = _call(1, {"query": "x"})
     text = _rpc([call], env)[0]["result"]["content"][0]["text"]
