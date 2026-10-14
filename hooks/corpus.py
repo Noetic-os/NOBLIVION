@@ -22,6 +22,7 @@ import importlib.util
 import json
 import os
 import re
+import stat
 import sys
 import unicodedata
 from collections.abc import Mapping, Sequence
@@ -502,43 +503,162 @@ def memory_name(base: str, meta: Mapping[str, Any]) -> str:
     return name or (base[:-3] if base.endswith(".md") else base)
 
 
-def load_memory_corpus(folder: str) -> List[MemoryFile]:
+def _read_memory_file(path: str, base: str) -> Optional[MemoryFile]:
+    """One memory file as the hook reads it, or None for an empty file."""
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    if not raw.strip():
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    meta, body = parse_frontmatter(text)
+    name = memory_name(base, meta)
+    desc_v = meta.get("description")
+    description = (desc_v if isinstance(desc_v, str) else "").strip()
+    rule, apply_block = read_rule_apply(meta)
+    return MemoryFile(
+        rel_path=base,
+        name=name,
+        kind=frontmatter_kind(base, meta),
+        description=description,
+        body=body,
+        tokens=tokens_sub(build_memory_content(name, description, base, body))
+        + tokens_sub(index_fields_text(meta, text)) * INDEX_FIELDS_REPEAT,
+        rule=rule,
+        apply_block=apply_block,
+    )
+
+
+# NOBLIVION-110. The parsed corpus cache. Reading and tokenizing 1,000 files cost about 130 ms on
+# every prompt. The cache keeps each file's parsed fields under its folder and name, with the
+# file's modification time (in nanoseconds) and size as the validity key: a file is read again
+# only when one of the two changed. ``body`` is kept to its first ``CACHE_BODY_CHARS`` characters,
+# which is all ``MemoryFile.dropped`` reads. Tokens are one space-joined string per file, because
+# a token holds only ``a-z0-9_.-/`` and the split of one string is much cheaper than the decode of
+# a list of 400 strings.
+CACHE_BODY_CHARS = 200
+_CACHE_FORMAT = 1
+# The inputs of the parse, so a change of the tokenizer or of the weight drops every entry.
+_CACHE_SIGNATURE = repr(
+    (
+        _CACHE_FORMAT,
+        INDEX_FIELDS_REPEAT,
+        INDEX_FIELDS_MAX_CHARS,
+        _DAEMON_TOKEN_SPLIT_RE.pattern,
+        _SUB_TOKEN_SPLIT_RE.pattern,
+        _FRONTMATTER_KEY_RE.pattern,
+        CACHE_BODY_CHARS,
+    )
+)
+
+
+def _load_corpus_cache(path: str) -> Dict[str, Any]:
+    """The cache file's ``files`` map, or ``{}`` when it is absent, unreadable or from another
+    version of this code."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(doc, dict) or doc.get("signature") != _CACHE_SIGNATURE:
+        return {}
+    files = doc.get("files")
+    return files if isinstance(files, dict) else {}
+
+
+def _save_corpus_cache(path: str, files: Dict[str, Any]) -> None:
+    """Write the cache file, atomically and for the owner only. Best effort: a hook that cannot
+    write its cache is slow, not wrong."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"signature": _CACHE_SIGNATURE, "files": files}, fh, separators=(",", ":"))
+        os.replace(tmp, path)
+    except (OSError, ValueError, TypeError):
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+
+
+def _file_from_cache(base: str, row: Any) -> Optional[MemoryFile]:
+    """A ``MemoryFile`` from a cache row, or None when the row has not the expected shape."""
+    if not (isinstance(row, list) and len(row) == 9):
+        return None
+    name, kind, description, body, rule, apply_block, tokens = row[2:]
+    if not all(isinstance(x, str) for x in (name, kind, description, body, rule, apply_block)):
+        return None
+    if not isinstance(tokens, str):
+        return None
+    return MemoryFile(base, name, kind, description, body, tokens.split(), rule, apply_block)
+
+
+def load_memory_corpus(folder: str, cache_path: Optional[str] = None) -> List[MemoryFile]:
     """Every non-empty top-level ``*.md`` of ``folder``, sorted by name.
 
     Top level only, which is the corpus Claude Code loads and the corpus the
     mirror ingested. The folder also holds a hidden ``.archive/`` of retired
     files and ``MEMORY.md.pre-compact-*`` backups, and neither is memory.
+
+    With ``cache_path`` the parsed files are kept in that JSON file, keyed by folder, file name,
+    modification time and size (NOBLIVION-110). A file that did not change is not read again.
+    The returned files are the same, except that ``body`` holds only its first
+    ``CACHE_BODY_CHARS`` characters when it came from the cache.
     """
-    out: List[MemoryFile] = []
+    if cache_path is None:
+        out: List[MemoryFile] = []
+        for base in sorted(os.listdir(folder)):
+            if not base.endswith(".md"):
+                continue
+            path = os.path.join(folder, base)
+            if not os.path.isfile(path):
+                continue
+            md = _read_memory_file(path, base)
+            if md is not None:
+                out.append(md)
+        return out
+    cached = _load_corpus_cache(cache_path)
+    prefix = folder + "\x00"
+    kept: Dict[str, Any] = {k: v for k, v in cached.items() if not k.startswith(prefix)}
+    changed = False
+    out = []
     for base in sorted(os.listdir(folder)):
         if not base.endswith(".md"):
             continue
         path = os.path.join(folder, base)
-        if not os.path.isfile(path):
+        try:
+            st = os.stat(path)
+        except OSError:
             continue
-        with open(path, "rb") as fh:
-            raw = fh.read()
-        if not raw.strip():
+        if not stat.S_ISREG(st.st_mode):
             continue
-        text = raw.decode("utf-8", errors="replace")
-        meta, body = parse_frontmatter(text)
-        name = memory_name(base, meta)
-        desc_v = meta.get("description")
-        description = (desc_v if isinstance(desc_v, str) else "").strip()
-        rule, apply_block = read_rule_apply(meta)
-        out.append(
-            MemoryFile(
-                rel_path=base,
-                name=name,
-                kind=frontmatter_kind(base, meta),
-                description=description,
-                body=body,
-                tokens=tokens_sub(build_memory_content(name, description, base, body))
-                + tokens_sub(index_fields_text(meta, text)) * INDEX_FIELDS_REPEAT,
-                rule=rule,
-                apply_block=apply_block,
-            )
-        )
+        key = prefix + base
+        stamp = [st.st_mtime_ns, st.st_size]
+        row = cached.get(key)
+        md = None
+        if isinstance(row, list) and row[:2] == stamp:
+            if len(row) == 2:
+                kept[key] = row
+                continue
+            md = _file_from_cache(base, row)
+        if md is None:
+            changed = True
+            md = _read_memory_file(path, base)
+            if md is None:
+                kept[key] = stamp
+                continue
+            row = stamp + [
+                md.name,
+                md.kind,
+                md.description,
+                md.body[:CACHE_BODY_CHARS],
+                md.rule,
+                md.apply_block,
+                " ".join(md.tokens),
+            ]
+        kept[key] = row
+        out.append(md)
+    if changed or len(kept) != len(cached):  # a file was read, or a file is gone
+        _save_corpus_cache(cache_path, kept)
     return out
 
 

@@ -99,6 +99,7 @@ EXPECTED = {
     ("PreToolUse", "Bash", "guard_hook.py", ""),
     ("PreToolUse", "Read|Grep", "guard_hook.py", ""),
     ("PreToolUse", "Edit|Write|MultiEdit", "guard_hook.py", ""),
+    ("PreToolUse", "mcp__.*noblivion_recall", "mcp_session_hook.py", ""),  # NOBLIVION-110
     ("PreToolUse", "Agent|Task", "subagent_rules_hook.py", ""),
     ("PostToolUse", "Write|Edit|MultiEdit", "memory_fields_hook.py", ""),
     ("PostToolUse", "Write|Edit|MultiEdit", "memory_sync_hook.py", ""),
@@ -176,7 +177,8 @@ def test_hooks_json_shape():
                     assert parts <= PRE_COMPACT_TRIGGERS, matcher
                 else:
                     assert event in {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
-                    assert parts <= TOOL_NAMES, matcher
+                    # NOBLIVION-110: an MCP tool matcher is a pattern that starts with mcp__.
+                    assert parts <= TOOL_NAMES or matcher.startswith("mcp__"), matcher
             assert isinstance(group["hooks"], list) and group["hooks"]
             for handler in group["hooks"]:
                 assert set(handler) <= {"type", "command", "timeout"}

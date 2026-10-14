@@ -33,6 +33,7 @@ ENTRY_POINTS = [
     ("recall_hook.py", ["--reset-rows"]),
     ("error_recall_hook.py", []),
     ("subagent_rules_hook.py", []),
+    ("mcp_session_hook.py", []),
     ("store_client.py", []),
     ("trust_flush.py", []),
 ]
@@ -84,6 +85,7 @@ def test_every_moved_module_is_present() -> None:
         "memory_fields_hook",
         "memory_labels",
         "memory_sync_hook",
+        "mcp_session_hook",  # NOBLIVION-110
         "memory_text",
         "recall_hook",
         "stop_checks",

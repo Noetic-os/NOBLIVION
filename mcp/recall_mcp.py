@@ -169,6 +169,14 @@ TOOL_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "description": "Reserved for the native host hook; omit this argument.",
             },
+            "session_key": {
+                "type": "string",
+                "description": "Reserved for the native host hook; omit this argument.",
+            },
+            "agent_key": {
+                "type": "string",
+                "description": "Reserved for the native host hook; omit this argument.",
+            },
         },
         # `query` is not required, because a fetch has no
         # query. Exactly one of the two is required, which a JSON Schema this
@@ -398,6 +406,8 @@ def noblivion_recall(
     _call_arguments: Any = None,
     chunk: Any = None,
     section: Any = None,
+    session_key: Any = None,
+    agent_key: Any = None,
 ) -> Dict[str, Any]:
     """The tool body. Returns an MCP tools/call result dict.
 
@@ -449,7 +459,8 @@ def noblivion_recall(
     if fetch_id is not None:
         if isinstance(query, str) and query.strip():
             return _tool_error("pass query OR fetch_id, not both")
-        return _fetch_one(hook, fetch_id, environ, chunk, section)
+        session, environ = _cache_identity(hook, environ, session_key, agent_key)
+        return _fetch_one(hook, fetch_id, environ, chunk, section, session)
     if chunk is not None or section:
         return _tool_error("chunk and section go with fetch_id")
     if not isinstance(query, str) or not query.strip():
@@ -509,7 +520,44 @@ def _mined_index(hook: Any, query: str, k: int, env: Mapping[str, str]) -> Dict[
     }
 
 
-def _resolve_fetch_id(hook: Any, value: int, env: Mapping[str, str]) -> tuple[int, str]:
+# NOBLIVION-110. The folder under the recall cache where a subagent's hook leaves its index and
+# shown-set (``subagent_rules_hook.SUBDIR``).
+SUBAGENT_CACHE_DIR = "subagent"
+NO_SESSION_NOTE = "session unknown: the newest index and shown-set of any session were used"
+
+
+def _cache_identity(
+    hook: Any, environ: Dict[str, str], session_key: Any, agent_key: Any
+) -> tuple[Optional[str], Dict[str, str]]:
+    """NOBLIVION-110. ``(session, env)``: the id that keys this call's last-index and shown-set
+    files, and the env with the cache folder those files live in. ``session`` is None when the
+    call names no valid session, and the fetch then falls back to the newest file.
+
+    The id is the session the store proved (``_learning_session_id``, set from the capability
+    token) or else ``session_key``, which the native PreToolUse hook writes into the arguments
+    (``hooks/mcp_session_hook.py``). ``session_key`` only chooses a local cache file: it is not a
+    chat identity for the store, so the unknown-session privacy controls stay as they were, and
+    a file reads as empty unless its own ``session`` field is the same id. A call from a subagent
+    adds ``agent_key``; its files are ``<session>.<agent>`` under ``cache/subagent``.
+    """
+    own = environ.get("_learning_session_id")
+    session = hook._valid_sid(own) or hook._valid_sid(session_key)
+    if not session:
+        return None, environ
+    agent = hook._valid_sid(agent_key)
+    if not agent or own:
+        return session, environ
+    both = hook._valid_sid(f"{session}.{agent}")
+    if not both:
+        return session, environ
+    sub = dict(environ)
+    sub["NOBLIVION_RECALL_CACHE_DIR"] = os.path.join(hook.cache_dir(environ), SUBAGENT_CACHE_DIR)
+    return both, sub
+
+
+def _resolve_fetch_id(
+    hook: Any, value: int, env: Mapping[str, str], session: Optional[str] = None
+) -> tuple[int, str]:
     """W6 F3: ``(id, note)``. Read a small number as a RANK when it is not an id.
 
     The order of the tests is the safe one and not the convenient one:
@@ -527,7 +575,7 @@ def _resolve_fetch_id(hook: Any, value: int, env: Mapping[str, str]) -> tuple[in
     the honest failure: the server does not invent a memory for a number it
     cannot place.
     """
-    rows = hook.load_last_index(hook.cache_dir(env))
+    rows = hook.load_last_index(hook.cache_dir(env), session)
     if not rows:
         return value, ""
     if any(row["id"] == value for row in rows):
@@ -586,6 +634,7 @@ def _fetch_one(
     environ: Optional[Dict[str, str]] = None,
     chunk: Any = None,
     section: Any = None,
+    session: Optional[str] = None,
 ) -> Dict[str, Any]:
     """(R1) — read one memory in full, by id.
 
@@ -597,6 +646,10 @@ def _fetch_one(
     The body is rendered with ``hook.neutral_block``, not ``hook.render``: it is
     multi-line text and must keep its line breaks while staying as inert as a
     one-line hit. The store has already redacted it at rest.
+
+    ``session`` (NOBLIVION-110) keys the last-index file that reads a rank and the shown-set file
+    that records the fetch. With none, both use the newest file of any session, which is wrong
+    when several sessions are open, so the answer says so.
     """
     # int(1.5) is 1, and int(True) is 1: either would fetch a DIFFERENT memory
     # than the caller named and answer as though nothing was wrong. Parsing the
@@ -630,7 +683,7 @@ def _fetch_one(
     rule_rows = hook.index_rule_rows(env)
     note = ""
     if rule_rows:
-        mid, note = _resolve_fetch_id(hook, mid, env)
+        mid, note = _resolve_fetch_id(hook, mid, env, session)
     try:
         answer = hook.fetch_memory_text(mid, environ, **extra)
     except hook.RecallError as exc:
@@ -671,6 +724,7 @@ def _fetch_one(
         head += f" | section {picked}" + (f": {heading}" if heading else "")
     elif "section" in extra:
         head += " | no section matched; showing the memory as fetched without one"
+    guessed = bool(note) and not session
     if hook.shown_set_on(env):
         # W8 DP-6. What this fetch returned, so that for the rest of the session
         # the index gives it no block and the trigger leg no row. Recorded only
@@ -680,7 +734,12 @@ def _fetch_one(
         # still gets the memory it asked for.
         raw_title = answer.get("title")
         if isinstance(raw_title, str) and raw_title:
-            hook.record_shown(hook.cache_dir(env), None, "fetched", [raw_title])
+            hook.record_shown(hook.cache_dir(env), session, "fetched", [raw_title])
+            guessed = guessed or not session
+    if guessed:
+        # No session id reached this server, so the newest index and shown-set of ANY session
+        # were used. Say so: with several sessions open it can be another session's.
+        head += " | " + NO_SESSION_NOTE
     if not rule_rows:
         return {"content": [{"type": "text", "text": f"{head}\n{body}"}], "isError": False}
     # W6 F3: RULE, then APPLY, then the body. The body keeps its own 6,000-char
@@ -797,6 +856,8 @@ def handle(message: Any, environ: Optional[Dict[str, str]] = None) -> Optional[D
                 _call_arguments=args,
                 chunk=args.get("chunk"),
                 section=args.get("section"),
+                session_key=args.get("session_key"),
+                agent_key=args.get("agent_key"),
             ),
         )
     return _error(req_id, -32601, f"Method not found: {method}")

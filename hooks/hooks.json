@@ -146,6 +146,16 @@
         ]
       },
       {
+        "matcher": "mcp__.*noblivion_recall",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/mcp_session_hook.py\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Agent|Task",
         "hooks": [
           {

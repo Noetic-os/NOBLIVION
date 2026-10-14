@@ -2048,6 +2048,7 @@ docs/
   `continuity_hook.py`; `startup|resume|clear`: `trust_session_line.py`),
   UserPromptSubmit (`stop_checks.py --mark-correction`, `recall_hook.py`),
   PreToolUse (`Bash`, `Read|Grep`, `Edit|Write|MultiEdit`: `guard_hook.py`;
+  `mcp__.*noblivion_recall`: `mcp_session_hook.py`;
   `Agent|Task`: `subagent_rules_hook.py`), PostToolUse
   (`Write|Edit|MultiEdit`: `memory_fields_hook.py`, `memory_sync_hook.py`;
   `Bash`: `error_recall_hook.py`, `memory_sync_hook.py`), PostToolUseFailure

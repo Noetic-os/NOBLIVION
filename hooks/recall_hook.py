@@ -2575,13 +2575,27 @@ def file_of(ln: Any, by_name: Mapping[str, MemoryFile]) -> Optional[MemoryFile]:
     return by_name.get(getattr(ln, "title", "") or "")
 
 
+CORPUS_CACHE_ENV = "NOBLIVION_RECALL_CORPUS_CACHE"
+CORPUS_CACHE_NAME = "corpus_cache.json"
+
+
+def corpus_cache_path(environ: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    """NOBLIVION-110. The file that keeps the parsed memory files between prompts: in the
+    recall cache folder, or None when ``NOBLIVION_RECALL_CORPUS_CACHE`` is off (on by default)."""
+    env = os.environ if environ is None else environ
+    if not switch_on(env, CORPUS_CACHE_ENV, True):
+        return None
+    return os.path.join(cache_dir(env), CORPUS_CACHE_NAME)
+
+
 def load_session_corpus(environ: Optional[Mapping[str, str]] = None) -> List[MemoryFile]:
     """The local corpus of ``memory_dirs``. On a file name that both folders
     hold, the project file is kept and the global file is left out, as the
     store does for a shared root."""
     seen: Dict[str, MemoryFile] = {}
+    cache_path = corpus_cache_path(environ)
     for folder in memory_dirs(environ):
-        for md in load_memory_corpus(folder):
+        for md in load_memory_corpus(folder, cache_path):
             seen.setdefault(md.rel_path, md)
     return [seen[name] for name in sorted(seen)]
 

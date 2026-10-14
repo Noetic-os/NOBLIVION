@@ -206,6 +206,7 @@ run `noblivion consent embeddings`. The `openrouter` backend also needs
 | `NOBLIVION_RECALL_CACHE_DIR` | none | `<data dir>/cache` | Hook state: session files, logs and the trust event spool. |
 | `NOBLIVION_RECALL_SESSION_KEEP_DAYS` | none | `7` | Days a session file stays in the cache. |
 | `NOBLIVION_RECALL_SESSION_KEEP_MAX` | none | `200` | The most session files the cache keeps. |
+| `NOBLIVION_RECALL_CORPUS_CACHE` | none | on (switch) | Keeps the parsed memory files in `<cache folder>/corpus_cache.json`, keyed by folder, file name, modification time and size, so a prompt reads only the files that changed. Turn it off to read and tokenize every file on every prompt. |
 | `NOBLIVION_RECALL_LABELS` | none | off (switch) | Adds label rows (notes that name a file, a tool, a ticket or a service in the prompt). The shipped config file turns it on under `recall.env`. |
 | `NOBLIVION_RECALL_MD_ONLY` | none | off (switch) | Makes the MCP tool return memory files only. |
 
