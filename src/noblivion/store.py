@@ -310,6 +310,7 @@ class Store:
         root: str | None = None,
         include_mined: bool = False,
         session_id: str = "",
+        target: str = "",
     ) -> ranking.RankResult | None:
         """Rank for a read route; None on an internal fault (logged, no text)."""
         try:
@@ -326,6 +327,7 @@ class Store:
                     root=root,
                     shared_roots=self.store_settings.shared_roots,
                     include_mined=include_mined,
+                    target=target,
                 )
                 # Shared roots have their own use controls. Filter against
                 # live state even when the ranker's snapshot is warm.

@@ -460,11 +460,26 @@ def insert_memory(
     labels: str,
     rev: int,
     now: str,
+    index_text: str = "",
 ) -> int:
     cur = conn.execute(
         "INSERT INTO memories (project, root, path, source_type, category, content, hash, "
-        "labels, rev, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (project, root, path, source_type, category, content, content_hash, labels, rev, now, now),
+        "labels, index_text, rev, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            project,
+            root,
+            path,
+            source_type,
+            category,
+            content,
+            content_hash,
+            labels,
+            index_text,
+            rev,
+            now,
+            now,
+        ),
     )
     memory_id = int(cur.lastrowid)
     sync_chunks(conn, memory_id, content, rev)
@@ -483,6 +498,7 @@ def rewrite_memory(
     labels: str,
     rev: int,
     now: str,
+    index_text: str = "",
 ) -> bool:
     """Update a row in place (same id) and make it live again.
 
@@ -491,9 +507,9 @@ def rewrite_memory(
     """
     cur = conn.execute(
         "UPDATE memories SET root = ?, path = ?, category = ?, content = ?, hash = ?, "
-        "labels = ?, archived_at = NULL, deleted_at = NULL, rev = ?, updated_at = ? "
-        "WHERE id = ?",
-        (root, path, category, content, content_hash, labels, rev, now, memory_id),
+        "labels = ?, index_text = ?, archived_at = NULL, deleted_at = NULL, rev = ?, "
+        "updated_at = ? WHERE id = ?",
+        (root, path, category, content, content_hash, labels, index_text, rev, now, memory_id),
     )
     if cur.rowcount != 1:
         return False

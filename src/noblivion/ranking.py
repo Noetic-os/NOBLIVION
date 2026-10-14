@@ -22,6 +22,7 @@ keyword-only (section 8.4).
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import sqlite3
@@ -44,6 +45,17 @@ MODE_HYBRID = "hybrid"
 MODE_KEYWORD = "keyword"
 _CACHE_MAX = 64
 _CHUNK_READ_BATCH = 500
+# NOBLIVION-104. The text of the ``rule``, ``apply`` and ``triggers`` lines counts twice in the
+# keyword score of every chunk of its file: the index shows them, so a word in them must find
+# the file, and they are short and exact next to a body. The hook re-rank reads the same weight
+# (``hooks/corpus.py`` ``INDEX_FIELDS_REPEAT``).
+INDEX_FIELDS_REPEAT = 2
+# A label of the file (a ticket key, a file name, a tool) that the query names adds this much to
+# the keyword score of the file. At most ``LABEL_BOOST_MAX_LABELS`` labels count, so the whole
+# boost is at most 0.8: it orders files whose scores are close, and never lifts a weak match
+# over a strong one. A BM25 score is about 1 to 15 for a short query.
+LABEL_BOOST = 0.4
+LABEL_BOOST_MAX_LABELS = 2
 _MARKER_LINE_RE = re.compile(r"^\[(?:claude_code_md|transcript_mined): [^\]\n]*\][ \t]*$", re.M)
 
 
@@ -67,6 +79,7 @@ class PoolRow:
     chunk_index: int = 0
     heading: str = ""
     chunk_text: str = field(default="", repr=False, compare=False)
+    labels: tuple[str, ...] = field(default=(), repr=False, compare=False)  # lower case
 
 
 @dataclass(frozen=True)
@@ -169,6 +182,31 @@ def rank_pool(
         chosen.append((best, sem[best]))
     hits = [Hit(rank, pool[i], sem.get(i), f, bm[i]) for rank, (i, f) in enumerate(chosen, start=1)]
     return RankResult(MODE_HYBRID, hits, n)
+
+
+def parse_labels(raw: object) -> tuple[str, ...]:
+    """The ``labels`` column (a JSON list) as lower-case labels. Bad JSON gives no label."""
+    try:
+        values = json.loads(raw) if isinstance(raw, str) else []
+    except ValueError:
+        return ()
+    if not isinstance(values, list):
+        return ()
+    return tuple(sorted({v.strip().lower() for v in values if isinstance(v, str) and v.strip()}))
+
+
+def label_boost(labels: Sequence[str], query_tokens: Iterable[str]) -> float:
+    """The bounded keyword boost of a file for the tokens of the query and of the tool target
+    (NOBLIVION-104). A label matches a token that is the label, or a path that ends in
+    ``/<label>``: the label ``ranking.py`` matches ``src/pkg/ranking.py``."""
+    if not labels:
+        return 0.0
+    tokens = set(query_tokens)
+    paths = [t for t in tokens if "/" in t]
+    found = sum(
+        1 for label in labels if label in tokens or any(p.endswith("/" + label) for p in paths)
+    )
+    return min(found, LABEL_BOOST_MAX_LABELS) * LABEL_BOOST
 
 
 def collapse_to_files(
@@ -323,7 +361,8 @@ class RankIndex:
             if content_rev > old.content_rev:
                 changed_rows = conn.execute(
                     "SELECT m.id, m.project, m.root, m.path, m.source_type, m.content, m.weight, "
-                    "m.archived_at, m.deleted_at, EXISTS (SELECT 1 FROM learning_notes n "
+                    "m.labels, m.index_text, m.archived_at, m.deleted_at, "
+                    "EXISTS (SELECT 1 FROM learning_notes n "
                     "WHERE n.project=m.project AND n.root=m.root AND n.path=m.path "
                     "AND n.file_hash=m.hash AND n.status='active' AND n.scope='general' "
                     "AND n.category IN ('preference','workflow')) is_general "
@@ -359,8 +398,12 @@ class RankIndex:
         new = _Snapshot(content_rev=content_rev, vector_rev=vector_rev)
         if content_rev > old.content_rev:
             rows = {mid: row for mid, row in old.rows.items() if mid in live_ids}
+            field_tokens: dict[int, tuple[str, ...]] = {}
             for r in changed_rows:
                 if r["archived_at"] is None and r["deleted_at"] is None:
+                    field_tokens[int(r["id"])] = (
+                        tuple(bm25.tokenize(r["index_text"])) * INDEX_FIELDS_REPEAT
+                    )
                     rows[int(r["id"])] = PoolRow(
                         id=int(r["id"]),
                         project=r["project"],
@@ -369,8 +412,9 @@ class RankIndex:
                         source_type=r["source_type"],
                         content=r["content"],
                         weight=float(r["weight"]),
-                        tokens=tuple(bm25.tokenize(r["content"])),
+                        tokens=tuple(bm25.tokenize(r["content"])) + field_tokens[int(r["id"])],
                         is_general=bool(r["is_general"]),
+                        labels=parse_labels(r["labels"]),
                     )
                 else:
                     rows.pop(int(r["id"]), None)
@@ -394,7 +438,7 @@ class RankIndex:
                         int(c["chunk_index"]),
                         c["heading"],
                         c["text"],
-                        tuple(bm25.tokenize(c["search_text"])) + path_tokens,
+                        tuple(bm25.tokenize(c["search_text"])) + path_tokens + field_tokens[mid],
                     )
                     for c in found
                 )
@@ -523,11 +567,14 @@ class RankIndex:
         root: str | None = None,
         shared_roots: Iterable[str] = (),
         include_mined: bool = False,
+        target: str = "",
     ) -> RankResult:
         """Rank the pool of section 8.1 for ``query``. No database access.
 
         Hybrid when ``query_vector`` is given and at least one pool row has a
         vector of the index model with the same dim; keyword-only otherwise.
+        ``target`` is the text of the tool target (a path or a command): it takes part in the
+        label boost only, never in the keyword score (NOBLIVION-104).
         """
         snap = self._snap
         key = self.pool_key(project, root, shared_roots, include_mined)
@@ -537,9 +584,22 @@ class RankIndex:
             return RankResult(mode, [], n_files)
         tokens = bm25.tokenize(query)
         scores = index.scores(tokens)
+        matched = index.matches(tokens)
+        if any(u.labels for u in units):
+            # NOBLIVION-104: a label that the query or the target names adds a bounded boost to
+            # the score of a file. It does not make a file a keyword match: a file that holds no
+            # query word stays out, as before.
+            named = {*tokens, *bm25.tokenize(target)}
+            per_file: dict[int, float] = {}
+            boosts = [
+                per_file.setdefault(u.id, label_boost(u.labels, named)) if u.labels else 0.0
+                for u in units
+            ]
+            if any(boosts):
+                scores = [s + b for s, b in zip(scores, boosts, strict=True)]
         cosines = self._cosines(snap, key, units, query_vector) if query_vector else {}
         # Rank every unit, then keep the best unit of each file (NOBLIVION-103).
-        ranked = rank_pool(units, scores, cosines, len(units), index.matches(tokens))
+        ranked = rank_pool(units, scores, cosines, len(units), matched)
         return collapse_to_files(ranked, units, cosines, top_k, n_files)
 
 
@@ -573,6 +633,7 @@ class Ranker:
         root: str | None = None,
         shared_roots: Iterable[str] = (),
         include_mined: bool = False,
+        target: str = "",
     ) -> RankResult:
         model_id = self.embedding.model_id if self.embedding is not None else None
         if np is None:
@@ -590,4 +651,5 @@ class Ranker:
             root=root,
             shared_roots=shared_roots,
             include_mined=include_mined,
+            target=target,
         )

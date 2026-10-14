@@ -112,6 +112,10 @@ It also ranks the notes that `noblivion import` added (see
 project folder, so every session searches them.
 
 1. **Keyword score.** BM25, a standard keyword score, over the note text.
+   The `rule:`, `apply:` and `triggers:` lines of a note count too, with
+   double weight, because the prompt index shows them. A note also gets a
+   small bonus when the prompt names one of its labels, such as a file
+   name or a ticket key.
 2. **Vector score.** The cosine similarity between the vector of the
    prompt and the vector of each note.
 3. **Fusion.** Reciprocal rank fusion joins the two ranked lists into one.

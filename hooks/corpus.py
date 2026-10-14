@@ -396,6 +396,60 @@ def frontmatter_kind(rel_path: str, meta: Mapping[str, Any]) -> str:
     return "reference"  # the mirror's CATEGORY_FALLBACK
 
 
+# NOBLIVION-104. The store indexes the ``rule``, ``apply`` and ``triggers`` lines of a file for
+# its keyword score (``indexer.index_fields_text``), at this weight (``ranking.INDEX_FIELDS_REPEAT``),
+# because the prompt index shows them. P1h reads the same fields, so the two legs rank one text.
+INDEX_FIELDS_REPEAT = 2
+INDEX_FIELDS_MAX_CHARS = 4000
+_TRIGGERS_LINE_RE = re.compile(r"^[ \t]*triggers:[ \t]*(.*)$")
+_TRIGGER_ITEM_RE = re.compile(r"^[ \t]+-[ \t]+(.*)$")
+_TRIGGER_KIND_RE = re.compile(r"^(?:glob|tool|phrase):[ \t]*", re.I)
+
+
+def read_trigger_items(text: str) -> List[str]:
+    """The items of ``triggers:`` in a file's frontmatter, as a ``[a, b]`` line or as ``- item``
+    lines, without the kind prefix (``glob:``, ``tool:``, ``phrase:``). ``[]`` when none."""
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return []
+    front: List[str] = []
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        front.append(line)
+    else:
+        return []
+    raw: List[str] = []
+    for i, line in enumerate(front):
+        match = _TRIGGERS_LINE_RE.match(line)
+        if match is None:
+            continue
+        value = match.group(1).strip()
+        if value:
+            if value.startswith("[") and value.endswith("]"):
+                value = value[1:-1]
+            raw = value.split(",")
+        else:
+            for after in front[i + 1 :]:
+                item = _TRIGGER_ITEM_RE.match(after)
+                if item is not None:
+                    raw.append(item.group(1))
+                elif after.strip():
+                    break
+        if raw:
+            break
+    items = [_TRIGGER_KIND_RE.sub("", _unquote_frontmatter(r.strip())) for r in raw]
+    return [item for item in items if item]
+
+
+def index_fields_text(meta: Mapping[str, Any], text: str) -> str:
+    """The text of the ``rule``, ``apply`` and ``triggers`` fields, one part per line: the text
+    that ``indexer.index_fields_text`` of the store reads, before its redaction."""
+    rule, apply_block = read_rule_apply(meta)
+    parts = [rule.strip(), apply_block.strip(), " ".join(read_trigger_items(text))]
+    return "\n".join(p for p in parts if p)[:INDEX_FIELDS_MAX_CHARS]
+
+
 def tokens_daemon(text: str) -> List[str]:
     """The daemon's tokenizer (store/memory.py `_tokenize`)."""
     return [t for t in _DAEMON_TOKEN_SPLIT_RE.split(text.lower()) if len(t) >= 2]
@@ -479,7 +533,8 @@ def load_memory_corpus(folder: str) -> List[MemoryFile]:
                 kind=frontmatter_kind(base, meta),
                 description=description,
                 body=body,
-                tokens=tokens_sub(build_memory_content(name, description, base, body)),
+                tokens=tokens_sub(build_memory_content(name, description, base, body))
+                + tokens_sub(index_fields_text(meta, text)) * INDEX_FIELDS_REPEAT,
                 rule=rule,
                 apply_block=apply_block,
             )

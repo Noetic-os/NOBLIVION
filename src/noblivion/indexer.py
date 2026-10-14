@@ -184,6 +184,88 @@ def category_for(file_name: str, meta: dict[str, object]) -> str:
     return CATEGORY_FALLBACK
 
 
+# -- the rule, apply and triggers fields (NOBLIVION-104) ---------------------------
+
+# Bump this when ``index_fields_text`` changes: the next scan rewrites every row.
+INDEX_FIELDS_VERSION = "1"
+INDEX_FIELDS_MAX_CHARS = 4000
+_FM_TRIGGERS_RE = re.compile(r"^[ \t]*triggers:[ \t]*(.*)$")
+_FM_ITEM_RE = re.compile(r"^[ \t]+-[ \t]+(.*)$")
+_TRIGGER_KIND_RE = re.compile(r"^(?:glob|tool|phrase):[ \t]*", re.I)
+
+
+def _front_lines(text: str) -> list[str]:
+    """The lines between the two ``---`` lines, or none."""
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return []
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return lines[1:i]
+    return []
+
+
+def _text_field(meta: dict[str, object], key: str) -> str:
+    """The value of ``key``: the top-level line, else the line under ``metadata:``."""
+    for source in (meta, meta.get("metadata")):
+        if isinstance(source, dict):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    return ""
+
+
+def _decode_apply(value: str) -> str:
+    """``apply:`` is one line that holds a JSON string; text that does not decode is kept."""
+    for candidate in (f'"{value}"', value):
+        try:
+            decoded = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(decoded, str):
+            return decoded
+    return value
+
+
+def trigger_items(text: str) -> list[str]:
+    """The items of ``triggers:``, as a ``[a, b]`` line or as ``- item`` lines.
+    The kind prefix of an item (``glob:``, ``tool:``, ``phrase:``) is dropped."""
+    lines = _front_lines(text)
+    raw: list[str] = []
+    for i, line in enumerate(lines):
+        match = _FM_TRIGGERS_RE.match(line)
+        if match is None:
+            continue
+        value = match.group(1).strip()
+        if value:
+            if value.startswith("[") and value.endswith("]"):
+                value = value[1:-1]
+            raw = value.split(",")
+        else:
+            for after in lines[i + 1 :]:
+                item = _FM_ITEM_RE.match(after)
+                if item is not None:
+                    raw.append(item.group(1))
+                elif after.strip():
+                    break
+        if raw:
+            break
+    items = [_TRIGGER_KIND_RE.sub("", _unquote(r.strip())) for r in raw]
+    return [item for item in items if item]
+
+
+def index_fields_text(text: str) -> str:
+    """The text of the ``rule``, ``apply`` and ``triggers`` fields, one part per line, for the
+    keyword score. The prompt index shows ``rule`` and the APPLY excerpt shows ``apply``, so a
+    word that only they hold must find the file. ``hooks/corpus.py`` reads the same fields."""
+    meta, _ = parse_frontmatter(text)
+    parts = [_text_field(meta, "rule").strip()]
+    apply_text = _text_field(meta, "apply")
+    parts.append(_decode_apply(apply_text).strip() if apply_text else "")
+    parts.append(" ".join(trigger_items(text)))
+    return "\n".join(p for p in parts if p)[:INDEX_FIELDS_MAX_CHARS]
+
+
 @dataclass(frozen=True)
 class ParsedFile:
     name: str
@@ -191,6 +273,7 @@ class ParsedFile:
     category: str
     body: str
     active: bool = True
+    index_text: str = ""
 
 
 def parse_file(file_name: str, text: str) -> ParsedFile:
@@ -205,6 +288,7 @@ def parse_file(file_name: str, text: str) -> ParsedFile:
         body=body,
         active=str(meta.get("status", "active")).strip().lower()
         not in ("superseded", "excluded", "forgotten"),
+        index_text=index_fields_text(text),
     )
 
 
@@ -581,6 +665,7 @@ class _Prepared:
     labels: str
     cut: bool  # the file is larger than MAX_FILE_BYTES: only its head is stored
     active: bool = True
+    index_text: str = ""  # the redacted rule, apply and triggers text (keyword score only)
 
 
 def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
@@ -609,8 +694,17 @@ def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
             labels = list(labeller(text, Path(entry.path).stem))
         except Exception:  # noqa: BLE001 - one labeller fault never stops the scan
             labels = None
+    index_text = redaction.redact_at_rest(parsed.index_text) if parsed.index_text else ""
+    if index_text == redaction.REDACTION_FAILED_TOKEN:
+        index_text = ""  # the fields only help the keyword score: store none rather than the risk
     return _Prepared(
-        entry, parsed.category, content, labels_json(labels, parsed.category), cut, parsed.active
+        entry,
+        parsed.category,
+        content,
+        labels_json(labels, parsed.category),
+        cut,
+        parsed.active,
+        index_text,
     )
 
 
@@ -639,6 +733,7 @@ def _apply_batch(
                 "content": prep.content,
                 "content_hash": entry.hash,
                 "labels": prep.labels,
+                "index_text": prep.index_text,
                 "rev": rev,
                 "now": now,
             }
@@ -705,6 +800,12 @@ def _read_redo(raw: str | None) -> set[int] | None:
         return None
 
 
+def _fields_key(project: str) -> str:
+    """The ``meta`` key of the index-fields version (``INDEX_FIELDS_VERSION``) of a namespace.
+    A row written before schema 6 has no ``index_text``; a different mark rewrites every row."""
+    return f"index_fields_version:{project}"
+
+
 def _rev_key(project: str) -> str:
     """The ``meta`` key of the revision mark: the content revision at the end
     of the last scan of a namespace that wrote a row. Only this code sets it.
@@ -744,13 +845,15 @@ def scan(
             stored_version = db.get_meta(conn, LEGACY_VERSION_KEY)
         stored_redo = _read_redo(db.get_meta(conn, _redo_key(project)))
         stored_rev = _read_rev(db.get_meta(conn, _rev_key(project)))
+        stored_fields = db.get_meta(conn, _fields_key(project))
         content_rev = db.revisions(conn)[0]
     # The live rows that hold text of another redactor version: all of them
     # after a version change, else the ones an earlier scan could not redo
     # and the ones that a store process of an older release wrote after the
     # last scan of this code.
     redo = {r.id for r in rows if r.live}
-    stale = stored_version != redaction.REDACTOR_VERSION or stored_redo is None
+    fields_stale = stored_fields != INDEX_FIELDS_VERSION
+    stale = stored_version != redaction.REDACTOR_VERSION or stored_redo is None or fields_stale
     if not stale:
         newer = {r.id for r in rows if stored_rev is not None and r.rev > stored_rev}
         redo &= stored_redo | newer
@@ -815,6 +918,7 @@ def scan(
             db.set_meta(conn, _version_key(project), redaction.REDACTOR_VERSION)
             db.set_meta(conn, _redo_key(project), json.dumps(sorted(left)))
             db.set_meta(conn, _rev_key(project), str(result.content_rev))
+            db.set_meta(conn, _fields_key(project), INDEX_FIELDS_VERSION)
     return result
 
 

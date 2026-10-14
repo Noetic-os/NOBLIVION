@@ -693,6 +693,7 @@ class Handler(BaseHTTPRequestHandler):
             top_k=top_k,
             root=root_of(params),
             session_id=first(params, "session_id"),
+            target=first(params, "target")[:MAX_Q_CHARS],
         )
         answer = search_answer(result, namespace, store.model())
         if result is None:
@@ -712,6 +713,7 @@ class Handler(BaseHTTPRequestHandler):
             root=root_of(params),
             include_mined=include_mined,
             session_id=first(params, "session_id"),
+            target=first(params, "target")[:MAX_Q_CHARS],
         )
         trust = None
         if result is not None and store.store_settings.trust_ranking in ("shadow", "on"):

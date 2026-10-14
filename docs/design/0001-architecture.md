@@ -1044,6 +1044,7 @@ CREATE TABLE memories (
     weight      REAL NOT NULL DEFAULT 1.0 CHECK (weight > 0 AND weight <= 4),
     pinned      INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
     labels      TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(labels)),
+    index_text  TEXT NOT NULL DEFAULT '',            -- rule, apply, triggers (schema 6)
     archived_at TEXT,                                -- set by dedup
     deleted_at  TEXT,                                -- file gone; purged after grace
     rev         INTEGER NOT NULL,                    -- content_rev of the last change
@@ -1149,8 +1150,8 @@ Why each choice:
   defect (section 9.4).
 - `memories.id` stays the same when a file changes. The indexer updates the
   row in place. Trust follows the file, not one version of its text.
-- Labels are a JSON column, not a table. Nothing joins on labels in v0.1.
-  The indexer writes them; ranking does not read them.
+- Labels are a JSON column, not a table. Nothing joins on labels. The
+  indexer writes them; ranking reads them for a bounded boost (section 8.2).
 - `STRICT` tables refuse wrong column types (SQLite 3.37 or newer, which
   the store venv provides).
 
@@ -1191,6 +1192,13 @@ The store creates the database with umask 077. `doctor` checks mode 0600 on
 the database, WAL, SHM and token files, and mode 0700 on the data dir.
 
 ### 6.6 Migrations
+
+Schema 6 (NOBLIVION-104) adds `memories.index_text`: the text of the `rule`,
+`apply` and `triggers` lines of the file, redacted, for the keyword score only
+(section 8.2). It is not part of `content`. A row from before schema 6 holds an
+empty `index_text`; the indexer writes every row again once, because the
+`meta` key `index_fields_version:<namespace>` is not
+`indexer.INDEX_FIELDS_VERSION`.
 
 Schema 5 (NOBLIVION-103) adds `memory_chunks` and `chunk_vectors` (section
 8.7). Its runner step also cuts every existing row into chunks, live,
@@ -1362,6 +1370,23 @@ row cannot change the ranks of the others.
   the hook (E4).
 - Cosine: the query vector times the L2-normalised matrix of the pool
   (numpy, float32), times the row `weight`, quantized to 4 places.
+- Fields (NOBLIVION-104). The prompt index shows the `rule` line and the
+  APPLY excerpt shows `apply`, so the keyword leg reads them too. The tokens
+  of `memories.index_text` (the `rule` text, the decoded `apply` text and the
+  `triggers` items without their `glob:`, `tool:` and `phrase:` prefix, found
+  at the top level or under `metadata:`, at most 4,000 characters) are added
+  twice to the tokens of every chunk of the file
+  (`ranking.INDEX_FIELDS_REPEAT`). The embedding text does not change, so no
+  vector is computed again, and `content`, and with it every answer, does not
+  change. The hook re-rank (`hooks/corpus.py`) tokenizes the same fields
+  with the same weight, so both legs rank one text.
+- Labels (NOBLIVION-104). A label of a file (a ticket key, a file name, a
+  tool; lower case) that is a token of the query, or of the optional `target`
+  parameter of `/index` and `/search` (the path or command of the tool call),
+  or a path that ends in `/<label>`, adds `0.4` to the BM25 score of the
+  file. At most 2 labels count, so the boost is at most `0.8`: it orders files
+  whose scores are close and cannot lift a weak match over a strong one. A
+  label alone does not make a file a keyword match.
 
 ### 8.3 Fusion
 

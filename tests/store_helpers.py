@@ -163,6 +163,8 @@ def add_memory(
     root: str = "-proj-alpha",
     source_type: str = db.SOURCE_MD,
     weight: float = 1.0,
+    labels: str = "[]",
+    index_text: str = "",
 ) -> int:
     with db.write_tx(conn):
         rev = db.bump_rev(conn, "content_rev")
@@ -176,7 +178,8 @@ def add_memory(
             category="feedback",
             content=content(name, body),
             content_hash=hashlib.sha256(body.encode()).hexdigest(),
-            labels="[]",
+            labels=labels,
+            index_text=index_text,
             rev=rev,
             now=now,
         )

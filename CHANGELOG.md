@@ -10,6 +10,14 @@ All notable changes to NOBLIVION. The format follows
 
 ### Added
 
+- The keyword score reads the `rule:`, `apply:` and `triggers:` lines of a memory file, in
+  the store and in the hook re-rank, with double weight. The prompt index shows `rule`
+  and the APPLY excerpt shows `apply`, but a word that only they held could not find the
+  note. The `labels` column now adds a bounded boost (at most 0.8 of a BM25 score) when
+  the prompt, or the new optional `target` parameter of `/api/memories/index`, names a
+  label of the note. A label alone never admits a note. The stored text, `fetch_id` output
+  and the embeddings do not change. Schema 6 adds the `index_text` column, and the next
+  index scan writes every row once to fill it (NOBLIVION-104).
 - `noblivion learning status` lists pending extraction jobs under `pending`, with
   the age and the reason each one waits: a paused session or scope,
   contribution off, a provider error, the budget, or no worker yet. A job held
