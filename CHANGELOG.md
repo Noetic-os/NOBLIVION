@@ -28,6 +28,19 @@ All notable changes to NOBLIVION. The format follows
 - `noblivion dedup apply` now acts on a `SUPERSEDE` verdict: the current note
   stays, the other note moves to the archive with a `superseded_by` line, and
   `undo` restores it byte for byte (NOBLIVION-108).
+- The index cuts each memory file into sections (a summary chunk, then one chunk
+  per heading, at most about 1,200 characters, with one sentence of overlap when
+  a section is split). Each chunk has its own vector and keyword score, so a topic
+  far down a long file is found; the file still has one row, one hit and the same
+  `[claude_code_md: <path>]` marker. The best chunk gives the file its place and its
+  score, and `/api/memories/index` rows name it (`chunk`, `heading`). A short file is
+  one chunk with the text and the vector it had before. Schema 5 adds the chunk tables
+  and cuts the existing rows when the store starts, with a backup first (NOBLIVION-103).
+- `noblivion_recall` with `fetch_id` takes `chunk` (a section number) or `section`
+  (words) and returns that section with its heading. A note over 6,000 characters now
+  opens as its summary and the list of its sections, so the text past 6,000 characters
+  can be reached. A search entry for such a file shows its header and the best section.
+  `tools/eval_chunks.py` measures this on a held-out query set (NOBLIVION-103).
 
 ### Fixed
 

@@ -120,7 +120,18 @@ def test_backfill_writes_vectors_with_model_dim_and_hash(conn):
     text = embedding.embed_text(conn.execute("SELECT content FROM memories WHERE id = ?", (a,))
                                 .fetchone()[0])  # fmt: skip
     assert row["content_hash"] == embedding.text_hash(text)
-    assert row["rev"] == db.revisions(conn)[1] > rev_before
+    assert row["rev"] > rev_before
+    # A short row is one chunk, with the text of the row: its vector is the vector of the
+    # row, copied (NOBLIVION-103).
+    assert result.chunks_embedded == 2 and result.chunks_failed == 0
+    chunk_rows = conn.execute(
+        "SELECT c.parent_id, c.chunk_index, v.dim, v.content_hash, v.rev, c.search_text "
+        "FROM chunk_vectors v JOIN memory_chunks c ON c.id = v.chunk_id "
+        "WHERE v.model = 'fake:fake-model'"
+    ).fetchall()
+    assert sorted((r[0], r[1]) for r in chunk_rows) == [(a, 0), (b, 0)]
+    assert all(r[2] == FAKE_DIM and r[3] == embedding.text_hash(r[5]) for r in chunk_rows)
+    assert all(r[4] == db.revisions(conn)[1] for r in chunk_rows)
     meta = {k: db.get_meta(conn, k) for k in ("embed_backend", "embed_model", "embed_dim")}
     assert meta == {"embed_backend": "fake", "embed_model": "fake-model", "embed_dim": "16"}
     # A second pass has nothing to do.
@@ -134,7 +145,9 @@ def test_backfill_reembeds_a_changed_row_only(conn):
     embedding.backfill(conn, embedder)
     change_memory(conn, a, "alpha epsilon")
     embedder.calls.clear()
-    assert embedding.backfill(conn, embedder).embedded == 1
+    result = embedding.backfill(conn, embedder)
+    assert (result.embedded, result.chunks_embedded) == (1, 1)
+    # The chunk has the text of the row, so its vector is the copy of the row vector.
     assert len(embedder.calls) == 1 and "epsilon" in embedder.calls[0][0]
 
 

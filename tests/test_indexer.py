@@ -253,9 +253,17 @@ def test_a_cut_between_the_data_and_the_kind_of_a_secret_keeps_no_data(conn, tmp
     assert f"\n  db0.conf: {redaction.FIELD_TOKEN}\n" in row["content"]
     assert value not in row["content"]
     assert value not in rest.safe_text(row["content"])  # each search hit
-    answer = rest.fetch_answer(conn, str(row["id"]), config.DEFAULT_NAMESPACE)
+    # A file this long is fetched by its sections (NOBLIVION-103): the chunk with the data lines.
+    answer = rest.fetch_answer(
+        conn, str(row["id"]), config.DEFAULT_NAMESPACE, query="db0.conf data"
+    )
     assert answer["reason"] is None and "db0.conf" in answer["text"]
     assert value not in answer["text"]
+    for chunk in answer["chunks"]:  # and no chunk of the file holds the value
+        part = rest.fetch_answer(
+            conn, str(row["id"]), config.DEFAULT_NAMESPACE, chunk=str(chunk["chunk"])
+        )
+        assert value not in part["text"]
 
 
 @pytest.mark.parametrize(
@@ -1212,3 +1220,55 @@ def test_namespaces_are_separate(conn, tmp_path):
     result = indexer.scan(conn, [folder], project="ns-two")
     assert result.inserted == 10
     assert conn.execute("SELECT count(DISTINCT project) FROM memories").fetchone()[0] == 2
+
+
+def test_a_scan_writes_the_chunks_and_a_changed_file_rewrites_only_its_chunks(conn, tmp_path):
+    # NOBLIVION-103: one row per file, with its sections as chunk rows.
+    sections = "\n\n".join(f"## Part {n}\n" + "A line about the rollout. " * 30 for n in range(3))
+    text = f"---\nname: Long note\ndescription: A long note\n---\n{sections}\n"
+    folder = make_folder(tmp_path, "proj-demo", {"reference_long.md": text, "reference_s.md": "Hi"})
+    indexer.scan(conn, [folder])
+    by_path = {k[1]: v for k, v in rows(conn).items()}
+    long_id, short_id = by_path["reference_long.md"]["id"], by_path["reference_s.md"]["id"]
+    heads = [
+        r[0]
+        for r in conn.execute(
+            "SELECT heading FROM memory_chunks WHERE parent_id = ? ORDER BY chunk_index", (long_id,)
+        )
+    ]
+    assert heads == ["", "Part 0", "Part 1", "Part 2"]
+    assert (
+        conn.execute(
+            "SELECT count(*) FROM memory_chunks WHERE parent_id = ?", (short_id,)
+        ).fetchone()[0]
+        == 1
+    )
+    # The row keeps the file-level shape: the marker line is in the row, in no chunk.
+    assert "\n[claude_code_md: reference_long.md]\n" in by_path["reference_long.md"]["content"]
+    assert (
+        conn.execute(
+            "SELECT count(*) FROM memory_chunks WHERE text LIKE '%claude_code_md%'"
+        ).fetchone()[0]
+        == 0
+    )
+    before = {
+        r[0]: r[1]
+        for r in conn.execute(
+            "SELECT heading, id FROM memory_chunks WHERE parent_id = ?", (long_id,)
+        )
+    }
+    (folder / "reference_long.md").write_text(text.replace("Part 1\nA line", "Part 1\nA new line"))
+    indexer.scan(conn, [folder])
+    after = {
+        r[0]: r[1]
+        for r in conn.execute(
+            "SELECT heading, id FROM memory_chunks WHERE parent_id = ?", (long_id,)
+        )
+    }
+    assert after == before  # same chunk rows, edited in place
+    assert (
+        "A new line"
+        in conn.execute(
+            "SELECT text FROM memory_chunks WHERE parent_id = ? AND heading = 'Part 1'", (long_id,)
+        ).fetchone()[0]
+    )

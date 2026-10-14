@@ -62,6 +62,13 @@ The store scans the memory folders at start and then every 30 seconds.
   in `memory_dirs`.
 - **Files.** Each non-empty `*.md` file at the top of a folder. Files in
   sub-folders and files whose names start with `.` are skipped.
+- **Sections.** The store also cuts each note into sections of about 1,200
+  characters: one summary (title and description), then one per heading,
+  and a long section in parts that overlap by one sentence. A short note is
+  one section. The store ranks the sections and shows one note per hit, so a
+  topic far down a long note is found. Open that section with
+  `noblivion_recall` and `fetch_id` with `chunk` or `section`. A note over
+  6,000 characters opens as its summary and the list of its sections.
 - **Size.** The indexer stores the first 256 KB of a larger file, up to
   the last whole line. A line longer than 128 KB is cut at a space, else
   hard at 256 KB without the token there. Recall and `/fetch` show that
@@ -224,10 +231,13 @@ Claude Code can call `noblivion_recall` with these arguments:
 | --- | --- |
 | `query` | What to find, free text, cut to 300 characters. |
 | `k` | The most hits, 1 to 20. Default 5. |
-| `fetch_id` | The id of one note to open in full. |
+| `fetch_id` | The id of one note to open. A long note opens as its summary and the list of its sections. |
+| `chunk` | With `fetch_id`: the number of one section to read. |
+| `section` | With `fetch_id`: words. The section that best matches them is read. Use `chunk` or `section`, not both. |
 | `include_mined` | `true` lists the ranked index with the transcript-mined notes. Default `false`. |
 
-Give `query` or `fetch_id`, not both. An opened note starts with
+Give `query` or `fetch_id`, not both. `chunk` and `section` go with
+`fetch_id` only. An opened note starts with
 `GROUNDED MEMORY <id>:`. The trust flush reads this line to record that the
 note was used.
 

@@ -969,6 +969,8 @@ def test_mcp_initialize_list_call_round_trip(daemon, env):
         "query",
         "k",
         "fetch_id",
+        "chunk",
+        "section",
         "include_mined",
         "read_capability",
     }

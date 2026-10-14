@@ -8,7 +8,7 @@ import time
 import pytest
 
 from noblivion import bm25, db, embedding, ranking
-from store_helpers import FakeEmbedder, add_memory, change_memory, soft_delete
+from store_helpers import FakeEmbedder, add_memory, change_memory, embed_memory, soft_delete
 
 
 @pytest.fixture
@@ -381,11 +381,12 @@ def test_hybrid_search_with_a_fake_model(conn):
 
 
 def half_pool(conn):
-    """4 notes; "deploy" is in exactly 2 of them, so its idf is 0."""
+    """4 notes; "deploy" is in the title of exactly 2 of them. Each note is 2 chunks (the
+    summary and the body, both with the title), so "deploy" is in 4 of 8 units: idf 0."""
     return {
-        "deploy_a": add_memory(conn, "release_steps", "deploy the service after the backup"),
+        "deploy_a": add_memory(conn, "deploy release", "the service after the backup"),
         "coffee": add_memory(conn, "coffee_filter", "paper filter brand"),
-        "deploy_b": add_memory(conn, "rollback_steps", "deploy the old build again"),
+        "deploy_b": add_memory(conn, "deploy rollback", "the old build again"),
         "garden": add_memory(conn, "garden_hose", "hose length and nozzle"),
     }
 
@@ -398,12 +399,7 @@ def test_a_word_in_half_of_the_pool_still_matches_in_hybrid_mode(conn):
     embedder = FakeEmbedder()
     service = make_service(embedder, conn)
     for key in ("deploy_a", "coffee"):
-        content = conn.execute("SELECT content FROM memories WHERE id = ?", (ids[key],))
-        text = embedding.embed_text(content.fetchone()[0])
-        vector = embedder.embed_documents([text])[0]
-        embedding._write_vectors(
-            conn, embedder.model_id, [(ids[key], embedding.text_hash(text), vector)]
-        )
+        embed_memory(conn, embedder, ids[key])
     result = ranking.Ranker(service).search(
         conn, "how do I deploy", project="claude_code", top_k=10
     )
@@ -428,12 +424,7 @@ def test_a_word_in_half_of_the_pool_still_matches_in_keyword_mode(conn):
 
 
 def _embed(conn, embedder, memory_id):
-    content = conn.execute("SELECT content FROM memories WHERE id = ?", (memory_id,))
-    text = embedding.embed_text(content.fetchone()[0])
-    vector = embedder.embed_documents([text])[0]
-    embedding._write_vectors(
-        conn, embedder.model_id, [(memory_id, embedding.text_hash(text), vector)]
-    )
+    embed_memory(conn, embedder, memory_id)
 
 
 def test_a_stop_word_brings_back_no_note_that_has_no_vector(conn):
@@ -441,12 +432,12 @@ def test_a_stop_word_brings_back_no_note_that_has_no_vector(conn):
     # query "how do I deploy the service" brought back every note with no
     # vector, with no score: "the" counted as a keyword match.
     ids = {
-        "deploy_a": add_memory(conn, "release_steps", "deploy the service after the backup"),
+        "deploy_a": add_memory(conn, "deploy release", "the service after the backup"),
         "coffee": add_memory(conn, "coffee_filter", "the paper filter of the brand"),
         "garden": add_memory(conn, "garden_hose", "the hose length and the nozzle"),
         "tea": add_memory(conn, "tea_kettle", "how to clean the kettle"),
         "bike": add_memory(conn, "bike_chain", "oil the chain once a month"),
-        "deploy_b": add_memory(conn, "rollback_steps", "deploy the old build again"),
+        "deploy_b": add_memory(conn, "deploy rollback", "the old build again"),
     }
     embedder = FakeEmbedder()
     service = make_service(embedder, conn)
@@ -533,11 +524,7 @@ def test_reembed_uses_new_vectors_only_and_bm25_for_the_rest(conn):
     new = FakeEmbedder("new-model")
     service2 = make_service(new, conn)
     assert service2.state == "reembedding"
-    content = conn.execute("SELECT content FROM memories WHERE id = ?", (ids["deploy"],))
-    digest = embedding.text_hash(embedding.embed_text(content.fetchone()[0]))
-    embedding._write_vectors(
-        conn, new.model_id, [(ids["deploy"], digest, new.embed_documents(["deploy backup"])[0])]
-    )
+    embed_memory(conn, new, ids["deploy"], text="deploy backup")
     result = ranking.Ranker(service2).search(
         conn, "pytest venv deploy", project="claude_code", top_k=5
     )

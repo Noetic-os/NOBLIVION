@@ -15,6 +15,8 @@ TABLES = {
     "meta",
     "memories",
     "vectors",
+    "memory_chunks",
+    "chunk_vectors",
     "feedback_events",
     "feedback",
     "dedup_actions",

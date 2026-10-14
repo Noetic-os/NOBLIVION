@@ -57,6 +57,8 @@ INDEX_ROW_KEYS = {
     "fusion_score",
     "source",
     "source_type",
+    "chunk",
+    "heading",
 }
 
 
@@ -642,7 +644,7 @@ def test_search_answer_does_not_redact_a_text_too_large_to_fit(monkeypatch):
     assert redacted == [small.content]
 
 
-def test_fetch_answer_stays_below_the_cap(tmp_path):
+def test_fetch_answer_stays_below_the_cap(tmp_path, monkeypatch):
     # A row the indexer did not cap (a row of an older release, for example).
     body = "line of a long note\n" * 40_000
     content = f"# big\n\n[claude_code_md: big.md]\n\n{body}"
@@ -661,6 +663,9 @@ def test_fetch_answer_stays_below_the_cap(tmp_path):
                 rev=db.bump_rev(conn),
                 now=db.utc_now(),
             )
+        # The whole text path: a row this long normally comes back as its summary and the
+        # list of its sections (see the chunk tests), so lift the whole-text limit here.
+        monkeypatch.setattr(rest, "FETCH_WHOLE_CHARS", 10**9)
         answer = rest.fetch_answer(conn, str(mid), "claude_code")
     size = len(json.dumps(answer, ensure_ascii=False, separators=(",", ":")).encode())
     assert size < rest.ANSWER_CAP_BYTES

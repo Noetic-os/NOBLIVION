@@ -23,10 +23,11 @@ keyword-only (section 8.4).
 from __future__ import annotations
 
 import math
+import re
 import sqlite3
 import threading
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from noblivion import bm25, db
 
@@ -42,10 +43,17 @@ FUSION_DECIMALS = 6  # the fused score, compared and reported at 6 places
 MODE_HYBRID = "hybrid"
 MODE_KEYWORD = "keyword"
 _CACHE_MAX = 64
+_CHUNK_READ_BATCH = 500
+_MARKER_LINE_RE = re.compile(r"^\[(?:claude_code_md|transcript_mined): [^\]\n]*\][ \t]*$", re.M)
 
 
 @dataclass(frozen=True)
 class PoolRow:
+    """One ranked unit. ``id`` and ``content`` are those of the file row. A
+    chunk unit (NOBLIVION-103) holds the tokens of one chunk, and names it in
+    ``chunk_id``, ``chunk_index``, ``heading`` and ``chunk_text``. A row that
+    has no chunk is one unit with ``chunk_id`` None."""
+
     id: int
     project: str
     root: str
@@ -55,6 +63,19 @@ class PoolRow:
     weight: float
     tokens: tuple[str, ...] = field(repr=False, compare=False)
     is_general: bool = False
+    chunk_id: int | None = None
+    chunk_index: int = 0
+    heading: str = ""
+    chunk_text: str = field(default="", repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class _Chunk:
+    id: int
+    index: int
+    heading: str
+    text: str
+    tokens: tuple[str, ...] = field(repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -150,6 +171,77 @@ def rank_pool(
     return RankResult(MODE_HYBRID, hits, n)
 
 
+def collapse_to_files(
+    ranked: RankResult,
+    units: Sequence[PoolRow],
+    cosines: dict[int, float] | None,
+    top_k: int,
+    n_files: int,
+) -> RankResult:
+    """One hit per file from a ranking of chunk units.
+
+    The best unit of a file in the fused order gives the file its place and
+    names its chunk. The ``score`` is the best weighted cosine of any chunk of
+    the file, so a hook floor on the cosine does not drop a file whose best
+    keyword chunk has a lower cosine than another chunk. A file with no
+    cosine in any chunk has ``score`` None.
+    """
+    best_cosine: dict[int, float] = {}
+    for i, c in (cosines or {}).items():
+        weighted = _q(c * units[i].weight, SCORE_DECIMALS)
+        file_id = units[i].id
+        if weighted > best_cosine.get(file_id, -math.inf):
+            best_cosine[file_id] = weighted
+    hits: list[Hit] = []
+    seen: set[int] = set()
+    for hit in ranked.hits:
+        if hit.row.id in seen:
+            continue
+        seen.add(hit.row.id)
+        score = best_cosine.get(hit.row.id)
+        hits.append(Hit(len(hits) + 1, hit.row, score, hit.fusion_score, hit.bm25))
+        if len(hits) >= top_k:
+            break
+    return RankResult(ranked.mode, hits, n_files)
+
+
+def pick_chunk(
+    chunks: Sequence[tuple[int, str]],
+    query: str,
+    vectors: dict[int, bytes] | None = None,
+    query_vector: Sequence[float] | None = None,
+) -> int | None:
+    """The position in ``chunks`` of the chunk that best answers ``query``, or None.
+
+    ``chunks`` holds ``(chunk id, search text)`` of one file. It is the ranking of
+    ``RankIndex.rank`` on a pool of one file: BM25 and, when ``query_vector`` and
+    the chunk ``vectors`` (chunk id -> float32 blob) are given, the cosine,
+    fused by ``rank_pool``. None when no chunk holds a query word and there is no cosine.
+    """
+    tokens = bm25.tokenize(query)
+    if not chunks or not tokens:
+        return None
+    units = [
+        PoolRow(cid, "", "", "", "", "", 1.0, tuple(bm25.tokenize(text))) for cid, text in chunks
+    ]
+    index = bm25.BM25([u.tokens for u in units])
+    cosines: dict[int, float] = {}
+    if np is not None and vectors and query_vector:
+        dim = len(query_vector)
+        q = np.asarray(query_vector, dtype=np.float32)
+        norm = float(np.linalg.norm(q))
+        if math.isfinite(norm) and norm != 0.0:
+            for position, unit in enumerate(units):
+                blob = vectors.get(unit.id)
+                if blob is not None and len(blob) == dim * 4:
+                    cosines[position] = float(np.frombuffer(blob, dtype="<f4") @ (q / norm))
+    ranked = rank_pool(units, index.scores(tokens), cosines, 1, index.matches(tokens))
+    if not ranked.hits:
+        return None
+    best = ranked.hits[0].row.id
+    return next(i for i, u in enumerate(units) if u.id == best)
+
+
 # -- RAM index ------------------------------------------------------------------
 
 
@@ -158,7 +250,8 @@ class _Snapshot:
     content_rev: int = -1
     vector_rev: int = -1
     rows: dict[int, PoolRow] = field(default_factory=dict)
-    vectors: dict[int, bytes] = field(default_factory=dict)  # memory_id -> float32 blob
+    chunks: dict[int, tuple[_Chunk, ...]] = field(default_factory=dict)  # memory_id -> chunks
+    vectors: dict[int, bytes] = field(default_factory=dict)  # chunk id -> float32 blob
     dims: dict[int, int] = field(default_factory=dict)
     pools: dict = field(default_factory=dict)  # pool key -> (rows, BM25)
     matrices: dict = field(default_factory=dict)  # (pool key, dim) -> (positions, matrix)
@@ -199,7 +292,11 @@ class RankIndex:
             self._model_id = model_id
             old = self._snap
             self._snap = _Snapshot(
-                content_rev=old.content_rev, vector_rev=-1, rows=old.rows, pools=old.pools
+                content_rev=old.content_rev,
+                vector_rev=-1,
+                rows=old.rows,
+                chunks=old.chunks,
+                pools=old.pools,
             )
 
     def refresh(self, conn: sqlite3.Connection) -> bool:
@@ -221,6 +318,7 @@ class RankIndex:
         with db.read_tx(conn):
             content_rev, vector_rev = db.revisions(conn)
             changed_rows = []
+            changed_chunks: dict[int, list] = {}
             live_ids = None
             if content_rev > old.content_rev:
                 changed_rows = conn.execute(
@@ -240,10 +338,22 @@ class RankIndex:
                         "SELECT id FROM memories WHERE archived_at IS NULL AND deleted_at IS NULL"
                     )
                 }
+                # All chunks of a changed row: the chunks of one row are read together.
+                ids = [int(r["id"]) for r in changed_rows if int(r["id"]) in live_ids]
+                for start in range(0, len(ids), _CHUNK_READ_BATCH):
+                    part = ids[start : start + _CHUNK_READ_BATCH]
+                    marks = ",".join("?" * len(part))
+                    for c in conn.execute(
+                        "SELECT parent_id, id, chunk_index, heading, text, search_text "
+                        f"FROM memory_chunks WHERE parent_id IN ({marks}) "
+                        "ORDER BY parent_id, chunk_index",
+                        part,
+                    ):
+                        changed_chunks.setdefault(int(c["parent_id"]), []).append(c)
             changed_vectors = []
             if model is not None and vector_rev > old.vector_rev:
                 changed_vectors = conn.execute(
-                    "SELECT memory_id, dim, blob FROM vectors WHERE model = ? AND rev > ?",
+                    "SELECT chunk_id, dim, blob FROM chunk_vectors WHERE model = ? AND rev > ?",
                     (model, old.vector_rev),
                 ).fetchall()
         new = _Snapshot(content_rev=content_rev, vector_rev=vector_rev)
@@ -265,22 +375,48 @@ class RankIndex:
                 else:
                     rows.pop(int(r["id"]), None)
             new.rows = rows
+            # A changed row takes the chunks read above. A row that changed and has no
+            # chunk row (a writer that skipped them) is one unit of its own.
+            changed_ids = {int(r["id"]) for r in changed_rows}
+            chunks = {
+                mid: found
+                for mid, found in old.chunks.items()
+                if mid in rows and mid not in changed_ids
+            }
+            for mid, found in changed_chunks.items():
+                # The marker line (the file path) is part of the keyword text of every chunk
+                # of its file, as it was part of the keyword text of the file row.
+                marker = _MARKER_LINE_RE.search(rows[mid].content)
+                path_tokens = tuple(bm25.tokenize(marker.group(0))) if marker else ()
+                chunks[mid] = tuple(
+                    _Chunk(
+                        int(c["id"]),
+                        int(c["chunk_index"]),
+                        c["heading"],
+                        c["text"],
+                        tuple(bm25.tokenize(c["search_text"])) + path_tokens,
+                    )
+                    for c in found
+                )
+            new.chunks = chunks
         else:
             new.rows = old.rows
+            new.chunks = old.chunks
             new.pools = old.pools  # BM25 stays: no content change
         if changed_vectors:
             new.vectors = dict(old.vectors)
             new.dims = dict(old.dims)
             for r in changed_vectors:
-                new.vectors[int(r["memory_id"])] = bytes(r["blob"])
-                new.dims[int(r["memory_id"])] = int(r["dim"])
+                new.vectors[int(r["chunk_id"])] = bytes(r["blob"])
+                new.dims[int(r["chunk_id"])] = int(r["dim"])
         else:
             new.vectors, new.dims = old.vectors, old.dims
             if content_rev == old.content_rev:
                 new.matrices = old.matrices
         if content_rev > old.content_rev:
-            new.vectors = {mid: value for mid, value in new.vectors.items() if mid in new.rows}
-            new.dims = {mid: value for mid, value in new.dims.items() if mid in new.rows}
+            live_chunks = {c.id for found in new.chunks.values() for c in found}
+            new.vectors = {k: v for k, v in new.vectors.items() if k in live_chunks}
+            new.dims = {k: v for k, v in new.dims.items() if k in live_chunks}
         return new
 
     # -- pools ----------------------------------------------------------------
@@ -293,7 +429,7 @@ class RankIndex:
             return (project, None, None, bool(include_mined))
         return (project, root, tuple(sorted(set(shared_roots) - {root})), bool(include_mined))
 
-    def _pool(self, snap: _Snapshot, key: tuple) -> tuple[list[PoolRow], bm25.BM25]:
+    def _pool(self, snap: _Snapshot, key: tuple) -> tuple[list[PoolRow], bm25.BM25, int]:
         cached = snap.pools.get(key)
         if cached is not None:
             return cached
@@ -318,7 +454,26 @@ class RankIndex:
                 if r.root == root or r.source_type != db.SOURCE_MD or r.path not in own
             ]
         rows.sort(key=lambda r: r.id)
-        built = (rows, bm25.BM25([r.tokens for r in rows]))
+        # One unit per chunk (BM25 and cosine are per chunk), or one unit for a
+        # row that has no chunk. The units of a row stay together, in chunk order.
+        units: list[PoolRow] = []
+        for r in rows:
+            found = snap.chunks.get(r.id)
+            if not found:
+                units.append(r)
+                continue
+            units.extend(
+                replace(
+                    r,
+                    tokens=c.tokens,
+                    chunk_id=c.id,
+                    chunk_index=c.index,
+                    heading=c.heading,
+                    chunk_text=c.text,
+                )
+                for c in found
+            )
+        built = (units, bm25.BM25([u.tokens for u in units]), len(rows))
         self.bm25_builds += 1
         if len(snap.pools) >= _CACHE_MAX:
             snap.pools.clear()
@@ -335,10 +490,12 @@ class RankIndex:
         cached = snap.matrices.get(mkey)
         if cached is None:
             positions = [
-                i for i, r in enumerate(rows) if r.id in snap.vectors and snap.dims.get(r.id) == dim
+                i
+                for i, r in enumerate(rows)
+                if r.chunk_id in snap.vectors and snap.dims.get(r.chunk_id) == dim
             ]
             if positions:
-                blob = b"".join(snap.vectors[rows[i].id] for i in positions)
+                blob = b"".join(snap.vectors[rows[i].chunk_id] for i in positions)
                 matrix = np.frombuffer(blob, dtype="<f4").reshape(len(positions), dim)
             else:
                 matrix = np.zeros((0, dim), dtype="<f4")
@@ -374,14 +531,16 @@ class RankIndex:
         """
         snap = self._snap
         key = self.pool_key(project, root, shared_roots, include_mined)
-        rows, index = self._pool(snap, key)
-        if not rows or not query.strip():
-            mode = MODE_HYBRID if query_vector is not None and rows else MODE_KEYWORD
-            return RankResult(mode, [], len(rows))
+        units, index, n_files = self._pool(snap, key)
+        if not units or not query.strip():
+            mode = MODE_HYBRID if query_vector is not None and units else MODE_KEYWORD
+            return RankResult(mode, [], n_files)
         tokens = bm25.tokenize(query)
         scores = index.scores(tokens)
-        cosines = self._cosines(snap, key, rows, query_vector) if query_vector else {}
-        return rank_pool(rows, scores, cosines, top_k, index.matches(tokens))
+        cosines = self._cosines(snap, key, units, query_vector) if query_vector else {}
+        # Rank every unit, then keep the best unit of each file (NOBLIVION-103).
+        ranked = rank_pool(units, scores, cosines, len(units), index.matches(tokens))
+        return collapse_to_files(ranked, units, cosines, top_k, n_files)
 
 
 class Ranker:
@@ -394,6 +553,15 @@ class Ranker:
         self.embedding = embedding
         self.query_timeout_s = query_timeout_s
         self.index = RankIndex(embedding.model_id if embedding is not None else None)
+
+    def query_vector(self, conn: sqlite3.Connection, query: str) -> list[float] | None:
+        """The embedding of ``query`` with the query time limit, or None (no model,
+        no numpy, a slow or failed embed): the caller then ranks by keyword only."""
+        if self.embedding is None or np is None or self.embedding.model_id is None:
+            return None
+        if not query.strip():
+            return None
+        return self.embedding.embed_query(query, self.query_timeout_s, conn)
 
     def search(
         self,

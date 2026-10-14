@@ -423,6 +423,71 @@ def test_end_to_end_ranked_index_rule_rows_and_mcp_fetch(tmp_path, real_store):
     assert "tag the release" in text
 
 
+LONG_SECTIONS = {
+    "Background": "A line of background that says nothing about the rest of the note. " * 90,
+    "Storage": "Snapshots of the object store stay for 45 days. " * 12,
+    "Keys": "The signing key for tokens rotates every 90 days and two keys stay valid. " * 8,
+    "Limits": "Every client may send 600 requests per minute before the gateway refuses. " * 8,
+}
+
+
+def test_end_to_end_mcp_fetch_of_a_long_memory_by_chunk_and_by_section(tmp_path):
+    """NOBLIVION-103: a long memory comes back as its summary and the list of its
+    sections; ``chunk`` and ``section`` read one section; the text past the old
+    6,000 characters can be reached."""
+    folder = _memory_folder(tmp_path)
+    body = "\n\n".join(f"## {name}\n{text.strip()}" for name, text in LONG_SECTIONS.items())
+    write_memory(folder, "gateway notes", "How the public gateway is run.", body)
+    run = Running(make_store(tmp_path))
+    try:
+        assert wait_for(lambda: run.store.index_state == store.INDEX_IDLE)
+        assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
+        with closing(db.connect(run.store.settings.db_path, create=False)) as conn:
+            mid = conn.execute("SELECT id FROM memories WHERE path LIKE '%gateway%'").fetchone()[0]
+            size = len(
+                conn.execute("SELECT content FROM memories WHERE id = ?", (mid,)).fetchone()[0]
+            )
+            assert size > 6000
+            limits = conn.execute(
+                "SELECT chunk_index FROM memory_chunks WHERE parent_id = ? AND heading = 'Limits'",
+                (mid,),
+            ).fetchone()[0]
+            assert limits > 3  # past the background chunks
+        env = _store_env(tmp_path, folder)
+        mcp = load_hook_mcp()
+
+        listing = mcp.noblivion_recall(environ=env, fetch_id=mid)
+        assert listing["isError"] is False
+        text = listing["content"][0]["text"]
+        assert text.startswith(f"GROUNDED MEMORY {mid}: gateway notes")
+        assert "Sections of this memory" in text and "Limits" in text and "chunk=" in text
+        assert "rotates every 90 days" not in text
+
+        by_chunk = mcp.noblivion_recall(environ=env, fetch_id=mid, chunk=limits)
+        assert by_chunk["isError"] is False
+        text = by_chunk["content"][0]["text"]
+        assert (
+            f"GROUNDED MEMORY {mid}: gateway notes" in text
+            and f"| section {limits}: Limits" in text
+        )
+        assert "600 requests per minute" in text and "rotates every 90 days" not in text
+
+        by_section = mcp.noblivion_recall(environ=env, fetch_id=mid, section="signing key rotates")
+        text = by_section["content"][0]["text"]
+        assert "| section" in text and ": Keys" in text and "rotates every 90 days" in text
+
+        bad = mcp.noblivion_recall(environ=env, fetch_id=mid, chunk=99)
+        assert bad["isError"] is True and "no chunk with that number" in bad["content"][0]["text"]
+        assert mcp.noblivion_recall(environ=env, fetch_id=mid, chunk=-1)["isError"] is True
+        assert mcp.noblivion_recall(environ=env, fetch_id=mid, chunk="x")["isError"] is True
+        both = mcp.noblivion_recall(environ=env, fetch_id=mid, chunk=1, section="keys")
+        assert both["isError"] is True and "chunk OR section" in both["content"][0]["text"]
+        alone = mcp.noblivion_recall("pytest venv", environ=env, chunk=1)
+        assert alone["isError"] is True and "go with fetch_id" in alone["content"][0]["text"]
+    finally:
+        run.stop()
+
+
 def test_end_to_end_mcp_search_and_include_mined(tmp_path, real_store):
     run, folder = real_store
     with closing(db.connect(run.store.settings.db_path, create=True)) as conn:
@@ -488,7 +553,12 @@ def backfill_store(tmp_path):
         with closing(db.connect(run.store.settings.db_path, create=False)) as conn:
             return conn.execute("SELECT COUNT(*) FROM vectors").fetchone()[0]
 
+    def chunk_vectors() -> int:
+        with closing(db.connect(run.store.settings.db_path, create=False)) as conn:
+            return conn.execute("SELECT COUNT(*) FROM chunk_vectors").fetchone()[0]
+
     assert wait_for(lambda: vectors() == 10)
+    assert wait_for(lambda: chunk_vectors() == 10)  # a short note is one chunk
     assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
     yield run, folder
     run.stop()

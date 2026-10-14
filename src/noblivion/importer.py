@@ -627,6 +627,7 @@ def store_entries(
                         "rev = ?, created_at = ?, updated_at = ? WHERE id = ?",
                         (*_row_values(e, archived_at, rev), row.id),
                     )
+                    db.sync_chunks(conn, row.id, e.content(), rev)
                     ids.append(row.id)
                     report.revived += 1
                     continue
@@ -637,6 +638,7 @@ def store_entries(
                     (project, db.IMPORT_ROOT, e.path, *_row_values(e, archived_at, rev)),
                 )
                 ids.append(int(cur.lastrowid))
+                db.sync_chunks(conn, int(cur.lastrowid), e.content(), rev)
             report.inserted += len(todo) - sum(1 for e in todo if current[e.path] is not None)
             report.content_rev = rev
     return ids

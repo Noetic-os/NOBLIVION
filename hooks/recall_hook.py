@@ -852,12 +852,26 @@ def index_url(
     return f"{base}/api/memories/index?{qs}"
 
 
-def fetch_url(base: str, memory_id: Any, project: str = PERSONA, root: Optional[str] = None) -> str:
+def fetch_url(
+    base: str,
+    memory_id: Any,
+    project: str = PERSONA,
+    root: Optional[str] = None,
+    chunk: Any = None,
+    section: str = "",
+) -> str:
     """(R1) — fetch on demand, by id. The id is sent as a plain
     integer; anything else is refused here rather than at the store, so a
-    crafted id cannot reach a URL path."""
+    crafted id cannot reach a URL path. ``chunk`` (a chunk number) or
+    ``section`` (words, sent as the store's ``query``) asks for one section of
+    the memory (NOBLIVION-103); both go in the query string only."""
     mid = int(memory_id)
-    qs = _qs({"project": project}, root)
+    params: Dict[str, Any] = {"project": project}
+    if chunk is not None:
+        params["chunk"] = int(chunk)
+    if isinstance(section, str) and section.strip():
+        params["query"] = section.strip()[:300]
+    qs = _qs(params, root)
     return f"{base}/api/memories/fetch/{mid}?{qs}"
 
 
@@ -2683,9 +2697,14 @@ def recall_index(
 
 
 def fetch_memory_text(
-    memory_id: Any, environ: Optional[Mapping[str, str]] = None, root: Optional[str] = None
+    memory_id: Any,
+    environ: Optional[Mapping[str, str]] = None,
+    root: Optional[str] = None,
+    chunk: Any = None,
+    section: str = "",
 ) -> Dict[str, Any]:
-    """(R1) — the full text of one memory, by id.
+    """(R1) — the full text of one memory, by id, or one section of it with
+    ``chunk`` or ``section`` (NOBLIVION-103).
 
     The other half of the index: the MCP tool calls this when the model asks for
     a candidate by id. Returns the store's answer as a dict; the caller renders
@@ -2696,10 +2715,12 @@ def fetch_memory_text(
     project = recall_project(env)
     where = session_root(env) if root is None else root
     try:
-        fetch_url("", memory_id, project)
+        fetch_url("", memory_id, project, None, chunk, section)
     except (TypeError, ValueError):
         raise RecallError("bad_id") from None
-    payload = store_get(lambda base: fetch_url(base, memory_id, project, where), env, timeout_s)
+    payload = store_get(
+        lambda base: fetch_url(base, memory_id, project, where, chunk, section), env, timeout_s
+    )
     if not isinstance(payload, dict):
         raise RecallError("bad_shape")
     if "namespace" in payload and payload["namespace"] != project:

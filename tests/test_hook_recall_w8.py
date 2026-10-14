@@ -477,3 +477,54 @@ def test_the_best_ranked_candidate_wins_a_duplicate_name():
         for i, mid in ((1, 19001), (2, 19002))
     ]
     assert hook._candidate_ids(lines) == {"feedback_a": 19001}
+
+
+# ── NOBLIVION-103: one section of a memory ──────────────────────────────────
+
+
+def test_a_fetch_passes_the_chunk_and_names_the_section(tmp_path, monkeypatch):
+    seen: list[dict[str, Any]] = []
+
+    def stub(mid, environ=None, **kwargs):
+        seen.append(kwargs)
+        return {"title": "gateway", "text": "## Keys\nrotate", "chunk": 2, "heading": "Keys",
+                "reason": None}  # fmt: skip
+
+    monkeypatch.setattr(hook, "fetch_memory_text", stub)
+    env = _fetch_env(tmp_path, tmp_path)
+    got = mcp._fetch_one(hook, 7, env, 2, None)
+    assert seen == [{"chunk": 2}]
+    assert got["content"][0]["text"].startswith("GROUNDED MEMORY 7: gateway | section 2: Keys\n")
+    # A plain fetch passes nothing: a hook of an older release takes the call as before.
+    mcp._fetch_one(hook, 7, env)
+    assert seen[-1] == {}
+
+
+def test_a_fetch_says_when_no_section_matched(tmp_path, monkeypatch):
+    seen: list[dict[str, Any]] = []
+
+    def stub(mid, environ=None, **kwargs):
+        seen.append(kwargs)
+        return {"title": "gateway", "text": "the summary", "reason": None}
+
+    monkeypatch.setattr(hook, "fetch_memory_text", stub)
+    got = mcp._fetch_one(hook, 7, _fetch_env(tmp_path, tmp_path), None, " the keys ")
+    assert seen == [{"section": "the keys"}]
+    assert "no section matched" in got["content"][0]["text"]
+
+
+def test_a_fetch_refuses_a_bad_chunk_or_section(tmp_path):
+    env = _fetch_env(tmp_path, tmp_path)
+    for chunk, section in [("x", None), (-1, None), (1.5, None), (1, "words"), (None, 5)]:
+        got = mcp._fetch_one(hook, 7, env, chunk, section)
+        assert got["isError"] is True, (chunk, section)
+
+
+def test_the_fetch_url_carries_the_chunk_and_the_section():
+    url = hook.fetch_url("http://h", 7, "claude_code", "-r", 3, "signing key")
+    assert url.startswith("http://h/api/memories/fetch/7?")
+    assert "chunk=3" in url and "query=signing+key" in url and "root=-r" in url
+    plain = hook.fetch_url("http://h", 7, "claude_code", "-r")
+    assert "chunk" not in plain and "query" not in plain
+    with pytest.raises(ValueError):
+        hook.fetch_url("http://h", 7, "claude_code", "-r", "x")

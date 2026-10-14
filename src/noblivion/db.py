@@ -29,6 +29,8 @@ from datetime import datetime, timedelta, timezone
 from importlib import resources
 from pathlib import Path
 
+from noblivion import chunking
+
 BATCH_ROWS = 200
 BUSY_TIMEOUT_MS = 5000
 KEEP_BACKUPS = 3
@@ -254,7 +256,12 @@ def _seed_version_1(conn: sqlite3.Connection) -> None:
     )
 
 
-_SEEDS = {1: _seed_version_1}
+def _seed_version_5(conn: sqlite3.Connection) -> None:
+    """Cut every existing row into chunks, in the migration transaction."""
+    _fill_chunks(conn)
+
+
+_SEEDS = {1: _seed_version_1, 5: _seed_version_5}
 
 
 def _backup(conn: sqlite3.Connection, db_path: Path, old_version: int) -> Path:
@@ -459,7 +466,9 @@ def insert_memory(
         "labels, rev, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (project, root, path, source_type, category, content, content_hash, labels, rev, now, now),
     )
-    return int(cur.lastrowid)
+    memory_id = int(cur.lastrowid)
+    sync_chunks(conn, memory_id, content, rev)
+    return memory_id
 
 
 def rewrite_memory(
@@ -486,7 +495,98 @@ def rewrite_memory(
         "WHERE id = ?",
         (root, path, category, content, content_hash, labels, rev, now, memory_id),
     )
-    return cur.rowcount == 1
+    if cur.rowcount != 1:
+        return False
+    sync_chunks(conn, memory_id, content, rev)
+    return True
+
+
+# -- chunks (NOBLIVION-103) ------------------------------------------------------
+
+CHUNKER_VERSION_KEY = "chunker_version"
+
+
+def sync_chunks(conn: sqlite3.Connection, memory_id: int, content: str, rev: int) -> int:
+    """Make the chunk rows of a memory row match ``content``. Call inside ``write_tx``.
+
+    A chunk with the same text keeps its row, its ``rev`` and its vector, so
+    an edit of one section does not embed the other sections again. A chunk
+    with a new text keeps its row id and gets ``rev``; its vector is stale by
+    hash until the next embedding pass. Returns the number of chunk rows
+    written or removed.
+    """
+    old = {
+        int(r[1]): (int(r[0]), r[2], r[3], r[4])
+        for r in conn.execute(
+            "SELECT id, chunk_index, heading, text, search_text FROM memory_chunks "
+            "WHERE parent_id = ?",
+            (memory_id,),
+        )
+    }
+    changed = 0
+    for chunk in chunking.split_content(content).chunks:
+        have = old.pop(chunk.index, None)
+        if have is None:
+            conn.execute(
+                "INSERT INTO memory_chunks (parent_id, chunk_index, heading, text, search_text, "
+                "rev) VALUES (?, ?, ?, ?, ?, ?)",
+                (memory_id, chunk.index, chunk.heading, chunk.text, chunk.search_text, rev),
+            )
+            changed += 1
+        elif have[1:] != (chunk.heading, chunk.text, chunk.search_text):
+            conn.execute(
+                "UPDATE memory_chunks SET heading = ?, text = ?, search_text = ?, rev = ? "
+                "WHERE id = ?",
+                (chunk.heading, chunk.text, chunk.search_text, rev, have[0]),
+            )
+            changed += 1
+    for chunk_id, *_ in old.values():
+        conn.execute("DELETE FROM memory_chunks WHERE id = ?", (chunk_id,))
+        changed += 1
+    return changed
+
+
+def _fill_chunks(conn: sqlite3.Connection) -> int:
+    """Cut the rows that have no chunk, or all rows when the chunker changed.
+    Stamps every row it touches with a new ``content_rev``, so a running
+    ranking index reloads them. Call inside ``write_tx``."""
+    version = str(chunking.CHUNKER_VERSION)
+    redo = get_meta(conn, CHUNKER_VERSION_KEY) not in (None, version)
+    rows = conn.execute(
+        "SELECT m.id, m.content FROM memories m "
+        + (
+            ""
+            if redo
+            else "WHERE NOT EXISTS (SELECT 1 FROM memory_chunks c WHERE c.parent_id = m.id) "
+        )
+        + "ORDER BY m.id"
+    ).fetchall()
+    if rows:
+        rev = bump_rev(conn, "content_rev")
+        for memory_id, content in rows:
+            sync_chunks(conn, int(memory_id), str(content), rev)
+        conn.executemany(
+            "UPDATE memories SET rev = ? WHERE id = ?", [(rev, int(r[0])) for r in rows]
+        )
+    set_meta(conn, CHUNKER_VERSION_KEY, version)
+    return len(rows)
+
+
+def ensure_chunks(conn: sqlite3.Connection) -> int:
+    """Fill the chunks of every row that has none (a writer that does not call
+    ``sync_chunks``, or a new chunker version). Returns the number of rows cut.
+    Opens its own ``write_tx``, and only when there is work."""
+    version = str(chunking.CHUNKER_VERSION)
+    if (
+        get_meta(conn, CHUNKER_VERSION_KEY) == version
+        and not conn.execute(
+            "SELECT 1 FROM memories m WHERE NOT EXISTS "
+            "(SELECT 1 FROM memory_chunks c WHERE c.parent_id = m.id) LIMIT 1"
+        ).fetchone()
+    ):
+        return 0
+    with write_tx(conn):
+        return _fill_chunks(conn)
 
 
 def soft_delete(conn: sqlite3.Connection, memory_id: int, *, rev: int, now: str) -> bool:

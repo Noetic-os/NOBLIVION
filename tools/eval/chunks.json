@@ -1,0 +1,440 @@
+{
+ "files": [
+  {
+   "id": "build_pipeline",
+   "name": "Build pipeline notes",
+   "description": "How the monorepo build pipeline runs, and the rules around it",
+   "body": "## Overview\nThe monorepo pipeline has five stages: lint, unit, package, integration and publish. Every stage runs on pooled runners that the platform team owns. A red stage blocks the merge queue for that branch only.\n\n## Inventory\n- stage lint: owner team-d, rotation 3, runbook rb-503, review every 6 weeks, backup owner team-a-8, contact channel #team-d-6\n- stage unit: owner team-e, rotation 8, runbook rb-233, review every 4 weeks, backup owner team-c-4, contact channel #team-e-12\n- stage package: owner team-d, rotation 5, runbook rb-797, review every 6 weeks, backup owner team-a-8, contact channel #team-d-6\n- stage integration: owner team-a, rotation 9, runbook rb-246, review every 8 weeks, backup owner team-c-7, contact channel #team-a-23\n- stage publish: owner team-b, rotation 2, runbook rb-883, review every 8 weeks, backup owner team-c-4, contact channel #team-b-18\n- stage sign: owner team-b, rotation 3, runbook rb-358, review every 4 weeks, backup owner team-b-2, contact channel #team-b-1\n- stage scan: owner team-c, rotation 2, runbook rb-751, review every 6 weeks, backup owner team-b-9, contact channel #team-c-25\n- stage bench: owner team-e, rotation 3, runbook rb-298, review every 6 weeks, backup owner team-b-6, contact channel #team-e-22\n- stage docs: owner team-b, rotation 5, runbook rb-465, review every 8 weeks, backup owner team-a-5, contact channel #team-b-13\n- stage deploy: owner team-d, rotation 7, runbook rb-596, review every 6 weeks, backup owner team-b-6, contact channel #team-d-1\n- stage lint-2: owner team-a, rotation 4, runbook rb-560, review every 2 weeks, backup owner team-a-5, contact channel #team-a-27\n- stage unit-2: owner team-a, rotation 7, runbook rb-229, review every 4 weeks, backup owner team-a-9, contact channel #team-a-28\n- stage package-2: owner team-c, rotation 7, runbook rb-445, review every 6 weeks, backup owner team-c-8, contact channel #team-c-22\n- stage integration-2: owner team-b, rotation 8, runbook rb-873, review every 2 weeks, backup owner team-a-4, contact channel #team-b-10\n- stage publish-2: owner team-c, rotation 8, runbook rb-920, review every 6 weeks, backup owner team-a-9, contact channel #team-c-29\n- stage sign-2: owner team-e, rotation 4, runbook rb-201, review every 8 weeks, backup owner team-b-8, contact channel #team-e-13\n- stage scan-2: owner team-d, rotation 2, runbook rb-405, review every 2 weeks, backup owner team-a-4, contact channel #team-d-7\n- stage bench-2: owner team-a, rotation 7, runbook rb-304, review every 4 weeks, backup owner team-a-2, contact channel #team-a-5\n- stage docs-2: owner team-e, rotation 6, runbook rb-314, review every 6 weeks, backup owner team-a-4, contact channel #team-e-21\n- stage deploy-2: owner team-a, rotation 4, runbook rb-258, review every 6 weeks, backup owner team-c-3, contact channel #team-a-3\n- stage lint-3: owner team-d, rotation 6, runbook rb-835, review every 4 weeks, backup owner team-a-5, contact channel #team-d-20\n- stage unit-3: owner team-a, rotation 2, runbook rb-343, review every 4 weeks, backup owner team-c-9, contact channel #team-a-17\n- stage package-3: owner team-d, rotation 5, runbook rb-589, review every 4 weeks, backup owner team-b-9, contact channel #team-d-14\n- stage integration-3: owner team-a, rotation 2, runbook rb-568, review every 2 weeks, backup owner team-c-7, contact channel #team-a-3\n- stage publish-3: owner team-d, rotation 6, runbook rb-835, review every 4 weeks, backup owner team-a-7, contact channel #team-d-4\n- stage sign-3: owner team-c, rotation 5, runbook rb-437, review every 4 weeks, backup owner team-b-4, contact channel #team-c-1\n- stage scan-3: owner team-b, rotation 4, runbook rb-139, review every 8 weeks, backup owner team-b-3, contact channel #team-b-28\n- stage bench-3: owner team-e, rotation 4, runbook rb-842, review every 8 weeks, backup owner team-b-4, contact channel #team-e-20\n- stage docs-3: owner team-e, rotation 5, runbook rb-451, review every 2 weeks, backup owner team-b-6, contact channel #team-e-13\n- stage deploy-3: owner team-c, rotation 9, runbook rb-544, review every 4 weeks, backup owner team-a-3, contact channel #team-c-10\n- stage lint-4: owner team-d, rotation 6, runbook rb-227, review every 6 weeks, backup owner team-a-8, contact channel #team-d-21\n- stage unit-4: owner team-d, rotation 4, runbook rb-588, review every 4 weeks, backup owner team-b-5, contact channel #team-d-18\n- stage package-4: owner team-a, rotation 7, runbook rb-855, review every 2 weeks, backup owner team-a-3, contact channel #team-a-24\n- stage integration-4: owner team-d, rotation 9, runbook rb-816, review every 4 weeks, backup owner team-c-4, contact channel #team-d-26\n- stage publish-4: owner team-b, rotation 8, runbook rb-534, review every 2 weeks, backup owner team-b-2, contact channel #team-b-3\n- stage sign-4: owner team-d, rotation 5, runbook rb-570, review every 6 weeks, backup owner team-b-9, contact channel #team-d-22\n- stage scan-4: owner team-e, rotation 8, runbook rb-572, review every 2 weeks, backup owner team-c-8, contact channel #team-e-27\n- stage bench-4: owner team-c, rotation 9, runbook rb-392, review every 4 weeks, backup owner team-a-2, contact channel #team-c-23\n- stage docs-4: owner team-e, rotation 2, runbook rb-161, review every 6 weeks, backup owner team-a-1, contact channel #team-e-2\n- stage deploy-4: owner team-b, rotation 9, runbook rb-766, review every 4 weeks, backup owner team-b-5, contact channel #team-b-30\n- stage lint-5: owner team-c, rotation 5, runbook rb-177, review every 8 weeks, backup owner team-c-7, contact channel #team-c-21\n- stage unit-5: owner team-c, rotation 5, runbook rb-228, review every 2 weeks, backup owner team-a-4, contact channel #team-c-14\n- stage package-5: owner team-d, rotation 8, runbook rb-144, review every 6 weeks, backup owner team-c-5, contact channel #team-d-8\n- stage integration-5: owner team-b, rotation 7, runbook rb-225, review every 4 weeks, backup owner team-b-9, contact channel #team-b-1\n- stage publish-5: owner team-d, rotation 4, runbook rb-973, review every 6 weeks, backup owner team-c-2, contact channel #team-d-13\n- stage sign-5: owner team-d, rotation 5, runbook rb-773, review every 4 weeks, backup owner team-c-5, contact channel #team-d-3\n- stage scan-5: owner team-a, rotation 9, runbook rb-442, review every 8 weeks, backup owner team-c-1, contact channel #team-a-12\n- stage bench-5: owner team-d, rotation 2, runbook rb-966, review every 4 weeks, backup owner team-c-7, contact channel #team-d-14\n- stage docs-5: owner team-b, rotation 4, runbook rb-628, review every 4 weeks, backup owner team-a-6, contact channel #team-b-12\n- stage deploy-5: owner team-a, rotation 7, runbook rb-443, review every 4 weeks, backup owner team-a-9, contact channel #team-a-27\n- stage lint-6: owner team-d, rotation 9, runbook rb-573, review every 6 weeks, backup owner team-c-1, contact channel #team-d-13\n- stage unit-6: owner team-b, rotation 2, runbook rb-739, review every 4 weeks, backup owner team-b-9, contact channel #team-b-5\n- stage package-6: owner team-a, rotation 7, runbook rb-490, review every 6 weeks, backup owner team-a-4, contact channel #team-a-21\n- stage integration-6: owner team-c, rotation 4, runbook rb-588, review every 2 weeks, backup owner team-b-3, contact channel #team-c-6\n- stage publish-6: owner team-b, rotation 6, runbook rb-849, review every 4 weeks, backup owner team-b-4, contact channel #team-b-14\n- stage sign-6: owner team-b, rotation 5, runbook rb-723, review every 6 weeks, backup owner team-b-5, contact channel #team-b-25\n- stage scan-6: owner team-e, rotation 5, runbook rb-733, review every 8 weeks, backup owner team-a-6, contact channel #team-e-26\n- stage bench-6: owner team-c, rotation 4, runbook rb-855, review every 6 weeks, backup owner team-b-9, contact channel #team-c-26\n- stage docs-6: owner team-b, rotation 6, runbook rb-703, review every 4 weeks, backup owner team-c-6, contact channel #team-b-14\n- stage deploy-6: owner team-c, rotation 3, runbook rb-869, review every 2 weeks, backup owner team-c-6, contact channel #team-c-27\n- stage lint-7: owner team-b, rotation 7, runbook rb-906, review every 4 weeks, backup owner team-b-3, contact channel #team-b-16\n- stage unit-7: owner team-e, rotation 7, runbook rb-297, review every 6 weeks, backup owner team-c-9, contact channel #team-e-27\n- stage package-7: owner team-b, rotation 5, runbook rb-976, review every 6 weeks, backup owner team-a-2, contact channel #team-b-11\n- stage integration-7: owner team-a, rotation 5, runbook rb-255, review every 2 weeks, backup owner team-c-7, contact channel #team-a-20\n- stage publish-7: owner team-c, rotation 2, runbook rb-139, review every 8 weeks, backup owner team-b-9, contact channel #team-c-22\n- stage sign-7: owner team-a, rotation 4, runbook rb-321, review every 2 weeks, backup owner team-c-7, contact channel #team-a-6\n- stage scan-7: owner team-a, rotation 8, runbook rb-849, review every 2 weeks, backup owner team-b-4, contact channel #team-a-14\n- stage bench-7: owner team-e, rotation 7, runbook rb-611, review every 4 weeks, backup owner team-b-9, contact channel #team-e-23\n- stage docs-7: owner team-c, rotation 2, runbook rb-127, review every 8 weeks, backup owner team-c-1, contact channel #team-c-13\n- stage deploy-7: owner team-c, rotation 9, runbook rb-401, review every 8 weeks, backup owner team-c-3, contact channel #team-c-15\n\n## Artifact retention\nBuild artifacts for a merged commit stay for 45 days. Artifacts of a closed pull request are deleted after 6 days. A release tag pins its artifacts with no expiry, and the pin is removed only by the platform lead. The storage bucket is named bld-cold-3 and a nightly job lists anything older than the policy.\n\n## Cache keys\nThe dependency cache key is the hash of the lockfile plus the runner image tag. A key miss costs about 7 minutes on the package stage. Never add the branch name to the key, because it splits the cache 40 ways. The cache is wiped every first Monday to drop stale layers.\n\n## Flaky test quarantine\nA test that fails and passes on the same commit twice in a week moves to the quarantine list. Quarantined tests still run but never block the queue. The owner gets a ticket with a 14 day limit. After the limit the test is deleted if nobody claims it.\n\n## Runner image rollout\nNew runner images roll out to 10 percent of the pool first, then 50 percent after one day of green builds. The old image stays available for 3 weeks. A rollback is one config line in the pool manifest, and it takes effect on the next job."
+  },
+  {
+   "id": "database_ops",
+   "name": "Database operations guide",
+   "description": "Backups, tuning and alerts for the main PostgreSQL clusters",
+   "body": "## Overview\nTwo clusters hold the product data: orders-db and accounts-db. Both run version 15 with one primary and two replicas. The data team owns schema changes, and the platform team owns the hosts.\n\n## Inventory\n- cluster orders: owner team-a, rotation 5, runbook rb-983, review every 2 weeks, backup owner team-c-7, contact channel #team-a-26\n- cluster accounts: owner team-b, rotation 8, runbook rb-839, review every 6 weeks, backup owner team-c-7, contact channel #team-b-25\n- cluster catalog: owner team-e, rotation 5, runbook rb-722, review every 2 weeks, backup owner team-a-8, contact channel #team-e-23\n- cluster billing: owner team-e, rotation 5, runbook rb-614, review every 4 weeks, backup owner team-a-2, contact channel #team-e-21\n- cluster events: owner team-d, rotation 4, runbook rb-202, review every 6 weeks, backup owner team-b-2, contact channel #team-d-18\n- cluster search: owner team-e, rotation 8, runbook rb-191, review every 6 weeks, backup owner team-b-3, contact channel #team-e-13\n- cluster audit: owner team-a, rotation 4, runbook rb-994, review every 2 weeks, backup owner team-c-4, contact channel #team-a-1\n- cluster sessions: owner team-d, rotation 7, runbook rb-305, review every 4 weeks, backup owner team-c-8, contact channel #team-d-29\n- cluster reports: owner team-b, rotation 2, runbook rb-160, review every 6 weeks, backup owner team-b-3, contact channel #team-b-27\n- cluster files: owner team-a, rotation 7, runbook rb-640, review every 4 weeks, backup owner team-a-2, contact channel #team-a-8\n- cluster orders-2: owner team-e, rotation 7, runbook rb-580, review every 2 weeks, backup owner team-c-8, contact channel #team-e-2\n- cluster accounts-2: owner team-b, rotation 4, runbook rb-224, review every 8 weeks, backup owner team-c-5, contact channel #team-b-9\n- cluster catalog-2: owner team-a, rotation 2, runbook rb-329, review every 2 weeks, backup owner team-b-4, contact channel #team-a-27\n- cluster billing-2: owner team-e, rotation 7, runbook rb-210, review every 2 weeks, backup owner team-c-6, contact channel #team-e-17\n- cluster events-2: owner team-c, rotation 9, runbook rb-128, review every 8 weeks, backup owner team-b-6, contact channel #team-c-16\n- cluster search-2: owner team-d, rotation 6, runbook rb-614, review every 6 weeks, backup owner team-c-4, contact channel #team-d-27\n- cluster audit-2: owner team-a, rotation 6, runbook rb-229, review every 4 weeks, backup owner team-a-4, contact channel #team-a-26\n- cluster sessions-2: owner team-c, rotation 6, runbook rb-164, review every 2 weeks, backup owner team-a-2, contact channel #team-c-30\n- cluster reports-2: owner team-a, rotation 5, runbook rb-781, review every 2 weeks, backup owner team-a-9, contact channel #team-a-15\n- cluster files-2: owner team-d, rotation 3, runbook rb-571, review every 2 weeks, backup owner team-a-6, contact channel #team-d-26\n- cluster orders-3: owner team-e, rotation 2, runbook rb-777, review every 2 weeks, backup owner team-a-8, contact channel #team-e-8\n- cluster accounts-3: owner team-b, rotation 9, runbook rb-252, review every 4 weeks, backup owner team-c-2, contact channel #team-b-11\n- cluster catalog-3: owner team-c, rotation 6, runbook rb-558, review every 2 weeks, backup owner team-b-2, contact channel #team-c-9\n- cluster billing-3: owner team-c, rotation 8, runbook rb-838, review every 8 weeks, backup owner team-a-3, contact channel #team-c-14\n- cluster events-3: owner team-b, rotation 9, runbook rb-636, review every 6 weeks, backup owner team-c-4, contact channel #team-b-29\n- cluster search-3: owner team-a, rotation 7, runbook rb-838, review every 8 weeks, backup owner team-b-3, contact channel #team-a-17\n- cluster audit-3: owner team-b, rotation 5, runbook rb-655, review every 4 weeks, backup owner team-b-1, contact channel #team-b-29\n- cluster sessions-3: owner team-c, rotation 8, runbook rb-826, review every 2 weeks, backup owner team-a-9, contact channel #team-c-15\n- cluster reports-3: owner team-c, rotation 6, runbook rb-480, review every 2 weeks, backup owner team-c-1, contact channel #team-c-29\n- cluster files-3: owner team-c, rotation 9, runbook rb-287, review every 8 weeks, backup owner team-b-3, contact channel #team-c-8\n- cluster orders-4: owner team-a, rotation 6, runbook rb-842, review every 8 weeks, backup owner team-b-8, contact channel #team-a-4\n- cluster accounts-4: owner team-e, rotation 2, runbook rb-735, review every 8 weeks, backup owner team-a-7, contact channel #team-e-27\n- cluster catalog-4: owner team-b, rotation 7, runbook rb-864, review every 8 weeks, backup owner team-a-4, contact channel #team-b-13\n- cluster billing-4: owner team-e, rotation 9, runbook rb-963, review every 2 weeks, backup owner team-a-8, contact channel #team-e-21\n- cluster events-4: owner team-a, rotation 9, runbook rb-195, review every 4 weeks, backup owner team-a-2, contact channel #team-a-12\n- cluster search-4: owner team-a, rotation 4, runbook rb-455, review every 4 weeks, backup owner team-c-2, contact channel #team-a-18\n- cluster audit-4: owner team-c, rotation 3, runbook rb-133, review every 4 weeks, backup owner team-a-2, contact channel #team-c-29\n- cluster sessions-4: owner team-d, rotation 7, runbook rb-273, review every 6 weeks, backup owner team-b-2, contact channel #team-d-29\n- cluster reports-4: owner team-d, rotation 6, runbook rb-677, review every 8 weeks, backup owner team-b-5, contact channel #team-d-23\n- cluster files-4: owner team-b, rotation 2, runbook rb-285, review every 8 weeks, backup owner team-a-9, contact channel #team-b-4\n- cluster orders-5: owner team-a, rotation 7, runbook rb-660, review every 8 weeks, backup owner team-c-1, contact channel #team-a-8\n- cluster accounts-5: owner team-a, rotation 3, runbook rb-446, review every 2 weeks, backup owner team-a-8, contact channel #team-a-20\n- cluster catalog-5: owner team-e, rotation 2, runbook rb-601, review every 6 weeks, backup owner team-c-7, contact channel #team-e-29\n- cluster billing-5: owner team-a, rotation 5, runbook rb-662, review every 4 weeks, backup owner team-a-8, contact channel #team-a-26\n- cluster events-5: owner team-a, rotation 6, runbook rb-584, review every 4 weeks, backup owner team-c-5, contact channel #team-a-6\n- cluster search-5: owner team-a, rotation 8, runbook rb-921, review every 6 weeks, backup owner team-c-3, contact channel #team-a-12\n- cluster audit-5: owner team-c, rotation 6, runbook rb-950, review every 2 weeks, backup owner team-a-5, contact channel #team-c-15\n- cluster sessions-5: owner team-e, rotation 2, runbook rb-200, review every 8 weeks, backup owner team-a-4, contact channel #team-e-25\n- cluster reports-5: owner team-e, rotation 9, runbook rb-841, review every 8 weeks, backup owner team-a-2, contact channel #team-e-5\n- cluster files-5: owner team-a, rotation 9, runbook rb-512, review every 8 weeks, backup owner team-c-4, contact channel #team-a-21\n- cluster orders-6: owner team-d, rotation 8, runbook rb-842, review every 2 weeks, backup owner team-c-7, contact channel #team-d-14\n- cluster accounts-6: owner team-d, rotation 8, runbook rb-675, review every 8 weeks, backup owner team-b-4, contact channel #team-d-13\n- cluster catalog-6: owner team-e, rotation 2, runbook rb-641, review every 8 weeks, backup owner team-b-6, contact channel #team-e-9\n- cluster billing-6: owner team-e, rotation 2, runbook rb-701, review every 4 weeks, backup owner team-a-2, contact channel #team-e-23\n- cluster events-6: owner team-b, rotation 5, runbook rb-641, review every 6 weeks, backup owner team-a-8, contact channel #team-b-18\n- cluster search-6: owner team-b, rotation 9, runbook rb-628, review every 6 weeks, backup owner team-a-3, contact channel #team-b-29\n- cluster audit-6: owner team-d, rotation 7, runbook rb-837, review every 2 weeks, backup owner team-a-2, contact channel #team-d-5\n- cluster sessions-6: owner team-a, rotation 6, runbook rb-996, review every 4 weeks, backup owner team-a-1, contact channel #team-a-11\n- cluster reports-6: owner team-e, rotation 6, runbook rb-929, review every 8 weeks, backup owner team-a-2, contact channel #team-e-27\n- cluster files-6: owner team-c, rotation 7, runbook rb-120, review every 8 weeks, backup owner team-a-3, contact channel #team-c-15\n- cluster orders-7: owner team-d, rotation 4, runbook rb-577, review every 8 weeks, backup owner team-c-8, contact channel #team-d-24\n- cluster accounts-7: owner team-e, rotation 4, runbook rb-640, review every 4 weeks, backup owner team-a-4, contact channel #team-e-9\n- cluster catalog-7: owner team-c, rotation 8, runbook rb-217, review every 2 weeks, backup owner team-a-3, contact channel #team-c-27\n- cluster billing-7: owner team-c, rotation 6, runbook rb-314, review every 8 weeks, backup owner team-a-9, contact channel #team-c-20\n- cluster events-7: owner team-e, rotation 3, runbook rb-847, review every 8 weeks, backup owner team-a-9, contact channel #team-e-4\n- cluster search-7: owner team-d, rotation 7, runbook rb-786, review every 2 weeks, backup owner team-c-8, contact channel #team-d-29\n- cluster audit-7: owner team-e, rotation 4, runbook rb-956, review every 2 weeks, backup owner team-c-3, contact channel #team-e-23\n- cluster sessions-7: owner team-d, rotation 9, runbook rb-760, review every 8 weeks, backup owner team-c-7, contact channel #team-d-14\n- cluster reports-7: owner team-e, rotation 8, runbook rb-209, review every 2 weeks, backup owner team-a-7, contact channel #team-e-10\n- cluster files-7: owner team-e, rotation 3, runbook rb-208, review every 4 weeks, backup owner team-c-9, contact channel #team-e-21\n\n## Connection pool sizing\nThe pooler allows 200 server connections per cluster. Each application pod gets a pool of 8, so the limit is reached at 25 pods. Raise the pooler limit only after checking memory, since each connection costs about 11 MB. Idle transactions older than 30 seconds are killed.\n\n## Vacuum and bloat\nAutovacuum runs with a scale factor of 0.02 on the large tables. The bloat report lists tables above 30 percent dead tuples every Sunday. A manual repack needs a maintenance window of 2 hours and a free disk of twice the table size.\n\n## Replica lag alerts\nThe lag alert fires at 15 seconds for 5 minutes. A lag above 120 seconds removes the replica from the read pool. Heavy reporting queries are the usual cause, so check the long running query list first before restarting anything.\n\n## Point in time restore\nWrite ahead logs ship every minute to the archive bucket. A restore to a chosen minute takes about 40 minutes for orders-db. Always restore into a fresh host and compare row counts before switching the pooler address."
+  },
+  {
+   "id": "api_gateway",
+   "name": "API gateway handbook",
+   "description": "Routing, limits and token rules of the public gateway",
+   "body": "## Overview\nThe gateway terminates all public traffic and forwards to about 30 internal services. Routes are declared in the routes repository and applied by a controller within a minute. Teams never edit the gateway hosts by hand.\n\n## Inventory\n- route /v1/orders: owner team-e, rotation 8, runbook rb-326, review every 4 weeks, backup owner team-a-5, contact channel #team-e-16\n- route /v1/carts: owner team-b, rotation 3, runbook rb-824, review every 8 weeks, backup owner team-c-1, contact channel #team-b-8\n- route /v1/users: owner team-b, rotation 2, runbook rb-531, review every 2 weeks, backup owner team-c-9, contact channel #team-b-22\n- route /v1/files: owner team-b, rotation 4, runbook rb-419, review every 8 weeks, backup owner team-c-5, contact channel #team-b-3\n- route /v1/search: owner team-e, rotation 9, runbook rb-737, review every 6 weeks, backup owner team-c-2, contact channel #team-e-4\n- route /v2/events: owner team-d, rotation 3, runbook rb-760, review every 2 weeks, backup owner team-b-6, contact channel #team-d-26\n- route /v1/pay: owner team-e, rotation 4, runbook rb-712, review every 8 weeks, backup owner team-a-8, contact channel #team-e-3\n- route /v1/hooks: owner team-e, rotation 4, runbook rb-916, review every 2 weeks, backup owner team-a-2, contact channel #team-e-25\n- route /v1/tags: owner team-d, rotation 3, runbook rb-594, review every 2 weeks, backup owner team-b-5, contact channel #team-d-27\n- route /v1/teams: owner team-a, rotation 2, runbook rb-312, review every 4 weeks, backup owner team-c-2, contact channel #team-a-27\n- route /v1/orders-2: owner team-e, rotation 3, runbook rb-185, review every 4 weeks, backup owner team-a-4, contact channel #team-e-26\n- route /v1/carts-2: owner team-a, rotation 5, runbook rb-611, review every 6 weeks, backup owner team-c-7, contact channel #team-a-16\n- route /v1/users-2: owner team-b, rotation 6, runbook rb-303, review every 8 weeks, backup owner team-c-1, contact channel #team-b-20\n- route /v1/files-2: owner team-d, rotation 4, runbook rb-140, review every 2 weeks, backup owner team-b-6, contact channel #team-d-14\n- route /v1/search-2: owner team-a, rotation 8, runbook rb-441, review every 2 weeks, backup owner team-a-6, contact channel #team-a-17\n- route /v2/events-2: owner team-d, rotation 3, runbook rb-533, review every 4 weeks, backup owner team-c-2, contact channel #team-d-21\n- route /v1/pay-2: owner team-e, rotation 6, runbook rb-195, review every 2 weeks, backup owner team-a-7, contact channel #team-e-14\n- route /v1/hooks-2: owner team-c, rotation 6, runbook rb-820, review every 6 weeks, backup owner team-c-8, contact channel #team-c-24\n- route /v1/tags-2: owner team-b, rotation 5, runbook rb-920, review every 6 weeks, backup owner team-a-1, contact channel #team-b-13\n- route /v1/teams-2: owner team-c, rotation 3, runbook rb-784, review every 6 weeks, backup owner team-c-5, contact channel #team-c-13\n- route /v1/orders-3: owner team-d, rotation 2, runbook rb-778, review every 6 weeks, backup owner team-b-4, contact channel #team-d-16\n- route /v1/carts-3: owner team-a, rotation 7, runbook rb-644, review every 2 weeks, backup owner team-a-3, contact channel #team-a-20\n- route /v1/users-3: owner team-a, rotation 4, runbook rb-457, review every 8 weeks, backup owner team-b-5, contact channel #team-a-26\n- route /v1/files-3: owner team-b, rotation 2, runbook rb-715, review every 8 weeks, backup owner team-a-5, contact channel #team-b-7\n- route /v1/search-3: owner team-a, rotation 2, runbook rb-203, review every 4 weeks, backup owner team-c-4, contact channel #team-a-11\n- route /v2/events-3: owner team-d, rotation 6, runbook rb-527, review every 4 weeks, backup owner team-c-7, contact channel #team-d-15\n- route /v1/pay-3: owner team-a, rotation 7, runbook rb-796, review every 6 weeks, backup owner team-a-9, contact channel #team-a-25\n- route /v1/hooks-3: owner team-a, rotation 9, runbook rb-446, review every 4 weeks, backup owner team-c-4, contact channel #team-a-14\n- route /v1/tags-3: owner team-a, rotation 9, runbook rb-908, review every 8 weeks, backup owner team-a-4, contact channel #team-a-15\n- route /v1/teams-3: owner team-d, rotation 4, runbook rb-827, review every 2 weeks, backup owner team-c-6, contact channel #team-d-19\n- route /v1/orders-4: owner team-c, rotation 4, runbook rb-851, review every 8 weeks, backup owner team-a-1, contact channel #team-c-1\n- route /v1/carts-4: owner team-b, rotation 9, runbook rb-572, review every 6 weeks, backup owner team-b-1, contact channel #team-b-15\n- route /v1/users-4: owner team-b, rotation 3, runbook rb-799, review every 8 weeks, backup owner team-b-5, contact channel #team-b-28\n- route /v1/files-4: owner team-a, rotation 6, runbook rb-935, review every 2 weeks, backup owner team-c-9, contact channel #team-a-21\n- route /v1/search-4: owner team-e, rotation 8, runbook rb-413, review every 2 weeks, backup owner team-c-2, contact channel #team-e-9\n- route /v2/events-4: owner team-c, rotation 2, runbook rb-494, review every 8 weeks, backup owner team-a-4, contact channel #team-c-22\n- route /v1/pay-4: owner team-e, rotation 5, runbook rb-621, review every 8 weeks, backup owner team-a-4, contact channel #team-e-18\n- route /v1/hooks-4: owner team-e, rotation 6, runbook rb-494, review every 4 weeks, backup owner team-b-2, contact channel #team-e-13\n- route /v1/tags-4: owner team-a, rotation 4, runbook rb-181, review every 2 weeks, backup owner team-b-5, contact channel #team-a-1\n- route /v1/teams-4: owner team-e, rotation 4, runbook rb-264, review every 4 weeks, backup owner team-c-5, contact channel #team-e-27\n- route /v1/orders-5: owner team-d, rotation 2, runbook rb-726, review every 2 weeks, backup owner team-c-1, contact channel #team-d-1\n- route /v1/carts-5: owner team-c, rotation 9, runbook rb-464, review every 2 weeks, backup owner team-a-1, contact channel #team-c-24\n- route /v1/users-5: owner team-b, rotation 5, runbook rb-224, review every 2 weeks, backup owner team-a-8, contact channel #team-b-15\n- route /v1/files-5: owner team-a, rotation 4, runbook rb-434, review every 4 weeks, backup owner team-b-2, contact channel #team-a-28\n- route /v1/search-5: owner team-e, rotation 4, runbook rb-975, review every 2 weeks, backup owner team-a-3, contact channel #team-e-21\n- route /v2/events-5: owner team-c, rotation 5, runbook rb-600, review every 2 weeks, backup owner team-b-7, contact channel #team-c-30\n- route /v1/pay-5: owner team-e, rotation 6, runbook rb-977, review every 6 weeks, backup owner team-b-9, contact channel #team-e-22\n- route /v1/hooks-5: owner team-d, rotation 5, runbook rb-739, review every 2 weeks, backup owner team-c-4, contact channel #team-d-1\n- route /v1/tags-5: owner team-a, rotation 3, runbook rb-266, review every 6 weeks, backup owner team-a-9, contact channel #team-a-15\n- route /v1/teams-5: owner team-e, rotation 7, runbook rb-765, review every 6 weeks, backup owner team-b-3, contact channel #team-e-17\n- route /v1/orders-6: owner team-d, rotation 3, runbook rb-421, review every 2 weeks, backup owner team-a-3, contact channel #team-d-29\n- route /v1/carts-6: owner team-d, rotation 7, runbook rb-617, review every 4 weeks, backup owner team-c-2, contact channel #team-d-26\n- route /v1/users-6: owner team-b, rotation 6, runbook rb-405, review every 2 weeks, backup owner team-a-9, contact channel #team-b-12\n- route /v1/files-6: owner team-b, rotation 2, runbook rb-472, review every 4 weeks, backup owner team-b-2, contact channel #team-b-12\n- route /v1/search-6: owner team-b, rotation 9, runbook rb-583, review every 6 weeks, backup owner team-b-3, contact channel #team-b-21\n- route /v2/events-6: owner team-b, rotation 9, runbook rb-455, review every 6 weeks, backup owner team-a-1, contact channel #team-b-2\n- route /v1/pay-6: owner team-d, rotation 6, runbook rb-674, review every 4 weeks, backup owner team-c-5, contact channel #team-d-17\n- route /v1/hooks-6: owner team-e, rotation 5, runbook rb-825, review every 8 weeks, backup owner team-a-1, contact channel #team-e-7\n- route /v1/tags-6: owner team-e, rotation 9, runbook rb-301, review every 6 weeks, backup owner team-c-5, contact channel #team-e-2\n- route /v1/teams-6: owner team-b, rotation 2, runbook rb-166, review every 8 weeks, backup owner team-b-3, contact channel #team-b-20\n- route /v1/orders-7: owner team-c, rotation 9, runbook rb-768, review every 2 weeks, backup owner team-b-7, contact channel #team-c-9\n- route /v1/carts-7: owner team-d, rotation 9, runbook rb-229, review every 2 weeks, backup owner team-c-9, contact channel #team-d-21\n- route /v1/users-7: owner team-b, rotation 6, runbook rb-563, review every 4 weeks, backup owner team-a-7, contact channel #team-b-1\n- route /v1/files-7: owner team-a, rotation 3, runbook rb-728, review every 6 weeks, backup owner team-c-3, contact channel #team-a-2\n- route /v1/search-7: owner team-d, rotation 6, runbook rb-241, review every 2 weeks, backup owner team-b-1, contact channel #team-d-19\n- route /v2/events-7: owner team-e, rotation 7, runbook rb-571, review every 6 weeks, backup owner team-b-6, contact channel #team-e-9\n- route /v1/pay-7: owner team-e, rotation 5, runbook rb-397, review every 4 weeks, backup owner team-b-1, contact channel #team-e-20\n- route /v1/hooks-7: owner team-e, rotation 9, runbook rb-595, review every 6 weeks, backup owner team-c-5, contact channel #team-e-5\n- route /v1/tags-7: owner team-d, rotation 2, runbook rb-793, review every 4 weeks, backup owner team-c-6, contact channel #team-d-15\n- route /v1/teams-7: owner team-c, rotation 3, runbook rb-783, review every 6 weeks, backup owner team-b-2, contact channel #team-c-13\n\n## Rate limits\nThe default limit is 600 requests per minute per API key. Partners on the gold plan get 3000. A burst bucket of 50 requests absorbs short spikes. Limit errors return status 429 with a retry-after header in whole seconds.\n\n## Token key rotation\nSigning keys rotate every 90 days. The new key is published 7 days before it signs anything, so clients can fetch it ahead of time. Two keys are always valid at once. An emergency rotation skips the delay and needs approval from the security lead.\n\n## Cross origin rules\nOnly origins listed in the allow file may call the browser endpoints. Wildcards are refused in production. Preflight answers are cached for 10 minutes. A new origin needs a pull request with the owner of the web app as reviewer.\n\n## Request size caps\nRequest bodies above 2 MB are rejected at the edge with status 413. Upload endpoints use signed storage links instead. Header size is capped at 16 KB, and cookies count toward that cap."
+  },
+  {
+   "id": "mobile_release",
+   "name": "Mobile release train",
+   "description": "Weekly release process for the iOS and Android apps",
+   "body": "## Overview\nThe mobile apps ship on a weekly train that cuts on Tuesday. A release branch lives for nine days. The release captain rotates every month and owns the go or no-go call.\n\n## Inventory\n- channel ios-prod: owner team-d, rotation 7, runbook rb-326, review every 8 weeks, backup owner team-b-9, contact channel #team-d-15\n- channel ios-beta: owner team-d, rotation 2, runbook rb-805, review every 6 weeks, backup owner team-a-8, contact channel #team-d-17\n- channel ios-staff: owner team-d, rotation 3, runbook rb-402, review every 6 weeks, backup owner team-c-9, contact channel #team-d-23\n- channel and-prod: owner team-a, rotation 5, runbook rb-799, review every 2 weeks, backup owner team-b-4, contact channel #team-a-22\n- channel and-beta: owner team-e, rotation 2, runbook rb-243, review every 8 weeks, backup owner team-b-1, contact channel #team-e-18\n- channel and-staff: owner team-b, rotation 8, runbook rb-162, review every 6 weeks, backup owner team-b-3, contact channel #team-b-28\n- channel ios-canary: owner team-c, rotation 8, runbook rb-537, review every 4 weeks, backup owner team-a-5, contact channel #team-c-15\n- channel and-canary: owner team-b, rotation 4, runbook rb-976, review every 4 weeks, backup owner team-c-5, contact channel #team-b-6\n- channel web-wrap: owner team-a, rotation 8, runbook rb-307, review every 6 weeks, backup owner team-b-6, contact channel #team-a-5\n- channel tv-prod: owner team-e, rotation 8, runbook rb-496, review every 2 weeks, backup owner team-a-1, contact channel #team-e-23\n- channel ios-prod-2: owner team-d, rotation 4, runbook rb-614, review every 6 weeks, backup owner team-c-4, contact channel #team-d-3\n- channel ios-beta-2: owner team-d, rotation 8, runbook rb-535, review every 6 weeks, backup owner team-c-7, contact channel #team-d-20\n- channel ios-staff-2: owner team-e, rotation 4, runbook rb-664, review every 2 weeks, backup owner team-c-9, contact channel #team-e-15\n- channel and-prod-2: owner team-a, rotation 2, runbook rb-449, review every 4 weeks, backup owner team-a-7, contact channel #team-a-17\n- channel and-beta-2: owner team-d, rotation 9, runbook rb-648, review every 2 weeks, backup owner team-a-8, contact channel #team-d-19\n- channel and-staff-2: owner team-c, rotation 8, runbook rb-546, review every 8 weeks, backup owner team-a-5, contact channel #team-c-3\n- channel ios-canary-2: owner team-e, rotation 7, runbook rb-647, review every 6 weeks, backup owner team-a-1, contact channel #team-e-12\n- channel and-canary-2: owner team-a, rotation 9, runbook rb-997, review every 2 weeks, backup owner team-a-9, contact channel #team-a-26\n- channel web-wrap-2: owner team-b, rotation 4, runbook rb-487, review every 2 weeks, backup owner team-b-9, contact channel #team-b-4\n- channel tv-prod-2: owner team-d, rotation 7, runbook rb-373, review every 6 weeks, backup owner team-a-2, contact channel #team-d-13\n- channel ios-prod-3: owner team-c, rotation 7, runbook rb-251, review every 8 weeks, backup owner team-a-7, contact channel #team-c-10\n- channel ios-beta-3: owner team-a, rotation 4, runbook rb-586, review every 2 weeks, backup owner team-b-1, contact channel #team-a-20\n- channel ios-staff-3: owner team-c, rotation 6, runbook rb-335, review every 6 weeks, backup owner team-a-1, contact channel #team-c-8\n- channel and-prod-3: owner team-d, rotation 7, runbook rb-329, review every 4 weeks, backup owner team-c-3, contact channel #team-d-27\n- channel and-beta-3: owner team-c, rotation 3, runbook rb-354, review every 4 weeks, backup owner team-a-2, contact channel #team-c-12\n- channel and-staff-3: owner team-e, rotation 9, runbook rb-131, review every 4 weeks, backup owner team-a-9, contact channel #team-e-3\n- channel ios-canary-3: owner team-d, rotation 7, runbook rb-161, review every 2 weeks, backup owner team-a-7, contact channel #team-d-6\n- channel and-canary-3: owner team-b, rotation 5, runbook rb-817, review every 6 weeks, backup owner team-b-7, contact channel #team-b-27\n- channel web-wrap-3: owner team-c, rotation 4, runbook rb-232, review every 8 weeks, backup owner team-c-9, contact channel #team-c-24\n- channel tv-prod-3: owner team-a, rotation 4, runbook rb-985, review every 2 weeks, backup owner team-c-7, contact channel #team-a-20\n- channel ios-prod-4: owner team-d, rotation 2, runbook rb-348, review every 6 weeks, backup owner team-c-6, contact channel #team-d-30\n- channel ios-beta-4: owner team-b, rotation 7, runbook rb-173, review every 4 weeks, backup owner team-a-2, contact channel #team-b-6\n- channel ios-staff-4: owner team-b, rotation 2, runbook rb-952, review every 8 weeks, backup owner team-b-7, contact channel #team-b-15\n- channel and-prod-4: owner team-b, rotation 7, runbook rb-715, review every 6 weeks, backup owner team-b-9, contact channel #team-b-28\n- channel and-beta-4: owner team-c, rotation 9, runbook rb-868, review every 8 weeks, backup owner team-b-2, contact channel #team-c-19\n- channel and-staff-4: owner team-d, rotation 7, runbook rb-213, review every 2 weeks, backup owner team-b-6, contact channel #team-d-13\n- channel ios-canary-4: owner team-d, rotation 9, runbook rb-541, review every 2 weeks, backup owner team-b-9, contact channel #team-d-27\n- channel and-canary-4: owner team-e, rotation 8, runbook rb-606, review every 8 weeks, backup owner team-c-8, contact channel #team-e-1\n- channel web-wrap-4: owner team-d, rotation 6, runbook rb-701, review every 2 weeks, backup owner team-c-3, contact channel #team-d-21\n- channel tv-prod-4: owner team-d, rotation 4, runbook rb-722, review every 8 weeks, backup owner team-c-4, contact channel #team-d-16\n- channel ios-prod-5: owner team-c, rotation 2, runbook rb-903, review every 6 weeks, backup owner team-a-6, contact channel #team-c-19\n- channel ios-beta-5: owner team-d, rotation 7, runbook rb-755, review every 2 weeks, backup owner team-b-7, contact channel #team-d-20\n- channel ios-staff-5: owner team-a, rotation 3, runbook rb-698, review every 8 weeks, backup owner team-a-5, contact channel #team-a-12\n- channel and-prod-5: owner team-c, rotation 4, runbook rb-161, review every 8 weeks, backup owner team-c-9, contact channel #team-c-24\n- channel and-beta-5: owner team-a, rotation 9, runbook rb-593, review every 2 weeks, backup owner team-b-5, contact channel #team-a-7\n- channel and-staff-5: owner team-e, rotation 6, runbook rb-446, review every 8 weeks, backup owner team-b-2, contact channel #team-e-12\n- channel ios-canary-5: owner team-d, rotation 8, runbook rb-139, review every 6 weeks, backup owner team-c-1, contact channel #team-d-20\n- channel and-canary-5: owner team-c, rotation 4, runbook rb-392, review every 8 weeks, backup owner team-c-5, contact channel #team-c-29\n- channel web-wrap-5: owner team-a, rotation 4, runbook rb-255, review every 4 weeks, backup owner team-b-4, contact channel #team-a-25\n- channel tv-prod-5: owner team-b, rotation 2, runbook rb-200, review every 6 weeks, backup owner team-b-5, contact channel #team-b-17\n- channel ios-prod-6: owner team-d, rotation 4, runbook rb-931, review every 4 weeks, backup owner team-b-6, contact channel #team-d-6\n- channel ios-beta-6: owner team-e, rotation 8, runbook rb-717, review every 2 weeks, backup owner team-c-8, contact channel #team-e-17\n- channel ios-staff-6: owner team-d, rotation 2, runbook rb-858, review every 4 weeks, backup owner team-c-4, contact channel #team-d-28\n- channel and-prod-6: owner team-b, rotation 5, runbook rb-534, review every 6 weeks, backup owner team-b-9, contact channel #team-b-18\n- channel and-beta-6: owner team-d, rotation 8, runbook rb-782, review every 4 weeks, backup owner team-a-1, contact channel #team-d-20\n- channel and-staff-6: owner team-a, rotation 6, runbook rb-398, review every 4 weeks, backup owner team-a-8, contact channel #team-a-17\n- channel ios-canary-6: owner team-b, rotation 2, runbook rb-781, review every 6 weeks, backup owner team-a-5, contact channel #team-b-3\n- channel and-canary-6: owner team-e, rotation 9, runbook rb-448, review every 6 weeks, backup owner team-a-9, contact channel #team-e-2\n- channel web-wrap-6: owner team-d, rotation 8, runbook rb-710, review every 8 weeks, backup owner team-c-9, contact channel #team-d-14\n- channel tv-prod-6: owner team-e, rotation 2, runbook rb-461, review every 2 weeks, backup owner team-b-3, contact channel #team-e-10\n- channel ios-prod-7: owner team-c, rotation 5, runbook rb-368, review every 8 weeks, backup owner team-c-1, contact channel #team-c-5\n- channel ios-beta-7: owner team-d, rotation 7, runbook rb-367, review every 8 weeks, backup owner team-a-8, contact channel #team-d-27\n- channel ios-staff-7: owner team-c, rotation 2, runbook rb-127, review every 2 weeks, backup owner team-b-9, contact channel #team-c-20\n- channel and-prod-7: owner team-e, rotation 4, runbook rb-571, review every 2 weeks, backup owner team-a-1, contact channel #team-e-3\n- channel and-beta-7: owner team-d, rotation 2, runbook rb-964, review every 6 weeks, backup owner team-c-2, contact channel #team-d-7\n- channel and-staff-7: owner team-a, rotation 9, runbook rb-430, review every 6 weeks, backup owner team-a-7, contact channel #team-a-6\n- channel ios-canary-7: owner team-a, rotation 2, runbook rb-832, review every 6 weeks, backup owner team-b-1, contact channel #team-a-6\n- channel and-canary-7: owner team-b, rotation 3, runbook rb-109, review every 6 weeks, backup owner team-b-1, contact channel #team-b-9\n- channel web-wrap-7: owner team-d, rotation 7, runbook rb-267, review every 6 weeks, backup owner team-a-3, contact channel #team-d-20\n- channel tv-prod-7: owner team-e, rotation 6, runbook rb-287, review every 6 weeks, backup owner team-b-6, contact channel #team-e-5\n\n## Crash triage\nCrash free sessions must stay above 99.4 percent for a release to widen. The captain reviews the top five crash signatures each morning. A signature seen by more than 300 users gets a blocker ticket. Symbol files are uploaded by the build job, never by hand.\n\n## Beta cohorts\nThe beta has three cohorts: staff, friends and the open group of 2000 testers. A build reaches the open group only after 48 hours with staff and no new crash signature. Testers can leave through the in-app menu.\n\n## Store review rejections\nThe most common rejection is missing privacy text for a new permission. Prepare the reviewer notes with a test account before submitting. An expedited review request is allowed twice per quarter and must name a user facing defect.\n\n## Feature flag cleanup\nA flag older than two releases after full rollout is deleted by the owner. The weekly report lists stale flags by team. Removing a flag needs a code change and a config change in separate releases, config last."
+  },
+  {
+   "id": "data_warehouse",
+   "name": "Data warehouse runbook",
+   "description": "Nightly loads, modelling rules and cost control for the warehouse",
+   "body": "## Overview\nThe warehouse loads from 14 source systems every night. Raw tables are append only, and the modelled layer is rebuilt from them. Analysts read only from the modelled layer.\n\n## Inventory\n- source crm: owner team-d, rotation 3, runbook rb-836, review every 4 weeks, backup owner team-a-6, contact channel #team-d-21\n- source orders: owner team-a, rotation 4, runbook rb-965, review every 6 weeks, backup owner team-a-9, contact channel #team-a-8\n- source web-events: owner team-a, rotation 4, runbook rb-831, review every 2 weeks, backup owner team-a-3, contact channel #team-a-3\n- source ads: owner team-e, rotation 7, runbook rb-541, review every 6 weeks, backup owner team-a-2, contact channel #team-e-14\n- source support: owner team-a, rotation 9, runbook rb-849, review every 2 weeks, backup owner team-b-9, contact channel #team-a-1\n- source billing: owner team-b, rotation 2, runbook rb-966, review every 8 weeks, backup owner team-b-8, contact channel #team-b-2\n- source inventory: owner team-b, rotation 9, runbook rb-928, review every 8 weeks, backup owner team-b-7, contact channel #team-b-15\n- source hr: owner team-b, rotation 5, runbook rb-578, review every 4 weeks, backup owner team-a-8, contact channel #team-b-6\n- source payments: owner team-b, rotation 2, runbook rb-574, review every 4 weeks, backup owner team-c-6, contact channel #team-b-18\n- source mobile-events: owner team-a, rotation 7, runbook rb-251, review every 6 weeks, backup owner team-b-7, contact channel #team-a-29\n- source crm-2: owner team-d, rotation 8, runbook rb-771, review every 4 weeks, backup owner team-c-8, contact channel #team-d-26\n- source orders-2: owner team-d, rotation 3, runbook rb-548, review every 8 weeks, backup owner team-b-4, contact channel #team-d-9\n- source web-events-2: owner team-b, rotation 4, runbook rb-544, review every 6 weeks, backup owner team-b-9, contact channel #team-b-2\n- source ads-2: owner team-a, rotation 5, runbook rb-381, review every 2 weeks, backup owner team-a-2, contact channel #team-a-13\n- source support-2: owner team-e, rotation 9, runbook rb-978, review every 6 weeks, backup owner team-c-8, contact channel #team-e-5\n- source billing-2: owner team-c, rotation 2, runbook rb-201, review every 6 weeks, backup owner team-c-4, contact channel #team-c-9\n\n## Partition pruning\nLarge fact tables are partitioned by event date. A query that filters on the ingestion timestamp scans every partition, so always filter on the event date. The cost dashboard flags scans above 2 TB with the author name.\n\n## Late arriving data\nEvents may arrive up to 72 hours late. The nightly build reprocesses the last three event dates every run. Anything later goes to the repair queue and is merged on Saturday. Dashboards show a freshness note for the last 3 days.\n\n## Cost labels\nEvery job carries a team label and a purpose label. Unlabeled jobs are stopped after the first warning. The monthly cost report groups spend by team, and a team above its budget by 20 percent gets a review meeting.\n\n## Column naming\nBoolean columns start with is or has. Timestamps end with the suffix at and are stored in UTC. Money columns carry the currency in a sibling column and never use floating point types."
+  },
+  {
+   "id": "observability",
+   "name": "Observability standards",
+   "description": "Dashboards, logs, traces and alert policy for all services",
+   "body": "## Overview\nEach service ships metrics, logs and traces through the shared collector. Dashboards are generated from a template, and teams add panels on top. Alerts page only for user impact.\n\n## Inventory\n- dashboard latency: owner team-d, rotation 8, runbook rb-650, review every 8 weeks, backup owner team-c-5, contact channel #team-d-12\n- dashboard errors: owner team-e, rotation 4, runbook rb-600, review every 2 weeks, backup owner team-c-6, contact channel #team-e-12\n- dashboard saturation: owner team-b, rotation 2, runbook rb-776, review every 2 weeks, backup owner team-b-1, contact channel #team-b-11\n- dashboard traffic: owner team-d, rotation 3, runbook rb-371, review every 4 weeks, backup owner team-a-5, contact channel #team-d-21\n- dashboard queues: owner team-a, rotation 9, runbook rb-309, review every 8 weeks, backup owner team-b-9, contact channel #team-a-2\n- dashboard cache: owner team-c, rotation 6, runbook rb-968, review every 6 weeks, backup owner team-b-8, contact channel #team-c-15\n- dashboard jobs: owner team-d, rotation 7, runbook rb-620, review every 6 weeks, backup owner team-c-2, contact channel #team-d-28\n- dashboard storage: owner team-a, rotation 7, runbook rb-724, review every 8 weeks, backup owner team-b-9, contact channel #team-a-26\n- dashboard network: owner team-c, rotation 5, runbook rb-730, review every 8 weeks, backup owner team-c-3, contact channel #team-c-2\n- dashboard costs: owner team-e, rotation 2, runbook rb-569, review every 2 weeks, backup owner team-a-4, contact channel #team-e-5\n- dashboard latency-2: owner team-d, rotation 3, runbook rb-344, review every 8 weeks, backup owner team-b-4, contact channel #team-d-11\n- dashboard errors-2: owner team-b, rotation 5, runbook rb-269, review every 6 weeks, backup owner team-c-7, contact channel #team-b-21\n- dashboard saturation-2: owner team-d, rotation 7, runbook rb-590, review every 2 weeks, backup owner team-b-7, contact channel #team-d-18\n- dashboard traffic-2: owner team-b, rotation 3, runbook rb-572, review every 6 weeks, backup owner team-b-4, contact channel #team-b-28\n- dashboard queues-2: owner team-e, rotation 5, runbook rb-504, review every 4 weeks, backup owner team-c-7, contact channel #team-e-7\n- dashboard cache-2: owner team-c, rotation 2, runbook rb-739, review every 8 weeks, backup owner team-b-2, contact channel #team-c-19\n\n## Log sampling\nDebug logs are sampled at 1 percent in production. Error logs are never sampled. A request id is attached to every line so a trace can be joined with its logs. Log lines above 8 KB are truncated by the collector.\n\n## Alert fatigue rules\nAn alert that fires more than 5 times in a week without action is reviewed by its owner. The review ends with a fix, a threshold change or deletion. Pages at night need a documented customer impact.\n\n## Trace retention\nTraces are kept for 7 days at full detail. Traces of failed requests are kept for 30 days. Tail based sampling keeps all traces slower than 2 seconds.\n\n## Service level objectives\nEach tier one service has an availability objective of 99.9 percent over 28 days. The error budget burn is shown on the team dashboard. A burn above 2 times the normal rate for an hour opens a ticket."
+  },
+  {
+   "id": "onboarding",
+   "name": "Engineering onboarding",
+   "description": "What a new engineer does in the first weeks",
+   "body": "## Overview\nA new engineer gets a buddy, a starter ticket and a laptop on day one. The first week is for setup and reading. The first production change should land before the end of week two.\n\n## Inventory\n- checklist badge: owner team-c, rotation 2, runbook rb-334, review every 8 weeks, backup owner team-a-4, contact channel #team-c-30\n- checklist laptop: owner team-e, rotation 7, runbook rb-775, review every 2 weeks, backup owner team-a-9, contact channel #team-e-29\n- checklist email: owner team-c, rotation 4, runbook rb-700, review every 2 weeks, backup owner team-b-1, contact channel #team-c-10\n- checklist chat: owner team-a, rotation 6, runbook rb-150, review every 6 weeks, backup owner team-c-1, contact channel #team-a-2\n- checklist repo-access: owner team-c, rotation 6, runbook rb-985, review every 2 weeks, backup owner team-a-7, contact channel #team-c-29\n- checklist vpn: owner team-a, rotation 9, runbook rb-486, review every 8 weeks, backup owner team-b-6, contact channel #team-a-13\n- checklist calendar: owner team-a, rotation 8, runbook rb-755, review every 4 weeks, backup owner team-c-8, contact channel #team-a-9\n- checklist wiki: owner team-e, rotation 8, runbook rb-200, review every 4 weeks, backup owner team-c-2, contact channel #team-e-17\n- checklist ticketing: owner team-d, rotation 5, runbook rb-269, review every 4 weeks, backup owner team-b-2, contact channel #team-d-23\n- checklist buddy: owner team-a, rotation 3, runbook rb-615, review every 2 weeks, backup owner team-c-8, contact channel #team-a-30\n- checklist badge-2: owner team-c, rotation 7, runbook rb-246, review every 4 weeks, backup owner team-a-7, contact channel #team-c-3\n- checklist laptop-2: owner team-a, rotation 9, runbook rb-568, review every 8 weeks, backup owner team-a-6, contact channel #team-a-13\n- checklist email-2: owner team-a, rotation 5, runbook rb-962, review every 6 weeks, backup owner team-b-8, contact channel #team-a-6\n- checklist chat-2: owner team-a, rotation 8, runbook rb-572, review every 4 weeks, backup owner team-c-2, contact channel #team-a-20\n- checklist repo-access-2: owner team-d, rotation 3, runbook rb-764, review every 6 weeks, backup owner team-b-1, contact channel #team-d-7\n- checklist vpn-2: owner team-c, rotation 9, runbook rb-233, review every 6 weeks, backup owner team-b-3, contact channel #team-c-3\n\n## Laptop setup\nRun the bootstrap script from the tools repository. It installs the package manager, the container runtime and the shell profile. Disk encryption must be on before the script will continue. Expect about 40 minutes on the office network.\n\n## Access requests\nAccess is requested through the access portal by the buddy, not by the new hire. Production read access needs the security course first. Write access to production is given after the second month and a review with the manager.\n\n## Mentor pairing\nThe buddy pairs with the new hire for two hours on each of the first five days. The second week has one pairing session per day. Pairing notes go into the team log so the next hire can read them.\n\n## First on-call shadow\nA new engineer shadows the on-call rotation in month two for one full week. Shadows do not get paged. They join the handoff call and write a short summary for the team."
+  },
+  {
+   "id": "incident_process",
+   "name": "Incident response process",
+   "description": "Severity levels, communication and follow up for incidents",
+   "body": "## Overview\nAn incident starts when a user visible problem needs coordinated work. The first responder opens a channel and names an incident lead. Severity can be raised or lowered at any time.\n\n## Inventory\n- role incident-lead: owner team-a, rotation 4, runbook rb-418, review every 4 weeks, backup owner team-a-9, contact channel #team-a-2\n- role comms-lead: owner team-b, rotation 2, runbook rb-557, review every 6 weeks, backup owner team-c-1, contact channel #team-b-2\n- role scribe: owner team-d, rotation 5, runbook rb-347, review every 2 weeks, backup owner team-a-1, contact channel #team-d-29\n- role ops-lead: owner team-c, rotation 8, runbook rb-401, review every 6 weeks, backup owner team-a-1, contact channel #team-c-11\n- role support-liaison: owner team-e, rotation 7, runbook rb-193, review every 4 weeks, backup owner team-a-1, contact channel #team-e-19\n- role exec-sponsor: owner team-d, rotation 3, runbook rb-567, review every 8 weeks, backup owner team-b-7, contact channel #team-d-9\n- role subject-expert: owner team-a, rotation 8, runbook rb-377, review every 8 weeks, backup owner team-a-4, contact channel #team-a-1\n- role deputy: owner team-e, rotation 9, runbook rb-565, review every 4 weeks, backup owner team-b-4, contact channel #team-e-4\n- role observer: owner team-b, rotation 3, runbook rb-472, review every 6 weeks, backup owner team-b-1, contact channel #team-b-6\n- role handoff-owner: owner team-e, rotation 4, runbook rb-740, review every 6 weeks, backup owner team-c-7, contact channel #team-e-7\n- role incident-lead-2: owner team-e, rotation 6, runbook rb-987, review every 2 weeks, backup owner team-c-5, contact channel #team-e-2\n- role comms-lead-2: owner team-b, rotation 4, runbook rb-427, review every 4 weeks, backup owner team-b-1, contact channel #team-b-18\n- role scribe-2: owner team-a, rotation 9, runbook rb-570, review every 8 weeks, backup owner team-b-8, contact channel #team-a-29\n- role ops-lead-2: owner team-b, rotation 3, runbook rb-392, review every 4 weeks, backup owner team-a-9, contact channel #team-b-16\n- role support-liaison-2: owner team-c, rotation 9, runbook rb-978, review every 6 weeks, backup owner team-b-9, contact channel #team-c-16\n- role exec-sponsor-2: owner team-b, rotation 4, runbook rb-391, review every 2 weeks, backup owner team-c-4, contact channel #team-b-25\n\n## Status page updates\nThe communications lead posts the first status update within 20 minutes of a severity one declaration. Updates repeat every 30 minutes until resolved. Wording stays plain and names the user impact, never the internal cause.\n\n## Postmortem template\nA postmortem is due 5 working days after resolution. It has a timeline, the impact in numbers, three contributing factors and action items with owners. It never names a person as the cause.\n\n## On-call handoff\nThe handoff happens on Monday at 10:00 with a short call. The outgoing engineer lists open alerts, known risks and pending deploys. The incoming engineer acknowledges in the rotation tool before the call ends.\n\n## Severity two limits\nA severity two incident that lasts longer than 4 hours is raised to severity one. Customer support gets a summary at the 2 hour mark. The incident lead may hand over only after a written note."
+  },
+  {
+   "id": "search_service",
+   "name": "Search service notes",
+   "description": "Index layout, tuning and operations of the product search cluster",
+   "body": "## Overview\nThe search cluster serves the product catalog and the help center. It has three data nodes and two query nodes. The index is rebuilt from the catalog database and never edited by hand.\n\n## Inventory\n- index products: owner team-e, rotation 9, runbook rb-448, review every 2 weeks, backup owner team-c-2, contact channel #team-e-2\n- index help: owner team-b, rotation 3, runbook rb-706, review every 6 weeks, backup owner team-c-1, contact channel #team-b-18\n- index brands: owner team-c, rotation 6, runbook rb-327, review every 8 weeks, backup owner team-a-9, contact channel #team-c-2\n- index stores: owner team-b, rotation 4, runbook rb-852, review every 2 weeks, backup owner team-a-7, contact channel #team-b-12\n- index reviews: owner team-a, rotation 3, runbook rb-251, review every 4 weeks, backup owner team-b-4, contact channel #team-a-29\n- index guides: owner team-b, rotation 3, runbook rb-549, review every 8 weeks, backup owner team-b-6, contact channel #team-b-25\n- index faq: owner team-b, rotation 9, runbook rb-469, review every 8 weeks, backup owner team-c-6, contact channel #team-b-22\n- index offers: owner team-d, rotation 7, runbook rb-690, review every 6 weeks, backup owner team-b-6, contact channel #team-d-2\n- index suggest: owner team-e, rotation 5, runbook rb-611, review every 4 weeks, backup owner team-b-1, contact channel #team-e-8\n- index recent: owner team-d, rotation 6, runbook rb-426, review every 8 weeks, backup owner team-c-8, contact channel #team-d-16\n- index products-2: owner team-d, rotation 5, runbook rb-650, review every 2 weeks, backup owner team-c-2, contact channel #team-d-4\n- index help-2: owner team-e, rotation 9, runbook rb-371, review every 2 weeks, backup owner team-a-3, contact channel #team-e-2\n- index brands-2: owner team-e, rotation 4, runbook rb-606, review every 8 weeks, backup owner team-c-6, contact channel #team-e-8\n- index stores-2: owner team-e, rotation 6, runbook rb-797, review every 2 weeks, backup owner team-a-3, contact channel #team-e-25\n- index reviews-2: owner team-c, rotation 5, runbook rb-521, review every 2 weeks, backup owner team-a-6, contact channel #team-c-21\n- index guides-2: owner team-e, rotation 4, runbook rb-115, review every 8 weeks, backup owner team-c-4, contact channel #team-e-5\n\n## Synonym lists\nSynonyms live in one file per language and are reloaded without a restart. Add a synonym only when the support team has seen at least 20 failed searches for it. Two way synonyms are avoided for brand names.\n\n## Reindex downtime\nA full reindex writes to a new index and swaps an alias at the end, so there is no downtime. It takes about 3 hours for the catalog. Keep free disk of at least 60 percent of the live index before starting.\n\n## Query timeouts\nQueries stop at 800 milliseconds and return partial results with a flag. The front end shows a notice when the flag is set. Wildcard queries that start with an asterisk are rejected at the query node.\n\n## Shard sizing\nEach shard should hold between 20 and 40 GB. The catalog index uses 6 primary shards with one replica each. Changing the shard count needs a reindex, so plan growth for a year ahead."
+  },
+  {
+   "id": "billing_system",
+   "name": "Billing system reference",
+   "description": "Invoice cycle, payment retries and tax handling",
+   "body": "## Overview\nInvoices are generated on the first of each month at 02:00 UTC. The billing service talks to the payment provider and the tax engine. Finance reviews a sample of invoices before they are sent.\n\n## Inventory\n- job invoice-gen: owner team-b, rotation 2, runbook rb-599, review every 2 weeks, backup owner team-c-9, contact channel #team-b-16\n- job tax-sync: owner team-b, rotation 5, runbook rb-319, review every 6 weeks, backup owner team-a-1, contact channel #team-b-7\n- job dunning: owner team-b, rotation 3, runbook rb-789, review every 8 weeks, backup owner team-a-9, contact channel #team-b-24\n- job export: owner team-a, rotation 7, runbook rb-574, review every 2 weeks, backup owner team-c-3, contact channel #team-a-28\n- job reconcile: owner team-e, rotation 7, runbook rb-743, review every 4 weeks, backup owner team-a-8, contact channel #team-e-28\n- job ledger-post: owner team-b, rotation 8, runbook rb-116, review every 4 weeks, backup owner team-b-8, contact channel #team-b-10\n- job refund-scan: owner team-c, rotation 6, runbook rb-320, review every 8 weeks, backup owner team-b-6, contact channel #team-c-11\n- job fx-update: owner team-a, rotation 9, runbook rb-646, review every 6 weeks, backup owner team-b-4, contact channel #team-a-22\n- job email-send: owner team-b, rotation 4, runbook rb-895, review every 6 weeks, backup owner team-c-6, contact channel #team-b-27\n- job archive: owner team-a, rotation 2, runbook rb-876, review every 4 weeks, backup owner team-b-7, contact channel #team-a-26\n- job invoice-gen-2: owner team-c, rotation 5, runbook rb-293, review every 6 weeks, backup owner team-a-9, contact channel #team-c-17\n- job tax-sync-2: owner team-c, rotation 6, runbook rb-245, review every 8 weeks, backup owner team-c-1, contact channel #team-c-14\n- job dunning-2: owner team-c, rotation 7, runbook rb-877, review every 8 weeks, backup owner team-a-3, contact channel #team-c-23\n- job export-2: owner team-b, rotation 8, runbook rb-432, review every 8 weeks, backup owner team-a-4, contact channel #team-b-9\n- job reconcile-2: owner team-c, rotation 6, runbook rb-166, review every 4 weeks, backup owner team-c-1, contact channel #team-c-16\n- job ledger-post-2: owner team-a, rotation 2, runbook rb-590, review every 2 weeks, backup owner team-b-9, contact channel #team-a-18\n\n## Proration rules\nA mid-cycle upgrade charges the difference for the remaining days, counted in whole days. A downgrade takes effect at the next cycle and gives no refund. Seat changes inside one hour are merged into a single line.\n\n## Failed card retries\nA failed card is retried after 1, 3 and 7 days. After the third failure the account enters a 14 day grace period and the customer gets an email each 3 days. The account is suspended on day 15.\n\n## Tax rounding\nTax is calculated per line and rounded half up to the cent. The invoice total is the sum of the rounded lines, never a rounding of the total. The tax engine response is stored with the invoice for 10 years.\n\n## Credit notes\nA credit note references the original invoice number and carries its own number. Finance approves any credit above 500 euros. Credit notes are never deleted, only reversed by a second note."
+  },
+  {
+   "id": "cluster_platform",
+   "name": "Kubernetes platform guide",
+   "description": "Node pools, quotas and disruption rules of the shared cluster",
+   "body": "## Overview\nThe shared cluster runs in three zones with separate node pools for general, memory heavy and batch work. Teams own namespaces and the platform team owns everything else. Upgrades happen every quarter.\n\n## Inventory\n- namespace checkout: owner team-e, rotation 5, runbook rb-647, review every 2 weeks, backup owner team-b-7, contact channel #team-e-14\n- namespace search: owner team-b, rotation 4, runbook rb-547, review every 4 weeks, backup owner team-a-9, contact channel #team-b-21\n- namespace ads: owner team-e, rotation 7, runbook rb-375, review every 4 weeks, backup owner team-b-8, contact channel #team-e-20\n- namespace data: owner team-c, rotation 3, runbook rb-114, review every 6 weeks, backup owner team-c-3, contact channel #team-c-5\n- namespace ml: owner team-e, rotation 4, runbook rb-906, review every 2 weeks, backup owner team-a-7, contact channel #team-e-4\n- namespace platform: owner team-a, rotation 2, runbook rb-164, review every 2 weeks, backup owner team-c-1, contact channel #team-a-10\n- namespace payments: owner team-b, rotation 5, runbook rb-164, review every 4 weeks, backup owner team-c-5, contact channel #team-b-19\n- namespace growth: owner team-c, rotation 5, runbook rb-950, review every 4 weeks, backup owner team-b-3, contact channel #team-c-11\n- namespace infra: owner team-a, rotation 9, runbook rb-587, review every 8 weeks, backup owner team-a-6, contact channel #team-a-6\n- namespace tools: owner team-a, rotation 5, runbook rb-847, review every 8 weeks, backup owner team-b-1, contact channel #team-a-4\n- namespace checkout-2: owner team-a, rotation 8, runbook rb-736, review every 2 weeks, backup owner team-b-4, contact channel #team-a-29\n- namespace search-2: owner team-b, rotation 2, runbook rb-202, review every 8 weeks, backup owner team-b-6, contact channel #team-b-2\n- namespace ads-2: owner team-c, rotation 3, runbook rb-614, review every 2 weeks, backup owner team-a-2, contact channel #team-c-20\n- namespace data-2: owner team-e, rotation 2, runbook rb-823, review every 8 weeks, backup owner team-a-1, contact channel #team-e-2\n- namespace ml-2: owner team-b, rotation 5, runbook rb-362, review every 8 weeks, backup owner team-b-9, contact channel #team-b-7\n- namespace platform-2: owner team-c, rotation 6, runbook rb-604, review every 4 weeks, backup owner team-a-3, contact channel #team-c-15\n\n## Pod disruption budgets\nEvery deployment with more than one replica must define a disruption budget that keeps at least 60 percent of pods available. Node drains wait for the budget for at most 10 minutes. A missing budget blocks the deploy check.\n\n## Ingress certificates\nCertificates are issued by the cluster issuer and renew 30 days before expiry. A failed renewal raises an alert at 14 days. Never copy a certificate secret between namespaces, request a new one instead.\n\n## Namespace quotas\nA new namespace starts with 20 CPU cores and 64 GB memory of quota. Increases are requested in the platform channel with a capacity note. Batch namespaces may burst above the quota at night.\n\n## Node pool upgrades\nUpgrades go one zone at a time with a pause of 1 hour between zones. Batch pools upgrade first. Stateful sets are moved last and only when the replicas are healthy."
+  },
+  {
+   "id": "ml_training",
+   "name": "Model training practices",
+   "description": "Datasets, GPU use and evaluation gates for the ML team",
+   "body": "## Overview\nThe ML team trains ranking and classification models on a shared GPU cluster. Datasets are versioned and immutable once published. Every training run logs its dataset version and code revision.\n\n## Inventory\n- dataset clicks-v3: owner team-c, rotation 6, runbook rb-131, review every 8 weeks, backup owner team-a-8, contact channel #team-c-13\n- dataset queries-v7: owner team-d, rotation 6, runbook rb-282, review every 2 weeks, backup owner team-b-5, contact channel #team-d-27\n- dataset images-v2: owner team-d, rotation 3, runbook rb-459, review every 4 weeks, backup owner team-a-7, contact channel #team-d-27\n- dataset reviews-v5: owner team-e, rotation 7, runbook rb-588, review every 2 weeks, backup owner team-b-3, contact channel #team-e-18\n- dataset sessions-v4: owner team-a, rotation 6, runbook rb-642, review every 4 weeks, backup owner team-c-2, contact channel #team-a-9\n- dataset labels-v9: owner team-d, rotation 5, runbook rb-360, review every 8 weeks, backup owner team-a-8, contact channel #team-d-23\n- dataset catalog-v6: owner team-a, rotation 4, runbook rb-520, review every 4 weeks, backup owner team-b-5, contact channel #team-a-6\n- dataset returns-v1: owner team-a, rotation 9, runbook rb-538, review every 2 weeks, backup owner team-a-3, contact channel #team-a-12\n- dataset tickets-v2: owner team-b, rotation 4, runbook rb-248, review every 6 weeks, backup owner team-a-1, contact channel #team-b-7\n- dataset ads-v8: owner team-c, rotation 6, runbook rb-679, review every 4 weeks, backup owner team-b-1, contact channel #team-c-9\n- dataset clicks-v3-2: owner team-d, rotation 3, runbook rb-336, review every 4 weeks, backup owner team-b-3, contact channel #team-d-5\n- dataset queries-v7-2: owner team-b, rotation 9, runbook rb-553, review every 6 weeks, backup owner team-b-6, contact channel #team-b-5\n- dataset images-v2-2: owner team-c, rotation 9, runbook rb-130, review every 8 weeks, backup owner team-a-2, contact channel #team-c-25\n- dataset reviews-v5-2: owner team-a, rotation 4, runbook rb-379, review every 4 weeks, backup owner team-c-1, contact channel #team-a-17\n- dataset sessions-v4-2: owner team-e, rotation 8, runbook rb-423, review every 4 weeks, backup owner team-a-3, contact channel #team-e-11\n- dataset labels-v9-2: owner team-c, rotation 9, runbook rb-764, review every 4 weeks, backup owner team-b-9, contact channel #team-c-27\n\n## GPU scheduling\nJobs request GPUs in the scheduler queue. A job longer than 12 hours needs a checkpoint every hour. Idle reservations are released after 30 minutes without utilization. Interactive notebooks get at most one GPU.\n\n## Checkpoint pruning\nKeep the last 3 checkpoints and the best one by validation score. Older checkpoints are deleted by the nightly cleanup. A checkpoint linked to a released model is never deleted.\n\n## Evaluation gates\nA model ships only if it beats the current model by 0.5 points on the offline metric and shows no loss on the fairness slices. The gate report is attached to the release ticket. A manual override needs two reviewers.\n\n## Data labeling budget\nLabeling requests above 5000 items need a pilot of 200 items first. The pilot checks agreement between labelers, and a score below 0.8 sends the guide back for rework."
+  },
+  {
+   "id": "coffee_machine",
+   "name": "Coffee Machine",
+   "description": "Office coffee machine descaling schedule",
+   "body": "The machine on floor 2 is descaled on the first Friday of the month. Use the blue cartridge only. Log the date on the sheet next to the machine."
+  },
+  {
+   "id": "bike_parking",
+   "name": "Bike Parking",
+   "description": "Bike parking rules at the main office",
+   "body": "Bikes go in the basement cage. The badge reader opens the cage from 06:00 to 22:00. Remove batteries from e-bikes over the weekend."
+  },
+  {
+   "id": "holiday_calendar",
+   "name": "Holiday Calendar",
+   "description": "Public holiday calendar for the support rota",
+   "body": "Support coverage drops to one engineer on public holidays. Swap requests close 10 days before the date. The rota is kept in the shared calendar."
+  },
+  {
+   "id": "expense_policy",
+   "name": "Expense Policy",
+   "description": "Expense claim policy in short",
+   "body": "Claims are filed within 30 days. Meals abroad are capped at 45 euros. Receipts must show the vendor tax number."
+  },
+  {
+   "id": "meeting_rooms",
+   "name": "Meeting Rooms",
+   "description": "How to book meeting rooms",
+   "body": "Rooms are booked in the calendar tool. A booking is released if nobody checks in within 10 minutes. The large room needs approval from the office manager."
+  },
+  {
+   "id": "brand_colors",
+   "name": "Brand Colors",
+   "description": "Brand color reference",
+   "body": "The primary color is a deep teal. Use the light tint for backgrounds only. Text on teal must be white and at least 16 pixels."
+  },
+  {
+   "id": "travel_booking",
+   "name": "Travel Booking",
+   "description": "Business travel booking",
+   "body": "Flights are booked through the travel desk at least 14 days ahead. Rail is preferred under 5 hours. Hotel rates are capped by city tier."
+  },
+  {
+   "id": "security_badges",
+   "name": "Security Badges",
+   "description": "Security badge replacement",
+   "body": "A lost badge is reported to the front desk at once. A replacement takes one working day. Temporary badges expire at 18:00."
+  },
+  {
+   "id": "lunch_vendors",
+   "name": "Lunch Vendors",
+   "description": "Lunch vendor rotation",
+   "body": "Three vendors rotate on a weekly basis. Vegetarian options are always available. Orders close at 10:30 each day."
+  },
+  {
+   "id": "print_setup",
+   "name": "Print Setup",
+   "description": "Printer setup on the office network",
+   "body": "Printers appear after joining the office network. Color printing needs a cost code. Scans are sent to the mailbox within a minute."
+  }
+ ],
+ "queries": [
+  {
+   "q": "How long do we keep the build outputs of a merged commit?",
+   "file": "build_pipeline",
+   "phrase": "stay for 45 days"
+  },
+  {
+   "q": "why did the cache stop being shared between branches",
+   "file": "build_pipeline",
+   "phrase": "branch name to the key"
+  },
+  {
+   "q": "what happens to a test that passes and fails on the same commit",
+   "file": "build_pipeline",
+   "phrase": "quarantine list"
+  },
+  {
+   "q": "how do we roll out a new image for the CI workers",
+   "file": "build_pipeline",
+   "phrase": "10 percent of the pool"
+  },
+  {
+   "q": "how many connections can the pooler open per cluster",
+   "file": "database_ops",
+   "phrase": "200 server connections"
+  },
+  {
+   "q": "dead tuples report and when to repack a table",
+   "file": "database_ops",
+   "phrase": "30 percent dead tuples"
+  },
+  {
+   "q": "a replica is falling behind, when do we pull it out of reads",
+   "file": "database_ops",
+   "phrase": "120 seconds removes the replica"
+  },
+  {
+   "q": "steps to recover the orders cluster to an exact minute",
+   "file": "database_ops",
+   "phrase": "restore to a chosen minute"
+  },
+  {
+   "q": "what is the default requests per minute for a key",
+   "file": "api_gateway",
+   "phrase": "600 requests per minute"
+  },
+  {
+   "q": "how often do the signing keys for tokens change",
+   "file": "api_gateway",
+   "phrase": "rotate every 90 days"
+  },
+  {
+   "q": "browser calls blocked by origin policy, how to allow a new site",
+   "file": "api_gateway",
+   "phrase": "allow file"
+  },
+  {
+   "q": "maximum body size before the edge refuses a request",
+   "file": "api_gateway",
+   "phrase": "above 2 MB"
+  },
+  {
+   "q": "what crash free rate do we need before widening a release",
+   "file": "mobile_release",
+   "phrase": "above 99.4 percent"
+  },
+  {
+   "q": "who gets a build first in the beta program",
+   "file": "mobile_release",
+   "phrase": "three cohorts"
+  },
+  {
+   "q": "app store turned down our submission, what is usually missing",
+   "file": "mobile_release",
+   "phrase": "missing privacy text"
+  },
+  {
+   "q": "when do we remove an old toggle after full rollout",
+   "file": "mobile_release",
+   "phrase": "two releases after full rollout"
+  },
+  {
+   "q": "queries that scan the whole fact table and cost too much",
+   "file": "data_warehouse",
+   "phrase": "filter on the event date"
+  },
+  {
+   "q": "how late can events arrive and still be counted",
+   "file": "data_warehouse",
+   "phrase": "up to 72 hours late"
+  },
+  {
+   "q": "what happens to warehouse jobs without a team tag",
+   "file": "data_warehouse",
+   "phrase": "Unlabeled jobs are stopped"
+  },
+  {
+   "q": "naming convention for timestamp and boolean fields",
+   "file": "data_warehouse",
+   "phrase": "suffix at and are stored in UTC"
+  },
+  {
+   "q": "what share of debug log lines is kept in prod",
+   "file": "observability",
+   "phrase": "sampled at 1 percent"
+  },
+  {
+   "q": "how do we handle alerts that fire often and nobody acts on",
+   "file": "observability",
+   "phrase": "more than 5 times in a week"
+  },
+  {
+   "q": "how many days do we keep distributed traces",
+   "file": "observability",
+   "phrase": "kept for 7 days"
+  },
+  {
+   "q": "what availability target do tier one services have",
+   "file": "observability",
+   "phrase": "99.9 percent over 28 days"
+  },
+  {
+   "q": "first steps to configure a new work laptop",
+   "file": "onboarding",
+   "phrase": "bootstrap script"
+  },
+  {
+   "q": "who files the request for production access for a new hire",
+   "file": "onboarding",
+   "phrase": "requested through the access portal"
+  },
+  {
+   "q": "how much pair time does a newcomer get in the first week",
+   "file": "onboarding",
+   "phrase": "two hours on each of the first five days"
+  },
+  {
+   "q": "when does a new person start shadowing the pager",
+   "file": "onboarding",
+   "phrase": "shadows the on-call rotation in month two"
+  },
+  {
+   "q": "how soon after declaring a major incident must we post publicly",
+   "file": "incident_process",
+   "phrase": "within 20 minutes"
+  },
+  {
+   "q": "what sections must the written review after an outage contain",
+   "file": "incident_process",
+   "phrase": "timeline, the impact in numbers"
+  },
+  {
+   "q": "what is covered when the pager changes hands",
+   "file": "incident_process",
+   "phrase": "known risks and pending deploys"
+  },
+  {
+   "q": "after how many hours is a medium incident treated as critical",
+   "file": "incident_process",
+   "phrase": "longer than 4 hours"
+  },
+  {
+   "q": "where do we add words that should match each other in search",
+   "file": "search_service",
+   "phrase": "one file per language"
+  },
+  {
+   "q": "how long does rebuilding the whole catalog index take",
+   "file": "search_service",
+   "phrase": "about 3 hours"
+  },
+  {
+   "q": "what is the time limit for a search request",
+   "file": "search_service",
+   "phrase": "800 milliseconds"
+  },
+  {
+   "q": "how big should each shard of the index be",
+   "file": "search_service",
+   "phrase": "between 20 and 40 GB"
+  },
+  {
+   "q": "customer upgrades in the middle of the month, how is it charged",
+   "file": "billing_system",
+   "phrase": "difference for the remaining days"
+  },
+  {
+   "q": "when do we try a declined card again",
+   "file": "billing_system",
+   "phrase": "retried after 1, 3 and 7 days"
+  },
+  {
+   "q": "does the tax get rounded per line or on the total",
+   "file": "billing_system",
+   "phrase": "rounded half up to the cent"
+  },
+  {
+   "q": "who must approve a large credit to a customer",
+   "file": "billing_system",
+   "phrase": "credit above 500 euros"
+  },
+  {
+   "q": "what stops a node drain from removing too many replicas at once",
+   "file": "cluster_platform",
+   "phrase": "keeps at least 60 percent of pods available"
+  },
+  {
+   "q": "when do the TLS certificates renew automatically",
+   "file": "cluster_platform",
+   "phrase": "renew 30 days before expiry"
+  },
+  {
+   "q": "starting resource allowance for a new team space",
+   "file": "cluster_platform",
+   "phrase": "20 CPU cores and 64 GB"
+  },
+  {
+   "q": "order in which the node pools are upgraded",
+   "file": "cluster_platform",
+   "phrase": "one zone at a time"
+  },
+  {
+   "q": "how do idle reserved accelerators get released",
+   "file": "ml_training",
+   "phrase": "released after 30 minutes"
+  },
+  {
+   "q": "which saved training states do we keep",
+   "file": "ml_training",
+   "phrase": "last 3 checkpoints"
+  },
+  {
+   "q": "what must a new model beat before it can be released",
+   "file": "ml_training",
+   "phrase": "beats the current model by 0.5 points"
+  },
+  {
+   "q": "agreement score needed before a big labeling job",
+   "file": "ml_training",
+   "phrase": "pilot of 200 items"
+  }
+ ],
+ "negatives": [
+  {
+   "q": "write a regex that validates an email address"
+  },
+  {
+   "q": "how do I reverse a linked list"
+  },
+  {
+   "q": "what is the capital of Australia"
+  },
+  {
+   "q": "convert this csv file to json"
+  },
+  {
+   "q": "explain the difference between tcp and udp"
+  },
+  {
+   "q": "set up a python virtual environment"
+  },
+  {
+   "q": "what is a good name for a cat"
+  },
+  {
+   "q": "summarize this paragraph for me"
+  },
+  {
+   "q": "how do I center a div in css"
+  },
+  {
+   "q": "rename a git branch locally"
+  },
+  {
+   "q": "why is my laptop fan so loud"
+  },
+  {
+   "q": "translate hello into german"
+  },
+  {
+   "q": "best way to learn piano as an adult"
+  },
+  {
+   "q": "convert celsius to fahrenheit"
+  },
+  {
+   "q": "sort a list of dicts by key in python"
+  },
+  {
+   "q": "what is a monad in functional programming"
+  },
+  {
+   "q": "how long should I boil an egg"
+  },
+  {
+   "q": "recommend a book about statistics"
+  },
+  {
+   "q": "undo the last git commit but keep the changes"
+  },
+  {
+   "q": "how do I parse a date string in javascript"
+  }
+ ]
+}

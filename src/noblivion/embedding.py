@@ -550,6 +550,8 @@ class BackfillResult:
     failed: int
     skipped_mined: int
     switched: bool
+    chunks_embedded: int = 0  # the chunk vectors of this pass (NOBLIVION-103)
+    chunks_failed: int = 0
 
 
 def needs_reembed(conn: sqlite3.Connection, embedder: Embedder) -> bool:
@@ -586,6 +588,68 @@ def _todo(
     return todo, skipped
 
 
+def _todo_chunks(
+    conn: sqlite3.Connection, model_id: str, include_mined: bool
+) -> tuple[list[tuple[int, str, str]], list[tuple[int, str, int, bytes]]]:
+    """Chunks of live rows whose vector for ``model_id`` is missing or stale.
+
+    Returns ``(to embed, to copy)``. A chunk whose text is the text of its file
+    row (a short note is one chunk) has the vector of the file row already: that
+    vector is copied, not computed again.
+    """
+    todo: list[tuple[int, str, str]] = []
+    copies: list[tuple[int, str, int, bytes]] = []
+    with db.read_tx(conn):
+        cur = conn.execute(
+            "SELECT c.id, c.search_text, m.source_type, v.content_hash, f.content_hash, f.dim, "
+            "f.blob FROM memory_chunks c JOIN memories m ON m.id = c.parent_id "
+            "LEFT JOIN chunk_vectors v ON v.chunk_id = c.id AND v.model = ? "
+            "LEFT JOIN vectors f ON f.memory_id = m.id AND f.model = ? "
+            "WHERE m.archived_at IS NULL AND m.deleted_at IS NULL ORDER BY c.id",
+            (model_id, model_id),
+        )
+        for chunk_id, search_text, source_type, have, file_hash, dim, blob in cur.fetchall():
+            if source_type == db.SOURCE_MINED and not include_mined:
+                continue
+            text = str(search_text).strip()[:MAX_EMBED_CHARS]
+            if not text:
+                continue
+            digest = text_hash(text)
+            if digest == have:
+                continue
+            if digest == file_hash and blob is not None:
+                copies.append((int(chunk_id), digest, int(dim), bytes(blob)))
+            else:
+                todo.append((int(chunk_id), text, digest))
+    return todo, copies
+
+
+def _copy_vectors(
+    conn: sqlite3.Connection, model_id: str, copies: Sequence[tuple[int, str, int, bytes]]
+) -> int:
+    """Write the file vector as the vector of the chunk that holds the same text."""
+    if not copies:
+        return 0
+    written = 0
+    with db.write_tx(conn):
+        rev = db.bump_rev(conn, "vector_rev")
+        for chunk_id, digest, dim, blob in copies:
+            row = conn.execute(
+                "SELECT search_text FROM memory_chunks WHERE id = ?", (chunk_id,)
+            ).fetchone()
+            if row is None or text_hash(str(row[0]).strip()[:MAX_EMBED_CHARS]) != digest:
+                continue  # changed since the read: the next pass handles it
+            conn.execute(
+                "INSERT INTO chunk_vectors (chunk_id, model, dim, content_hash, blob, rev) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (chunk_id, model) DO UPDATE SET dim = excluded.dim, "
+                "content_hash = excluded.content_hash, blob = excluded.blob, rev = excluded.rev",
+                (chunk_id, model_id, dim, digest, blob, rev),
+            )
+            written += 1
+    return written
+
+
 def _embed_batch(
     conn: sqlite3.Connection, embedder: Embedder, batch: Sequence[tuple[int, str, str]]
 ) -> tuple[list[tuple[int, str, list[float]]], int]:
@@ -612,7 +676,11 @@ def _embed_batch(
 
 
 def _write_vectors(
-    conn: sqlite3.Connection, model_id: str, rows: Sequence[tuple[int, str, list[float]]]
+    conn: sqlite3.Connection,
+    model_id: str,
+    rows: Sequence[tuple[int, str, list[float]]],
+    *,
+    chunks: bool = False,
 ) -> tuple[int, int, int | None]:
     written = failed = 0
     dim: int | None = None
@@ -631,11 +699,25 @@ def _write_vectors(
         for memory_id, digest, size, blob in packed:
             # The row may be gone or changed since the read: write only the
             # vector of its current text, so a slow pass never overwrites a newer one.
-            row = conn.execute("SELECT content FROM memories WHERE id = ?", (memory_id,)).fetchone()
-            if row is None or text_hash(embed_text(row[0])) != digest:
+            if chunks:
+                row = conn.execute(
+                    "SELECT search_text FROM memory_chunks WHERE id = ?", (memory_id,)
+                ).fetchone()
+                current = None if row is None else str(row[0]).strip()[:MAX_EMBED_CHARS]
+            else:
+                row = conn.execute(
+                    "SELECT content FROM memories WHERE id = ?", (memory_id,)
+                ).fetchone()
+                current = None if row is None else embed_text(row[0])
+            if current is None or text_hash(current) != digest:
                 continue
             conn.execute(
-                "INSERT INTO vectors (memory_id, model, dim, content_hash, blob, rev) "
+                "INSERT INTO chunk_vectors (chunk_id, model, dim, content_hash, blob, rev) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (chunk_id, model) DO UPDATE SET dim = excluded.dim, "
+                "content_hash = excluded.content_hash, blob = excluded.blob, rev = excluded.rev"
+                if chunks
+                else "INSERT INTO vectors (memory_id, model, dim, content_hash, blob, rev) "
                 "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (memory_id, model) DO UPDATE SET dim = excluded.dim, "
                 "content_hash = excluded.content_hash, blob = excluded.blob, rev = excluded.rev",
@@ -655,6 +737,7 @@ def finish_model_switch(conn: sqlite3.Connection, embedder: Embedder) -> bool:
         if not needs_reembed(conn, embedder):
             return False
         conn.execute("DELETE FROM vectors WHERE model <> ?", (embedder.model_id,))
+        conn.execute("DELETE FROM chunk_vectors WHERE model <> ?", (embedder.model_id,))
         row = conn.execute(
             "SELECT dim FROM vectors WHERE model = ? LIMIT 1", (embedder.model_id,)
         ).fetchone()
@@ -681,15 +764,29 @@ def backfill(
     its next call; the batches written so far stay, the pass does not finish.
     """
     model_id = embedder.model_id
+    db.ensure_chunks(conn)  # a row with no chunk rows gets them before the pass
     todo, skipped = _todo(conn, model_id, include_mined)
+    # Texts of a like length share a batch: the model pads a batch to its longest text.
+    todo.sort(key=lambda item: len(item[1]))
     embedded = failed = 0
     for start in range(0, len(todo), max(1, batch_size)):
         done, batch_failed = _embed_batch(conn, embedder, todo[start : start + batch_size])
         written, bad, _ = _write_vectors(conn, model_id, done)
         embedded += written
         failed += batch_failed + bad
+    # The chunk vectors (NOBLIVION-103): the ranking reads these. The file vectors
+    # above stay for the dedup and the import report.
+    chunk_todo, chunk_copies = _todo_chunks(conn, model_id, include_mined)
+    chunk_todo.sort(key=lambda item: len(item[1]))
+    chunks_embedded = _copy_vectors(conn, model_id, chunk_copies)
+    chunks_failed = 0
+    for start in range(0, len(chunk_todo), max(1, batch_size)):
+        done, batch_failed = _embed_batch(conn, embedder, chunk_todo[start : start + batch_size])
+        written, bad, _ = _write_vectors(conn, model_id, done, chunks=True)
+        chunks_embedded += written
+        chunks_failed += batch_failed + bad
     switched = finish_model_switch(conn, embedder) if finish else False
-    return BackfillResult(embedded, failed, skipped, switched)
+    return BackfillResult(embedded, failed, skipped, switched, chunks_embedded, chunks_failed)
 
 
 # -- the service the store holds -------------------------------------------------

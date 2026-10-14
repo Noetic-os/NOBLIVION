@@ -587,6 +587,15 @@ Id not a number: same shape with `"id": "<as sent>"` and
   implementation. An id from another namespace is "not found".
 - The answer stays below 512 KB. A longer `text` is cut, with `…` at the
   cut.
+- A long text is fetched by section (section 8.7, NOBLIVION-103). Query
+  `chunk` (a chunk number) or `query` (words) picks one chunk: `text` is that
+  chunk, and the answer adds `chunk` (its number) and `heading` (its heading
+  path). With neither, a text of up to 6,000 characters comes back whole, as
+  before. A longer text comes back as its summary chunk and the list of its
+  sections, and the answer adds `chunks`, a list of `{chunk, heading, chars}`.
+  A `chunk` that is not a number, or that the memory does not have, gets the
+  `reason` `"chunk is not a number"` or `"no chunk with that number in this
+  memory"`. A `query` that no chunk matches gets the answer for no argument.
 - A fetch is the point where a memory counts as read. The store does not
   write a trust event for it; the trust hooks do that (section 9).
 - A fetch can return a `transcript_mined` row. That is the "on request"
@@ -1183,6 +1192,12 @@ the database, WAL, SHM and token files, and mode 0700 on the data dir.
 
 ### 6.6 Migrations
 
+Schema 5 (NOBLIVION-103) adds `memory_chunks` and `chunk_vectors` (section
+8.7). Its runner step also cuts every existing row into chunks, live,
+archived and soft-deleted rows alike, in the same transaction, and stamps
+the rows with a new `content_rev`. The rows themselves do not change. A
+store that is at schema 4 needs no other step.
+
 - `PRAGMA user_version` holds the schema version. Migrations are a list of
   numbered SQL scripts in the package, applied in order.
 - Before a migration the store copies the database with the SQLite backup
@@ -1268,6 +1283,11 @@ For a backend that leaves the machine, two more rules hold:
   `embedding.remote_include_mined = true`. Without it they rank on BM25
   only. They hold tool output and third-party text, which the user never
   chose to share.
+
+A chunk (section 8.7) is embedded as its `search_text`: the file title and
+the heading path in front of the chunk text. A chunk that has the text of its
+file row (a short note is one chunk) takes the vector of the file row, so the
+text is not embedded twice. The file vectors stay: the dedup sweep reads them.
 
 ### 7.3 Model change and re-embed
 
@@ -1422,6 +1442,50 @@ Module `noblivion.ranking`, built in E3b:
   store calls `start(conn)` at start and again for the hourly retry,
   `backfill(conn)` from its background job, and reads `state` and `error`
   for `/health`.
+
+### 8.7 Chunks (NOBLIVION-103)
+
+The default model reads 512 tokens, so the vector of a long file covers its
+first 2 KB. The store therefore ranks chunks, not files, and answers one hit
+per file.
+
+- **Rows.** `memory_chunks` holds one row per chunk: `parent_id` (the
+  `memories` row), `chunk_index` (0 first), `heading` (the heading path,
+  `A > B`), `text`, `search_text` and `rev`. `chunk_vectors` holds one vector
+  per chunk and model, like `vectors`. Both cascade with the parent row. The
+  `memories` row keeps the whole content and the `[claude_code_md: <path>]`
+  marker line, so the file-level row shape and every client that reads the
+  marker are unchanged. No chunk holds the marker.
+- **Cut.** `noblivion.chunking` cuts the stored content. A text of at most
+  1,200 characters is one chunk with the text that the file row embeds. A
+  longer text has chunk 0 as its summary (title and description), then one chunk
+  per Markdown heading section. A section over 1,200 characters is packed from
+  its paragraphs (a long list from its lines, a long line from its sentences);
+  a continuing chunk starts with the last sentence of the chunk before it. A
+  section under 300 characters joins the next one when both fit. A `#` line in
+  a code fence is not a heading.
+- **Keep in step.** `db.insert_memory`, `db.rewrite_memory` and the importer
+  call `db.sync_chunks`. A chunk whose text did not change keeps its row, its
+  `rev` and its vector. `db.ensure_chunks` cuts a row that has no chunk, and
+  every row again when `meta.chunker_version` differs from the code's
+  `chunking.CHUNKER_VERSION`; the embedding pass calls it.
+- **Ranking.** The pool is the chunks of the rows of section 8.1. A row with
+  no chunk is one unit. BM25 reads `search_text` plus the tokens of the marker
+  line; the cosine reads the chunk vector. The fusion of section 8.3 runs over
+  the units. Then the best unit of each file in the fused order gives the file
+  its place and names its chunk. The `score` of a file is the best weighted
+  cosine of any of its chunks (null when none has a vector). The pool size in
+  the answer counts files. The count of rows in an answer does not change.
+- **Answers.** An `/index` row adds `chunk` and `heading` (null for a row with
+  no chunk). A `/search` entry for a file over 6,000 characters whose best chunk
+  is not chunk 0 is the file header (title, description, marker line) and that
+  chunk, not the whole file; any other entry is the whole row. Fetch: section
+  4.4. The MCP tool takes `chunk` and `section` with `fetch_id`.
+- **Chunk choice in a fetch.** `query` picks a chunk by the same fusion over
+  the chunks of the one file, with the vector of the query when the store has
+  a model.
+- **Cost.** A long file has several chunks, so the store holds more vectors
+  and BM25 documents than before. A short file costs no more.
 
 ### 8.6 Trust in ranking
 

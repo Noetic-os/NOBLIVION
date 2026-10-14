@@ -189,9 +189,40 @@ def change_memory(conn: sqlite3.Connection, memory_id: int, body: str) -> None:
     with db.write_tx(conn):
         rev = db.bump_rev(conn, "content_rev")
         name = conn.execute("SELECT path FROM memories WHERE id = ?", (memory_id,)).fetchone()[0]
+        text = content(name[:-3], body)
         conn.execute(
             "UPDATE memories SET content = ?, rev = ?, updated_at = ? WHERE id = ?",
-            (content(name[:-3], body), rev, db.utc_now(), memory_id),
+            (text, rev, db.utc_now(), memory_id),
+        )
+        db.sync_chunks(conn, memory_id, text, rev)
+
+
+def embed_memory(
+    conn: sqlite3.Connection,
+    embedder: FakeEmbedder,
+    memory_id: int,
+    *,
+    text: str | None = None,
+) -> None:
+    """Write the file vector and the chunk vectors of one row. ``text`` replaces the
+    text that is embedded, for a vector that is not the one of the stored text."""
+    content = conn.execute("SELECT content FROM memories WHERE id = ?", (memory_id,)).fetchone()[0]
+    file_text = embedding.embed_text(content)
+    vector = embedder.embed_documents([text or file_text])[0]
+    embedding._write_vectors(
+        conn, embedder.model_id, [(memory_id, embedding.text_hash(file_text), vector)]
+    )
+    for chunk_id, search_text in conn.execute(
+        "SELECT id, search_text FROM memory_chunks WHERE parent_id = ? ORDER BY chunk_index",
+        (memory_id,),
+    ).fetchall():
+        chunk_text = search_text.strip()
+        chunk_vector = embedder.embed_documents([text or chunk_text])[0]
+        embedding._write_vectors(
+            conn,
+            embedder.model_id,
+            [(chunk_id, embedding.text_hash(chunk_text), chunk_vector)],
+            chunks=True,
         )
 
 

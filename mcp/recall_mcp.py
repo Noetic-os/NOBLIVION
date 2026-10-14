@@ -139,6 +139,23 @@ TOOL_SCHEMA: Dict[str, Any] = {
                     "not both."
                 ),
             },
+            "chunk": {
+                "type": "integer",
+                "minimum": 0,
+                "description": (
+                    "With fetch_id: read one section of the memory, by the chunk number "
+                    "that a fetch of a long memory lists. A long memory comes back as its "
+                    "summary and the list of its sections when you pass neither chunk nor "
+                    "section."
+                ),
+            },
+            "section": {
+                "type": "string",
+                "description": (
+                    "With fetch_id: read the section of the memory that best matches these "
+                    "words (trimmed to 300 chars). Use this OR chunk."
+                ),
+            },
             "include_mined": {
                 "type": "boolean",
                 "default": False,
@@ -379,6 +396,8 @@ def noblivion_recall(
     include_mined: Any = False,
     read_capability: Any = None,
     _call_arguments: Any = None,
+    chunk: Any = None,
+    section: Any = None,
 ) -> Dict[str, Any]:
     """The tool body. Returns an MCP tools/call result dict.
 
@@ -430,7 +449,9 @@ def noblivion_recall(
     if fetch_id is not None:
         if isinstance(query, str) and query.strip():
             return _tool_error("pass query OR fetch_id, not both")
-        return _fetch_one(hook, fetch_id, environ)
+        return _fetch_one(hook, fetch_id, environ, chunk, section)
+    if chunk is not None or section:
+        return _tool_error("chunk and section go with fetch_id")
     if not isinstance(query, str) or not query.strip():
         return _tool_error(
             "query must be a non-empty string, or pass fetch_id to read one memory by id"
@@ -544,7 +565,11 @@ def _local_rule_apply(hook: Any, env: Mapping[str, str], name: str) -> tuple[str
 
 
 def _fetch_one(
-    hook: Any, fetch_id: Any, environ: Optional[Dict[str, str]] = None
+    hook: Any,
+    fetch_id: Any,
+    environ: Optional[Dict[str, str]] = None,
+    chunk: Any = None,
+    section: Any = None,
 ) -> Dict[str, Any]:
     """(R1) — read one memory in full, by id.
 
@@ -567,6 +592,22 @@ def _fetch_one(
         return _tool_error("fetch_id must be a whole number, as shown on an index line")
     if mid < 1:
         return _tool_error("fetch_id must be a positive integer")
+    # NOBLIVION-103: one section of the memory. Same parse rule as the id.
+    extra: Dict[str, Any] = {}
+    if chunk is not None:
+        try:
+            chunk_number = int(str(chunk).strip())
+        except (TypeError, ValueError):
+            return _tool_error("chunk must be a whole number, as listed by a fetch")
+        if chunk_number < 0:
+            return _tool_error("chunk must be zero or a positive integer")
+        extra["chunk"] = chunk_number
+    if section is not None and not isinstance(section, str):
+        return _tool_error("section must be text")
+    if isinstance(section, str) and section.strip():
+        if chunk is not None:
+            return _tool_error("pass chunk OR section, not both")
+        extra["section"] = section.strip()
     env = os.environ if environ is None else environ
     # W6 F3, both halves behind the one variable arm E sets. Arm D reaches
     # neither branch, so its fetch is the Phase 3 fetch, character for character.
@@ -575,7 +616,7 @@ def _fetch_one(
     if rule_rows:
         mid, note = _resolve_fetch_id(hook, mid, env)
     try:
-        answer = hook.fetch_memory_text(mid, environ)
+        answer = hook.fetch_memory_text(mid, environ, **extra)
     except hook.RecallError as exc:
         if exc.reason == "bad_project":
             return _tool_error(
@@ -608,6 +649,12 @@ def _fetch_one(
         else ""
     )
     head = f"GROUNDED MEMORY {mid}: {title}{source_line}"
+    picked = answer.get("chunk")
+    if isinstance(picked, int) and not isinstance(picked, bool):
+        heading = hook._neutral(str(answer.get("heading") or ""), hook.TITLE_MAX_CHARS)
+        head += f" | section {picked}" + (f": {heading}" if heading else "")
+    elif "section" in extra:
+        head += " | no section matched; showing the memory as fetched without one"
     if hook.shown_set_on(env):
         # W8 DP-6. What this fetch returned, so that for the rest of the session
         # the index gives it no block and the trigger leg no row. Recorded only
@@ -727,6 +774,8 @@ def handle(message: Any, environ: Optional[Dict[str, str]] = None) -> Optional[D
                 include_mined=args.get("include_mined", False),
                 read_capability=args.get("read_capability"),
                 _call_arguments=args,
+                chunk=args.get("chunk"),
+                section=args.get("section"),
             ),
         )
     return _error(req_id, -32601, f"Method not found: {method}")

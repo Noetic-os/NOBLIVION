@@ -887,3 +887,22 @@ def test_backend_none_says_no_row_gets_a_vector(conn, tmp_path):
     )
     assert "backend is none" in report.vector_line()
     assert report.to_dict()["embedding"]["backend"] == "none"
+
+
+def test_imported_rows_get_chunks_and_a_revived_row_gets_new_ones(conn, tmp_path):
+    long_text = "# Imported\n\n" + "\n\n".join(
+        f"## Part {n}\n" + "A sentence about the rollout. " * 30 for n in range(3)
+    )
+    first = write_jsonl(tmp_path / "v1.jsonl", [{"content": long_text}, {"content": "Short."}])
+    do_import(conn, first)
+    counts = dict(
+        conn.execute(
+            "SELECT m.content, count(*) FROM memory_chunks c JOIN memories m ON m.id = c.parent_id "
+            "GROUP BY m.id"
+        ).fetchall()
+    )
+    assert sorted(counts.values()) == [1, 4]
+    importer.run(conn, first, project="claude_code", apply=True, remove=True)
+    do_import(conn, first)  # the soft-deleted rows come back
+    assert conn.execute("SELECT count(*) FROM memory_chunks").fetchone()[0] == 5
+    assert db.foreign_key_problems(conn) == []

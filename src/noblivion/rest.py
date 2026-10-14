@@ -20,12 +20,12 @@ from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from noblivion import db, injection, redaction, trust
+from noblivion import db, injection, ranking, redaction, trust
 from noblivion.launcher import NONCE_RE
 from noblivion.ranking import MODE_KEYWORD
 
 if TYPE_CHECKING:
-    from noblivion.ranking import Hit, RankResult
+    from noblivion.ranking import Hit, PoolRow, RankResult
     from noblivion.store import Store
 
 log = logging.getLogger("noblivion.store")
@@ -40,6 +40,15 @@ NO_MEMORIES = "No memories available."
 INTERNAL_REASON = "index or fetch failed; see the store log"  # section 4: fixed text
 NOT_FOUND_REASON = "no memory with that id in this namespace"
 BAD_ID_REASON = "id is not a number"
+BAD_CHUNK_REASON = "chunk is not a number"
+NO_CHUNK_REASON = "no chunk with that number in this memory"
+# A memory text up to this size is fetched whole, as before the chunks (NOBLIVION-103).
+# A longer text comes back as its summary chunk and the list of its sections.
+FETCH_WHOLE_CHARS = 6000
+MAX_SECTION_LINES = 60
+# A search entry of a file longer than this shows the file header and the best
+# chunk, not the whole file.
+LARGE_ENTRY_CHARS = 6000
 ENTRY_SEPARATOR = "\n---\n"
 TITLE_CHARS = 120
 SUMMARY_CHARS = 180
@@ -55,6 +64,7 @@ GET_ROUTES = (SEARCH_PATH, INDEX_PATH, TRUST_REPORT_PATH)
 
 _SOURCE_RE = re.compile(r"^\[claude_code_md: ([^\]\n]+)\]$")
 _MARKER_RE = re.compile(r"^\[(?:claude_code_md|transcript_mined): [^\]\n]*\]$")
+_MARKER_LINE_RE = re.compile(r"^\[claude_code_md: [^\]\n]+\][ \t]*$", re.M)
 _ID_RE = re.compile(r"[0-9]+")
 MAX_ROW_ID = 2**63 - 1
 
@@ -135,6 +145,20 @@ def source_of(content: str) -> str | None:
     return None
 
 
+def entry_text(row: PoolRow) -> str:
+    """The text of one search entry. A file longer than ``LARGE_ENTRY_CHARS`` whose best
+    chunk is a body chunk gives its header (title, description, marker line) and
+    that chunk, so a later section of a long file reaches the reader. Any other
+    row gives its whole content."""
+    content = row.content
+    if len(content) <= LARGE_ENTRY_CHARS or not row.chunk_text or row.chunk_index < 1:
+        return content
+    marker = _MARKER_LINE_RE.search(content)
+    if marker is None:
+        return content
+    return f"{content[: marker.end()]}\n\n{row.chunk_text}"
+
+
 def _json_len(text: str) -> int:
     return len(json.dumps(text, ensure_ascii=False).encode("utf-8")) - 2
 
@@ -176,9 +200,10 @@ def search_answer(result: RankResult | None, namespace: str, model: str | None =
     sep_len = _json_len(ENTRY_SEPARATOR)
     for hit in result.hits if result is not None else []:
         sep = sep_len if entries else 0
-        if used + sep + _json_len(hit.row.content) > budget:
+        raw = entry_text(hit.row)
+        if used + sep + _json_len(raw) > budget:
             continue  # too large as stored: not redacted, a smaller entry after it can fit
-        text = safe_text(hit.row.content)
+        text = safe_text(raw)
         if text == redaction.REDACTION_FAILED_TOKEN:
             continue
         size = _json_len(text) + sep
@@ -209,6 +234,9 @@ def index_row(hit: Hit, trust: Mapping[int, tuple[float, int]] | None, prior_min
         "fusion_score": hit.fusion_score,
         "source": source_of(row.content),
         "source_type": row.source_type,
+        # The chunk that ranked the file (NOBLIVION-103); None for a row with no chunk.
+        "chunk": row.chunk_index if row.chunk_id is not None else None,
+        "heading": row.heading if row.chunk_id is not None else None,
     }
     if trust is not None:
         rollup = trust.get(row.id)
@@ -276,9 +304,20 @@ def fetch_answer(
     root: str | None = None,
     session_id: str = "",
     shared_roots: Sequence[str] = (),
+    chunk: str = "",
+    query: str = "",
+    query_vector: Sequence[float] | None = None,
+    model_id: str | None = None,
 ) -> dict:
     """Section 4.4. Archived, deleted and other-namespace rows are not found.
-    The answer stays below 512 KB: a longer text is cut, with ``…`` at the cut."""
+    The answer stays below 512 KB: a longer text is cut, with ``…`` at the cut.
+
+    ``chunk`` (a chunk number) or ``query`` (words) picks one section of the
+    memory (NOBLIVION-103): the answer text is that chunk, ``chunk`` is its
+    number and ``heading`` its heading path. With neither, a text of up to
+    ``FETCH_WHOLE_CHARS`` characters comes back whole, and a longer text comes
+    back as its summary chunk and the list of its sections. ``chunks`` lists
+    every section (number, heading, characters) when the answer is not the whole text."""
     if not _ID_RE.fullmatch(raw_id):
         return {
             "namespace": namespace,
@@ -333,9 +372,74 @@ def fetch_answer(
         "text": "",
         "reason": None,
     }
+    sections = conn.execute(
+        "SELECT chunk_index, heading, text, search_text, id FROM memory_chunks "
+        "WHERE parent_id = ? ORDER BY chunk_index",
+        (memory_id,),
+    ).fetchall()
+    picked = None
+    chunk = chunk.strip()
+    if chunk:
+        if not _ID_RE.fullmatch(chunk):
+            return dict(answer, reason=BAD_CHUNK_REASON)
+        picked = next((c for c in sections if int(c[0]) == int(chunk)), None)
+        if picked is None:
+            return dict(answer, reason=NO_CHUNK_REASON)
+    elif query.strip():
+        picked = best_chunk(conn, sections, query, query_vector, model_id)
+    whole = False
+    if picked is not None:
+        answer["chunk"] = int(picked[0])
+        answer["heading"] = safe_text(picked[1])
+        text = safe_text(picked[2])
+    elif sections and len(content) > FETCH_WHOLE_CHARS:
+        text = safe_text(summary_view(sections))
+    else:
+        text = safe_text(content)
+        whole = True
+    if sections and not whole:
+        # The answer is not the whole text: list the sections that can be asked for.
+        answer["chunks"] = [
+            {"chunk": int(c[0]), "heading": safe_text(c[1]), "chars": len(c[2])} for c in sections
+        ]
     room = ANSWER_CAP_BYTES - 1 - len(json.dumps(answer, ensure_ascii=False).encode("utf-8"))
-    answer["text"] = _cut_to_json_len(safe_text(content), room)
+    answer["text"] = _cut_to_json_len(text, room)
     return answer
+
+
+def best_chunk(
+    conn: sqlite3.Connection,
+    sections: Sequence[Sequence[object]],
+    query: str,
+    query_vector: Sequence[float] | None = None,
+    model_id: str | None = None,
+) -> Sequence[object] | None:
+    """The section that best answers ``query``: the ranking of the search on the
+    sections of one memory (keyword, and the cosine when the query vector and the
+    chunk vectors of ``model_id`` exist). None when nothing matches. ``sections``
+    rows are ``(index, heading, text, search_text, chunk id)``."""
+    vectors: dict[int, bytes] = {}
+    if query_vector and model_id and sections:
+        marks = ",".join("?" * len(sections))
+        found = conn.execute(
+            f"SELECT chunk_id, blob FROM chunk_vectors WHERE model = ? AND chunk_id IN ({marks})",
+            (model_id, *(int(c[4]) for c in sections)),
+        )
+        vectors = {int(r[0]): bytes(r[1]) for r in found}
+    position = ranking.pick_chunk(
+        [(int(c[4]), str(c[3])) for c in sections], query, vectors, query_vector
+    )
+    return None if position is None else sections[position]
+
+
+def summary_view(sections: Sequence[Sequence[object]]) -> str:
+    """The summary chunk and the list of the sections, for a text too long to return whole."""
+    lines = [str(sections[0][2]), "", "Sections of this memory. Ask for one with chunk=<number>:"]
+    for number, heading, text, *_ in sections[:MAX_SECTION_LINES]:
+        lines.append(f"{number}: {heading or 'intro'} ({len(str(text))} characters)")
+    if len(sections) > MAX_SECTION_LINES:
+        lines.append(f"... and {len(sections) - MAX_SECTION_LINES} more")
+    return "\n".join(lines)
 
 
 # -- the handler ------------------------------------------------------------------
@@ -628,6 +732,10 @@ class Handler(BaseHTTPRequestHandler):
         namespace = namespace_of(params, store.namespace)
         try:
             with store.connection() as conn:
+                query = first(params, "query")[:MAX_Q_CHARS]
+                vector = None
+                if query.strip() and not first(params, "chunk").strip():
+                    vector = store.ranker.query_vector(conn, query)
                 return fetch_answer(
                     conn,
                     raw_id,
@@ -635,6 +743,10 @@ class Handler(BaseHTTPRequestHandler):
                     root_of(params),
                     first(params, "session_id"),
                     store.store_settings.shared_roots,
+                    first(params, "chunk"),
+                    query,
+                    vector,
+                    store.ranker.embedding.model_id if store.ranker.embedding else None,
                 )
         except (sqlite3.Error, OSError) as exc:
             log.error("fetch failed: %s", type(exc).__name__)
