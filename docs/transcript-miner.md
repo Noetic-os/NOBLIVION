@@ -118,6 +118,43 @@ the end of each session. It runs at most once every 10 minutes. The hook
 runs `NOBLIVION_MINE_CMD` when you set it, else
 `<data dir>/venv/bin/noblivion mine`.
 
+### The learning client and the miner
+
+A learning client config (`<data dir>/learning-client.json`, see
+[learning.md](learning.md)) does not turn the miner off by being there. The
+hook and `noblivion mine` read it and apply the same opt-out rule as the
+learner (`allowed` in `codex/capture.py`). A transcript is mined only when:
+
+- `learning.contribute` is `true`, and
+- `learning.paused` is not `true`, and
+- the session has no opt-out of its own under `learning.sessions.<id>`
+  (`contribute` set to `false`, `excluded` or `paused`).
+
+The session id is the file name of the transcript without `.jsonl`.
+`noblivion mine` skips an opted-out transcript without opening it and counts
+it as `files_opted_out` (`opted_out=` in the summary line). The hook stays
+off for the ending session when that session opted out, or for every
+session when the global rule fails.
+
+The switch comes first. With no `NOBLIVION_MINER` and no `miner.enabled`,
+the miner is off whatever the learning client says. With the switch on and
+no `learning-client.json`, nothing is filtered.
+
+A `learning-client.json` that is not valid JSON, is not an object or has a
+malformed section is never read as permission. The hook stays off. `noblivion
+mine` mines nothing and exits with code 7.
+
+The workspace mappings (`project_mappings`) of the learning client are not
+applied to the miner: only the top-level `learning` section and the session
+entries count.
+
+The hook writes one line for each SessionEnd decision to
+`<data dir>/cache/mine-hook.log`: `decision=on`, `decision=off-by-env`,
+`decision=off-by-opt-out detail=learning` (or `detail=session`) or
+`decision=off-by-bad-config detail=<error name>`. The log holds no session id
+and no path. It moves to `mine-hook.log.1` past 1 MB. When nothing was mined,
+read this file first.
+
 One run stops after `miner.max_run_s` seconds (default 300). It stops at
 the end of a line and saves its place. The next run goes on from there.
 The miner keeps the size and the read position of each transcript in the
@@ -141,7 +178,8 @@ code 0.
 | `--json` | Print the result as JSON. |
 
 Exit code 4 means another miner run holds the lock. Exit code 3 means a
-database schema error. Exit code 6 means there is no database: the miner
+database schema error. Exit code 7 means `learning-client.json` exists but
+cannot be applied. Exit code 6 means there is no database: the miner
 never makes one, so a run that the SessionEnd hook starts after an
 uninstall does not make the data dir again (NOBLIVION-28).
 

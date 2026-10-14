@@ -79,6 +79,10 @@ EXIT_OK = 0
 EXIT_SCHEMA = 3
 EXIT_LOCKED = 4
 EXIT_NO_DB = 6  # no database: the miner never makes one (NOBLIVION-28)
+EXIT_OPT_OUT_UNREADABLE = 7  # learning-client.json is there but unusable: mine nothing
+
+LEARNING_CLIENT_FILE = "learning-client.json"
+_CAPTURE_MODULE = "_noblivion_codex_capture"
 
 KIND_CORRECTION = "correction"
 KIND_REVIEW = "review_request_changes"
@@ -154,6 +158,60 @@ def correction_test() -> Callable[[str], str | None] | None:
             sys.modules.pop(_STOP_CHECKS_MODULE, None)
             return None
     return None
+
+
+class OptOutError(Exception):
+    """The learning client config is there, but the miner cannot apply it."""
+
+
+def _capture_module():
+    """``codex/capture.py``, the home of ``allowed``: the learner and the miner
+    share one opt-out rule. Found like the hooks folder, one level up."""
+    for folder in labels.hooks_dirs():
+        path = folder.parent / "codex" / "capture.py"
+        if not path.is_file():
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(_CAPTURE_MODULE, path)
+            if spec is None or spec.loader is None:
+                break
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+            return mod
+        except Exception:  # noqa: BLE001 - no rule: no mining
+            sys.modules.pop(_CAPTURE_MODULE, None)
+            break
+    raise OptOutError("codex/capture.py did not load, so the opt-out rule is unknown")
+
+
+def load_session_filter(
+    env: Mapping[str, str] | None = None,
+) -> Callable[[str], bool] | None:
+    """The per-session opt-out filter, or ``None`` when no learning client is
+    configured (nothing to apply). The result takes a session id and returns
+    True when the miner may read that session. It is ``allowed`` of
+    ``codex/capture.py``: ``learning.contribute`` must be true, and neither
+    ``learning.paused`` nor the session's own opt-out may be set
+    (NOBLIVION-106). Raises ``OptOutError`` when the file is unreadable."""
+    path = config.data_dir(env) / LEARNING_CLIENT_FILE
+    if not path.exists():
+        return None
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise OptOutError(f"{LEARNING_CLIENT_FILE} is unreadable ({type(exc).__name__})") from exc
+    if not isinstance(cfg, dict):
+        raise OptOutError(f"{LEARNING_CLIENT_FILE} is not a JSON object")
+    allowed = _capture_module().allowed
+
+    def may_read(session_id: str) -> bool:
+        try:
+            return bool(allowed(cfg, session_id))
+        except Exception:  # noqa: BLE001 - a malformed section is an opt-out
+            return False
+
+    return may_read
 
 
 def find_cue(text: str) -> str:
@@ -333,6 +391,7 @@ class MineStats:
     files: int = 0
     files_skipped: int = 0  # unchanged since the last run
     unreadable_files: int = 0
+    files_opted_out: int = 0  # skipped: the learning client opts the session out
     lines: int = 0
     bytes_read: int = 0
     bad_lines: int = 0
@@ -352,6 +411,7 @@ class MineStats:
             "files": self.files,
             "files_skipped": self.files_skipped,
             "unreadable_files": self.unreadable_files,
+            "files_opted_out": self.files_opted_out,
             "lines": self.lines,
             "bytes_read": self.bytes_read,
             "bad_lines": self.bad_lines,
@@ -374,6 +434,8 @@ class MineStats:
             f"{per_kind} inserted={self.inserted} deduped={sum(self.deduped.values())} "
             f"existing={self.existing} redaction_failed={self.redaction_failed}"
         )
+        if self.files_opted_out:
+            line += f" opted_out={self.files_opted_out}"
         return line + (" partial=true" if self.partial else "")
 
 
@@ -773,8 +835,11 @@ def run(
     max_run_s: float | None = DEFAULT_MAX_RUN_S,
     since: datetime | None = None,
     clock: Callable[[], float] = time.monotonic,
+    may_read: Callable[[str], bool] | None = None,
 ) -> MineStats:
-    """One miner run over ``transcripts``. Returns what it did."""
+    """One miner run over ``transcripts``. Returns what it did. ``may_read``
+    takes a session id (the transcript's file stem) and returns False for a
+    session that must not be mined; such a transcript is not opened."""
     stats = MineStats()
     deadline = None if max_run_s is None else clock() + max_run_s
     miner = Miner(stats, _hash_seen(conn, project))
@@ -783,6 +848,9 @@ def run(
         if deadline is not None and clock() >= deadline:
             stats.partial = True
             break
+        if may_read is not None and not may_read(t.path.stem):
+            stats.files_opted_out += 1
+            continue
         try:
             st = t.path.stat()
         except OSError:
@@ -871,6 +939,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
     try:
+        may_read = load_session_filter()
+    except OptOutError as exc:
+        print(f"noblivion mine: {exc}; this run mines nothing", file=sys.stderr)
+        return EXIT_OPT_OUT_UNREADABLE
+    try:
         with indexer.index_lock(db_path.parent / MINE_LOCK_FILE, args.lock_timeout):
             conn = db.open_db(db_path, allow_migrate=False)
             try:
@@ -880,6 +953,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     project=settings.namespace,
                     max_run_s=max_s,
                     since=args.since,
+                    may_read=may_read,
                 )
             finally:
                 conn.close()

@@ -667,7 +667,7 @@ def test_session_end_hook_starts_nothing_until_the_miner_is_on(tmp_path):
 
     assert hook.is_enabled(env) is False
     assert hook.run_hook(env, starter, now=lambda: 1000.0) == "off"
-    assert started == [] and not (tmp_path / "cache").exists()
+    assert started == [] and not (tmp_path / "cache" / "mine.stamp").exists()
     # A user who turned the miner on in the config file keeps it on.
     (tmp_path / "config.json").write_text(json.dumps({"miner": {"enabled": True}}))
     assert hook.run_hook(env, starter, now=lambda: 1000.0) == "started"
@@ -695,3 +695,180 @@ def test_new_learner_controls_cannot_fall_through_to_historical_miner(tmp_path, 
     (tmp_path / "learning-client.json").write_text(content)
     env = {"NOBLIVION_DATA_DIR": str(tmp_path), "NOBLIVION_MINER": "1"}
     assert load_hook("mine_session_end").is_enabled(env) is False
+
+
+# -- the learning client does not turn the miner off (NOBLIVION-106) -----------
+
+LEARNING_ON = {"learning": {"contribute": True, "use": True}}
+
+
+def put_client(folder: Path, cfg) -> None:
+    text = cfg if isinstance(cfg, str) else json.dumps(cfg)
+    (folder / "learning-client.json").write_text(text)
+
+
+def hook_log(folder: Path) -> list[str]:
+    path = folder / "cache" / "mine-hook.log"
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def test_a_learning_client_that_contributes_leaves_the_miner_on(tmp_path):
+    put_client(tmp_path, LEARNING_ON)
+    env = {"NOBLIVION_DATA_DIR": str(tmp_path), "NOBLIVION_MINER": "1"}
+    hook = load_hook("mine_session_end")
+    assert hook.is_enabled(env) is True
+    assert hook.is_enabled(env, "any-session") is True
+    # The switch still comes first: no env var and no config key, no mining.
+    assert hook.is_enabled({"NOBLIVION_DATA_DIR": str(tmp_path)}) is False
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        {"learning": {"contribute": False}},
+        {"learning": {"contribute": True, "paused": True}},
+        {"learning": {}},
+        {},
+    ],
+)
+def test_a_global_learning_opt_out_keeps_the_hook_off(tmp_path, cfg):
+    put_client(tmp_path, cfg)
+    env = {"NOBLIVION_DATA_DIR": str(tmp_path), "NOBLIVION_MINER": "1"}
+    assert load_hook("mine_session_end").is_enabled(env) is False
+
+
+@pytest.mark.parametrize(
+    "opt", [{"contribute": False}, {"excluded": True}, {"paused": True}], ids=str
+)
+def test_the_hook_skips_a_session_that_opted_out(tmp_path, opt):
+    put_client(tmp_path, {"learning": {"contribute": True, "sessions": {"s-out": opt}}})
+    env = {
+        "NOBLIVION_DATA_DIR": str(tmp_path),
+        "NOBLIVION_MINER": "1",
+        "NOBLIVION_MINE_CMD": "true",
+    }
+    hook = load_hook("mine_session_end")
+    started: list[list[str]] = []
+
+    def starter(argv, environ):
+        started.append(argv)
+        return True
+
+    assert hook.run_hook(env, starter, now=lambda: 1000.0, session_id="s-out") == "off"
+    assert started == []
+    assert hook.run_hook(env, starter, now=lambda: 1000.0, session_id="s-in") == "started"
+    assert len(started) == 1
+
+
+def test_a_malformed_learning_client_turns_the_hook_off_and_logs_it(tmp_path):
+    env = {
+        "NOBLIVION_DATA_DIR": str(tmp_path),
+        "NOBLIVION_MINER": "1",
+        "NOBLIVION_MINE_CMD": "true",
+    }
+    hook = load_hook("mine_session_end")
+    for bad in ("{invalid", "[1, 2]", '{"learning": "yes"}', '{"learning": {"sessions": 5}}'):
+        put_client(tmp_path, bad)
+        assert hook.is_enabled(env, "s-1") is False, bad
+    put_client(tmp_path, "{invalid")
+    started: list[list[str]] = []
+    assert hook.run_hook(env, lambda a, e: started.append(a) or True) == "off"
+    assert started == []
+    assert (
+        hook_log(tmp_path)[-1].split(" ", 1)[1]
+        == "decision=off-by-bad-config detail=JSONDecodeError"
+    )
+
+
+def test_the_hook_logs_one_line_per_decision(tmp_path):
+    base = {"NOBLIVION_DATA_DIR": str(tmp_path), "NOBLIVION_MINE_CMD": "true"}
+    hook = load_hook("mine_session_end")
+    nothing = lambda argv, environ: True  # noqa: E731
+    hook.run_hook({**base, "NOBLIVION_MINER": "0"}, nothing, now=lambda: 1000.0)
+    put_client(tmp_path, {"learning": {"contribute": False}})
+    hook.run_hook({**base, "NOBLIVION_MINER": "1"}, nothing, now=lambda: 1000.0)
+    put_client(tmp_path, LEARNING_ON)
+    hook.run_hook({**base, "NOBLIVION_MINER": "1"}, nothing, now=lambda: 1000.0)
+    lines = [line.split(" ", 1)[1] for line in hook_log(tmp_path)]
+    assert lines == [
+        "decision=off-by-env",
+        "decision=off-by-opt-out detail=learning",
+        "decision=on",
+    ]
+    for line in hook_log(tmp_path):
+        assert "s-out" not in line and str(tmp_path) not in line
+
+
+def test_the_hook_script_reads_the_session_id_from_its_event(tmp_path):
+    put_client(
+        tmp_path, {"learning": {"contribute": True, "sessions": {"s-out": {"excluded": True}}}}
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("NOBLIVION_")}
+    env.update(NOBLIVION_DATA_DIR=str(tmp_path), HOME=str(tmp_path), NOBLIVION_MINER="1")
+    hook = ROOT / "hooks" / "mine_session_end.py"
+    for sid in ("s-out", "s-in"):
+        proc = subprocess.run(
+            [sys.executable, str(hook)],
+            input=json.dumps({"session_id": sid}),
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+        assert (proc.returncode, proc.stdout) == (0, "")
+    assert [line.split(" ", 1)[1] for line in hook_log(tmp_path)] == [
+        "decision=off-by-opt-out detail=session",
+        "decision=on",
+    ]
+
+
+def test_the_cli_miner_skips_a_session_that_opted_out(cli_env, capsys):
+    projects = cli_env.parent / "home" / ".claude" / "projects"
+    write(projects / PROJECT_DIR / "s-out.jsonl", session_one())
+    put_client(
+        cli_env, {"learning": {"contribute": True, "sessions": {"s-out": {"excluded": True}}}}
+    )
+    assert cli_main(["mine", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["files_opted_out"] == 1 and out["files"] == 1 and out["inserted"] == 3
+    with closing(db.connect(cli_env / "noblivion.db")) as c:
+        assert {r["path"].split("#")[0] for r in rows(c)} <= {"s-one"}
+        assert not [r for r in rows(c) if "s-out" in r["path"]]
+    # The opted-out session left no read position behind.
+    with closing(db.connect(cli_env / "noblivion.db")) as c:
+        keys = [r[0] for r in c.execute("SELECT transcript FROM miner_state")]
+    assert keys == [f"{PROJECT_DIR}/s-one.jsonl"]
+
+
+def test_the_cli_miner_reads_nothing_when_contribute_is_off(cli_env, capsys):
+    put_client(cli_env, {"learning": {"contribute": False}})
+    assert cli_main(["mine", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["files_opted_out"] == 1 and out["files"] == 0 and out["inserted"] == 0
+
+
+def test_the_cli_miner_mines_when_the_client_contributes(cli_env, capsys):
+    put_client(cli_env, LEARNING_ON)
+    assert cli_main(["mine", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["inserted"] == 3
+
+
+def test_the_cli_miner_mines_nothing_when_the_client_config_is_malformed(cli_env, capsys):
+    put_client(cli_env, "{invalid")
+    assert cli_main(["mine", "--json"]) == miner.EXIT_OPT_OUT_UNREADABLE
+    captured = capsys.readouterr()
+    assert "learning-client.json is unreadable" in captured.err and captured.out == ""
+    with closing(db.connect(cli_env / "noblivion.db")) as c:
+        assert rows(c) == []
+
+
+def test_the_hook_and_the_miner_use_the_learner_rule(tmp_path):
+    capture = load_hook("mine_session_end")._capture_allowed()
+    cfg = {"learning": {"contribute": True, "sessions": {"s": {"paused": True}}}}
+    put_client(tmp_path, cfg)
+    may_read = miner.load_session_filter({"NOBLIVION_DATA_DIR": str(tmp_path)})
+    assert may_read is not None
+    for sid in ("s", "other", ""):
+        assert may_read(sid) is capture(cfg, sid)
+    assert miner.load_session_filter({"NOBLIVION_DATA_DIR": str(tmp_path / "none")}) is None

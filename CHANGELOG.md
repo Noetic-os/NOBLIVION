@@ -40,16 +40,6 @@ All notable changes to NOBLIVION. The format follows
   `learning pass failed: LeaseLost` error (NOBLIVION-107).
 - The delivery drain uses the release it runs from, not a `repo_root` left in
   `learning-client.json` by an older install (NOBLIVION-107).
-- A dedup judge answer with thinking text around the JSON object, or in a
-  list of text parts, is now read. When there is no readable object, the judge
-  is asked once more for the JSON object only, with a longer answer allowance.
-  The plan summary counts the pairs that still cannot be read as
-  `parse_failed`, apart from `UNSURE` (NOBLIVION-108).
-- A merge no longer skips a pair because the trigger union has more than 12
-  items. It keeps the first 12 (the survivor's own items are never cut) and
-  writes the rest to the plan file as `dropped_triggers`. The limit is
-  documented (NOBLIVION-108).
-
 ## 0.1.14 - 2026-10-13
 
 ### Added
