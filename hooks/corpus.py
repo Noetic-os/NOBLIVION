@@ -567,10 +567,10 @@ def _load_corpus_cache(path: str) -> Dict[str, Any]:
 
 def _save_corpus_cache(path: str, files: Dict[str, Any]) -> None:
     """Write the cache file, atomically and for the owner only. Best effort: a hook that cannot
-    write its cache is slow, not wrong."""
+    write its cache is slow, not wrong. It does not make the folder: the caller does, by the
+    rule that no hook makes a data dir an uninstall deleted (NOBLIVION-28)."""
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
-        os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump({"signature": _CACHE_SIGNATURE, "files": files}, fh, separators=(",", ":"))

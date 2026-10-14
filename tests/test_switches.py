@@ -41,6 +41,7 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_RECALL_DISABLE": rh.recall_disabled,
     "NOBLIVION_RECALL_LABELS": lr.prompt_enabled,
     "NOBLIVION_RECALL_MD_ONLY": rh.md_only_on,
+    "NOBLIVION_RECALL_CORPUS_CACHE": lambda e: rh.corpus_cache_path(e) is not None,  # NOBLIVION-110
     "NOBLIVION_RECALL_INDEX": rh.index_mode,
     "NOBLIVION_RECALL_INDEX_HYGIENE": rh.index_hygiene,
     "NOBLIVION_RECALL_INDEX_RERANK": rh.index_rerank,

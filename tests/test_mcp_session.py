@@ -398,7 +398,7 @@ def test_a_malformed_row_is_read_from_the_file(tmp_path):
 def test_the_cache_file_is_private(tmp_path):
     folder = tmp_path / "memory"
     _write_memories(folder, 2)
-    cache = tmp_path / "sub" / "corpus_cache.json"
+    cache = tmp_path / "corpus_cache.json"
     corpus.load_memory_corpus(str(folder), str(cache))
     assert (cache.stat().st_mode & 0o077) == 0
 

@@ -2594,6 +2594,11 @@ def load_session_corpus(environ: Optional[Mapping[str, str]] = None) -> List[Mem
     store does for a shared root."""
     seen: Dict[str, MemoryFile] = {}
     cache_path = corpus_cache_path(environ)
+    if cache_path:
+        try:
+            _make_dirs(os.path.dirname(cache_path))  # never makes a deleted data dir (NOBLIVION-28)
+        except OSError:
+            cache_path = None
     for folder in memory_dirs(environ):
         for md in load_memory_corpus(folder, cache_path):
             seen.setdefault(md.rel_path, md)
