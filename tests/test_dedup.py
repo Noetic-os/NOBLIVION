@@ -93,13 +93,13 @@ def no_network(monkeypatch):
     return calls
 
 
-@pytest.fixture
-def garden(tmp_path, no_network):
-    """A fictional memory folder, indexed, with vectors, files 1 hour old."""
+def build_garden(tmp_path: Path, files: dict[str, str], vectors: dict[str, list[float]]) -> dict:
+    """A fictional memory folder, indexed, with vectors, files 1 hour old.
+    The caller closes ``conn``."""
     folder = tmp_path / "projects" / ROOT / "memory"
     folder.mkdir(parents=True)
     old = time.time() - 3600
-    for name, text in FILES.items():
+    for name, text in files.items():
         path = folder / name
         path.write_text(text, encoding="utf-8")
         os.utime(path, (old, old))
@@ -114,14 +114,20 @@ def garden(tmp_path, no_network):
     indexer.scan(conn, [folder])
     ids = {r["path"]: r["id"] for r in conn.execute("SELECT id, path FROM memories")}
     with db.write_tx(conn):
-        for name, vector in VECTORS.items():
+        for name, vector in vectors.items():
             conn.execute(
                 "INSERT INTO vectors (memory_id, model, dim, content_hash, blob, rev) "
                 "VALUES (?, ?, ?, 'h', ?, 1)",
                 (ids[name], MODEL_ID, len(vector), embedding.vector_to_blob(vector)),
             )
-    yield {"folder": folder, "data": data, "env": env, "conn": conn, "ids": ids}
-    conn.close()
+    return {"folder": folder, "data": data, "env": env, "conn": conn, "ids": ids}
+
+
+@pytest.fixture
+def garden(tmp_path, no_network):
+    g = build_garden(tmp_path, FILES, VECTORS)
+    yield g
+    g["conn"].close()
 
 
 def snapshot(folder: Path) -> dict[str, bytes]:
@@ -561,9 +567,10 @@ def test_apply_skips_a_file_changed_since_the_plan(garden):
     assert snapshot(garden["folder"]) == before
 
 
-def test_only_merge_acts(garden):
+@pytest.mark.parametrize("verdict", ["RELATED", "CONTRADICT", "UNSURE"])
+def test_only_merge_and_supersede_act(garden, verdict):
     before = snapshot(garden["folder"])
-    _plan_and_apply(garden, {"verdict": "SUPERSEDE", "survivor": "A", "reason": "r"})
+    _plan_and_apply(garden, {"verdict": verdict, "survivor": "none", "reason": "r"})
     assert snapshot(garden["folder"]) == before
 
 

@@ -60,3 +60,6 @@ markers = [
 # their long message strings, so the moved code stays comparable line by line.
 "hooks/*.py" = ["E501", "UP006", "UP031", "UP035", "UP045"]
 "mcp/*.py" = ["E501", "UP006", "UP031", "UP035", "UP045"]
+# This file imports the fixtures of test_dedup.py, so a test argument has the
+# name of an import.
+"tests/test_dedup_sweep.py" = ["F811"]

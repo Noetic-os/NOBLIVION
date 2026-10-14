@@ -24,7 +24,7 @@ USAGE = (
     "usage: noblivion learning status|inspect|controls|edit|exclude|forget|summary|retry\n"
     "       noblivion index [--force] [--allow-shrink] [--memory-dir DIR] [--json]\n"
     "       noblivion consent embeddings [--revoke]\n"
-    "       noblivion dedup pairs|plan [--dry-run] [--yes]|apply RUN_ID|undo RUN_ID\n"
+    "       noblivion dedup pairs|plan [--dry-run] [--yes]|sweep|apply RUN_ID|undo RUN_ID\n"
     "       noblivion dedup consent [--revoke]|clear-latch\n"
     "       noblivion trust report [--json] [--limit N]\n"
     "       noblivion trust recompute [--json]\n"

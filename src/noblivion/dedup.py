@@ -10,11 +10,18 @@
   skips the question. ``--dry-run`` prints the pairs and the cost estimate
   only: it makes no network call and writes no plan. A plan never changes a
   memory file.
-- ``apply <run_id>``: merge the ``MERGE`` pairs of that plan. The memory
-  files are the source of truth: the survivor file gets the loser text, the
-  loser file moves to ``<memory folder>/.archive/dedup/<run_id>/``, and the
-  indexer picks the change up. A write-ahead log, a backup and an undo
-  script go to ``dedup/<run_id>/`` in the data dir.
+- ``apply <run_id>``: act on the ``MERGE`` and ``SUPERSEDE`` pairs of that
+  plan. The memory files are the source of truth. A MERGE gives the survivor
+  file the loser text (at most 12 trigger items; the rest are named in the
+  plan). A SUPERSEDE leaves the survivor as it is and adds a ``superseded_by``
+  line to the loser. Either way the loser file moves to
+  ``<memory folder>/.archive/dedup/<run_id>/`` and the indexer picks the
+  change up. A write-ahead log, a backup and an undo script go to
+  ``dedup/<run_id>/`` in the data dir.
+- ``sweep [--max-pairs N] [--daily-cost-cap USD]``: for a timer. Judge the
+  best pairs, write the plan and apply it in one run. It never asks a
+  question, so it needs the consent from ``consent``. The judge spend of the
+  UTC day stays under the cap (``dedup.daily_cost_cap_usd``).
 - ``undo <run_id> [--pair A,B]``: restore the files of a run, newest step
   first, and veto the pair.
 - ``consent [--revoke]`` and ``clear-latch``.
@@ -61,6 +68,7 @@ EXAMPLE_MODEL = "google/gemini-2.5-flash"  # docs and help only, never a default
 DEFAULT_MIN_COSINE = 0.75
 THRESHOLD_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_MAX_PAIRS = 50
+DEFAULT_DAILY_COST_CAP_USD = 0.5  # for `sweep`: all judge spend of one UTC day
 DEFAULT_TIMEOUT_S = 60.0
 DEFAULT_MIN_INTERVAL_S = 1.0
 MAX_MERGES_PER_RUN = 30
@@ -68,6 +76,12 @@ MIN_AGE_S = 30 * 60
 MAX_FILE_CHARS = 20_000
 MAX_REASON_CHARS = 500
 MAX_OUTPUT_TOKENS = 400
+RETRY_MAX_OUTPUT_TOKENS = 1200
+RETRY_INSTRUCTION = (
+    "Your last answer could not be read. Answer again with ONE JSON object only, "
+    'in this form: {"verdict": "...", "survivor": "A|B|none", "reason": "..."}. '
+    "No thinking text, no code fence, nothing before or after the object."
+)
 MAX_RETRIES_429 = 2
 MAX_RETRY_AFTER_S = 60.0
 CHARS_PER_TOKEN = 4
@@ -139,6 +153,7 @@ class DedupSettings:
     min_interval_s: float = DEFAULT_MIN_INTERVAL_S
     price_in_per_mtok: float | None = None  # USD per million input tokens, for the estimate
     price_out_per_mtok: float | None = None
+    daily_cost_cap_usd: float = DEFAULT_DAILY_COST_CAP_USD
 
 
 def load_dedup_settings(env: Mapping[str, str] | None = None) -> DedupSettings:
@@ -172,6 +187,10 @@ def load_dedup_settings(env: Mapping[str, str] | None = None) -> DedupSettings:
         or 0.0,
         price_in_per_mtok=_float(config.lookup(cfg, "dedup.price_in_per_mtok"), None),
         price_out_per_mtok=_float(config.lookup(cfg, "dedup.price_out_per_mtok"), None),
+        daily_cost_cap_usd=_float(
+            config.lookup(cfg, "dedup.daily_cost_cap_usd"), DEFAULT_DAILY_COST_CAP_USD
+        )
+        or 0.0,
     )
 
 
@@ -314,28 +333,74 @@ class Judge(Protocol):
     def judge(self, system: str, user: str) -> Verdict: ...
 
 
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+_THINK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r"<think(?:ing)?>.*", re.DOTALL | re.IGNORECASE)
+MAX_PARSE_CHARS = 50_000
+PARSE_ERROR = "parse"  # Verdict.error of an answer the code cannot read
+
+
+def answer_text(content: object) -> str | None:
+    """The text of a judge reply: a string, or a list of text parts. ``None``
+    when there is no text at all."""
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+        content = "\n".join(parts) if parts else None
+    if not isinstance(content, str) or not content.strip():
+        return None
+    return content
+
+
+def _json_objects(text: str) -> list[dict]:
+    """Every top-level JSON object in ``text``, in order. Text around the
+    objects, and a brace that opens no object, are skipped."""
+    decoder = json.JSONDecoder()
+    found: list[dict] = []
+    i = text.find("{")
+    while i != -1:
+        try:
+            obj, end = decoder.raw_decode(text, i)
+        except ValueError:
+            i = text.find("{", i + 1)
+            continue
+        if isinstance(obj, dict):
+            found.append(obj)
+        i = text.find("{", end)
+    return found
 
 
 def parse_verdict(content: object) -> Verdict:
     """The judge answer is data: parsed against the schema, never followed.
-    Anything that does not parse is ``UNSURE``."""
-    if not isinstance(content, str):
-        return unsure("the judge answer is not text", sent=True, error="parse")
-    match = _JSON_OBJECT_RE.search(content)
-    try:
-        data = json.loads(match.group(0) if match else content)
-    except ValueError:
-        return unsure("the judge answer is not JSON", sent=True, error="parse")
-    if not isinstance(data, dict):
-        return unsure("the judge answer is not an object", sent=True, error="parse")
+    Anything that does not parse is ``UNSURE`` with ``error == "parse"``.
+
+    A reasoning model may put thinking text around the answer. So the parser
+    drops ``<think>`` blocks, accepts a JSON object anywhere in the text and,
+    when there are several, takes the last one that has a ``verdict`` key."""
+    text = answer_text(content)
+    if text is None:
+        return unsure("the judge answer is not text", sent=True, error=PARSE_ERROR)
+    text = _THINK_OPEN_RE.sub("", _THINK_RE.sub("", text[:MAX_PARSE_CHARS])).strip()
+    objects = _json_objects(text)
+    if not objects:
+        try:
+            whole = json.loads(text)
+        except ValueError:
+            return unsure("the judge answer is not JSON", sent=True, error=PARSE_ERROR)
+        if not isinstance(whole, dict):
+            return unsure("the judge answer is not an object", sent=True, error=PARSE_ERROR)
+        objects = [whole]
+    data = next((o for o in reversed(objects) if "verdict" in o), objects[-1])
     verdict = str(data.get("verdict", "")).strip().upper()
     survivor = str(data.get("survivor", "none")).strip()
     survivor = survivor.upper() if survivor.upper() in ("A", "B") else survivor.lower()
     reason = data.get("reason")
     reason = reason.strip()[:MAX_REASON_CHARS] if isinstance(reason, str) else ""
     if verdict not in VERDICTS or survivor not in SURVIVORS:
-        return unsure("the judge answer does not match the schema", sent=True, error="parse")
+        return unsure("the judge answer does not match the schema", sent=True, error=PARSE_ERROR)
     return Verdict(verdict, survivor, reason)
 
 
@@ -402,15 +467,12 @@ class OpenRouterJudge:
                 self._sleep(min(retry_after or 5.0, MAX_RETRY_AFTER_S))
         return {}  # not reached
 
-    def judge(self, system: str, user: str) -> Verdict:
+    def _ask(self, messages: list[dict], max_tokens: int) -> Verdict:
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            "messages": messages,
             "temperature": 0,
-            "max_tokens": MAX_OUTPUT_TOKENS,
+            "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
             "provider": {"data_collection": "deny"},
             "usage": {"include": True},
@@ -435,6 +497,27 @@ class OpenRouterJudge:
         cost = usage.get("cost")
         verdict.cost = float(cost) if isinstance(cost, (int, float)) else None
         return verdict
+
+    def judge(self, system: str, user: str) -> Verdict:
+        """One call; when the answer does not parse, one retry that asks for
+        the JSON object only and allows a longer answer (a reasoning model
+        can use the whole first allowance for thinking). The tokens and the
+        cost of both calls are summed."""
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        first = self._ask(messages, MAX_OUTPUT_TOKENS)
+        if first.error != PARSE_ERROR:
+            return first
+        retry = self._ask(
+            messages + [{"role": "user", "content": RETRY_INSTRUCTION}], RETRY_MAX_OUTPUT_TOKENS
+        )
+        retry.prompt_tokens += first.prompt_tokens
+        retry.completion_tokens += first.completion_tokens
+        if first.cost is not None or retry.cost is not None:
+            retry.cost = (first.cost or 0.0) + (retry.cost or 0.0)
+        return retry
 
 
 # -- candidates (section 10.1) --------------------------------------------------
@@ -609,13 +692,27 @@ def build_plan(
     *,
     run_id: str,
     out,
+    cost_cap_usd: float | None = None,
+    spent_usd: float = 0.0,
 ) -> dict:
-    """Judge every pair. Reads files, writes nothing."""
+    """Judge every pair. Reads files, writes nothing.
+
+    With ``cost_cap_usd`` the run stops before a pair when the money already
+    spent (``spent_usd`` of earlier runs today plus this run), plus the dearest
+    pair so far, would pass the cap. It also stops when a judge call reports no
+    cost, because the cap cannot then be kept. The plan names the reason."""
     pairs: list[dict] = []
     used_in = used_out = 0
     cost = 0.0
     cost_seen = False
-    for c in candidates:
+    dearest = 0.0
+    stopped = ""
+    for n_done, c in enumerate(candidates):
+        if cost_cap_usd is not None and spent_usd + cost + dearest > cost_cap_usd:
+            stopped = f"daily cost cap ${cost_cap_usd:.4f} reached"
+            skipped = len(candidates) - n_done
+            print(f"  stop: {stopped}; {skipped} pairs not judged", file=out)
+            break
         folder = folders[c.root]
         try:
             raw_a, raw_b = (folder / c.path_a).read_bytes(), (folder / c.path_b).read_bytes()
@@ -628,6 +725,7 @@ def build_plan(
         if v.cost is not None:
             cost += v.cost
             cost_seen = True
+            dearest = max(dearest, v.cost)
         pairs.append(
             {
                 "root": c.root,
@@ -645,6 +743,10 @@ def build_plan(
             f"{c.root}: {c.path_a} <> {c.path_b}" + (f"\n         {v.reason}" if v.reason else ""),
             file=out,
         )
+        if cost_cap_usd is not None and v.sent and v.cost is None and v.error in ("", PARSE_ERROR):
+            stopped = "the judge reported no cost, so the daily cost cap cannot be kept"
+            print(f"  stop: {stopped}", file=out)
+            break
     return {
         "version": 1,
         "run_id": run_id,
@@ -652,6 +754,7 @@ def build_plan(
         "judge_model": judge.model,
         "prompt_sha256": prompt.sha256,
         "pairs": pairs,
+        "stopped": stopped,
         "usage": {
             "prompt_tokens": used_in,
             "completion_tokens": used_out,
@@ -780,10 +883,32 @@ def _check_kind(name: str) -> str:
     return "other"
 
 
+def merge_triggers(
+    survivor: Sequence[str], loser: Sequence[str], limit: int
+) -> tuple[list[str], list[str]]:
+    """``(kept, dropped)``. The survivor's items keep their order, then the new
+    items of the loser follow, with duplicates removed. The list is cut at
+    ``limit`` items. The survivor's own items are never cut, so a list that is
+    already longer than ``limit`` only stops growing."""
+    union = list(survivor)
+    for t in loser:
+        if t not in union:
+            union.append(t)
+    keep = max(limit, len(survivor))
+    return union[:keep], union[keep:]
+
+
 def merge_texts(
-    mf: ModuleType, s_name: str, s_raw: bytes, l_name: str, l_raw: bytes, date: str
+    mf: ModuleType,
+    s_name: str,
+    s_raw: bytes,
+    l_name: str,
+    l_raw: bytes,
+    date: str,
+    dropped: list[str] | None = None,
 ) -> bytes:
-    """The survivor with the loser merged in, or ``Refusal``."""
+    """The survivor with the loser merged in, or ``Refusal``. The trigger items
+    that did not fit (see ``merge_triggers``) are added to ``dropped``."""
     try:
         s_text, l_text = _text(s_raw), _text(l_raw)
     except UnicodeDecodeError:
@@ -802,12 +927,11 @@ def merge_texts(
         if str(sf.get(key) or "") != str(lf.get(key) or ""):
             raise Refusal(f"{key} differs")
     s_trig = [str(t) for t in (sf.get("triggers") or [])]
-    union = list(s_trig)
-    for t in (str(t) for t in (lf.get("triggers") or [])):
-        if t not in union:
-            union.append(t)
-    if len(union) > mf.TRIGGERS_MAX_ITEMS:
-        raise Refusal(f"the trigger union has {len(union)} items")
+    union, cut = merge_triggers(
+        s_trig, [str(t) for t in (lf.get("triggers") or [])], mf.TRIGGERS_MAX_ITEMS
+    )
+    if dropped is not None:
+        dropped.extend(cut)
     changes: dict[str, object] = {}
     if union != s_trig:
         changes["triggers"] = union
@@ -848,15 +972,13 @@ class FileChange:
     name: str
     before: bytes
     after: bytes | None  # None: the loser, which moves to the archive
+    archived: bytes | None = None  # the text archived, when it is not ``before``
 
 
-def plan_merge(
-    mf: ModuleType, view: Mapping[str, bytes], survivor: str, loser: str, date: str
-) -> list[FileChange]:
-    """Every file change of one merge: survivor first, the loser last."""
-    merged = merge_texts(mf, survivor, view[survivor], loser, view[loser], date)
+def _relink(view: Mapping[str, bytes], survivor: str, loser: str) -> list[FileChange]:
+    """Every other file whose links or index lines pointed at the loser."""
     s_stem, l_stem = stem_of(survivor), stem_of(loser)
-    changes = [FileChange(survivor, view[survivor], merged)]
+    changes = []
     for name in sorted(view):
         if name in (survivor, loser):
             continue
@@ -868,7 +990,54 @@ def plan_merge(
         new = rewrite_links(new, l_stem, s_stem)
         if new != old:
             changes.append(FileChange(name, view[name], new.encode("utf-8")))
+    return changes
+
+
+def plan_merge(
+    mf: ModuleType,
+    view: Mapping[str, bytes],
+    survivor: str,
+    loser: str,
+    date: str,
+    dropped: list[str] | None = None,
+) -> list[FileChange]:
+    """Every file change of one merge: survivor first, the loser last."""
+    merged = merge_texts(mf, survivor, view[survivor], loser, view[loser], date, dropped)
+    changes = [FileChange(survivor, view[survivor], merged)]
+    changes += _relink(view, survivor, loser)
     changes.append(FileChange(loser, view[loser], None))
+    return changes
+
+
+SUPERSEDED_BY_KEY = "superseded_by"
+
+
+def stamp_superseded(mf: ModuleType, raw: bytes, survivor: str) -> bytes:
+    """The loser text with one ``superseded_by: <survivor stem>`` line at the end
+    of its front matter. An older line of the same key is replaced."""
+    try:
+        text = _text(raw)
+    except UnicodeDecodeError:
+        raise Refusal("a file is not UTF-8") from None
+    split = mf.split(text)
+    if split is None:
+        raise Refusal("a file has no closed front matter")
+    lines, close = split
+    stem = stem_of(survivor)
+    value = stem if re.fullmatch(r"[A-Za-z0-9_.\-]+", stem) else json.dumps(stem)
+    head = [ln for ln in lines[:close] if not ln.startswith(SUPERSEDED_BY_KEY + ":")]
+    return "\n".join([*head, f"{SUPERSEDED_BY_KEY}: {value}", *lines[close:]]).encode("utf-8")
+
+
+def plan_supersede(
+    mf: ModuleType, view: Mapping[str, bytes], survivor: str, loser: str
+) -> list[FileChange]:
+    """The file changes of one SUPERSEDE step. The survivor stays as it is. The
+    loser moves to the archive with a ``superseded_by`` line, and links to it in
+    other files point at the survivor, as in a merge."""
+    stamped = stamp_superseded(mf, view[loser], survivor)
+    changes = _relink(view, survivor, loser)
+    changes.append(FileChange(loser, view[loser], None, archived=stamped))
     return changes
 
 
@@ -1011,6 +1180,17 @@ class Step:
     def archive_to(self) -> str:
         return str(ARCHIVE_DIR / self.run_id / self.loser)
 
+    @staticmethod
+    def _file_record(ch: FileChange) -> dict:
+        record = {
+            "name": ch.name,
+            "before": sha256_bytes(ch.before),
+            "after": None if ch.after is None else sha256_bytes(ch.after),
+        }
+        if ch.archived is not None:
+            record["archived"] = sha256_bytes(ch.archived)
+        return record
+
     def begin_record(self, backup: Path) -> dict:
         """Names and hashes only; never file text, never the judge reason."""
         return {
@@ -1025,14 +1205,7 @@ class Step:
             "archived_id": self.archived_id,
             "archive_to": self.archive_to,
             "backup": backup.name,
-            "files": [
-                {
-                    "name": ch.name,
-                    "before": sha256_bytes(ch.before),
-                    "after": None if ch.after is None else sha256_bytes(ch.after),
-                }
-                for ch in self.changes
-            ],
+            "files": [self._file_record(ch) for ch in self.changes],
         }
 
 
@@ -1044,8 +1217,13 @@ def _restore_files(folder: Path, begin: Mapping, backup: Mapping[str, bytes]) ->
         before = backup[name]
         if f["after"] is None:
             target = folder / name
-            if archived.is_file() and sha256_bytes(archived.read_bytes()) == f["before"]:
-                os.replace(archived, target)
+            expected = f.get("archived") or f["before"]
+            if archived.is_file() and sha256_bytes(archived.read_bytes()) == expected:
+                if expected == f["before"]:
+                    os.replace(archived, target)
+                else:  # a stamped copy (SUPERSEDE): the original comes from the backup
+                    write_atomic(target, before, 0o644)
+                    archived.unlink()
             else:
                 write_atomic(target, before, 0o644)
         else:
@@ -1099,7 +1277,12 @@ def _run_step(conn: sqlite3.Connection, settings: config.Settings, step: Step, m
                 write_atomic(step.folder / ch.name, ch.after)
         archived = step.folder / step.archive_to
         archived.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.replace(step.folder / step.loser, archived)
+        stamped = next((ch.archived for ch in step.changes if ch.archived is not None), None)
+        if stamped is None:
+            os.replace(step.folder / step.loser, archived)
+        else:
+            write_atomic(archived, stamped, 0o644)
+            os.unlink(step.folder / step.loser)
     except Exception as exc:
         _restore_files(step.folder, begin, {ch.name: ch.before for ch in step.changes})
         with db.write_tx(conn):
@@ -1145,6 +1328,43 @@ def load_plan(settings: config.Settings, run_id: str) -> dict:
     return data
 
 
+ACTING_VERDICTS = ("MERGE", "SUPERSEDE")
+REPORT_REASON_CHARS = 160
+
+
+@dataclass
+class ApplyResult:
+    """What ``apply_plan`` did. ``applied`` has one record per step."""
+
+    merged: int = 0
+    superseded: int = 0
+    applied: list[dict] | None = None
+
+    @property
+    def total(self) -> int:
+        return self.merged + self.superseded
+
+
+def _one_line(text: object, limit: int = REPORT_REASON_CHARS) -> str:
+    line = " ".join("".join(ch if ch.isprintable() else " " for ch in str(text or "")).split())
+    return line if len(line) <= limit else line[: limit - 3] + "..."
+
+
+def _save_applied(settings: config.Settings, run_id: str, records: list[dict]) -> None:
+    """Add the steps of this apply to ``applied`` in the plan file: what was
+    done, and the trigger items a merge could not keep. Never raises: the
+    database and the write-ahead log are the record of the step."""
+    path = plan_path(settings, run_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("run_id") != run_id:
+            return
+        data["applied"] = [*(data.get("applied") or []), *records]
+        write_atomic(path, json.dumps(data, indent=1, sort_keys=True).encode("utf-8"))
+    except (OSError, ValueError):
+        return
+
+
 def apply_plan(
     conn: sqlite3.Connection,
     settings: config.Settings,
@@ -1154,8 +1374,12 @@ def apply_plan(
     out,
     mf: ModuleType | None = None,
     max_merges: int = MAX_MERGES_PER_RUN,
-) -> int:
-    """Merge the ``MERGE`` pairs of ``plan``. Returns the number merged.
+) -> ApplyResult:
+    """Act on the ``MERGE`` and ``SUPERSEDE`` pairs of ``plan``.
+
+    MERGE appends the loser to the survivor and archives the loser. SUPERSEDE
+    archives the loser with a ``superseded_by`` line and leaves the survivor as
+    it is. Both have the same undo. At most ``max_merges`` steps run.
     Raises ``DedupError`` after a failed step (the latch is then set)."""
     run_id = str(plan["run_id"])
     if latch_path(settings).exists():
@@ -1164,21 +1388,22 @@ def apply_plan(
             "or `noblivion dedup clear-latch`"
         )
     recover_pending(conn, settings, out)
-    merges = [p for p in plan.get("pairs", []) if p.get("verdict") == "MERGE"]
-    if not merges:
-        print("noblivion dedup: the plan has no MERGE pair; nothing changed", file=out)
-        return 0
+    result = ApplyResult(applied=[])
+    todo = [p for p in plan.get("pairs", []) if p.get("verdict") in ACTING_VERDICTS]
+    if not todo:
+        print("noblivion dedup: the plan has no MERGE or SUPERSEDE pair; nothing changed", file=out)
+        return result
     mf = mf or load_memory_fields()
     with db.read_tx(conn):
         step_no = conn.execute(
             "SELECT count(*) FROM dedup_actions WHERE run_id = ?", (run_id,)
         ).fetchone()[0]
     date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    merged = 0
-    for pair in merges:
-        if merged >= max_merges:
+    for pair in todo:
+        if result.total >= max_merges:
             print(f"  stop: at most {max_merges} merges per run", file=out)
             break
+        action = "supersede" if pair["verdict"] == "SUPERSEDE" else "merge"
         a, b = pair["a"], pair["b"]
         label = f"{pair['root']}: {a['path']} <> {b['path']}"
         folder = folders.get(pair["root"])
@@ -1191,9 +1416,16 @@ def apply_plan(
         ):
             print(f"  skip {label}: a file changed since the plan", file=out)
             continue
+        if action == "supersede" and pair.get("survivor") not in ("A", "B"):
+            print(f"  skip {label}: the judge named no current file", file=out)
+            continue
         survivor, loser = choose_survivor(pair, view)
+        dropped: list[str] = []
         try:
-            changes = plan_merge(mf, view, survivor, loser, date)
+            if action == "supersede":
+                changes = plan_supersede(mf, view, survivor, loser)
+            else:
+                changes = plan_merge(mf, view, survivor, loser, date, dropped)
         except Refusal as exc:
             print(f"  skip {label}: {exc}", file=out)
             continue
@@ -1216,11 +1448,39 @@ def apply_plan(
         except DedupError as exc:
             _set_latch(settings, run_id, str(exc))
             raise
-        merged += 1
-        print(f"  merged {loser} into {survivor} ({pair['root']})", file=out)
-    if merged:
+        if action == "supersede":
+            result.superseded += 1
+        else:
+            result.merged += 1
+        record = {
+            "action": action,
+            "root": pair["root"],
+            "survivor": survivor,
+            "loser": loser,
+            "cosine": pair.get("cosine"),
+            "reason": _one_line(pair.get("reason"), MAX_REASON_CHARS),
+            "dropped_triggers": dropped,
+        }
+        assert result.applied is not None
+        result.applied.append(record)
+        verb = "superseded" if action == "supersede" else "merged"
+        prep = "by" if action == "supersede" else "into"
+        report = f"  {verb} {loser} {prep} {survivor} ({pair['root']})"
+        if pair.get("cosine") is not None:
+            report += f" cosine={pair['cosine']}"
+        if record["reason"]:
+            report += f" reason: {_one_line(record['reason'])}"
+        print(report, file=out)
+        if dropped:
+            print(
+                f"    {len(dropped)} trigger items did not fit and were dropped "
+                f"(the archived {loser} keeps them): " + ", ".join(dropped),
+                file=out,
+            )
+    if result.total:
         write_undo_script(settings, run_id)
-    return merged
+        _save_applied(settings, run_id, result.applied or [])
+    return result
 
 
 def write_undo_script(settings: config.Settings, run_id: str) -> Path:
@@ -1270,7 +1530,8 @@ def undo_run(
         archived = folder / begin["archive_to"]
         for f in begin["files"]:
             if f["after"] is None:
-                ok = archived.is_file() and sha256_bytes(archived.read_bytes()) == f["before"]
+                expected = f.get("archived") or f["before"]
+                ok = archived.is_file() and sha256_bytes(archived.read_bytes()) == expected
                 ok = ok and not (folder / f["name"]).exists()
                 where = archived
             else:
@@ -1340,7 +1601,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes", action="store_true", help="send without the question after the cost estimate"
     )
     p.add_argument("--max-pairs", type=int, default=None, help="judge calls in this run")
-    p = sub.add_parser("apply", help="merge the MERGE pairs of a plan")
+    p = sub.add_parser(
+        "sweep",
+        help="for a timer: judge pairs, then apply MERGE and SUPERSEDE, within a daily cost cap",
+    )
+    p.add_argument("--max-pairs", type=int, default=None, help="judge calls in this run")
+    p.add_argument(
+        "--daily-cost-cap",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="stop judging before the UTC day spend passes this (dedup.daily_cost_cap_usd)",
+    )
+    p = sub.add_parser("apply", help="act on the MERGE and SUPERSEDE pairs of a plan")
     p.add_argument("run_id")
     p = sub.add_parser("undo", help="restore the files of a run")
     p.add_argument("run_id")
@@ -1349,6 +1622,56 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--revoke", action="store_true")
     sub.add_parser("clear-latch", help="allow apply again after a failed apply")
     return parser
+
+
+def tally(plan: Mapping) -> tuple[dict[str, int], int]:
+    """``(verdict counts, parse failures)``. A parse failure is a judge answer the
+    code could not read. It is not a judgement, so it is not counted as UNSURE."""
+    counts: dict[str, int] = {}
+    parse_failed = 0
+    for p in plan["pairs"]:
+        if p.get("error") == PARSE_ERROR:
+            parse_failed += 1
+        else:
+            counts[p["verdict"]] = counts.get(p["verdict"], 0) + 1
+    return counts, parse_failed
+
+
+def summary_line(plan: Mapping) -> str:
+    counts, parse_failed = tally(plan)
+    usage = plan["usage"]
+    cost = f", cost ${usage['cost_usd']:.4f}" if usage["cost_usd"] is not None else ""
+    return (
+        "noblivion dedup: verdicts "
+        + (", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none")
+        + f"; parse_failed={parse_failed}"
+        + f"; used {usage['prompt_tokens']} input and {usage['completion_tokens']} "
+        f"output tokens{cost}"
+    )
+
+
+def write_plan(settings: config.Settings, plan: Mapping) -> Path:
+    path = plan_path(settings, str(plan["run_id"]))
+    _private_dir(path.parent)
+    write_atomic(path, json.dumps(plan, indent=1, sort_keys=True).encode("utf-8"))
+    return path
+
+
+def spent_today(settings: config.Settings, now: datetime | None = None) -> float:
+    """USD that the plans written today (UTC) report, manual plans included."""
+    day = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+    total = 0.0
+    for path in dedup_dir(settings).glob("plan-*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if str(data.get("created_at", ""))[:10] != day:
+                continue
+            value = data["usage"]["cost_usd"]
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            total += float(value)
+    return total
 
 
 def _print_estimate(pairs, folders, prompt, ds, out) -> None:
@@ -1410,6 +1733,8 @@ def main(
         return _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_s)
     except DedupError as exc:
         print(f"noblivion dedup: {exc}", file=out)
+        if args.command == "sweep":
+            write_status(settings, env, mode="sweep", outcome="refused", refused_reason=str(exc))
         if args.command in ("apply", "undo"):
             write_status(
                 settings,
@@ -1422,6 +1747,92 @@ def main(
         return EXIT_LATCH if latch_path(settings).exists() else EXIT_REFUSED
     finally:
         conn.close()
+
+
+def _send_checks(conn, ds, env, out) -> str | None:
+    """Every check that keeps text on this machine, before any judge: the judge
+    is on, a model is set, the key is set. Returns the key, or ``None`` after it
+    printed why nothing was sent."""
+    if ds.judge == "off":
+        print("noblivion dedup: dedup.judge is off; nothing was sent", file=out)
+        return None
+    if not ds.model:
+        print(
+            "noblivion dedup: no judge model is set (dedup.model, for example "
+            f"{EXAMPLE_MODEL}); nothing was sent",
+            file=out,
+        )
+        return None
+    api_key = env.get(KEY_ENV, "").strip()
+    if not api_key:
+        print(f"noblivion dedup: {KEY_ENV} is not set; nothing was sent", file=out)
+        return None
+    return api_key
+
+
+def _sweep(args, conn, settings, ds, env, out, judge_factory, candidates, folders) -> int:
+    """Pairs, plan and apply in one run, for a timer. It never asks a question:
+    it needs the consent from ``noblivion dedup consent`` and refuses without it.
+    The judge spend of the UTC day (manual plans too) stays under the cap."""
+    api_key = _send_checks(conn, ds, env, out)
+    if api_key is None:
+        return EXIT_REFUSED
+    if not has_consent(conn, ds.model):
+        print(
+            "noblivion dedup: no dedup consent for this model; run `noblivion dedup consent` "
+            "once by hand. A sweep never asks; nothing was sent",
+            file=out,
+        )
+        return EXIT_REFUSED
+    if latch_path(settings).exists():  # before any spend: apply would refuse anyway
+        raise DedupError(
+            "a failed apply set the latch; run `noblivion dedup undo <run_id>` "
+            "or `noblivion dedup clear-latch`"
+        )
+    cap = ds.daily_cost_cap_usd if args.daily_cost_cap is None else max(0.0, args.daily_cost_cap)
+    spent = spent_today(settings)
+    print(f"noblivion dedup: sweep; spent today ${spent:.4f} of the daily cap ${cap:.4f}", file=out)
+    if spent >= cap:
+        print("noblivion dedup: the daily cost cap is reached; nothing was sent", file=out)
+        write_status(settings, env, mode="sweep", merged=0, proposals=0)
+        return EXIT_OK
+    prompt = load_prompt()
+    pairs = candidates()
+    max_pairs = ds.max_pairs if args.max_pairs is None else max(0, args.max_pairs)
+    pairs = pairs[:max_pairs]
+    if not pairs:
+        print("noblivion dedup: sweep found no candidate pair; nothing was sent", file=out)
+        write_status(settings, env, mode="sweep", merged=0, proposals=0)
+        return EXIT_OK
+    _print_estimate(pairs, folders, prompt, ds, out)
+    judge = (judge_factory or openrouter_judge)(ds, api_key)
+    run_id = new_run_id()
+    plan = build_plan(
+        pairs, folders, judge, prompt, run_id=run_id, out=out, cost_cap_usd=cap, spent_usd=spent
+    )
+    print(summary_line(plan), file=out)
+    path = write_plan(settings, plan)
+    print(f"noblivion dedup: plan {run_id} written to {path}", file=out)
+    try:
+        with indexer.index_lock(settings.index_lock_path, timeout_s=60.0):
+            res = apply_plan(conn, settings, plan, folders=folders, out=out)
+    except indexer.LockTimeoutError:
+        print(
+            "noblivion dedup: the index lock is busy; nothing applied. "
+            f"Run later: noblivion dedup apply {run_id}",
+            file=out,
+        )
+        write_status(settings, env, mode="plan", run_id=run_id, merged=0, proposals=0)
+        return EXIT_LOCKED
+    write_status(settings, env, mode="sweep", run_id=run_id, merged=res.total, proposals=0)
+    print(
+        f"noblivion dedup: sweep {run_id}: {len(plan['pairs'])} judged, "
+        f"{res.merged} merged, {res.superseded} superseded",
+        file=out,
+    )
+    if res.total:
+        print(f"  undo: noblivion dedup undo {run_id}", file=out)
+    return EXIT_OK
 
 
 def _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_s) -> int:
@@ -1473,20 +1884,8 @@ def _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_
         return EXIT_OK
 
     if args.command == "plan":
-        # Every check that keeps text on this machine comes before any judge.
-        if ds.judge == "off":
-            print("noblivion dedup: dedup.judge is off; nothing was sent", file=out)
-            return EXIT_REFUSED
-        if not ds.model:
-            print(
-                "noblivion dedup: no judge model is set (dedup.model, for example "
-                f"{EXAMPLE_MODEL}); nothing was sent",
-                file=out,
-            )
-            return EXIT_REFUSED
-        api_key = env.get(KEY_ENV, "").strip()
-        if not api_key:
-            print(f"noblivion dedup: {KEY_ENV} is not set; nothing was sent", file=out)
+        api_key = _send_checks(conn, ds, env, out)
+        if api_key is None:
             return EXIT_REFUSED
         if not has_consent(conn, ds.model) and not ask_consent(conn, ds.model, stdin, out):
             return EXIT_REFUSED
@@ -1506,39 +1905,40 @@ def _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_
         judge = (judge_factory or openrouter_judge)(ds, api_key)
         run_id = new_run_id()
         plan = build_plan(pairs, folders, judge, prompt, run_id=run_id, out=out)
-        counts: dict[str, int] = {}
-        for p in plan["pairs"]:
-            counts[p["verdict"]] = counts.get(p["verdict"], 0) + 1
-        usage = plan["usage"]
-        cost = f", cost ${usage['cost_usd']:.4f}" if usage["cost_usd"] is not None else ""
-        print(
-            "noblivion dedup: verdicts "
-            + (", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none")
-            + f"; used {usage['prompt_tokens']} input and {usage['completion_tokens']} "
-            f"output tokens{cost}",
-            file=out,
-        )
-        path = plan_path(settings, run_id)
-        _private_dir(path.parent)
-        write_atomic(path, json.dumps(plan, indent=1, sort_keys=True).encode("utf-8"))
+        counts, _ = tally(plan)
+        print(summary_line(plan), file=out)
+        path = write_plan(settings, plan)
         print(
             f"noblivion dedup: plan {run_id} written to {path}\n"
             f"  read it, then run: noblivion dedup apply {run_id}",
             file=out,
         )
         write_status(
-            settings, env, mode="plan", run_id=run_id, merged=0, proposals=counts.get("MERGE", 0)
+            settings,
+            env,
+            mode="plan",
+            run_id=run_id,
+            merged=0,
+            proposals=counts.get("MERGE", 0) + counts.get("SUPERSEDE", 0),
         )
         return EXIT_OK
+
+    if args.command == "sweep":
+        return _sweep(args, conn, settings, ds, env, out, judge_factory, candidates, folders)
 
     lock = settings.index_lock_path
     try:
         with indexer.index_lock(lock, timeout_s=60.0):
             if args.command == "apply":
                 plan = load_plan(settings, args.run_id)
-                n = apply_plan(conn, settings, plan, folders=folders, out=out)
+                res = apply_plan(conn, settings, plan, folders=folders, out=out)
+                n = res.total
                 write_status(settings, env, mode="apply", run_id=args.run_id, merged=n, proposals=0)
-                print(f"noblivion dedup: {n} merged in run {args.run_id}", file=out)
+                print(
+                    f"noblivion dedup: {res.merged} merged, {res.superseded} superseded "
+                    f"in run {args.run_id}",
+                    file=out,
+                )
                 if n:
                     print(f"  undo: noblivion dedup undo {args.run_id}", file=out)
                 return EXIT_OK

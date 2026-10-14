@@ -18,6 +18,16 @@ All notable changes to NOBLIVION. The format follows
 - Learned notes carry a `description:` and a `rule:` line, so the prompt index
   can show them. An existing learned note is rewritten with both on the next
   projection (NOBLIVION-107).
+- `noblivion dedup sweep` runs pairs, plan and apply in one command for a
+  timer. It asks no question and needs the dedup consent. It stops before a
+  pair that could pass the daily cost cap (`--daily-cost-cap`,
+  `dedup.daily_cost_cap_usd`, default 0.5 USD, all plans of the UTC day
+  counted) and prints one line for each merge. See
+  [Duplicate sweep](docs/dedup-and-privacy.md#run-the-sweep-on-a-timer)
+  (NOBLIVION-108).
+- `noblivion dedup apply` now acts on a `SUPERSEDE` verdict: the current note
+  stays, the other note moves to the archive with a `superseded_by` line, and
+  `undo` restores it byte for byte (NOBLIVION-108).
 
 ### Fixed
 
@@ -30,6 +40,15 @@ All notable changes to NOBLIVION. The format follows
   `learning pass failed: LeaseLost` error (NOBLIVION-107).
 - The delivery drain uses the release it runs from, not a `repo_root` left in
   `learning-client.json` by an older install (NOBLIVION-107).
+- A dedup judge answer with thinking text around the JSON object, or in a
+  list of text parts, is now read. When there is no readable object, the judge
+  is asked once more for the JSON object only, with a longer answer allowance.
+  The plan summary counts the pairs that still cannot be read as
+  `parse_failed`, apart from `UNSURE` (NOBLIVION-108).
+- A merge no longer skips a pair because the trigger union has more than 12
+  items. It keeps the first 12 (the survivor's own items are never cut) and
+  writes the rest to the plan file as `dropped_triggers`. The limit is
+  documented (NOBLIVION-108).
 
 ## 0.1.14 - 2026-10-13
 

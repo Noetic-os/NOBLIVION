@@ -1595,8 +1595,12 @@ the indexer never sees a half-done merge.
    Every `plan`, `apply` and `undo` writes `cache/dedup-last-run.json` in
    the data dir (`NOBLIVION_DEDUP_STATUS_FILE`) for the session start line.
 3. The user reads the plan. `noblivion dedup apply <run_id>` applies only
-   the `MERGE` pairs in that plan file, and only when both files still have
-   the hash recorded in the plan.
+   the `MERGE` and `SUPERSEDE` pairs in that plan file, and only when both
+   files still have the hash recorded in the plan. A `SUPERSEDE` leaves the
+   survivor as it is and archives the loser with a `superseded_by` line
+   (NOBLIVION-108). `noblivion dedup sweep` runs steps 1 to 3 in one
+   command for a timer: no question, consent required, and a daily cost cap
+   (`dedup.daily_cost_cap_usd`).
 4. At most 30 merged-away files per run.
 
 Commands (E6, `src/noblivion/dedup.py`): `noblivion dedup pairs` (list the
@@ -1677,8 +1681,10 @@ gold set ships with this plugin, so a human reads every plan.
   links, then the first name.
 - The merge refuses a pair (and skips it) when `scope`, `status` or
   `project` differ, when both files hold different `violates` groups, when
-  the trigger union has more than 12 items, or when the merged file fails
-  the field check with a new problem. It uses `hooks/memory_fields.py`.
+  or when the merged file fails the field check with a new problem. A
+  trigger union over 12 items is cut at 12 (the survivor's own items are
+  never cut) and the cut items go to the plan (NOBLIVION-108). It uses
+  `hooks/memory_fields.py`.
 - Before any write: a write-ahead log entry in
   `dedup/<run_id>/wal.jsonl` and a `tar.gz` backup of every file the step
   touches.

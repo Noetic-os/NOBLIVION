@@ -388,7 +388,7 @@ mode) and logged only (the check is not in the blocking list).
 | `NOBLIVION_TRUST_CORRECTION_CONTRADICT` | `trust.correction_contradict` | off (switch) | A user correction of a reply that cited a note records a `contradict` for that note. Off by default: a correction does not say whether the note was wrong, and a wrong `contradict` lowers a good note. See [trust.md](trust.md). |
 | none | `trust.prior_mined` | `0.3` | The starting trust of a transcript-mined note, more than 0 and at most 1. A memory file starts at `0.5`. |
 | `NOBLIVION_TRUST_REPORT_FILE` | none | `<data dir>/cache/trust-report.json` | The cached trust report. |
-| `NOBLIVION_DEDUP_STATUS_FILE` | none | `<data dir>/cache/dedup-last-run.json` | The duplicate sweep status. Every `noblivion dedup plan`, `apply` and `undo` writes it. The session start line reads it. |
+| `NOBLIVION_DEDUP_STATUS_FILE` | none | `<data dir>/cache/dedup-last-run.json` | The duplicate sweep status. Every `noblivion dedup plan`, `sweep`, `apply` and `undo` writes it. The session start line reads it. |
 
 ## Duplicate sweep
 
@@ -397,7 +397,8 @@ mode) and logged only (the check is not in the blocking list).
 | `NOBLIVION_DEDUP_JUDGE` | `dedup.judge` | `openrouter` | `openrouter`, or `off`. Any other value counts as `off`. |
 | `NOBLIVION_DEDUP_MODEL` | `dedup.model` | none | The judge model on OpenRouter. With no model, `noblivion dedup plan` refuses. |
 | none | `dedup.min_cosine` | `0.75` | The lowest vector similarity of a candidate pair. |
-| none | `dedup.max_pairs` | `50` | The most judge calls in one `plan` run. |
+| none | `dedup.max_pairs` | `50` | The most judge calls in one `plan` or `sweep` run. |
+| none | `dedup.daily_cost_cap_usd` | `0.5` | The most USD of judge spend in one UTC day that `noblivion dedup sweep` allows, all plans of that day counted. `0` stops every sweep before the first call. |
 | none | `dedup.timeout_s` | `60` | The time limit of one judge call, in seconds. |
 | none | `dedup.min_interval_s` | `1.0` | The shortest time between two judge calls, in seconds. |
 | none | `dedup.price_in_per_mtok` | none | Price per million input tokens, for the cost estimate. |
