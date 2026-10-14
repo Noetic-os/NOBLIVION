@@ -542,3 +542,107 @@ def test_codex_malformed_provenance_does_not_discard_text(kinds):
     row = message("A real user request.")
     row["payload"]["internal_chat_message_metadata_passthrough"] = {"content_item_kinds": kinds}
     assert capture.normalized(row, "codex")[0]["content"] == "A real user request."
+
+
+# A session may start in one folder and later run in a mapped one. Eligibility
+# is decided per mapped scope, on the first event in that scope.
+
+
+@pytest.fixture
+def hooked(cfg, monkeypatch):
+    monkeypatch.setattr(capture, "wake", lambda scoped: None)
+    return cfg
+
+
+def elsewhere(cfg, name="elsewhere"):
+    return str(Path(cfg["state_dir"]).parent / name)
+
+
+def scope_records(cfg):
+    spool = capture.Spool(
+        capture.scoped_config(cfg, {"cwd": cfg["project_mappings"][0]["workspace"]})
+    )
+    try:
+        return [r["content"] for r in records(spool)]
+    finally:
+        spool.close()
+
+
+def test_session_from_an_unmapped_folder_is_captured_once_it_enters_a_mapped_scope(
+    hooked, tmp_path
+):
+    cfg = hooked
+    path = tmp_path / "native.jsonl"
+    write_rows(path, [message("Said in the unmapped folder.")])
+    start = event(cfg, cwd=elsewhere(cfg), transcript_path=str(path))
+    assert capture.capture_hook(cfg, start) == {"status": "disabled"}
+    # The first event in the mapped scope is not a SessionStart.
+    entered = event(cfg, "UserPromptSubmit", transcript_path=str(path))
+    assert capture.capture_hook(cfg, entered)["status"] == "captured"
+    write_rows(path, [message("Said in the mapped folder.")])
+    assert capture.capture_hook(cfg, event(cfg, "Stop", transcript_path=str(path)))["chunks"] == 1
+    # Only what happened in the mapped scope enters it, never the earlier folder.
+    assert scope_records(cfg) == ["Said in the mapped folder."]
+
+
+def test_a_resumed_session_from_an_unmapped_folder_stays_out(hooked, tmp_path):
+    cfg = hooked
+    path = tmp_path / "old.jsonl"
+    write_rows(path, [message("An old transcript.")])
+    capture.capture_hook(cfg, event(cfg, source="resume", cwd=elsewhere(cfg)))
+    entered = event(cfg, "UserPromptSubmit", transcript_path=str(path))
+    assert capture.capture_hook(cfg, entered)["status"] == "not_new_session"
+    assert not scope_records(cfg)
+
+
+def test_a_session_nobody_saw_start_stays_out_of_a_mapped_scope(hooked, tmp_path):
+    cfg = hooked
+    path = tmp_path / "unknown.jsonl"
+    write_rows(path, [message("History from before activation.")])
+    entered = event(cfg, "UserPromptSubmit", transcript_path=str(path))
+    assert capture.capture_hook(cfg, entered)["status"] == "not_new_session"
+    assert not scope_records(cfg)
+
+
+def test_each_mapped_scope_decides_on_its_own_first_event(hooked, tmp_path):
+    cfg = hooked
+    second = {
+        "workspace": str(tmp_path / "other"),
+        "namespace": "claude_code",
+        "root": "second",
+    }
+    cfg["project_mappings"].append(second)
+    path = tmp_path / "native.jsonl"
+    write_rows(path, [message("First scope evidence.")])
+    capture.capture_hook(cfg, event(cfg, transcript_path=str(path)))
+    assert scope_records(cfg) == ["First scope evidence."]
+    entered = event(cfg, "UserPromptSubmit", cwd=second["workspace"], transcript_path=str(path))
+    assert capture.capture_hook(cfg, entered)["status"] == "captured"
+    write_rows(path, [message("Second scope evidence.")])
+    stop = event(cfg, "Stop", cwd=second["workspace"], transcript_path=str(path))
+    assert capture.capture_hook(cfg, stop)["chunks"] == 1
+    spool = capture.Spool(capture.scoped_config(cfg, {"cwd": second["workspace"]}))
+    assert [r["content"] for r in records(spool)] == ["Second scope evidence."]
+    spool.close()
+
+
+def test_a_fresh_start_leaves_no_trace_when_no_scope_contributes(hooked):
+    cfg = hooked
+    cfg["learning"] = {"contribute": False}
+    cfg["project_mappings"][0]["learning"] = {"contribute": False}
+    capture.capture_hook(cfg, event(cfg, cwd=elsewhere(cfg)))
+    assert not (Path(cfg["state_dir"]) / "learning" / "fresh-sessions.sqlite3").exists()
+
+
+def test_drain_keeps_the_running_release_root_over_a_stale_client_file(cfg, tmp_path, monkeypatch):
+    client = tmp_path / "client.json"
+    client.write_text(json.dumps({**cfg, "repo_root": str(tmp_path / "old-release")}))
+    delivery = tmp_path / "delivery.json"
+    workspace = cfg["project_mappings"][0]["workspace"]
+    delivery.write_text(json.dumps({**cfg, "workspace": workspace, "source_config": str(client)}))
+    capture.spool_folder(cfg).mkdir(parents=True)
+    seen = []
+    monkeypatch.setattr(capture.Spool, "drain", lambda self: seen.append(self.cfg) or {})
+    monkeypatch.setattr(capture.sys, "argv", ["capture", "--config", str(delivery), "--drain"])
+    assert capture.main() == 0
+    assert seen[0]["repo_root"] == cfg["repo_root"]

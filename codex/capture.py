@@ -85,6 +85,53 @@ def scoped_config(cfg: dict, event: dict) -> dict | None:
     return result
 
 
+FRESH_LEDGER_DAYS = 30
+
+
+def _fresh_ledger(cfg: dict) -> sqlite3.Connection:
+    """Hold session ids only. A fresh session id may enter any mapped scope later."""
+    folder = Path(cfg["state_dir"]) / "learning"
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    conn = sqlite3.connect(str(folder / "fresh-sessions.sqlite3"), timeout=2)
+    conn.execute("CREATE TABLE IF NOT EXISTS fresh (id TEXT PRIMARY KEY, created REAL NOT NULL)")
+    return conn
+
+
+def is_fresh_start(event: dict) -> bool:
+    return event.get("hook_event_name") == "SessionStart" and event.get("source") in (
+        "startup",
+        "clear",
+        "new",
+    )
+
+
+def note_fresh_start(cfg: dict, event: dict) -> None:
+    """Remember a new session wherever it starts, mapped folder or not."""
+    session = str(event.get("session_id") or "")
+    if not session or not is_fresh_start(event) or not cfg.get("state_dir"):
+        return
+    conn = _fresh_ledger(cfg)
+    try:
+        with conn:
+            now = time.time()
+            conn.execute("DELETE FROM fresh WHERE created<?", (now - FRESH_LEDGER_DAYS * 86400,))
+            conn.execute("INSERT OR IGNORE INTO fresh VALUES (?,?)", (session, now))
+    finally:
+        conn.close()
+
+
+def seen_fresh_start(cfg: dict, session: str) -> bool:
+    if not session or not cfg.get("state_dir"):
+        return False
+    if not (Path(cfg["state_dir"]) / "learning" / "fresh-sessions.sqlite3").exists():
+        return False
+    conn = _fresh_ledger(cfg)
+    try:
+        return conn.execute("SELECT 1 FROM fresh WHERE id=?", (session,)).fetchone() is not None
+    finally:
+        conn.close()
+
+
 def allowed(cfg: dict, session: str = "") -> bool:
     opts = cfg.get("learning", {})
     session_opts = opts.get("sessions", {}).get(session, {})
@@ -106,7 +153,8 @@ def memory_use(cfg: dict, session: str = "") -> bool:
 
 
 def safe_content(cfg: dict, text: str) -> bool:
-    mod = load_module(Path(cfg["repo_root"]) / "src/noblivion/redaction.py", "_capture_redaction")
+    root = Path(cfg.get("repo_root") or Path(__file__).resolve().parents[1])
+    mod = load_module(root / "src/noblivion/redaction.py", "_capture_redaction")
     if hasattr(mod, "contains_secret"):
         return not mod.contains_secret(text)
     clean = mod.redact_at_rest(text)
@@ -477,15 +525,23 @@ class Spool:
                 "SELECT eligible FROM sessions WHERE id=?", (session,)
             ).fetchone()
             if row is None:
-                fresh = event.get("hook_event_name") == "SessionStart" and event.get("source") in (
-                    "startup",
-                    "clear",
-                    "new",
-                )
+                # Decide once per scope, on the first event in this scope. A session
+                # that began in any folder counts. One that moved in from an
+                # unmapped folder is captured from here on, never from its past.
+                fresh = is_fresh_start(event)
+                if fresh:
+                    note_fresh_start(self.cfg, event)
+                joined = not fresh and seen_fresh_start(self.cfg, session)
                 self.conn.execute(
-                    "INSERT INTO sessions VALUES (?,?,?)", (session, int(fresh), time.time())
+                    "INSERT INTO sessions VALUES (?,?,?)",
+                    (session, int(fresh or joined), time.time()),
                 )
-                row = {"eligible": fresh}
+                row = {"eligible": fresh or joined}
+                if joined and path is not None and path.is_file():
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO cursors VALUES (?,?,?)",
+                        (session, path_id, path.stat().st_size),
+                    )
             if not row["eligible"]:
                 self.conn.commit()
                 return {"status": "not_new_session"}
@@ -720,6 +776,13 @@ def wake(cfg: dict) -> None:
 
 
 def capture_hook(cfg: dict, event: dict, client: str = "codex") -> dict:
+    contributes = cfg.get("learning", {}).get("contribute") is True or any(
+        isinstance(m, dict) and m.get("learning", {}).get("contribute") is True
+        for m in cfg.get("project_mappings", [])
+    )
+    if contributes:
+        with contextlib.suppress(OSError, sqlite3.Error):
+            note_fresh_start(cfg, event)
     scoped = scoped_config(cfg, event)
     if scoped is None:
         return {"status": "disabled"}
@@ -750,7 +813,12 @@ def main() -> int:
         refreshed = scoped_config(current, {"cwd": cfg.get("workspace", "")})
         if refreshed is None:
             return 0
-        cfg = refreshed
+        # The running release is the one that holds this code. A repo_root left in
+        # the client file by an older install must not point the drain elsewhere.
+        cfg = {
+            **refreshed,
+            "repo_root": cfg.get("repo_root") or str(Path(__file__).resolve().parents[1]),
+        }
     if args.status or args.exclude_session:
         spool = Spool(cfg)
         try:

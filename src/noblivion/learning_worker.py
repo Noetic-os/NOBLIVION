@@ -22,7 +22,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from threading import Event, Timer
 
-from .learning import BudgetExceeded, SemanticSnapshotChanged
+from .learning import BudgetExceeded, LeaseLost, SemanticSnapshotChanged
 from .learning_extract import (
     EXTRACTION_SCHEMA,
     SEMANTIC_PROMPT,
@@ -299,6 +299,19 @@ class LearningWorker:
         self.stop: Event | None = None
 
     def run_once(self) -> dict:
+        """Run one job. A lost lease is normal, not a pass failure.
+
+        Another worker may hold the job after an expired lease, and a pause or an
+        exclusion revokes the lease on purpose. This worker stops with no write,
+        and the job state stays with whoever owns it now.
+        """
+        try:
+            return self._run_once()
+        except LeaseLost:
+            LOG.info("learning job lease lost; the job is no longer this worker's")
+            return {"status": "lease_lost"}
+
+    def _run_once(self) -> dict:
         """Claim one job and process all windows, or leave a visible failure.
 
         There are no invisible provider retries. Each call reserves its budget

@@ -338,3 +338,67 @@ def test_real_ledger_unconfigured_scope_never_submits(tmp_path):
     assert conn.execute("SELECT count(*) FROM learning_budget").fetchone()[0] == 0
     assert conn.execute("SELECT attempts FROM learning_jobs").fetchone()[0] == 0
     conn.close()
+
+
+def test_two_workers_on_one_job_the_stale_one_stops_quietly(tmp_path, caplog):
+    """A lease that expires mid-call hands the job to a second worker. The first
+    worker must stop with no write and no pass failure, and the second finishes."""
+    from noblivion import db
+    from noblivion.learning import BudgetLimits, LearningLedger
+
+    conn = db.open_db(tmp_path / "isolated.db", create=True)
+    ledger = LearningLedger(conn)
+    s = source()
+    ledger.capture_batch(
+        {
+            "batch_id": "lease-batch",
+            "namespace": "demo",
+            "root": "example",
+            "session_id": "lease-session",
+            "source_client": "codex",
+            "records": [
+                {
+                    "source_id": "lease-source",
+                    "source_hash": s["sha256"],
+                    "role": "user",
+                    "content": s["content"],
+                    "observed_at": s["observed_at"],
+                }
+            ],
+        }
+    )
+    second = []
+
+    class StealingProvider:
+        """While the first worker waits on the model, its lease expires."""
+
+        def estimate_cost(self, tokens):
+            return 0.0
+
+        def complete(self, messages, **kwargs):
+            if not second:
+                conn.execute("UPDATE learning_jobs SET lease_until=0")
+                second.append(ledger.claim("worker-b"))
+            return ProviderResponse('{"version":1,"candidates":[]}', 50)
+
+    scope = {("demo", "example")}
+    first = LearningWorker(
+        ledger,
+        StealingProvider(),
+        WorkerSettings(),
+        BudgetLimits(),
+        worker_id="worker-a",
+        allowed_scopes=scope,
+    )
+    with caplog.at_level("WARNING"):
+        result = first.run_once()
+    assert result == {"status": "lease_lost"}
+    assert not caplog.records
+    job = second[0]
+    assert job["lease_owner"] == "worker-b" and job["attempts"] == 2
+    row = conn.execute("SELECT status,lease_owner FROM learning_jobs").fetchone()
+    assert (row["status"], row["lease_owner"]) == ("leased", "worker-b")
+    # The new owner is not disturbed by the stale worker and completes the job.
+    ledger.finish(job["id"], job["lease_token"], [])
+    assert conn.execute("SELECT status FROM learning_jobs").fetchone()[0] == "done"
+    conn.close()

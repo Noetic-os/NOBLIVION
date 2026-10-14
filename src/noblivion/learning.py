@@ -95,6 +95,27 @@ def _number(value: Any, name: str) -> float:
     return float(value)
 
 
+RULE_MAX_CHARS = 160
+DESCRIPTION_MAX_CHARS = 200
+
+
+def _first_sentence(text: str) -> str:
+    flat = " ".join(str(text).split())
+    match = re.search(r"[.!?](?=\s|$)", flat)
+    return flat[: match.end()] if match else flat
+
+
+def _plain_line(text: str, limit: int = DESCRIPTION_MAX_CHARS) -> str:
+    """One plain front matter line: no newline, no ': ' or ' #', no leading YAML mark."""
+    flat = "".join(ch for ch in " ".join(str(text).split()) if ch.isprintable())
+    flat = flat.replace(": ", " - ").replace(" #", " ").strip()
+    flat = flat.lstrip("\"'[]{}&*!|>%@`?-, ").rstrip(":")
+    if len(flat) > limit:
+        cut = flat[:limit]
+        flat = (cut.rsplit(" ", 1)[0] if " " in cut else cut).rstrip(" ,;:-")
+    return flat or "learned note"
+
+
 class LearningLedger:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
@@ -1706,11 +1727,16 @@ class LearningLedger:
         lines = [
             "---",
             "name: " + _json(note["title"]),
+            "description: "
+            + _plain_line(
+                "Learned " + note["category"].replace("_", " ") + " - " + note["statement"]
+            ),
             "type: " + category,
             "noblivion_id: " + note["note_id"],
             "revision: " + str(note["revision"]),
             "status: " + note["status"],
             "scope: " + note["scope"],
+            "rule: " + _plain_line(_first_sentence(note["statement"]), RULE_MAX_CHARS),
             "---",
             "",
             note["statement"],
@@ -1727,12 +1753,41 @@ class LearningLedger:
             )
         return "\n".join(lines) + "\n"
 
+    def _refresh_format(self, project: str, root: str) -> None:
+        """Queue a rewrite of an active note whose file text changed with the format.
+
+        The database row is the authority and the file is a projection, so the
+        stored hash follows the current rendering. Revision and evidence stay.
+        """
+        stale = []
+        for row in self.conn.execute(
+            "SELECT * FROM learning_notes WHERE project=? AND root=? AND status='active'",
+            (project, root),
+        ).fetchall():
+            digest = _hash(self.render_note(self._note(row)))
+            if digest != row["file_hash"]:
+                stale.append((row["note_id"], digest))
+        if not stale:
+            return
+        with db.write_tx(self.conn):
+            for note_id, digest in stale:
+                row = self.conn.execute(
+                    "SELECT revision,status FROM learning_notes WHERE note_id=?", (note_id,)
+                ).fetchone()
+                if row is None or row["status"] != "active":
+                    continue
+                self.conn.execute(
+                    "UPDATE learning_notes SET file_hash=? WHERE note_id=?", (digest, note_id)
+                )
+                self._queue(note_id, row["revision"], "write")
+
     def project_pending(self, project: str, root: str, notes_dir: Path | str) -> dict[str, int]:
         """Project only managed UUID paths; each file and outbox acknowledgement is retryable."""
         folder = Path(notes_dir)
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         if folder.is_symlink():
             raise LearningError("projection folder must not be a symlink")
+        self._refresh_format(project, root)
         counts = {"written": 0, "removed": 0, "failed": 0, "pending": 0}
         ids = [
             row[0]
@@ -1833,6 +1888,70 @@ class LearningLedger:
                 lines.append(line)
         return "\n".join(lines)
 
+    def _hold_reason(self, row: sqlite3.Row, now: float) -> tuple[str, float, bool]:
+        """Say why a pending job waits, and since when. Text here is never provider output."""
+        held = self.conn.execute(
+            "SELECT session_id,use_memory,contribute,paused,updated_at FROM learning_controls "
+            "WHERE project=? AND root=? AND session_id IN ('',?) "
+            "AND (paused=1 OR contribute=0) ORDER BY updated_at DESC",
+            (row["project"], row["root"], row["session_id"]),
+        ).fetchone()
+        if held is not None:
+            level = "session" if held["session_id"] else "scope"
+            what = "paused" if held["paused"] == 1 else "contribution off"
+            return level + " " + what, max(held["updated_at"], row["created_at"]), True
+        error = str(row["last_error"] or "")
+        if error in {"budget unavailable", "BudgetExceeded"}:
+            return "budget", row["updated_at"], False
+        if error == "ScopeNotEnabled":
+            return "scope not enabled", row["updated_at"], False
+        if error:
+            return "provider error: " + error[:120], row["updated_at"], False
+        if row["next_attempt"] > now:
+            return "waiting for retry time", row["updated_at"], False
+        return "waiting for a worker", row["created_at"], False
+
+    def pending_jobs(
+        self,
+        project: str | None = None,
+        root: str | None = None,
+        *,
+        stale_days: float = 7,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """List jobs that wait, with the reason and the age. Nothing is changed or dropped."""
+        where, params = "WHERE status='pending'", []
+        if project is not None:
+            where += " AND project=?"
+            params.append(project)
+        if root is not None:
+            where += " AND root=?"
+            params.append(root)
+        now = time.time()
+        rows = self.conn.execute(
+            "SELECT * FROM learning_jobs " + where + " ORDER BY created_at,id", params
+        ).fetchall()
+        jobs, stale = [], 0
+        for row in rows:
+            reason, since, held = self._hold_reason(row, now)
+            is_stale = held and (now - since) > stale_days * 86400
+            stale += is_stale
+            jobs.append(
+                {
+                    "job_id": row["id"],
+                    "kind": row["kind"],
+                    "project": row["project"],
+                    "root": row["root"],
+                    "session_id": row["session_id"],
+                    "reason": reason,
+                    "age_days": round((now - row["created_at"]) / 86400, 2),
+                    "held_days": round((now - since) / 86400, 2),
+                    "attempts": row["attempts"],
+                    "stale": is_stale,
+                }
+            )
+        return {"total": len(jobs), "stale": stale, "jobs": jobs[:limit]}
+
     def status(self, project: str | None = None, root: str | None = None) -> dict[str, Any]:
         where, params = "", []
         if project is not None:
@@ -1853,6 +1972,7 @@ class LearningLedger:
                     "SELECT status,count(*) FROM learning_jobs" + where + " GROUP BY status", params
                 )
             },
+            "pending": self.pending_jobs(project, root),
             "notes": {
                 r[0]: r[1]
                 for r in self.conn.execute(

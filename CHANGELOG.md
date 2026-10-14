@@ -8,6 +8,29 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+### Added
+
+- `noblivion learning status` lists pending extraction jobs under `pending`, with
+  the age and the reason each one waits: a paused session or scope,
+  contribution off, a provider error, the budget, or no worker yet. A job held
+  by a pause for more than 7 days is flagged `stale` and counted. Nothing is
+  dropped (NOBLIVION-107).
+- Learned notes carry a `description:` and a `rule:` line, so the prompt index
+  can show them. An existing learned note is rewritten with both on the next
+  projection (NOBLIVION-107).
+
+### Fixed
+
+- Learning capture decides eligibility per mapped scope, on the first event in
+  that scope. A session that starts in an unmapped folder and later runs in a
+  mapped one is captured for that scope from there on. Its earlier part is not
+  imported, and a resumed session is still never swept (NOBLIVION-107).
+- A learning worker whose lease was lost to another worker, a pause or an
+  exclusion stops quietly. It no longer ends the pass with a
+  `learning pass failed: LeaseLost` error (NOBLIVION-107).
+- The delivery drain uses the release it runs from, not a `repo_root` left in
+  `learning-client.json` by an older install (NOBLIVION-107).
+
 ## 0.1.14 - 2026-10-13
 
 ### Added

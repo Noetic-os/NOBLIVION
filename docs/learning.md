@@ -71,7 +71,8 @@ the store data directory. Both clients need explicit `project_mappings`:
 ```
 
 Keep the existing adapter settings, including the repository, state and
-store locations. Add these fields to that configuration. The most specific
+store locations. The Claude file needs no `repo_root`. The hooks use the
+installed release they run from, so the file cannot point at an old folder. Add these fields to that configuration. The most specific
 workspace prefix wins. An unmapped workspace cannot contribute. Map
 unrelated projects to different roots. A shared namespace alone does not
 make project facts global. Preferences and workflows with explicit across-project
@@ -81,7 +82,10 @@ is read-only during reconciliation: corrections become visible conflicts for an
 explicit edit in the owning scope. Project facts never receive this exception.
 
 New-session activation establishes a durable source cursor. Resuming an old
-session does not silently import its earlier transcript. Native Codex and
+session does not silently import its earlier transcript. A new session counts
+wherever it starts, in a mapped folder or not. If it later runs in a mapped
+workspace, that scope captures it from its first event there. The earlier
+part of the transcript, from the unmapped folder, is not imported. Native Codex and
 Claude records preserve roles, tool call IDs, source hashes and complete
 text through bounded chunks. The client rejects detected secrets before
 spooling. An oversized or malformed source remains a visible failure; it
@@ -127,6 +131,13 @@ a source withdraws its dependent notes. Forgetting removes retained content
 and derived text while keeping an empty identity tombstone so stale files
 cannot restore the forgotten fact. This does not delete the native client transcript
 or older external backups; manage those through their own retention controls.
+
+`noblivion learning status` also lists pending extraction jobs under `pending`.
+Each entry gives the job, its age in days and the reason it waits: a paused
+session or scope, contribution off, a provider error, the budget, or a worker
+that has not claimed it yet. A job held by a pause for more than 7 days has
+`"stale": true` and counts in `pending.stale`. Status never drops or cancels
+a job. Resume the session or scope, or retry it, to continue.
 
 `noblivion learning status --project <namespace> --root <root>` lists up to
 20 open conflicts and their total count. Run `noblivion learning inspect
