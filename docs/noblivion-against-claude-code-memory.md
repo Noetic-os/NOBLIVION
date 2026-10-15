@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # NOBLIVION against Claude Code memory
 
 Written 2026-10-15 against NOBLIVION 0.1.15.
