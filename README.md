@@ -142,7 +142,7 @@ for the full steps and limits.
 - [Import memories from a JSONL file](docs/import.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Architecture (design document)](docs/design/0001-architecture.md)
-- [NOBLIVION against Claude Code memory](docs/noblivion-against-claude-code-memory.md): architecture, features, scores and conclusion
+- [NOBLIVION against Claude Code memory](docs/noblivion-against-claude-code-memory.md): architecture, features, scores and conclusion ([PDF](docs/noblivion-against-claude-code-memory.pdf))
 - [Contributing](CONTRIBUTING.md)
 
 ## License
