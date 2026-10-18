@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The ``noblivion`` command: ``noblivion <command> [options]``.
 
-Commands in this version: ``index`` (see ``noblivion.indexer``),
+Commands include ``doctor`` (read-only health checks), ``explain`` (bounded
+recall diagnostics), and ``index`` (see ``noblivion.indexer``),
 ``consent embeddings`` (see ``noblivion.embedding``), ``dedup`` (the
 opt-in duplicate sweep, see ``noblivion.dedup``), ``serve`` (the store
 in the foreground, see ``noblivion.store``), ``ensure-running`` (start
@@ -21,7 +22,9 @@ import sys
 from collections.abc import Sequence
 
 USAGE = (
-    "usage: noblivion learning status|inspect|controls|edit|exclude|forget|summary|retry\n"
+    "usage: noblivion doctor [--json] [--data-dir DIR] [--root ROOT]\n"
+    "       noblivion explain PROMPT [--json] [--root ROOT] [--live]\n"
+    "       noblivion learning status|inspect|controls|edit|exclude|forget|summary|retry\n"
     "       noblivion index [--force] [--allow-shrink] [--memory-dir DIR] [--json]\n"
     "       noblivion consent embeddings [--revoke]\n"
     "       noblivion dedup pairs|plan [--dry-run] [--yes]|sweep|apply RUN_ID|undo RUN_ID\n"
@@ -46,6 +49,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(USAGE)
         return 0 if args else 2
     command, rest = args[0], args[1:]
+    if command in ("doctor", "explain"):
+        from importlib import import_module
+
+        return import_module("noblivion." + command).main(rest)
     if command == "index":
         from noblivion import indexer
 

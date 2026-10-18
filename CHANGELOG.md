@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Add bounded, read-only `doctor` checks and secret-safe `explain` recall diagnostics for Codex and other clients.
+
 - Add safe Codex integration removal and respect `CODEX_HOME` during installation and removal.
 - Keep deny rules active during concurrent guard rebuilds, resume interrupted regex checks, and show skipped-rule warnings in Codex.
 
