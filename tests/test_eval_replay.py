@@ -4,6 +4,7 @@
 import hashlib
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -392,6 +393,76 @@ def test_threshold_module_is_importable_as_namespace(monkeypatch):
     import tools.eval_thresholds as module
 
     assert module.MANIFEST.is_file()
+
+
+@pytest.mark.parametrize("entry", ["spec", "namespace", "script"])
+@pytest.mark.parametrize("shadow", ["none", "module", "path"])
+def test_threshold_import_entry_points_in_clean_process(tmp_path, entry, shadow):
+    # The legacy CI fixture assigns an arbitrary module name and does not add
+    # tools/ to sys.path. A fresh isolated interpreter prevents earlier tests'
+    # module imports and monkeypatches from hiding that execution path.
+    code = r"""
+import importlib.util
+import runpy
+import sys
+import types
+from pathlib import Path
+
+root = Path(sys.argv[1])
+entry, shadow = sys.argv[2], sys.argv[3]
+sys.path = [p for p in sys.path if Path(p).resolve() != root / "tools"]
+sys.path.insert(0, str(root / "src"))
+if entry == "namespace":
+    sys.path.insert(0, str(root))
+for name in ("eval_replay", "tools.eval_replay"):
+    sys.modules.pop(name, None)
+if shadow == "path":
+    sys.path.insert(0, str(Path.cwd()))
+if shadow == "module":
+    poison = types.ModuleType("eval_replay")
+    poison.MANIFEST = "unrelated module must not be used"
+    sys.modules["eval_replay"] = poison
+before = list(sys.path)
+if entry == "spec":
+    spec = importlib.util.spec_from_file_location(
+        "fresh_ci_fixture_alias", root / "tools/eval_thresholds.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # Point's dataclass needs its owning module.
+    spec.loader.exec_module(module)
+elif entry == "namespace":
+    import tools.eval_thresholds as module
+else:
+    sys.argv = [str(root / "tools/eval_thresholds.py"), "--help"]
+    try:
+        runpy.run_path(sys.argv[0], run_name="__main__")
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("script main did not run")
+if entry != "script":
+    assert module.MANIFEST == root / "tools/eval/replay_manifest.json"
+    assert module.load_manifest()[0]["version"] == 1
+assert sys.path == before
+assert "tools.eval_replay" not in sys.modules
+if shadow == "module":
+    assert sys.modules["eval_replay"] is poison
+    assert poison.MANIFEST == "unrelated module must not be used"
+else:
+    assert "eval_replay" not in sys.modules
+"""
+    # A same-name file in the unrelated working directory is also not a
+    # substitute for the helper beside the script under test.
+    (tmp_path / "eval_replay.py").write_text("raise RuntimeError('wrong sibling')\n")
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(ROOT), entry, str(shadow)],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_heldout_index_measurement_never_disables_the_floor(thresholds, monkeypatch, tmp_path):

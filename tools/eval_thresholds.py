@@ -85,13 +85,32 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
-if __package__:
-    from .eval_replay import MANIFEST, load_manifest, read_json, validate_split
-else:
-    from eval_replay import MANIFEST, load_manifest, read_json, validate_split
 from noblivion import __version__, config, db, dedup, embedding, store
 
 HERE = Path(__file__).resolve().parent
+
+
+def _load_replay_helpers() -> ModuleType:
+    """Load our sibling even when an external fixture gives this file an alias.
+
+    Never change sys.path or resolve an unrelated ambient eval_replay module.
+    This stdlib helper needs no process-wide sys.modules registration.
+    """
+    path = HERE / "eval_replay.py"
+    spec = importlib.util.spec_from_file_location(f"{__name__}._replay_helpers", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load evaluation helpers from {path}")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper
+
+
+_REPLAY = _load_replay_helpers()
+MANIFEST = _REPLAY.MANIFEST
+load_manifest = _REPLAY.load_manifest
+read_json = _REPLAY.read_json
+validate_split = _REPLAY.validate_split
+
 REPO = HERE.parent
 DATA = HERE / "eval" / "thresholds.json"
 SHIPPED_CONFIG = REPO / "config" / "config.default.json"
