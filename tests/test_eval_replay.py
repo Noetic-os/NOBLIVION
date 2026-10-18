@@ -23,7 +23,14 @@ def replay(monkeypatch):
 
 
 @pytest.fixture
-def thresholds(replay):
+def core_runtime():
+    # The core requires 3.10; the package-free 3.9 lane still runs pure replay tests.
+    if sys.version_info < (3, 10):  # noqa: UP036 - package-free CI also runs on 3.9
+        pytest.skip("threshold evaluator needs the core runtime (Python >=3.10)")
+
+
+@pytest.fixture
+def thresholds(replay, core_runtime):
     spec = importlib.util.spec_from_file_location(
         "threshold_eval_under_test", ROOT / "tools/eval_thresholds.py"
     )
@@ -388,7 +395,7 @@ def test_data_read_is_bounded(replay, tmp_path):
         replay.read_json(path)
 
 
-def test_threshold_module_is_importable_as_namespace(monkeypatch):
+def test_threshold_module_is_importable_as_namespace(monkeypatch, core_runtime):
     monkeypatch.syspath_prepend(str(ROOT))
     import tools.eval_thresholds as module
 
@@ -397,7 +404,7 @@ def test_threshold_module_is_importable_as_namespace(monkeypatch):
 
 @pytest.mark.parametrize("entry", ["spec", "namespace", "script"])
 @pytest.mark.parametrize("shadow", ["none", "module", "path"])
-def test_threshold_import_entry_points_in_clean_process(tmp_path, entry, shadow):
+def test_threshold_import_entry_points_in_clean_process(tmp_path, entry, shadow, core_runtime):
     # The legacy CI fixture assigns an arbitrary module name and does not add
     # tools/ to sys.path. A fresh isolated interpreter prevents earlier tests'
     # module imports and monkeypatches from hiding that execution path.
