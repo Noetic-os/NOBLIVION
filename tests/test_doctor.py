@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sqlite3
+import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -228,11 +231,10 @@ def test_bad_token_never_probes(installed, monkeypatch):
     assert "secret-canary" not in json.dumps(result)
 
 
-def test_network_filesystem_warning(installed, monkeypatch):
-    folder, _ = installed
-    monkeypatch.undo()
+def test_network_filesystem_warning(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor.sys, "platform", "linux")
     monkeypatch.setattr(doctor, "read_bytes", lambda *a, **kw: b"server:/data / nfs4 rw 0 0\n")
-    assert doctor._filesystem(folder, 0.05)[0] == "warn"
+    assert doctor._filesystem(tmp_path, 0.05)[0] == "warn"
 
 
 def test_config_read_limit_and_fifo(installed):
@@ -362,8 +364,7 @@ def test_rollback_journal_is_unavailable_and_unchanged(installed):
 
 
 @pytest.mark.skipif(not doctor.sys.platform.startswith("linux"), reason="Linux proc mount table")
-def test_linux_mount_table_does_not_follow_final_symlink(tmp_path, monkeypatch):
-    monkeypatch.undo()
+def test_linux_mount_table_does_not_follow_final_symlink(tmp_path):
     result = doctor._filesystem(tmp_path, 0.05)
     assert result[0] in {"pass", "warn"}
 
@@ -557,3 +558,159 @@ def test_numeric_diagnostics_match_dedup_and_miner_fallbacks(installed, monkeypa
 def test_integer_text_rejected_by_runtime_is_not_healthy(installed, key, value):
     (installed[0] / "config.json").write_text(json.dumps({key: value}))
     assert check(installed, "config_values") == "fail"
+
+
+class _MountOutput(io.BytesIO):
+    def __init__(self, body, *, blocked=False):
+        super().__init__(body)
+        self.read_limits = []
+        self.blocked = blocked
+        self.release = threading.Event()
+
+    def read(self, size=-1):
+        self.read_limits.append(size)
+        if self.blocked:
+            assert self.release.wait(1), "diagnostic did not stop its blocked child"
+        return super().read(size)
+
+
+class _MountProcess:
+    def __init__(self, body, *, returncode=0, blocked=False, wait_timeout=False):
+        self.stdout = _MountOutput(body, blocked=blocked)
+        self.returncode = None
+        self.final_returncode = returncode
+        self.wait_timeout = wait_timeout
+        self.wait_limits = []
+        self.killed = False
+
+    def kill(self):
+        self.killed = True
+        self.stdout.release.set()
+
+    def wait(self, timeout=None):
+        self.wait_limits.append(timeout)
+        if self.wait_timeout and not self.killed:
+            raise subprocess.TimeoutExpired("fixture-mount", timeout)
+        self.returncode = -9 if self.killed else self.final_returncode
+        return self.returncode
+
+
+def _mock_darwin_mount(monkeypatch, process):
+    calls = []
+
+    def popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return process
+
+    monkeypatch.setattr(doctor.sys, "platform", "darwin")
+    monkeypatch.setattr(doctor.subprocess, "Popen", popen)
+    return calls
+
+
+@pytest.mark.parametrize("kind,status", [("nfs", "warn"), ("smbfs", "warn"), ("apfs", "pass")])
+def test_darwin_filesystem_type_uses_bounded_mount_output(tmp_path, monkeypatch, kind, status):
+    process = _MountProcess(f"fixture-device on / ({kind}, local)\n".encode())
+    calls = _mock_darwin_mount(monkeypatch, process)
+    assert doctor._filesystem(tmp_path, 0.05)[0] == status
+    assert calls == [
+        (
+            ["/sbin/mount"],
+            {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.DEVNULL,
+            },
+        )
+    ]
+    assert process.stdout.read_limits == [doctor.MAX_FILE_BYTES + 1]
+    assert process.wait_limits == [0.05]
+    assert process.stdout.closed
+    assert not process.killed
+
+
+@pytest.mark.parametrize(
+    "specific_kind,status", [("nfs", "warn"), ("smbfs", "warn"), ("apfs", "pass")]
+)
+def test_darwin_filesystem_selects_longest_matching_mount(
+    tmp_path, monkeypatch, specific_kind, status
+):
+    broad = tmp_path.resolve()
+    specific = broad / "nested"
+    target = specific / "memory"
+    body = (
+        f"fixture-local on / (apfs, local)\n"
+        f"fixture-network on {broad} (nfs)\n"
+        f"fixture-nested on {specific} ({specific_kind})\n"
+    )
+    process = _MountProcess(body.encode())
+    _mock_darwin_mount(monkeypatch, process)
+    assert doctor._filesystem(target, 0.05)[0] == status
+    assert process.stdout.closed
+
+
+def test_darwin_filesystem_ignores_mount_with_only_shared_name_prefix(tmp_path, monkeypatch):
+    target = tmp_path.resolve() / "project"
+    body = f"fixture-local on / (apfs)\nfixture-network on {target}-other (smbfs)\n"
+    process = _MountProcess(body.encode())
+    _mock_darwin_mount(monkeypatch, process)
+    assert doctor._filesystem(target, 0.05)[0] == "pass"
+
+
+@pytest.mark.parametrize(
+    "body,returncode",
+    [
+        (b"fixture-private-canary", 0),
+        (b"", 0),
+        (b"fixture-device on / (nfs)\n", 1),
+    ],
+)
+def test_darwin_invalid_or_refused_mount_listing_is_unavailable(
+    tmp_path, monkeypatch, body, returncode
+):
+    process = _MountProcess(body, returncode=returncode)
+    _mock_darwin_mount(monkeypatch, process)
+    result = doctor._filesystem(tmp_path, 0.05)
+    assert result[0] == "unavailable"
+    assert "canary" not in str(result)
+    assert process.stdout.closed
+
+
+def test_darwin_mount_command_refusal_is_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor.sys, "platform", "darwin")
+
+    def refused(*args, **kwargs):
+        raise PermissionError("fixture-private-canary")
+
+    monkeypatch.setattr(doctor.subprocess, "Popen", refused)
+    result = doctor._filesystem(tmp_path, 0.05)
+    assert result[0] == "unavailable"
+    assert "canary" not in str(result)
+
+
+def test_darwin_oversized_mount_output_is_bounded_and_child_stopped(tmp_path, monkeypatch):
+    process = _MountProcess(b"x" * (doctor.MAX_FILE_BYTES + 100))
+    _mock_darwin_mount(monkeypatch, process)
+    assert doctor._filesystem(tmp_path, 0.05)[0] == "unavailable"
+    assert process.stdout.read_limits == [doctor.MAX_FILE_BYTES + 1]
+    assert process.killed
+    assert process.wait_limits == [0.05]
+    assert process.stdout.closed
+
+
+def test_darwin_blocked_mount_output_is_bounded_and_child_stopped(tmp_path, monkeypatch):
+    process = _MountProcess(b"", blocked=True)
+    _mock_darwin_mount(monkeypatch, process)
+    started = time.monotonic()
+    assert doctor._filesystem(tmp_path, 0.05)[0] == "unavailable"
+    assert time.monotonic() - started < 0.5
+    assert process.killed
+    assert process.stdout.read_limits == [doctor.MAX_FILE_BYTES + 1]
+    assert process.stdout.closed
+
+
+def test_darwin_child_wait_timeout_stops_child_and_closes_pipe(tmp_path, monkeypatch):
+    process = _MountProcess(b"fixture-device on / (apfs)\n", wait_timeout=True)
+    _mock_darwin_mount(monkeypatch, process)
+    assert doctor._filesystem(tmp_path, 0.05)[0] == "unavailable"
+    assert process.killed
+    assert process.wait_limits == [0.05, 0.05]
+    assert process.stdout.closed

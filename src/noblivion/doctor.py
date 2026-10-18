@@ -410,8 +410,14 @@ def _filesystem(path: Path, timeout: float) -> tuple[str, str]:
                 reader.join(timeout)
                 proc.stdout.close()
                 return "unavailable", "Filesystem inspection exceeded diagnostic limits."
-            proc.wait(timeout=timeout)
-            proc.stdout.close()
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=timeout)
+                return "unavailable", "Filesystem inspection exceeded diagnostic limits."
+            finally:
+                proc.stdout.close()
             output = chunks[0] if chunks else b""
             if proc.returncode != 0:
                 return "unavailable", "Cannot identify filesystem."
