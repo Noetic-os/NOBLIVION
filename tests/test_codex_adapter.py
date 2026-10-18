@@ -631,3 +631,22 @@ def test_an_inherited_claude_project_dir_is_dropped(
     env = adapter.environment(cfg, event(cfg, "SessionStart"))
     assert "CLAUDE_PROJECT_DIR" not in env
     assert env["NOBLIVION_MEMORY_DIR"] == cfg["memory_dir"]
+
+
+def test_session_start_preserves_the_guard_skipped_rule_warning(cfg, monkeypatch):
+    warning = "NOBLIVION: 1 rule is skipped and does not block: feedback_broken."
+    real = adapter._invoke
+
+    def invoke(config, env, name, payload, *args):
+        if name == "guard_table":
+            return {
+                "systemMessage": warning,
+                "hookSpecificOutput": {"additionalContext": warning},
+            }
+        # Keep the real capture path, while avoiding unrelated store startup work.
+        return {}
+
+    monkeypatch.setattr(adapter, "_invoke", invoke)
+    result = adapter.handle_hook(cfg, event(cfg, "SessionStart", source="startup"))
+    assert result["hookSpecificOutput"]["additionalContext"].count(warning) == 1
+    monkeypatch.setattr(adapter, "_invoke", real)

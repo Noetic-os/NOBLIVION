@@ -63,6 +63,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import select
 import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
@@ -553,6 +554,69 @@ _PROBE_CHILD = (
 )
 
 
+# The table builder reuses a child, but each regex still has its own kill limit.
+_PROBE_BATCH_CHILD = (
+    "import json,re,sys,time\n"
+    "for line in sys.stdin:\n"
+    " d=json.loads(line);rx=re.compile(d['p']);t=time.perf_counter()\n"
+    " for s in d['i']: rx.search(s)\n"
+    " print(time.perf_counter()-t,flush=True)\n"
+)
+_PROBE_BATCH: Optional[Any] = None
+
+
+class RegexProbeBatch:
+    """Reuse a probe child during one build; kill it on timeout or interruption."""
+
+    def __init__(self) -> None:
+        self.child: Optional[Any] = None
+        self.previous: Optional[Any] = None
+
+    def __enter__(self):
+        global _PROBE_BATCH
+        self.previous, _PROBE_BATCH = _PROBE_BATCH, self
+        return self
+
+    def close(self) -> None:
+        child, self.child = self.child, None
+        if child is not None:
+            if child.poll() is None:
+                child.kill()
+            child.wait()
+            for stream in (child.stdin, child.stdout):
+                if stream is not None:
+                    stream.close()
+
+    def __exit__(self, *_args) -> None:
+        global _PROBE_BATCH
+        _PROBE_BATCH = self.previous
+        self.close()
+
+    def run(self, payload: str):
+        if self.child is None:
+            self.child = subprocess.Popen(
+                [sys.executable, "-u", "-c", _PROBE_BATCH_CHILD],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+        child = self.child
+        try:
+            child.stdin.write(payload + "\n")
+            child.stdin.flush()
+            ready, _, _ = select.select([child.stdout], [], [], REGEX_PROBE_KILL)
+            if not ready:
+                raise subprocess.TimeoutExpired(child.args, REGEX_PROBE_KILL)
+            line = child.stdout.readline()
+            if not line:
+                raise OSError("regex probe child exited")
+            return subprocess.CompletedProcess(child.args, 0, stdout=line)
+        except BaseException:
+            self.close()
+            raise
+
+
 def regex_probe_inputs(example: str) -> List[str]:
     n = REGEX_PROBE_BYTES
     ex = (example or "x").strip() or "x"
@@ -586,13 +650,16 @@ def regex_too_slow(pattern: str, example: str = "", name: str = "violates") -> s
             times[1][key] = times[0][key]
             return ""
     try:
-        r = subprocess.run(
-            [sys.executable, "-c", _PROBE_CHILD],
-            input=payload,
-            capture_output=True,
-            text=True,
-            timeout=REGEX_PROBE_KILL,
-        )
+        if _PROBE_BATCH is not None:
+            r = _PROBE_BATCH.run(payload)
+        else:
+            r = subprocess.run(
+                [sys.executable, "-c", _PROBE_CHILD],
+                input=payload,
+                capture_output=True,
+                text=True,
+                timeout=REGEX_PROBE_KILL,
+            )
     except subprocess.TimeoutExpired:
         return f"{name} runs longer than {REGEX_PROBE_KILL:g} s on {REGEX_PROBE_BYTES} bytes"
     except OSError as exc:

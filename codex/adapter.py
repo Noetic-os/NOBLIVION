@@ -414,7 +414,7 @@ def handle_hook(cfg: dict, event: dict) -> dict:
     out: list[dict] = []
     if name == "SessionStart":
         _invoke(cfg, env, "store_client", event)
-        _invoke(cfg, env, "guard_table", event, "--rebuild")
+        out.append(_invoke(cfg, env, "guard_table", event, "--rebuild"))
         if use_memory and event.get("source") == "compact":
             _invoke(cfg, env, "recall_hook", event, "--reset-rows")
         if use_memory:
