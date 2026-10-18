@@ -336,8 +336,9 @@ def uninstall(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 tomllib.loads(new)
     if not args.dry_run:
-        for target, new in changes:
+        for target, _ in changes:
             _backup(home, target)
+        for target, new in changes:
             _write_private(target, new)
     return {"removed_from": [str(target) for target, _ in changes], "dry_run": args.dry_run}
 

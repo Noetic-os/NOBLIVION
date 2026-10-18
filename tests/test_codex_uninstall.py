@@ -191,3 +191,86 @@ def test_compound_adapter_command_refuses_without_removing_other_guard(tmp_path)
     assert result.returncode != 0 and "compound" in result.stderr
     assert before == {name: (home / name).read_bytes() for name in before}
     assert not (home / "noblivion/backups").exists()
+
+
+@pytest.mark.parametrize("as_file", [False, True])
+def test_invalid_store_data_dir_refuses_before_detaching_codex(tmp_path, as_file):
+    home = tmp_path / "codex"
+    configured(home)
+    data = tmp_path / "unrelated-target"
+    if as_file:
+        data.touch()
+    else:
+        data.mkdir()
+    before = {name: (home / name).read_bytes() for name in ("hooks.json", "config.toml")}
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts/uninstall.sh"),
+            "--data-dir",
+            str(data),
+            "--codex-home",
+            str(home),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0 and "nothing removed" in result.stderr
+    assert before == {name: (home / name).read_bytes() for name in before}
+    assert not (home / "noblivion/backups").exists()
+
+
+@pytest.mark.parametrize("invalid", ["hooks-json", "hooks-shape", "toml-marker", "compound"])
+def test_invalid_managed_settings_refuse_before_store_removal(tmp_path, invalid):
+    home = tmp_path / "codex"
+    configured(home)
+    data = tmp_path / "store"
+    (data / "venv").mkdir(parents=True)
+    if invalid == "toml-marker":
+        (home / "config.toml").write_text(_installer().BEGIN)
+    elif invalid == "compound":
+        path = home / "hooks.json"
+        doc = json.loads(path.read_text())
+        doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"] += (
+            " " + chr(38) * 2 + " python3 /other/guard.py"
+        )
+        path.write_text(json.dumps(doc))
+    else:
+        (home / "hooks.json").write_text("{" if invalid == "hooks-json" else '{"hooks": []}')
+    before = {name: (home / name).read_bytes() for name in ("hooks.json", "config.toml")}
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts/uninstall.sh"),
+            "--data-dir",
+            str(data),
+            "--codex-home",
+            str(home),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert (data / "venv").is_dir()
+    assert before == {name: (home / name).read_bytes() for name in before}
+    assert not (home / "noblivion/backups").exists()
+
+
+def test_all_backups_complete_before_managed_settings_change(tmp_path, monkeypatch):
+    import argparse
+
+    home = tmp_path / "codex"
+    configured(home)
+    installer = _installer()
+    before = {name: (home / name).read_bytes() for name in ("hooks.json", "config.toml")}
+    real = installer._backup
+
+    def backup(folder, target):
+        if target.name == "config.toml":
+            raise OSError("fixture backup refusal")
+        real(folder, target)
+
+    monkeypatch.setattr(installer, "_backup", backup)
+    with pytest.raises(OSError, match="backup refusal"):
+        installer.uninstall(argparse.Namespace(codex_home=str(home), dry_run=False))
+    assert before == {name: (home / name).read_bytes() for name in before}
