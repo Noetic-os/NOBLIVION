@@ -1,0 +1,34 @@
+{
+  "spdx": "AGPL-3.0-or-later",
+  "version": 1,
+  "evidence_kind": "synthetic",
+  "about": "Reviewable freeze record; public fixtures verify pipeline mechanics only. Retire heldout data if it informs tuning.",
+  "limits": {
+    "seconds": 2.0,
+    "input_bytes": 16384,
+    "output_bytes": 8192,
+    "artifact_bytes": 8192,
+    "iterations": 1,
+    "input_tokens": 4096,
+    "output_tokens": 1024,
+    "max_tasks": 100
+  },
+  "files": {
+    "tuning": {
+      "path": "thresholds.json",
+      "sha256": "d8eba0d2adf292de8dc536e36365d79a3937c0a1336079e5ab090a3a98bec622"
+    },
+    "heldout": {
+      "path": "thresholds_heldout.json",
+      "sha256": "feb89a4b7d3f82e9b3844c054006ae7520fd3c401cff2d01bdcdda9faf03eae8"
+    },
+    "tasks": {
+      "path": "replay_tasks.json",
+      "sha256": "43f35f212d0015a98488ac874d44d60ad031f1a67f6cc89347ca2f4fc7bf9ad4"
+    },
+    "synthetic_runner": {
+      "path": "replay_task.py",
+      "sha256": "837a857b3dbb6bcfbf5d95e00562ab5f483b8a19bc068baec64da6919b3a4142"
+    }
+  }
+}

@@ -3,7 +3,9 @@
 
 The eval set is ``tools/eval/thresholds.json``: made-up developer memories,
 labelled queries, near-miss negatives and duplicate pairs. It is small, and it
-has no held-out split: each threshold is chosen and scored on the same items.
+is a tuning fixture: each threshold is chosen and scored on the same items.
+Use ``--mode evaluate`` for the separately frozen, synthetic held-out fixture.
+Evaluation uses only shipped thresholds and never chooses a best threshold.
 
 The script starts a real store in this process (``noblivion.store.Store``),
 with the fastembed backend and ``embedding.DEFAULT_MODEL``. The store indexes
@@ -65,6 +67,7 @@ The model is downloaded on the first run. fastembed keeps it in
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import io
 import json
@@ -82,6 +85,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
+if __package__:
+    from .eval_replay import MANIFEST, load_manifest, read_json, validate_split
+else:
+    from eval_replay import MANIFEST, load_manifest, read_json, validate_split
 from noblivion import __version__, config, db, dedup, embedding, store
 
 HERE = Path(__file__).resolve().parent
@@ -322,7 +329,9 @@ class EvalStore:
 # -- the measurements -------------------------------------------------------------
 
 
-def measure_recall(es: EvalStore, rh: ModuleType, queries: Sequence[Mapping]) -> list[Point]:
+def measure_recall(
+    es: EvalStore, rh: ModuleType, queries: Sequence[Mapping], thresholds=RECALL_GRID
+) -> list[Point]:
     """The prompt hook path: ``recall(query, K_PROMPT, md_only=True)``."""
 
     def at_threshold(t: float) -> Point:
@@ -331,7 +340,7 @@ def measure_recall(es: EvalStore, rh: ModuleType, queries: Sequence[Mapping]) ->
             t, queries, lambda q: [mem_id(h.mid) for h in rh.recall(q, rh.K_PROMPT, env, True)]
         )
 
-    return [at_threshold(t) for t in RECALL_GRID]
+    return [at_threshold(t) for t in thresholds]
 
 
 _INDEX_ROW_RE = re.compile(r"^- \[id (\d+)\] ", re.MULTILINE)  # a rule row of the index
@@ -351,8 +360,13 @@ def index_status(cache: Path, sid: str) -> str:
 
 
 def measure_index(
-    es: EvalStore, rh: ModuleType, queries: Sequence[Mapping]
-) -> tuple[list[Point], Point, Point]:
+    es: EvalStore,
+    rh: ModuleType,
+    queries: Sequence[Mapping],
+    thresholds=RECALL_GRID,
+    *,
+    include_off: bool = True,
+) -> tuple[list[Point], Point | None, Point]:
     """The prompt hook path of the shipped config file: ``run()`` serves the
     ranked index. Returns the curve, the point with the floor off, and the
     point with the variable unset (the floor of the shipped defaults).
@@ -387,13 +401,14 @@ def measure_index(
         shutil.rmtree(cache, ignore_errors=True)
         return point
 
-    curve = [at_floor(t, str(t), f"{t:.2f}") for t in RECALL_GRID]
+    curve = [at_floor(t, str(t), f"{t:.2f}") for t in thresholds]
     floor = float(rh.DEFAULT_INDEX_MIN_SCORE)
-    return curve, at_floor(-1.0, INDEX_FLOOR_OFF, "off"), at_floor(floor, None, "unset")
+    off = at_floor(-1.0, INDEX_FLOOR_OFF, "off") if include_off else None
+    return curve, off, at_floor(floor, None, "unset")
 
 
 def measure_subagent(
-    es: EvalStore, srh: ModuleType, queries: Sequence[Mapping]
+    es: EvalStore, srh: ModuleType, queries: Sequence[Mapping], thresholds=RECALL_GRID
 ) -> tuple[list[Point], Point]:
     """The subagent rules path: ``run()`` of the subagent hook for a
     ``SubagentStart`` event with the task text in it. Returns the curve and the
@@ -434,12 +449,14 @@ def measure_subagent(
         shutil.rmtree(cache, ignore_errors=True)
         return point
 
-    curve = [at_floor(t, str(t), f"{t:.2f}") for t in RECALL_GRID]
+    curve = [at_floor(t, str(t), f"{t:.2f}") for t in thresholds]
     floor = float(srh.DEFAULT_INDEX_MIN_SCORE)
     return curve, at_floor(floor, None, "unset")
 
 
-def measure_error_recall(es: EvalStore, erh: ModuleType, queries: Sequence[Mapping]) -> list[Point]:
+def measure_error_recall(
+    es: EvalStore, erh: ModuleType, queries: Sequence[Mapping], thresholds=RECALL_GRID
+) -> list[Point]:
     """The error hook path: ``search()`` in store mode, every row that passes the gate."""
     folder = es.folders[RECALL_ROOT]
 
@@ -458,10 +475,12 @@ def measure_error_recall(es: EvalStore, erh: ModuleType, queries: Sequence[Mappi
 
         return score_queries(t, queries, returned)
 
-    return [at_threshold(t) for t in RECALL_GRID]
+    return [at_threshold(t) for t in thresholds]
 
 
-def measure_error_local(folder: Path, erh: ModuleType, queries: Sequence[Mapping]) -> list[Point]:
+def measure_error_local(
+    folder: Path, erh: ModuleType, queries: Sequence[Mapping], thresholds=LOCAL_GRID
+) -> list[Point]:
     """The error hook path in its default mode: ``search()`` in local mode over
     the memory files of ``folder``, every row that passes the gate. It uses no
     store and no model."""
@@ -477,7 +496,7 @@ def measure_error_local(folder: Path, erh: ModuleType, queries: Sequence[Mapping
 
         return score_queries(t, queries, returned)
 
-    return [at_threshold(t) for t in LOCAL_GRID]
+    return [at_threshold(t) for t in thresholds]
 
 
 def dedup_cosines(es: EvalStore) -> dict[tuple[str, str], float]:
@@ -493,12 +512,14 @@ def dedup_cosines(es: EvalStore) -> dict[tuple[str, str], float]:
     return out  # type: ignore[return-value]
 
 
-def measure_dedup(cosines: Mapping, duplicates: Iterable[Sequence[str]]) -> list[Point]:
+def measure_dedup(
+    cosines: Mapping, duplicates: Iterable[Sequence[str]], thresholds=DEDUP_GRID
+) -> list[Point]:
     dups = {tuple(sorted(p)) for p in duplicates}
     missing = dups - set(cosines)
     if missing:
         raise SystemExit(f"duplicate pairs not in the dedup folder: {sorted(missing)}")
-    return [score_pairs(t, cosines, dups) for t in DEDUP_GRID]  # type: ignore[arg-type]
+    return [score_pairs(t, cosines, dups) for t in thresholds]  # type: ignore[arg-type]
 
 
 # -- report -----------------------------------------------------------------------
@@ -572,26 +593,50 @@ def check_shipped_config(
     ]
 
 
-def run(data: Mapping) -> tuple[dict[str, list[Point]], dict[str, float], dict, dict[str, Point]]:
+def run(
+    data: Mapping, *, evaluate: bool = False
+) -> tuple[dict[str, list[Point]], dict[str, float], dict, dict[str, Point]]:
     """Every curve, the shipped values, extra numbers for ``--json``, and the
     two more points of the index path (``off`` and ``unset``) and the one of
     the subagent path (``subagent_unset``)."""
     rh = load_hook("recall_hook")
     erh = load_hook("error_recall_hook")
     srh = load_hook("subagent_rules_hook")
+    current = shipped(rh, erh, srh)
+
+    def values(name, tuning_grid):
+        return [current[name]] if evaluate else tuning_grid
+
     with (
         tempfile.TemporaryDirectory(prefix="noblivion-eval-") as tmp,
         EvalStore(Path(tmp), data) as es,
     ):
-        recall_points = measure_recall(es, rh, data["recall"]["queries"])
-        index_points, index_off, index_unset = measure_index(es, rh, data["recall"]["queries"])
-        subagent_points, subagent_unset = measure_subagent(es, srh, data["recall"]["queries"])
-        error_points = measure_error_recall(es, erh, data["recall"]["error_queries"])
+        recall_points = measure_recall(
+            es, rh, data["recall"]["queries"], values("recall", RECALL_GRID)
+        )
+        index_points, index_off, index_unset = measure_index(
+            es,
+            rh,
+            data["recall"]["queries"],
+            values("index", RECALL_GRID),
+            include_off=not evaluate,
+        )
+        subagent_points, subagent_unset = measure_subagent(
+            es, srh, data["recall"]["queries"], values("subagent", RECALL_GRID)
+        )
+        error_points = measure_error_recall(
+            es, erh, data["recall"]["error_queries"], values("error_recall", RECALL_GRID)
+        )
         local_points = measure_error_local(
-            es.folders[RECALL_ROOT], erh, data["recall"]["error_queries"]
+            es.folders[RECALL_ROOT],
+            erh,
+            data["recall"]["error_queries"],
+            values("error_local", LOCAL_GRID),
         )
         cosines = dedup_cosines(es)
-        dedup_points = measure_dedup(cosines, data["dedup"]["duplicates"])
+        dedup_points = measure_dedup(
+            cosines, data["dedup"]["duplicates"], values("dedup", DEDUP_GRID)
+        )
     extra = {
         "dedup_pairs": {
             f"{a} {b}": round(c, 4) for (a, b), c in sorted(cosines.items(), key=lambda kv: -kv[1])
@@ -605,8 +650,10 @@ def run(data: Mapping) -> tuple[dict[str, list[Point]], dict[str, float], dict, 
         "error_local": local_points,
         "dedup": dedup_points,
     }
-    paths = {"off": index_off, "unset": index_unset, "subagent_unset": subagent_unset}
-    return results, shipped(rh, erh, srh), extra, paths
+    paths = {"unset": index_unset, "subagent_unset": subagent_unset}
+    if index_off is not None:
+        paths["off"] = index_off
+    return results, current, ({} if evaluate else extra), paths
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -615,13 +662,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--check", action="store_true", help="fail when a shipped value misses its floor"
     )
     parser.add_argument("--json", type=Path, help="write every measured number to this file")
-    parser.add_argument("--data", type=Path, default=DATA, help="the eval set")
+    parser.add_argument("--mode", choices=("tune", "evaluate"), default="tune")
+    parser.add_argument("--manifest", type=Path, default=MANIFEST)
+    parser.add_argument("--data", type=Path, help="tuning data only; evaluation uses the manifest")
     args = parser.parse_args(argv)
-    data = json.loads(args.data.read_text(encoding="utf-8"))
+    evaluate = args.mode == "evaluate"
+    if evaluate and args.data is not None:
+        parser.error("--data is tuning-only; heldout data comes from --manifest")
+    try:
+        manifest, frozen_paths = load_manifest(args.manifest)
+        data_path = frozen_paths["heldout"] if evaluate else (args.data or DATA)
+        data = read_json(data_path)
+        if not evaluate and (data.get("split") == "heldout" or data.get("tuning_allowed") is False):
+            raise ValueError("heldout data must never be passed to tuning")
+        # A renamed heldout fixture is also forbidden as tuning input.
+        if not evaluate:
+            validate_split(data, read_json(frozen_paths["heldout"]))
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        parser.error(str(exc))
     t0 = time.monotonic()
-    results, current, extra, index_paths = run(data)
+    results, current, extra, index_paths = run(data, evaluate=evaluate)
     print(
-        f"model {embedding.DEFAULT_MODEL}, eval set {args.data.name}, {time.monotonic() - t0:.0f} s"
+        f"model {embedding.DEFAULT_MODEL}, eval set {data_path.name}, {time.monotonic() - t0:.0f} s"
     )
     titles = {
         "recall": "prompt recall floor, note text, no config file (recall_hook DEFAULT_MIN_SCORE),"
@@ -637,9 +699,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "dedup": "dedup cosine (dedup.DEFAULT_MIN_COSINE), pair cosine",
     }
     for name, points in results.items():
-        print_curve(titles[name], points, current[name])
+        if evaluate:
+            print(f"\n{titles[name]}")
+            print(point_row(f"{current[name]:.2f}", at(points, current[name]), "  frozen shipped"))
+        else:
+            print_curve(titles[name], points, current[name])
         if name == "index":
-            print(point_row("off", index_paths["off"], "  no floor"))
+            if not evaluate:
+                print(point_row("off", index_paths["off"], "  no floor"))
             print(point_row("unset", index_paths["unset"], "  the shipped config file as it is"))
         if name == "subagent":
             print(point_row("unset", index_paths["subagent_unset"], "  the shipped defaults"))
@@ -649,10 +716,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {
                     "model": embedding.DEFAULT_MODEL,
                     "shipped": current,
-                    "best": {k: best(v).as_dict() for k, v in results.items()},
-                    "curves": {k: [p.as_dict() for p in v] for k, v in results.items()},
+                    "mode": args.mode,
+                    "evidence_kind": (
+                        "synthetic_fixture_only"
+                        if evaluate or data_path.resolve() == frozen_paths["tuning"]
+                        else "unqualified_custom_tuning_data"
+                    ),
+                    "manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
+                    "data_sha256": hashlib.sha256(data_path.read_bytes()).hexdigest(),
+                    "sample_sizes": {
+                        "queries": len(data["recall"]["queries"]),
+                        "error_queries": len(data["recall"]["error_queries"]),
+                        "dedup_memories": len(data["dedup"]["memories"]),
+                    },
+                    **(
+                        {"measured": {k: at(v, current[k]).as_dict() for k, v in results.items()}}
+                        if evaluate
+                        else {
+                            "best": {k: best(v).as_dict() for k, v in results.items()},
+                            "curves": {k: [p.as_dict() for p in v] for k, v in results.items()},
+                        }
+                    ),
                     "index_paths": {
-                        "off": {**index_paths["off"].as_dict(), "threshold": None},
+                        **(
+                            {"off": {**index_paths["off"].as_dict(), "threshold": None}}
+                            if not evaluate
+                            else {}
+                        ),
                         "unset": index_paths["unset"].as_dict(),
                     },
                     "subagent_unset": index_paths["subagent_unset"].as_dict(),

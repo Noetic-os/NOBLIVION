@@ -1,0 +1,108 @@
+{
+  "spdx": "AGPL-3.0-or-later",
+  "date": "2026-10-18",
+  "scope": "Tiny fictional heldout pipeline check only.",
+  "downloads_allowed": false,
+  "model": "BAAI/bge-small-en-v1.5",
+  "shipped": {
+    "recall": 0.68,
+    "index": 0.68,
+    "subagent": 0.68,
+    "error_recall": 0.7,
+    "error_local": 0.39,
+    "dedup": 0.75
+  },
+  "mode": "evaluate",
+  "evidence_kind": "synthetic_fixture_only",
+  "manifest_sha256": "7fe9666718f0e542e288a797210cfcfa4cc0146d7cf087ceefff8992021357a2",
+  "data_sha256": "feb89a4b7d3f82e9b3844c054006ae7520fd3c401cff2d01bdcdda9faf03eae8",
+  "sample_sizes": {
+    "queries": 3,
+    "error_queries": 2,
+    "dedup_memories": 3
+  },
+  "measured": {
+    "recall": {
+      "threshold": 0.68,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0,
+      "negatives_hit": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "index": {
+      "threshold": 0.68,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0,
+      "negatives_hit": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "subagent": {
+      "threshold": 0.68,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0,
+      "negatives_hit": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "error_recall": {
+      "threshold": 0.7,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "negatives_hit": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "error_local": {
+      "threshold": 0.39,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "negatives_hit": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "dedup": {
+      "threshold": 0.75,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "negatives_hit": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    }
+  },
+  "index_paths": {
+    "unset": {
+      "threshold": 0.68,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0,
+      "negatives_hit": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    }
+  },
+  "subagent_unset": {
+    "threshold": 0.68,
+    "tp": 2,
+    "fp": 0,
+    "fn": 0,
+    "negatives_hit": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0
+  }
+}
