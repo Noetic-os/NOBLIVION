@@ -1,0 +1,117 @@
+{
+  "spdx": "AGPL-3.0-or-later",
+  "about": "Public synthetic heldout pipeline fixture, never a qualification corpus. Zero floors do not qualify accuracy.",
+  "split": "heldout",
+  "tuning_allowed": false,
+  "gate": {
+    "recall": {
+      "precision": 0.0,
+      "recall": 0.0
+    },
+    "index": {
+      "precision": 0.0,
+      "recall": 0.0
+    },
+    "subagent": {
+      "precision": 0.0,
+      "recall": 0.0
+    },
+    "error_recall": {
+      "precision": 0.0,
+      "recall": 0.0
+    },
+    "error_local": {
+      "precision": 0.0,
+      "recall": 0.0
+    },
+    "dedup": {
+      "precision": 0.0,
+      "recall": 0.0
+    }
+  },
+  "recall": {
+    "memories": [
+      {
+        "id": "heldout_catalogue_tags",
+        "name": "catalogue tag placement",
+        "description": "Catalogue cards carry a gold tag in their lower corner.",
+        "body": "Place the gold collection tag in the lower right corner of each catalogue card."
+      },
+      {
+        "id": "heldout_bindery_drying",
+        "name": "bindery drying time",
+        "description": "New bindings dry for three days before shelving.",
+        "body": "Leave a newly bound folio on the drying rack for seventy two hours before shelving it."
+      },
+      {
+        "id": "heldout_scanner_lid",
+        "name": "scanner lid alignment",
+        "description": "A lid alignment error requires the scanner spacer.",
+        "body": "When the folio scanner shows LID_ALIGN, fit the blue spacer before the next scan."
+      }
+    ],
+    "queries": [
+      {
+        "id": "heldout-q-tag",
+        "q": "Where does the collection tag go on a catalogue card?",
+        "expect": [
+          "heldout_catalogue_tags"
+        ]
+      },
+      {
+        "id": "heldout-q-dry",
+        "q": "How long must a newly bound folio stay on its rack?",
+        "expect": [
+          "heldout_bindery_drying"
+        ]
+      },
+      {
+        "id": "heldout-q-none",
+        "q": "Name a constellation visible in winter.",
+        "expect": []
+      }
+    ],
+    "error_queries": [
+      {
+        "id": "heldout-error-lid",
+        "q": "The folio scanner shows LID_ALIGN; what should I fit?",
+        "expect": [
+          "heldout_scanner_lid"
+        ]
+      },
+      {
+        "id": "heldout-error-none",
+        "q": "The teapot whistles while the kettle is cold.",
+        "expect": []
+      }
+    ]
+  },
+  "dedup": {
+    "memories": [
+      {
+        "id": "heldout_dup_a",
+        "name": "folio wrap",
+        "description": "A folio travels in linen.",
+        "body": "Wrap each folio in linen for transport."
+      },
+      {
+        "id": "heldout_dup_b",
+        "name": "transport linen",
+        "description": "Linen protects the folio while travelling.",
+        "body": "For transport, enclose the folio in a linen wrap."
+      },
+      {
+        "id": "heldout_dup_c",
+        "name": "folio shelf order",
+        "description": "Shelve folios by accession number.",
+        "body": "Order the folio shelf by accession number."
+      }
+    ],
+    "duplicates": [
+      [
+        "heldout_dup_a",
+        "heldout_dup_b"
+      ]
+    ]
+  }
+}

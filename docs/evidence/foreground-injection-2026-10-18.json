@@ -1,0 +1,210 @@
+{
+  "spdx": "AGPL-3.0-or-later",
+  "version": 1,
+  "date": "2026-10-18",
+  "scope": "Fictional foreground injection component; not native memory parity or population quality.",
+  "cli_version": "0.154.0",
+  "requested_model": "gpt-5.6-sol",
+  "reasoning_effort": "low",
+  "image": "sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
+  "freeze_sha256": "89f247288aab61bb05b6dd80be06108bbd4cb6b070aa1d4ced275c3217a7d548",
+  "tasks_sha256": "43f35f212d0015a98488ac874d44d60ad031f1a67f6cc89347ca2f4fc7bf9ad4",
+  "sample_size_pairs": 3,
+  "successful_calls": 6,
+  "total_attempts_including_failure": 7,
+  "passed": {
+    "off": 1,
+    "on": 3
+  },
+  "paired_pass_rate_difference": 0.6666666666666666,
+  "usage_totals": {
+    "input_tokens": 48361,
+    "cached_input_tokens": 6528,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 128,
+    "reasoning_output_tokens": 0
+  },
+  "accounting": "Cached input is a subset of input; reasoning output is a subset of output. Prior failed-request usage is unknown, not zero.",
+  "prior_failed_attempt": {
+    "requested_model": "gpt-6.1-sol",
+    "http_status": 400,
+    "error": "Selected model unsupported for the account path.",
+    "actual_usage": null,
+    "reserved_input_tokens": 25000,
+    "trace_sha256": "5924281a984317bfaa3b85e24d45d73e480471a09552f5f67321ec01adb48b75"
+  },
+  "warning": "All six completed calls reported the same unavailable code-mode host startup warning. The host was not mounted. It failed closed; executed model tool events were zero.",
+  "isolation": "Read-only container root, dropped capabilities, no new privileges, existing binary and read-only account-auth mounts; fresh state and task workspace. No oracle, training, repository or harness mounts. Native memory and tools disabled.",
+  "task_state": "Model chose structured write_catalogue or no_change. A separate finite-action executor applied a fixed allowed file write. An external oracle read actual file bytes and absence. Expected labels were not sent to the model.",
+  "bounds": {
+    "max_attempts": 6,
+    "planned_calls": 6,
+    "input_token_budget": 125000,
+    "reservation_per_attempt": 25000,
+    "seconds_per_call": 120,
+    "prompt_bytes": 16384,
+    "answer_bytes": 2048,
+    "trace_bytes_per_stream": 1048576,
+    "first_call_input_abort_threshold": 20000
+  },
+  "tasks": [
+    {
+      "task_id": "catalogue-blue",
+      "arm": "off",
+      "action_valid": true,
+      "passed": false,
+      "usage": {
+        "input_tokens": 8058,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 0
+      },
+      "seconds": 5.474103878004826,
+      "file_oracle": {
+        "files": {
+          "catalogue.txt": false
+        },
+        "passed": false
+      },
+      "actual_files": {},
+      "executed_model_tool_events": 0
+    },
+    {
+      "task_id": "catalogue-blue",
+      "arm": "on",
+      "action_valid": true,
+      "passed": true,
+      "usage": {
+        "input_tokens": 8066,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 24,
+        "reasoning_output_tokens": 0
+      },
+      "seconds": 4.222114739997778,
+      "file_oracle": {
+        "files": {
+          "catalogue.txt": true
+        },
+        "passed": true
+      },
+      "actual_files": {
+        "catalogue.txt": "BLU-417\n"
+      },
+      "executed_model_tool_events": 0
+    },
+    {
+      "task_id": "catalogue-gold",
+      "arm": "on",
+      "action_valid": true,
+      "passed": true,
+      "usage": {
+        "input_tokens": 8066,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 24,
+        "reasoning_output_tokens": 0
+      },
+      "seconds": 4.721644438002841,
+      "file_oracle": {
+        "files": {
+          "catalogue.txt": true
+        },
+        "passed": true
+      },
+      "actual_files": {
+        "catalogue.txt": "GLD-582\n"
+      },
+      "executed_model_tool_events": 0
+    },
+    {
+      "task_id": "catalogue-gold",
+      "arm": "off",
+      "action_valid": true,
+      "passed": false,
+      "usage": {
+        "input_tokens": 8058,
+        "cached_input_tokens": 6528,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 0
+      },
+      "seconds": 6.976295750995632,
+      "file_oracle": {
+        "files": {
+          "catalogue.txt": false
+        },
+        "passed": false
+      },
+      "actual_files": {},
+      "executed_model_tool_events": 0
+    },
+    {
+      "task_id": "catalogue-empty",
+      "arm": "off",
+      "action_valid": true,
+      "passed": true,
+      "usage": {
+        "input_tokens": 8053,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 0
+      },
+      "seconds": 4.375125899998238,
+      "file_oracle": {
+        "files": {
+          "unchanged.txt": true,
+          "catalogue.txt": true
+        },
+        "passed": true
+      },
+      "actual_files": {
+        "unchanged.txt": "keep\n"
+      },
+      "executed_model_tool_events": 0
+    },
+    {
+      "task_id": "catalogue-empty",
+      "arm": "on",
+      "action_valid": true,
+      "passed": true,
+      "usage": {
+        "input_tokens": 8060,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 0
+      },
+      "seconds": 4.524316235008882,
+      "file_oracle": {
+        "files": {
+          "unchanged.txt": true,
+          "catalogue.txt": true
+        },
+        "passed": true
+      },
+      "actual_files": {
+        "unchanged.txt": "keep\n"
+      },
+      "executed_model_tool_events": 0
+    }
+  ],
+  "usage_by_arm": {
+    "off": {
+      "input_tokens": 24169,
+      "cached_input_tokens": 6528,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 60,
+      "reasoning_output_tokens": 0
+    },
+    "on": {
+      "input_tokens": 24192,
+      "cached_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 68,
+      "reasoning_output_tokens": 0
+    }
+  }
+}

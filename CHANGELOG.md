@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Add frozen held-out evaluation and paired injection replay with external task-state checks.
+
 - Add bounded, read-only `doctor` checks and secret-safe `explain` recall diagnostics for Codex and other clients.
 
 - Add safe Codex integration removal and respect `CODEX_HOME` during installation and removal.

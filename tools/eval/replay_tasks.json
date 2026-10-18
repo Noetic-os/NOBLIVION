@@ -1,0 +1,37 @@
+{
+  "spdx": "AGPL-3.0-or-later",
+  "evidence_kind": "synthetic",
+  "about": "Public fictional tasks to verify pairing, injection and external file scoring. Not a qualification corpus.",
+  "tasks": [
+    {
+      "id": "catalogue-blue",
+      "prompt": "Write the blue collection's catalogue code followed by a newline to catalogue.txt.",
+      "memory_context": "Catalogue code: BLU-417.",
+      "expected_files": {
+        "catalogue.txt": "BLU-417\n"
+      }
+    },
+    {
+      "id": "catalogue-gold",
+      "prompt": "Write the gold collection's catalogue code followed by a newline to catalogue.txt.",
+      "memory_context": "Catalogue code: GLD-582.",
+      "expected_files": {
+        "catalogue.txt": "GLD-582\n"
+      }
+    },
+    {
+      "id": "catalogue-empty",
+      "prompt": "No catalogue record exists. Leave catalogue.txt absent.",
+      "memory_context": "The collection has no catalogue record.",
+      "initial_files": {
+        "unchanged.txt": "keep\n"
+      },
+      "expected_files": {
+        "unchanged.txt": "keep\n"
+      },
+      "absent_files": [
+        "catalogue.txt"
+      ]
+    }
+  ]
+}
