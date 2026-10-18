@@ -8,6 +8,7 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Add safe Codex integration removal and respect `CODEX_HOME` during installation and removal.
 - Keep deny rules active during concurrent guard rebuilds, resume interrupted regex checks, and show skipped-rule warnings in Codex.
 
 ## 0.1.15 - 2026-10-14

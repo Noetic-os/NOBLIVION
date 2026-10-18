@@ -273,6 +273,75 @@ def _merge_toml(old: str, block: str) -> str:
     return "".join(preserved).rstrip("\r\n") + "\n\n" + block + "\n"
 
 
+def _remove_hooks(old: str) -> str:
+    doc = json.loads(old)
+    if not isinstance(doc, dict) or not isinstance(doc.get("hooks", {}), dict):
+        raise ValueError("hooks.json must contain an object with a hooks object")
+    changed = False
+    for event, groups in doc.get("hooks", {}).items():
+        if not isinstance(groups, list):
+            raise ValueError("hooks.json event must contain a list: " + event)
+        preserved = []
+        for group in groups:
+            if not _is_ours(group):
+                preserved.append(group)
+                continue
+            # A compound command can contain an independent guard. Refuse
+            # custom shapes before writing either file, as on upgrade.
+            for hook in group["hooks"]:
+                if isinstance(hook, dict) and "/codex/adapter.py" in str(hook.get("command", "")):
+                    _replace_adapter_command(
+                        hook["command"], "python3 /removed/codex/adapter.py --config /removed"
+                    )
+            changed = True
+            foreign = [
+                hook
+                for hook in group["hooks"]
+                if not (
+                    isinstance(hook, dict) and "/codex/adapter.py" in str(hook.get("command", ""))
+                )
+            ]
+            if foreign:
+                preserved.append({**group, "hooks": foreign})
+        doc["hooks"][event] = preserved
+    return json.dumps(doc, indent=2) + "\n" if changed else old
+
+
+def _remove_toml(old: str) -> str:
+    _, markers = _toml_table_lines(old)
+    if not markers:
+        return old  # An unmarked MCP section belongs to the user.
+    return _merge_toml(old, "").rstrip("\r\n") + "\n"
+
+
+def uninstall(args: argparse.Namespace) -> dict[str, Any]:
+    """Remove managed integration only; retain private config, state and backups."""
+    home = Path(args.codex_home).expanduser().resolve()
+    changes = []
+    for name, remove in (("hooks.json", _remove_hooks), ("config.toml", _remove_toml)):
+        target = home / name
+        if not target.exists():
+            continue
+        old = target.read_text(encoding="utf-8")
+        new = remove(old)
+        if new != old:
+            changes.append((target, new))
+    # Validate both files before writing either, as for installation.
+    for target, new in changes:
+        if target.suffix == ".toml":
+            try:
+                import tomllib
+            except ModuleNotFoundError:
+                pass
+            else:
+                tomllib.loads(new)
+    if not args.dry_run:
+        for target, new in changes:
+            _backup(home, target)
+            _write_private(target, new)
+    return {"removed_from": [str(target) for target, _ in changes], "dry_run": args.dry_run}
+
+
 def _git_common(path: Path) -> str:
     try:
         proc = subprocess.run(
@@ -406,9 +475,15 @@ def install(args: argparse.Namespace) -> dict[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", required=True)
-    parser.add_argument("--memory-dir", required=True)
-    parser.add_argument("--workspace", action="append", required=True)
+    parser.add_argument(
+        "--uninstall", action="store_true", help="remove managed Codex hooks and MCP settings"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="preview uninstall without changing files"
+    )
+    parser.add_argument("--data-dir")
+    parser.add_argument("--memory-dir")
+    parser.add_argument("--workspace", action="append")
     parser.add_argument("--namespace", default=None)
     parser.add_argument(
         "--contribute",
@@ -418,17 +493,27 @@ def main() -> int:
     )
     parser.add_argument("--no-contribute", dest="contribute", action="store_false")
     parser.add_argument("--root", default=None)
-    parser.add_argument("--codex-home", default=str(Path.home() / ".codex"))
+    parser.add_argument(
+        "--codex-home", default=os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
+    )
     args = parser.parse_args()
+    if not args.uninstall and not all((args.data_dir, args.memory_dir, args.workspace)):
+        parser.error("installation requires --data-dir, --memory-dir and --workspace")
+    if args.dry_run and not args.uninstall:
+        parser.error("--dry-run requires --uninstall")
     try:
-        result = install(args)
+        result = uninstall(args) if args.uninstall else install(args)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     print(
         json.dumps(
             {
                 **result,
-                "hook_trust": "review and trust NOBLIVION hooks with /hooks in Codex CLI",
+                **(
+                    {}
+                    if args.uninstall
+                    else {"hook_trust": "review and trust NOBLIVION hooks with /hooks in Codex CLI"}
+                ),
             }
         )
     )

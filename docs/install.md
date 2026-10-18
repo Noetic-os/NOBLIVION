@@ -266,6 +266,15 @@ Set `CLAUDE_CONFIG_DIR` when the Claude config folder is not `~/.claude`.
 
 ## Uninstall
 
+The uninstall script first removes managed Codex adapter hooks and the managed
+NOBLIVION MCP section. It uses `$CODEX_HOME`, else `~/.codex`; give
+`--codex-home /absolute/codex/config` if installation used another folder.
+Other Codex hooks, servers and hook trust state stay. The Codex config, state
+and backups under `noblivion/` stay. To remove only the Codex integration, run
+`python3 scripts/install_codex.py --uninstall` from the checkout.
+See [Codex removal](codex.md#remove-the-codex-integration) for custom bridges.
+
+
 The steps below keep your database (the memory index and the trust
 history), `config.json` and `token`, so a later install starts where you
 stopped.

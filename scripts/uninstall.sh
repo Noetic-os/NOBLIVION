@@ -3,9 +3,10 @@
 #
 # Remove the NOBLIVION store venv (design doc 0001, section 13.3).
 #
-# Usage: uninstall.sh [--data-dir DIR] [--purge] [--dry-run]
+# Usage: uninstall.sh [--data-dir DIR] [--codex-home DIR] [--purge] [--dry-run]
 #
 #   --data-dir DIR  as in install.sh.
+#   --codex-home DIR  Codex config folder (default: $CODEX_HOME or ~/.codex).
 #   --purge         also remove the database, the config, the token and every
 #                   other file in the data dir.
 #   --dry-run       print the steps, change nothing.
@@ -21,6 +22,7 @@ set -euo pipefail
 DATA_DIR=""
 PURGE=0
 DRY_RUN=0
+CODEX_CONFIG_DIR="${CODEX_HOME:-$HOME/.codex}"
 
 die() {
     printf 'noblivion uninstall: %s\n' "$*" >&2
@@ -44,6 +46,11 @@ while [ $# -gt 0 ]; do
             DATA_DIR="$2"
             shift 2
             ;;
+        --codex-home)
+            [ $# -ge 2 ] || die "--codex-home needs a folder"
+            CODEX_CONFIG_DIR="$2"
+            shift 2
+            ;;
         --purge) PURGE=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h | --help)
@@ -57,6 +64,11 @@ done
 if [ -z "$DATA_DIR" ]; then
     DATA_DIR="${NOBLIVION_DATA_DIR:-${CLAUDE_PLUGIN_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/noblivion}}"
 fi
+# Detach Codex before removing runtime files, even if the data dir is gone.
+CODEX_ARGS=(--uninstall --codex-home "$CODEX_CONFIG_DIR")
+if [ "$DRY_RUN" = 1 ]; then CODEX_ARGS+=(--dry-run); fi
+python3 "$(dirname "${BASH_SOURCE[0]}")/install_codex.py" "${CODEX_ARGS[@]}"
+
 [ -d "$DATA_DIR" ] || { printf 'noblivion uninstall: no data dir at %s\n' "$DATA_DIR"; exit 0; }
 [ -e "$DATA_DIR/venv" ] || [ -e "$DATA_DIR/store.json" ] || [ -e "$DATA_DIR/noblivion.db" ] \
     || die "$DATA_DIR does not look like a NOBLIVION data dir; nothing removed"
