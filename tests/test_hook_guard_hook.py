@@ -2046,15 +2046,17 @@ def test_only_the_guard_legs_rebuild_a_stale_table(folder_env):
     assert "feedback_no_stash_drop" in path.read_text()
 
 
-def test_a_table_override_is_never_rebuilt_by_the_hook(env, tmp_path, monkeypatch):
-    """``NOBLIVION_GUARD_TABLE`` pins one file: the hook reads it as it is."""
-    mem = tmp_path / "mem"
-    mem.mkdir()
+def test_an_explicit_table_path_follows_its_memory_folder(folder_env, tmp_path, monkeypatch):
+    env, mem = folder_env
+    explicit = tmp_path / "explicit-table.json"
+    monkeypatch.setenv("NOBLIVION_GUARD_TABLE", str(explicit))
+    env["NOBLIVION_GUARD_TABLE"] = str(explicit)
+    _rulefile(mem, "feedback_no_stash_pop")
+    assert _denied(env, "git stash pop") and explicit.exists()
     _rulefile(mem, "feedback_no_stash_clear", "clear")
-    e = dict(env, NOBLIVION_MEMORY_DIR=str(mem))
-    before = Path(env["NOBLIVION_GUARD_TABLE"]).read_text()
-    assert not _denied(e, "git stash clear") and _denied(e, "git stash pop")
-    assert Path(env["NOBLIVION_GUARD_TABLE"]).read_text() == before
+    assert _denied(env, "git stash clear")
+    (mem / "feedback_no_stash_pop.md").unlink()
+    assert not _denied(env, "git stash pop")
 
 
 ORDINARY = [
@@ -2357,12 +2359,129 @@ def test_a_rebuild_after_one_edit_times_only_the_changed_rule(folder_env, monkey
     for word in ("pop", "drop", "clear", "apply"):
         _rulefile(mem, f"feedback_no_stash_{word}", word)
     mfm = gh._gt()._mf()
-    real, probes = mfm.subprocess.run, []
-    monkeypatch.setattr(mfm.subprocess, "run", lambda *a, **k: probes.append(1) or real(*a, **k))
-    assert _denied(env, "git stash pop") and len(probes) == 4  # no table yet: every rule
+    real, probes = mfm.subprocess.Popen, []
+    monkeypatch.setattr(mfm.subprocess, "Popen", lambda *a, **k: probes.append(1) or real(*a, **k))
+    assert _denied(env, "git stash pop") and len(probes) == 1  # no table yet: every rule
     target = mem / "feedback_no_stash_drop.md"
     target.write_text(target.read_text().replace("Body.", "Body, edited."))
-    assert _denied(env, "git stash drop") and len(probes) == 4  # the text changed, no regex
+    assert _denied(env, "git stash drop") and len(probes) == 1  # the text changed, no regex
     _rulefile(mem, "feedback_no_stash_drop", "show")
     assert _denied(env, "git stash show") and not _denied(env, "git stash drop")
-    assert len(probes) == 5  # one regex changed
+    assert len(probes) == 2  # one regex changed
+
+
+def test_an_interrupted_build_retries_when_new_measurements_were_saved(folder_env, monkeypatch):
+    env, mem = folder_env
+    for word in ("pop", "drop"):
+        _rulefile(mem, f"feedback_no_stash_{word}", word)
+    gt = gh._gt()
+    mf = gt._mf()
+    real = mf.RegexProbeBatch.run
+    measured = []
+
+    def partial(self, payload):
+        if measured:
+            raise gh._TimeUp()
+        result = real(self, payload)
+        measured.append(payload)
+        return result
+
+    monkeypatch.setattr(mf.RegexProbeBatch, "run", partial)
+    first = _main_doc(env, "git stash drop")
+    assert gh.REBUILD_NONE_LINE in first["systemMessage"]
+    assert "next call retries" in first["systemMessage"]
+    path = gt.table_path(mem, env)
+    assert not path.with_name(path.name + gh.LATE_SUFFIX).exists()
+    assert len(gt._read_probes(gt.probes_path(path))) == 1
+    monkeypatch.setattr(mf.RegexProbeBatch, "run", real)
+    assert _denied(env, "git stash drop") and _denied(env, "git stash pop")
+
+
+def test_a_mid_session_rebuild_reports_skipped_rules(folder_env):
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    assert _denied(env, "git stash pop")
+    _rulefile(mem, "feedback_bad")
+    target = mem / "feedback_bad.md"
+    target.write_text(target.read_text().replace("scope: tool", "scope: invalid"))
+    doc = _main_doc(env, "git stash pop")
+    assert doc["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "feedback_bad" in doc["systemMessage"]
+    assert "skipped and does not block" in doc["systemMessage"]
+    assert not [row for row in log(env) if row["decision"] == "error"]
+
+
+def test_a_busy_rebuild_lock_keeps_the_previous_deny_table_in_force(folder_env):
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    assert _denied(env, "git stash pop")
+    _rulefile(mem, "feedback_no_stash_drop", "drop")
+    gt = gh._gt()
+    with gt.rebuild_lock(gt.table_path(mem, env)):
+        doc = _main_doc(env, "git stash pop", time_limit=0.1)
+    assert doc["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "systemMessage" not in doc
+    assert _denied(env, "git stash drop")
+
+
+def test_a_busy_rebuild_lock_with_no_table_reports_unchecked_rules(folder_env):
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    gt = gh._gt()
+    with gt.rebuild_lock(gt.table_path(mem, env)):
+        doc = _main_doc(env, "git stash pop", time_limit=0.1)
+    assert "another call is building" in doc["systemMessage"]
+    assert "no deny rule is checked" in doc["systemMessage"]
+
+
+def test_an_explicit_table_without_source_folders_still_denies(env, monkeypatch):
+    monkeypatch.setattr(gh._gt(), "source_dirs", lambda *_args: [])
+    assert _denied(env, "git stash pop")
+
+
+def test_parallel_rebuilds_share_one_build_and_one_skipped_warning(folder_env, tmp_path):
+    env, mem = folder_env
+    _rulefile(mem, "feedback_no_stash_pop")
+    assert _denied(env, "git stash pop")
+    _rulefile(mem, "feedback_bad")
+    target = mem / "feedback_bad.md"
+    target.write_text(target.read_text().replace("scope: tool", "scope: invalid"))
+    count = tmp_path / "builds"
+    script = r"""
+import json,sys,time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import guard_hook as gh
+gt=gh._gt()
+real=gt.build
+def build(*args):
+    with Path(sys.argv[2]).open('a') as f: f.write('build\n')
+    time.sleep(1)
+    return real(*args)
+gt.build=build
+notes=[]
+path=gh.table_file(dict(__import__('os').environ), '/tmp', fresh=True, notes=notes)
+print(json.dumps({'notes': notes, 'hits': len(gt.match('git stash pop', gt.load_table(path)))}))
+"""
+    processes = []
+    for index in range(2):
+        processes.append(
+            subprocess.Popen(
+                [sys.executable, "-c", script, str(HOOKS), str(count)],
+                env={**os.environ, **env},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        )
+        if index == 0:
+            deadline = time.monotonic() + 3
+            while not count.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert count.exists()
+    results = [process.communicate(timeout=5) for process in processes]
+    assert all(process.returncode == 0 for process in processes), results
+    assert count.read_text().splitlines() == ["build"]
+    docs = [json.loads(stdout) for stdout, _ in results]
+    assert sorted(len(doc["notes"]) for doc in docs) == [0, 1]
+    assert all(doc["hits"] == 1 for doc in docs)
