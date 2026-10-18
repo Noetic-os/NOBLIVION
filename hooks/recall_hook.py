@@ -3149,6 +3149,8 @@ def _serve_index(
     stdout,
     environ: Dict[str, str],
     default_floor: float = DEFAULT_INDEX_MIN_SCORE,
+    diagnostic: Optional[Dict[str, Any]] = None,
+    candidates_override: Optional[Sequence[IndexLine]] = None,
 ) -> None:
     """The ranked-index shape of one hook call (R1).
 
@@ -3237,6 +3239,18 @@ def _serve_index(
     silently served arm D's ranking, or rows with descriptions where rules were
     promised, would look like a result and be an artefact.
     """
+    if diagnostic is not None:
+        # Inspect current files without updating a corpus cache or recall state.
+        environ = dict(environ, NOBLIVION_RECALL_CORPUS_CACHE="off")
+
+    def trace(stage: str, current: Sequence[IndexLine]) -> None:
+        if diagnostic is None:
+            return
+        ids = {ln.mid for ln in current}
+        for row in diagnostic.get("candidates", []):
+            if row["decision"] == "candidate" and row["id"] not in ids:
+                row["decision"] = stage
+
     k = index_k(environ)
     hygiene = index_hygiene(environ)
     rerank = index_rerank(environ)
@@ -3259,8 +3273,17 @@ def _serve_index(
         max(k, INDEX_CANDIDATE_TOP_K) if (hygiene or rerank or floor is not None or drop_on) else k
     )
     try:
-        lines = recall_index(query, ask, environ)
+        lines = (
+            list(candidates_override)[:ask]
+            if candidates_override is not None
+            else recall_index(query, ask, environ)
+        )
         candidates = list(lines)
+        if diagnostic is not None:
+            diagnostic["candidates"] = [
+                {"id": ln.mid, "score": ln.score, "initial_rank": ln.rank, "decision": "candidate"}
+                for ln in lines
+            ]
     except RecallError as exc:
         log_line(cache, event, sid, 0, 0, int((time.monotonic() - t0) * 1000), f"fail:{exc.reason}")
         return
@@ -3280,6 +3303,7 @@ def _serve_index(
                 by_name = corpus_by_name(corpus)
                 if hygiene:
                     lines = hygiene_index(lines, by_name)
+                    trace("hygiene", lines)
                 if rerank and keyword:
                     # Design doc section 8.4: the store ranked by BM25 alone
                     # and sent no cosine, so its order is kept.
@@ -3292,7 +3316,9 @@ def _serve_index(
                 note = f":local_off:{type(exc).__name__}"
                 by_name = {}
     # (G). After the re-rank and before the floor and the cut to k.
-    lines, trust_note = _apply_trust(lines, environ, by_name, cache, sid, event)
+    lines, trust_note = _apply_trust(
+        lines, environ, by_name, "" if diagnostic is not None else cache, sid, event
+    )
     note += trust_note
     if floor is not None and keyword:
         # Design doc section 8.4: no cosine, so no floor can judge a row.
@@ -3311,6 +3337,7 @@ def _serve_index(
         # row under the floor gives its place to the next one that passes.
         ranked = len(lines)
         lines, unscored = floor_index(lines, floor)
+        trace("relevance_floor", lines)
         note += f":floor{len(lines)}of{ranked}"
         if unscored:
             note += f":unscored{unscored}"
@@ -3321,6 +3348,7 @@ def _serve_index(
         # annotation after the cut then only counts.
         annotate_index(lines, by_name)
         lines, no_rule = drop_no_rule_index(lines)
+        trace("missing_rule", lines)
         note += f":norule_drop{no_rule}"
     elif drop_asked:
         note += ":drop_no_rule_off:no_rule_rows"
@@ -3329,6 +3357,7 @@ def _serve_index(
         # rank, and the APPLY tier that belongs to a rank, follow the rows that
         # are shown.
         lines = renumber(lines[:k])
+        trace("top_k", lines)
     if local:
         if rule_rows:
             # F1. After the cut to k, because only these rows are rendered and
@@ -3358,6 +3387,7 @@ def _serve_index(
             # NOT renumbered: a tier belongs to a rank (see DP-6 below), so a
             # row that was rank 14 carries no block because 13 rows left.
             lines = fresh
+            trace("session_row_dedupe", lines)
     shown_on = bool(tiers) and shown_set_on(environ)
     if shown_on:
         # DP-6 (W8). The block's text is already in the conversation, so it is
@@ -3392,6 +3422,17 @@ def _serve_index(
         # neither did a row whose block did not fit.
         carried = [ln.title for ln in with_block]
         note += f":apply{len(carried)}of{apply_k(tiers)}"
+    if diagnostic is not None:
+        trace("character_cap", shown)
+        ranks = {ln.mid: ln.rank for ln in shown}
+        blocks = {ln.mid for ln in with_block}
+        for row in diagnostic["candidates"]:
+            if row["decision"] == "candidate":
+                row["decision"] = "shown"
+                row["rank"] = ranks[row["id"]]
+                row["apply_block"] = row["id"] in blocks
+        diagnostic.update({"notes": note, "characters": len(text), "shown": len(shown)})
+        return  # no emit, logs, cache, dedupe state, pruning or feedback writes
     chars = emit(event, text, stdout)
     if rule_rows:
         # F3. The rows the model can now see by number. Written AFTER the emit,

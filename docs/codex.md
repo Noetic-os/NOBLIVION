@@ -256,6 +256,7 @@ paths. Review changed hooks in Codex CLI with `/hooks`. Start a new Codex
 task to load the new MCP server and hooks.
 
 For a store failure, run the NOBLIVION `doctor` command from the store venv
+(see [diagnostic commands and recall explanations](diagnostics.md))
 and read [troubleshooting.md](troubleshooting.md). Check the data folder
 first: two data folders mean two databases. Check the namespace and memory
 folder next. The store accepts only loopback connections on its host.
