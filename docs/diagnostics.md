@@ -2,11 +2,12 @@
 
 # Diagnose memory and explain recall
 
-Use the store environment from the same installed plugin revision as the hooks:
+Activate the installed store virtual environment from the same plugin revision
+as the hooks, then run:
 
 ```sh
-~/.noblivion/venv/bin/python -m noblivion doctor --json --root YOUR_ROOT
-~/.noblivion/venv/bin/python -m noblivion explain 'your prompt' --json --root YOUR_ROOT
+python -m noblivion doctor --json --root YOUR_ROOT
+python -m noblivion explain 'your prompt' --json --root YOUR_ROOT
 ```
 
 Set `NOBLIVION_DATA_DIR` or pass `--data-dir` for a non-default store. `--root`
@@ -63,7 +64,7 @@ cannot be inspected. Memory use disabled for the scope returns status 1.
 For scores from an **already running** store, opt in explicitly:
 
 ```sh
-~/.noblivion/venv/bin/python -m noblivion explain 'your prompt' --root YOUR_ROOT --live --json
+python -m noblivion explain 'your prompt' --root YOUR_ROOT --live --json
 ```
 
 `--live` authenticates that store before sending the prompt and may call its
