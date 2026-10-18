@@ -105,6 +105,50 @@ def load_manifest(path: Path = MANIFEST) -> tuple[dict, dict[str, Path]]:
     return manifest, paths
 
 
+def cleanup_runner(process: subprocess.Popen) -> dict:
+    """Stop the owned child and report any unconfirmed process-group cleanup."""
+    result = {
+        "group_signal_denied": False,
+        "child_signal_denied": False,
+        "child_reaped": False,
+        "errors": [],
+    }
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            result["group_signal_denied"] = True
+    # A group signal may be refused or race with exit. The owned child still
+    # needs a separate, bounded kill/reap attempt before its pipes are closed.
+    if process.poll() is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            result["child_signal_denied"] = True
+    try:
+        process.wait(timeout=1.0)
+        result["child_reaped"] = True
+    except subprocess.TimeoutExpired:
+        result["errors"].append("owned_child_not_reaped")
+    if result["group_signal_denied"]:
+        # Darwin can refuse a signal to an exiting group. Only absence after
+        # reaping resolves that refusal; a surviving or inaccessible group
+        # must not be reported as successfully terminated.
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            result["errors"].append("process_group_cleanup_unconfirmed")
+        else:
+            result["errors"].append("process_group_cleanup_unconfirmed")
+    return result
+
+
 def run_bounded(argv: list[str], request: bytes, cwd: Path, limits: dict) -> dict:
     """One invocation. Cap pipe bytes and wall time; kill descendants on POSIX.
 
@@ -185,15 +229,10 @@ def run_bounded(argv: list[str], request: bytes, cwd: Path, limits: dict) -> dic
     finally:
         # Also remove descendants that retained no pipes after their parent exited.
         try:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGKILL)
-            elif process.poll() is None:
-                process.kill()
-        except ProcessLookupError:
-            pass
-        process.wait()
-        for pipe in (process.stdin, process.stdout, process.stderr):
-            pipe.close()
+            cleanup = cleanup_runner(process)
+        finally:
+            for pipe in (process.stdin, process.stdout, process.stderr):
+                pipe.close()
     usage = None
     if status == "ok":
         if process.returncode != 0:
@@ -210,8 +249,13 @@ def run_bounded(argv: list[str], request: bytes, cwd: Path, limits: dict) -> dic
                     raise ValueError("missing invocation usage")
             except (ValueError, KeyError, TypeError):
                 status, usage = "invalid_usage", None
+    runner_status = status
+    if cleanup["errors"]:
+        status, usage = "cleanup_error", None
     return {
         "status": status,
+        "runner_status": runner_status,
+        "cleanup": cleanup,
         "returncode": process.returncode,
         "seconds": round(time.monotonic() - started, 6),
         "stdout_bytes": len(streams["stdout"]),
@@ -278,6 +322,7 @@ def replay(manifest_path: Path, argv: list[str]) -> dict:
     if not argv or not Path(argv[0]).is_absolute():
         raise ValueError("runner executable must be an absolute path; arguments are a list")
     rows, seen = [], set()
+    aborted = None
     for index, task in enumerate(tasks["tasks"]):
         if task["id"] in seen:
             raise ValueError("duplicate task id")
@@ -303,20 +348,37 @@ def replay(manifest_path: Path, argv: list[str]) -> dict:
                     }
                 ).encode()
                 result = run_bounded(argv, request, root, limits)
-                observation = observe(
-                    root,
-                    task["expected_files"],
-                    limits["artifact_bytes"],
-                    task.get("absent_files", ()),
-                )
+                if result["status"] == "cleanup_error":
+                    # Do not inspect task files or start another runner while
+                    # this invocation may still have a live child or group.
+                    aborted = "cleanup_error"
+                    observation = {"files": {}, "passed": False}
+                else:
+                    observation = observe(
+                        root,
+                        task["expected_files"],
+                        limits["artifact_bytes"],
+                        task.get("absent_files", ()),
+                    )
                 row["arms"][arm] = {
                     **result,
                     "observation": observation,
                     "passed": result["status"] == "ok" and observation["passed"],
                 }
+            if aborted:
+                break
         rows.append(row)
-    passed = {arm: sum(row["arms"][arm]["passed"] for row in rows) for arm in ("off", "on")}
-    valid = [row for row in rows if all(row["arms"][a]["status"] == "ok" for a in ("off", "on"))]
+        if aborted:
+            break
+    passed = {
+        arm: sum(row["arms"].get(arm, {}).get("passed", False) for row in rows)
+        for arm in ("off", "on")
+    }
+    valid = [
+        row
+        for row in rows
+        if all(row["arms"].get(arm, {}).get("status") == "ok" for arm in ("off", "on"))
+    ]
     difference = sum(
         int(row["arms"]["on"]["passed"]) - int(row["arms"]["off"]["passed"]) for row in valid
     )
@@ -333,6 +395,9 @@ def replay(manifest_path: Path, argv: list[str]) -> dict:
             "identity_note": "Executable hash only; dependencies and arguments are not archived.",
         },
         "sample_size": len(rows),
+        "planned_sample_size": len(tasks["tasks"]),
+        "not_run_tasks": len(tasks["tasks"]) - len(rows),
+        "aborted": aborted,
         "valid_pairs": len(valid),
         "invalid_pairs": len(rows) - len(valid),
         "passed": passed,
