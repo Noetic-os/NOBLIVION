@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Add safe Codex integration removal and respect `CODEX_HOME` during installation and removal.
+
 ## 0.1.15 - 2026-10-14
 
 ### Added
