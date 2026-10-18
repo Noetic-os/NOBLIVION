@@ -64,14 +64,19 @@ done
 if [ -z "$DATA_DIR" ]; then
     DATA_DIR="${NOBLIVION_DATA_DIR:-${CLAUDE_PLUGIN_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/noblivion}}"
 fi
+# Refuse an existing invalid store target before changing Codex settings.
+if [ -e "$DATA_DIR" ] || [ -L "$DATA_DIR" ]; then
+    [ -d "$DATA_DIR" ] || die "$DATA_DIR is not a NOBLIVION data dir; nothing removed"
+    [ -e "$DATA_DIR/venv" ] || [ -e "$DATA_DIR/store.json" ] || [ -e "$DATA_DIR/noblivion.db" ] \
+        || die "$DATA_DIR does not look like a NOBLIVION data dir; nothing removed"
+fi
+
 # Detach Codex before removing runtime files, even if the data dir is gone.
 CODEX_ARGS=(--uninstall --codex-home "$CODEX_CONFIG_DIR")
 if [ "$DRY_RUN" = 1 ]; then CODEX_ARGS+=(--dry-run); fi
 python3 "$(dirname "${BASH_SOURCE[0]}")/install_codex.py" "${CODEX_ARGS[@]}"
 
 [ -d "$DATA_DIR" ] || { printf 'noblivion uninstall: no data dir at %s\n' "$DATA_DIR"; exit 0; }
-[ -e "$DATA_DIR/venv" ] || [ -e "$DATA_DIR/store.json" ] || [ -e "$DATA_DIR/noblivion.db" ] \
-    || die "$DATA_DIR does not look like a NOBLIVION data dir; nothing removed"
 
 # Stop the store and wait for it to exit (NOBLIVION-28): a store that still
 # stops after this script ends could write in the data dir after Claude Code
