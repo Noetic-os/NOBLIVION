@@ -195,6 +195,146 @@ def test_subprocess_limits_and_protocol(replay, tmp_path, code, expected):
     assert result["seconds"] < 2
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group signals")
+@pytest.mark.parametrize("exited", [False, True])
+def test_group_signal_refusal_still_reaps_owned_child(replay, tmp_path, monkeypatch, exited):
+    manifest, _ = replay.load_manifest()
+    processes = []
+    popen, killpg = replay.subprocess.Popen, replay.os.killpg
+
+    def record_process(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    def deny_group_signal(pid, sig):
+        if sig == replay.signal.SIGKILL:
+            raise PermissionError("simulated group signal refusal")
+        return killpg(pid, sig)
+
+    monkeypatch.setattr(replay.subprocess, "Popen", record_process)
+    monkeypatch.setattr(replay.os, "killpg", deny_group_signal)
+    code = (
+        'print(\'{"usage":{"iterations":1,"input_tokens":0,"output_tokens":0}}\')'
+        if exited
+        else "import sys,time;sys.stderr.write('x'*20000);sys.stderr.flush();time.sleep(10)"
+    )
+    try:
+        result = replay.run_bounded(
+            [sys.executable, "-c", code], b"{}", tmp_path, manifest["limits"]
+        )
+        assert result["status"] == ("ok" if exited else "output_limit")
+        assert result["cleanup"]["group_signal_denied"] is True
+        assert result["cleanup"]["child_reaped"] is True
+        assert result["cleanup"]["errors"] == []
+        assert processes[0].poll() is not None
+        assert all(
+            pipe.closed for pipe in (processes[0].stdin, processes[0].stdout, processes[0].stderr)
+        )
+    finally:
+        # The regression also runs against old code, where refusal escaped
+        # before reaping. Keep that intentionally failing probe self-cleaning.
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=1.0)
+            for pipe in (process.stdin, process.stdout, process.stderr):
+                pipe.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group signals")
+@pytest.mark.parametrize("inaccessible", [False, True])
+def test_unconfirmed_group_cleanup_cannot_report_success(
+    replay, tmp_path, monkeypatch, inaccessible
+):
+    manifest, _ = replay.load_manifest()
+
+    def deny_or_find_group(pid, sig):
+        if sig == replay.signal.SIGKILL or inaccessible:
+            raise PermissionError("simulated surviving or inaccessible group")
+        assert sig == 0  # A group still exists after the owned child was reaped.
+
+    monkeypatch.setattr(replay.os, "killpg", deny_or_find_group)
+    code = 'print(\'{"usage":{"iterations":1,"input_tokens":0,"output_tokens":0}}\')'
+    result = replay.run_bounded([sys.executable, "-c", code], b"{}", tmp_path, manifest["limits"])
+    assert result["status"] == "cleanup_error"
+    assert result["runner_status"] == "ok"
+    assert result["usage"] is None
+    assert result["cleanup"]["child_reaped"] is True
+    assert result["cleanup"]["errors"] == ["process_group_cleanup_unconfirmed"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group signals")
+@pytest.mark.parametrize("unreapable", [False, True])
+def test_owned_child_cleanup_race_and_bounded_reap(replay, monkeypatch, unreapable):
+    class Process:
+        pid = 123
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            if unreapable:
+                raise PermissionError("simulated child signal refusal")
+            raise ProcessLookupError("child exited before direct kill")
+
+        def wait(self, *, timeout):
+            assert timeout == 1.0
+            if unreapable:
+                raise replay.subprocess.TimeoutExpired("synthetic runner", timeout)
+            return -9
+
+    def missing_group(pid, sig):
+        raise ProcessLookupError("group already exited")
+
+    monkeypatch.setattr(replay.os, "killpg", missing_group)
+    result = replay.cleanup_runner(Process())
+    assert result["child_reaped"] is not unreapable
+    assert result["child_signal_denied"] is unreapable
+    assert result["errors"] == (["owned_child_not_reaped"] if unreapable else [])
+
+
+@pytest.mark.parametrize("failed_invocation", [1, 2])
+def test_cleanup_failure_stops_replay_before_next_arm_or_task(
+    replay, monkeypatch, failed_invocation
+):
+    invocations, observations = [], []
+
+    def run(argv, request, root, limits):
+        invocations.append(json.loads(request)["task_id"])
+        if len(invocations) == failed_invocation:
+            return {
+                "status": "cleanup_error",
+                "runner_status": "timeout",
+                "usage": None,
+                "cleanup": {"child_reaped": False, "errors": ["owned_child_not_reaped"]},
+            }
+        return {"status": "ok", "usage": {"iterations": 1, "input_tokens": 0, "output_tokens": 0}}
+
+    def observe(*args):
+        observations.append(True)
+        return {"files": {}, "passed": True}
+
+    monkeypatch.setattr(replay, "run_bounded", run)
+    monkeypatch.setattr(replay, "observe", observe)
+    report = replay.replay(replay.MANIFEST, [sys.executable])
+    assert len(invocations) == failed_invocation
+    assert len(observations) == failed_invocation - 1
+    assert report["aborted"] == "cleanup_error"
+    assert report["sample_size"] == report["invalid_pairs"] == 1
+    assert report["planned_sample_size"] == 3
+    assert report["not_run_tasks"] == 2
+    assert report["valid_pairs"] == 0
+    assert report["paired_pass_rate_difference"] is None
+    arms = report["tasks"][0]["arms"]
+    assert len(arms) == failed_invocation
+    failed_arm = list(arms.values())[-1]
+    assert failed_arm["runner_status"] == "timeout"
+    assert failed_arm["usage"] is None
+    assert failed_arm["passed"] is False
+    assert failed_arm["observation"] == {"files": {}, "passed": False}
+
+
 def test_input_limit_prevents_spawn(replay, tmp_path):
     manifest, _ = replay.load_manifest()
     result = replay.run_bounded(["/does/not/exist"], b"x" * 17000, tmp_path, manifest["limits"])
