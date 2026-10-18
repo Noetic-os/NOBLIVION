@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Keep deny rules active during concurrent guard rebuilds, resume interrupted regex checks, and show skipped-rule warnings in Codex.
+
 ## 0.1.15 - 2026-10-14
 
 ### Added

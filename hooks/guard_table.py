@@ -69,6 +69,7 @@ No daemon call, no network. Standard library only.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -78,6 +79,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from re import Pattern
 from typing import Any, Dict, List, Optional, Tuple
@@ -389,17 +391,42 @@ def _write_probes(table: Path, probes: Dict[str, float], old: Dict[str, float]) 
         pass
 
 
-def rebuild(folder: Any = None, out: Optional[Path] = None) -> Dict[str, Any]:
-    """Build the table for ``folder`` (one folder or a list, default
-    ``source_dirs()``) and write it to ``out`` (default the table of the
-    first folder, ``table_path``). Returns the table.
+@contextmanager
+def rebuild_lock(path: Path, *, blocking: bool = True):
+    """Serialize table builds and late-state decisions across hook processes."""
+    _make_dirs(path.parent)
+    with path.with_name(path.name + ".lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
-    The build times every ``violates`` and ``complies`` regex in a child
-    process (``memory_fields.regex_too_slow``, about 10 ms each). The time of
-    a probe that passed is kept in ``probes_path(out)``, so the next build
-    times only a new or changed regex. A build that is cut off (the time
-    limit of the guard hook) keeps the times it measured: the next build goes
-    on from there."""
+
+def rebuild(
+    folder: Any = None, out: Optional[Path] = None, *, _locked: bool = False
+) -> Dict[str, Any]:
+    """Build and atomically write a table under its process lock.
+
+    One child measures new regexes, with a separate timeout per regex. Passed
+    measurements survive an interrupted build so the next call can resume.
+    ``_locked`` is for the guard hook, which also checks late state under the lock.
+    """
+    folders = _folders(folder) if folder is not None else source_dirs()
+    if not folders:
+        raise FileNotFoundError("no memory folder")
+    path = Path(out) if out is not None else table_path(folders[0])
+    if _locked:
+        return _rebuild_unlocked(folders, path)
+    with rebuild_lock(path):
+        return _rebuild_unlocked(folders, path)
+
+
+def _rebuild_unlocked(folder: Any, out: Path) -> Dict[str, Any]:
     folders = _folders(folder) if folder is not None else source_dirs()
     if not folders:
         raise FileNotFoundError("no memory folder")
@@ -409,7 +436,8 @@ def rebuild(folder: Any = None, out: Optional[Path] = None) -> Dict[str, Any]:
     new: Dict[str, float] = {}
     mf.PROBE_TIMES = (old, new)
     try:
-        table = build(folders)
+        with mf.RegexProbeBatch():
+            table = build(folders)
     except BaseException:
         _write_probes(path, {**old, **new}, old)
         raise

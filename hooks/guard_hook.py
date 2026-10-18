@@ -17,7 +17,7 @@ sends no Write event), the hook rebuilds it before it reads it
 (NOBLIVION-50; the prompt leg of the label rows reads it as it is). A rebuild
 that runs out of its time (``REBUILD_LIMIT_S``) leaves the table of the last
 build in force and tells the user once per change of the folder
-(``_rebuild``). A table named by ``NOBLIVION_GUARD_TABLE`` is read as it is.
+(``_rebuild``). An explicit table path follows the configured source folders too.
 No daemon call, no network.
 
 Bash
@@ -273,11 +273,8 @@ ROWS_FULL_SESSION_CHARS = (
 LOG_TEXT_CHARS = 300
 STATE_MAX_AGE_S = 7 * 24 * 3600
 TIME_LIMIT_S = 1.5
-# A rebuild of the table (``table_file``) has its own limit: the build times
-# each new or changed ``violates`` regex in a child process
-# (``memory_fields.regex_too_slow``, about 10 ms each; ``guard_table.rebuild``
-# keeps the times), so a first build does not fit in ``TIME_LIMIT_S`` from
-# about 150 rules. The hook is registered with a timeout of 10 s.
+# Table builds reuse one child for new regex probes and keep passed timings.
+# The hook is registered with a timeout of 10 s; its rebuild has a separate budget.
 REBUILD_LIMIT_S = 6.0
 DENY_TOOLS = ("Bash", "Read", "Grep")  # a ``violates`` rule or the credential guard can deny
 TIMEOUT_LINE = (
@@ -285,15 +282,13 @@ TIMEOUT_LINE = (
 )
 # A rebuild of the table that ran out of ``REBUILD_LIMIT_S``: one line for the
 # user per change of the memory folder. The stamp of the folder goes to the
-# file ``<table>.late``, so the same state of the folder is not built again.
+# file ``<table>.late`` only when no new probes passed, to avoid repeated stalls.
 REBUILD_LATE_LINE = (
     "NOBLIVION: a memory file changed, and the deny rules could not be read again in time. "
-    "The rules from before the change stay in force until a memory file changes again "
-    "or a new session starts."
+    "The rules from before the change stay in force."
 )
 REBUILD_NONE_LINE = (
-    "NOBLIVION: the deny rules could not be read in time, so no deny rule is checked "
-    "until a memory file changes or a new session starts."
+    "NOBLIVION: the deny rules could not be read in time, so no deny rule is checked for this call."
 )
 LATE_SUFFIX = ".late"
 ROWS_SESSION_CHARS = 6000
@@ -423,13 +418,9 @@ def table_file(
     of ``cwd``. A missing table of an existing folder is built here once,
     fail open (a SessionStart that ran before the folder existed). With
     ``fresh`` (the guard's own legs) a stale table is rebuilt too: a memory
-    file changed since the build, by any means (NOBLIVION-50). A table named
-    by ``NOBLIVION_GUARD_TABLE`` is read as it is: one file for every project
-    has no one folder to follow. ``notes`` gets a line for the user when the
-    rebuild ran out of time (``_rebuild``)."""
-    raw = env.get("NOBLIVION_GUARD_TABLE")
-    if raw:
-        return Path(raw).expanduser()
+    file changed since the build, by any means. An explicit table path follows
+    the configured source folders too. ``notes`` reports rebuild failures and
+    skipped rules."""
     gt = _gt()
     folders = gt.source_dirs(cwd, env)
     path = gt.table_path(folders[0] if folders else None, env)
@@ -443,17 +434,24 @@ def table_file(
 
 
 def _rebuild(gt: Any, folders: List[Path], path: Path, notes: Optional[List[str]] = None) -> None:
-    """``gt.rebuild`` inside ``REBUILD_LIMIT_S``. The time limit of the call
-    waits and goes on with the time it had left, so a slow rebuild does not
-    turn the deny check off.
+    """Keep checking the previous table while another process builds its replacement."""
+    with gt.rebuild_lock(path, blocking=False) as acquired:
+        if not acquired:
+            if notes is not None and not path.is_file():
+                notes.append(
+                    "NOBLIVION: another call is building the deny-rule table, so no deny rule "
+                    "is checked for this call."
+                )
+            return
+        if not gt.stale(folders, path):
+            return  # another hook completed the build while this call waited
+        _rebuild_locked(gt, folders, path, notes)
 
-    A rebuild that runs out of its time changes nothing: the table of the
-    last build stays in force, and the call goes on with it. ``notes`` then
-    gets one line for the user, and the stamp of the folder goes to the file
-    ``<table>.late``. While the folder keeps that stamp, no call builds it or
-    prints the line again: without the file every call would wait
-    ``REBUILD_LIMIT_S`` for the same result. A caller with no ``notes`` writes
-    no file, so a later call tries again and tells the user."""
+
+def _rebuild_locked(
+    gt: Any, folders: List[Path], path: Path, notes: Optional[List[str]] = None
+) -> None:
+    """Bound the build separately; retry unchanged folders when probes made progress."""
     late = path.with_name(path.name + LATE_SUFFIX)
     stamp = gt.folder_stamp(folders)
     try:
@@ -461,6 +459,7 @@ def _rebuild(gt: Any, folders: List[Path], path: Path, notes: Optional[List[str]
             return
     except (OSError, ValueError):
         pass
+    probes_before = gt._read_probes(gt.probes_path(path))
     left = 0.0
     try:
         left = signal.getitimer(signal.ITIMER_REAL)[0]
@@ -470,7 +469,11 @@ def _rebuild(gt: Any, folders: List[Path], path: Path, notes: Optional[List[str]
         left = 0.0
     done = False
     try:
-        gt.rebuild(folders, path)
+        table = gt.rebuild(folders, path, _locked=True)
+        if notes is not None:
+            line = gt.skipped_line(table)
+            if line:
+                notes.append(line)
         done = True
     except _TimeUp:
         if left <= 0:
@@ -478,8 +481,13 @@ def _rebuild(gt: Any, folders: List[Path], path: Path, notes: Optional[List[str]
         if notes is not None:  # no alarm is set here: the file is written before the call goes on
             notes.append(REBUILD_LATE_LINE if path.is_file() else REBUILD_NONE_LINE)
             try:
-                _make_dirs(late.parent)
-                late.write_text(stamp, encoding="utf-8")
+                if gt._read_probes(gt.probes_path(path)) == probes_before:
+                    _make_dirs(late.parent)
+                    late.write_text(stamp, encoding="utf-8")
+                else:
+                    notes.append(
+                        "Regex checks made progress; the next call retries the remaining checks."
+                    )
             except OSError:
                 pass
     finally:
@@ -1878,7 +1886,7 @@ def main(
             _disarm()
             armed = False
         pending[0] = False
-        out = _with_message(d.out, notes[0]) if notes else d.out
+        out = _with_message(d.out, " ".join(notes)) if notes else d.out
         if out:
             stdout.write(out + "\n")
             stdout.flush()
@@ -1889,7 +1897,7 @@ def main(
             text = d.log_text() if d.log_text is not None else _log_text(event)
             log_line(env, sid, tool, d.log[0], d.log[1], text, agent, **d.extra)
             _trust_use(env, sid, d.log[0], d.log[1])
-        if notes:
+        if any(line in (REBUILD_LATE_LINE, REBUILD_NONE_LINE) for line in notes):
             log_line(env, sid, tool, "error", [], "", agent, error="table rebuild timeout")
     except BaseException as exc:  # noqa: BLE001 - a guard fails open
         if armed:

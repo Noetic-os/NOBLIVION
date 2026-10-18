@@ -1086,38 +1086,38 @@ def test_the_table_stamp_follows_the_memory_files_only(folder, table_file):
 def probes(monkeypatch):
     """The runs of the probe child process (``memory_fields.regex_too_slow``)."""
     mfm = gt._mf()
-    real, runs = mfm.subprocess.run, []
-    monkeypatch.setattr(mfm.subprocess, "run", lambda *a, **k: runs.append(a) or real(*a, **k))
+    real, runs = mfm.subprocess.Popen, []
+    monkeypatch.setattr(mfm.subprocess, "Popen", lambda *a, **k: runs.append(a) or real(*a, **k))
     return runs
 
 
 def test_a_rebuild_times_a_regex_once(folder, table_file, probes):
     first = gt.rebuild(folder)
-    assert len(probes) == 2  # the two rules with ``violates``
+    assert len(probes) == 1  # one child for both regexes
     kept = json.loads(gt.probes_path(table_file).read_text())
     assert len(kept) == 2 and all(
         0 <= secs <= gt._mf().REGEX_PROBE_SECONDS for secs in kept.values()
     )
     # nothing changed, or only the text of a memory: no probe runs
-    assert gt.rebuild(folder)["entries"] == first["entries"] and len(probes) == 2
+    assert gt.rebuild(folder)["entries"] == first["entries"] and len(probes) == 1
     target = folder / "feedback_stash.md"
     target.write_text(target.read_text() + "One more line.\n")
-    assert gt.rebuild(folder)["entries"] == first["entries"] and len(probes) == 2
+    assert gt.rebuild(folder)["entries"] == first["entries"] and len(probes) == 1
     # a new regex, or a new example for the same regex: one probe
     target.write_text(
         memory("feedback_stash", r"^git\s+stash\s+drop\s*$", "git stash drop", "git stash list")
     )
-    assert gt.match("git stash drop", gt.rebuild(folder)) and len(probes) == 3
+    assert gt.match("git stash drop", gt.rebuild(folder)) and len(probes) == 2
     target.write_text(
         memory("feedback_stash", r"^git\s+stash\s+drop\s*$", "git  stash drop", "git stash list")
     )
     gt.rebuild(folder)
-    assert len(probes) == 4
+    assert len(probes) == 3
     # the file holds the probes of this build only
     assert len(json.loads(gt.probes_path(table_file).read_text())) == 2
     target.unlink()
     gt.rebuild(folder)
-    assert len(json.loads(gt.probes_path(table_file).read_text())) == 1 and len(probes) == 4
+    assert len(json.loads(gt.probes_path(table_file).read_text())) == 1 and len(probes) == 3
 
 
 def test_a_missing_or_broken_probe_file_is_only_slower(folder, table_file, probes):
@@ -1128,7 +1128,7 @@ def test_a_missing_or_broken_probe_file_is_only_slower(folder, table_file, probe
         else:
             gt.probes_path(table_file).write_text(text)
         n = len(probes)
-        assert gt.rebuild(folder)["entries"] == table["entries"] and len(probes) == n + 2
+        assert gt.rebuild(folder)["entries"] == table["entries"] and len(probes) == n + 1
         assert len(json.loads(gt.probes_path(table_file).read_text())) == 2
 
 
@@ -1137,11 +1137,11 @@ def test_a_slow_regex_is_timed_again_at_each_build(folder, table_file, probes, m
     measured again, and the rule can come back."""
     monkeypatch.setattr(gt._mf(), "REGEX_PROBE_SECONDS", -1.0)  # every probe is too slow
     table = gt.rebuild(folder)
-    assert len(probes) == 2 and len(table["skipped"]) == 2
+    assert len(probes) == 1 and len(table["skipped"]) == 2
     assert not gt.probes_path(table_file).exists()
     monkeypatch.setattr(gt._mf(), "REGEX_PROBE_SECONDS", 0.25)
     table = gt.rebuild(folder)
-    assert len(probes) == 4 and not table["skipped"] and gt.match("git stash pop", table)
+    assert len(probes) == 2 and not table["skipped"] and gt.match("git stash pop", table)
 
 
 def test_a_build_that_is_cut_off_keeps_its_probe_times(folder, table_file, probes, monkeypatch):
@@ -1158,7 +1158,7 @@ def test_a_build_that_is_cut_off_keeps_its_probe_times(folder, table_file, probe
         )
     (folder / "feedback_more_3.md").unlink()
     gt.rebuild(folder)
-    assert len(probes) == 5
+    assert len(probes) == 1
     before = table_file.read_text()
     (folder / "feedback_more_3.md").write_text(
         memory("feedback_more_3", r"^git\s+stash\s+w3\s*$", "git stash w3", "git stash list")
@@ -1167,24 +1167,28 @@ def test_a_build_that_is_cut_off_keeps_its_probe_times(folder, table_file, probe
         memory("feedback_more_4", r"^git\s+stash\s+w4\s*$", "git stash w4", "git stash list")
     )
     mfm = gt._mf()
-    run = mfm.subprocess.run
+    run = mfm.RegexProbeBatch.run
+    measured = []
 
     class Cut(BaseException):
         pass
 
-    def cut(*a, **k):
-        if len(probes) == 6:  # one new probe is done, the second one is cut off
+    def cut(self, payload):
+        if len(measured) == 1:  # one new probe passed, the second is cut off
             raise Cut()
-        return run(*a, **k)
+        result = run(self, payload)
+        measured.append(payload)
+        return result
 
-    monkeypatch.setattr(mfm.subprocess, "run", cut)
+    monkeypatch.setattr(mfm.RegexProbeBatch, "run", cut)
     with pytest.raises(Cut):
         gt.rebuild(folder)
     assert table_file.read_text() == before and mfm.PROBE_TIMES is None
+    assert mfm._PROBE_BATCH is None
     assert len(json.loads(gt.probes_path(table_file).read_text())) == 6
-    monkeypatch.setattr(mfm.subprocess, "run", run)
+    monkeypatch.setattr(mfm.RegexProbeBatch, "run", run)
     table = gt.rebuild(folder)
-    assert len(probes) == 7  # only the probe that was cut off
+    assert len(probes) == 3  # one child for each of the three builds
     assert gt.match("git stash w3", table) and gt.match("git stash w4", table)
 
 
@@ -1247,3 +1251,34 @@ def test_the_stamp_of_200_memory_files_is_cheap(tmp_path):
         gt.folder_stamp(mem)
         best = min(best, time.perf_counter() - t0)
     assert best < 0.05
+
+
+def test_a_cold_build_of_650_rules_uses_one_probe_child(tmp_path, probes):
+    folder = tmp_path / "mem"
+    folder.mkdir()
+    for i in range(650):
+        (folder / f"feedback_rule{i}.md").write_text(
+            memory(
+                f"feedback_rule{i}",
+                rf"^synthetic-cli\s+action{i}\s*$",
+                f"synthetic-cli action{i}",
+                "synthetic-cli inspect",
+                trigger="synthetic-cli",
+            )
+        )
+    table = gt.rebuild(folder, tmp_path / "table.json")
+    assert len(probes) == 1
+    assert len(table["entries"]) == 650 and not table["skipped"]
+    assert gt.match("synthetic-cli action649", table)
+
+
+def test_a_timed_out_batch_probe_is_killed_and_the_next_regex_runs(monkeypatch):
+    mf = gt._mf()
+    monkeypatch.setattr(mf, "REGEX_PROBE_KILL", 0.1)
+    with mf.RegexProbeBatch() as batch:
+        # Deliberately exercise only the isolated regex child, never a tool command.
+        assert "runs longer" in mf.regex_too_slow(r"(a+)+$", "a" * 100 + "!")
+        assert batch.child is None
+        assert mf.regex_too_slow(STASH, "git stash pop") == ""
+        child = batch.child
+    assert child.poll() is not None and mf._PROBE_BATCH is None
