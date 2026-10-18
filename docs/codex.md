@@ -55,6 +55,10 @@ same host as both clients. The clients must run as the same operating system use
    scan indexes the note. The default scan interval is 30 seconds. Check
    that Claude Code can then find the note.
 
+The installer uses `$CODEX_HOME` when it is set, else `~/.codex`.
+Give `--codex-home /absolute/codex/config` to select a different folder.
+The explicit option takes precedence over the environment variable.
+
 The installer adds hooks for the selected workspace and its Git worktrees.
 Give `--workspace` again for each separate repository you want. A later
 install replaces the installer's workspace list, so pass the full list
@@ -255,3 +259,25 @@ For a store failure, run the NOBLIVION `doctor` command from the store venv
 and read [troubleshooting.md](troubleshooting.md). Check the data folder
 first: two data folders mean two databases. Check the namespace and memory
 folder next. The store accepts only loopback connections on its host.
+
+## Remove the Codex integration
+
+Run this before deleting the checkout:
+
+```sh
+python3 scripts/install_codex.py --uninstall
+```
+
+Use the same `--codex-home` as for installation, or keep `$CODEX_HOME` set.
+Add `--dry-run` to preview the change. No store or memory folder is needed.
+The command removes the adapter hooks and the managed NOBLIVION MCP section.
+It keeps other hooks, hook trust state and other MCP servers, including user
+sections inside the managed block. It backs up changed files and retains
+`noblivion/config.json`, state and existing backups for a later install.
+It refuses compound or custom adapter commands so it cannot remove an independent
+guard in the same command. Review those commands manually before removal.
+It leaves an unmarked, manually configured MCP section unchanged. Remove a
+custom remote bridge's hooks and MCP entry manually from the same Codex folder.
+
+`scripts/uninstall.sh` also removes the managed Codex integration before it
+removes the store runtime. See [install.md](install.md#uninstall).
