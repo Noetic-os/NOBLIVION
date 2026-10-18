@@ -590,7 +590,7 @@ wheels = [
 
 [[package]]
 name = "noblivion"
-version = "0.1.15"
+version = "0.1.16"
 source = { editable = "." }
 
 [package.optional-dependencies]
