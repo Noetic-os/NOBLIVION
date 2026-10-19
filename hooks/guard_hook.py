@@ -1631,6 +1631,8 @@ def plan_act(
     the memory has ``complies``) matches it. Ask: every hit is marked
     ``on_violation: ask``."""
     plan = ActPlan()
+    if not any(h.get("rewrite") or h.get("on_violation") for h in hits):
+        return plan  # a rule without the new fields: nothing is read, nothing is logged
     live_rw, live_ask, shadow = rewrite_on(env), ask_on(env), act_shadow(env)
     if not (live_rw or live_ask or shadow):
         return plan
