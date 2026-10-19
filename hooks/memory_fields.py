@@ -22,7 +22,9 @@ carries, LAST in its front matter and in this fixed order:
   rewrite:         a JSON string in the closed grammar of ``guard_rewrite``
                    (``add-flag <flag> after <prefix>``),
                    optional, only with violates (NOBLIVION-122). Off unless the
-                   guard switch NOBLIVION_GUARD_REWRITE is on.
+                   guard switch NOBLIVION_GUARD_REWRITE is on. A note with
+                   ``rewrite`` is a rewrite note, not a deny note: it never adds a
+                   deny while the rewrite settings are off.
   on_violation:    ``deny`` (the default) or ``ask``, optional, only with
                    violates (NOBLIVION-122). ``ask`` turns the deny of this
                    memory into a question to the user when the guard switch
@@ -921,6 +923,22 @@ def on_violation_problems(fields: Dict[str, object]) -> List[str]:
         return [f"on_violation {value!r} is not one of deny, ask"]
     if not fields.get("violates"):
         return ["on_violation is allowed only with violates"]
+    return []
+
+
+REWRITE_DENY_WARNING = (
+    "rewrite and on_violation: deny disagree. A note with rewrite is a rewrite note: "
+    "it does not deny while the rewrite settings are off. on_violation: deny makes this "
+    "note deny anyway, and the rewrite acts only when guard.rewrite is on. Remove "
+    "rewrite for a deny note, or remove on_violation: deny for a rewrite note"
+)
+
+
+def rewrite_warnings(fields: Dict[str, object]) -> List[str]:
+    """Warnings (not problems) of a note that carries ``rewrite`` and a deny-only
+    field (NOBLIVION-122). Nothing here switches a guard off."""
+    if fields.get("rewrite") and fields.get("on_violation") == "deny":
+        return [REWRITE_DENY_WARNING]
     return []
 
 

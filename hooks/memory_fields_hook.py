@@ -171,10 +171,17 @@ def run(stdin_text: str) -> str:
     if mf is None:
         return ""
     text = path.read_text(encoding="utf-8", errors="replace")
-    problems = mf.check_fields(mf.read_fields(text), kind)
+    fields = mf.read_fields(text)
+    problems = mf.check_fields(fields, kind)
     nested = mf.nested_keys(text)
+    warnings = getattr(mf, "rewrite_warnings", lambda f: [])(fields)  # NOBLIVION-122
     if not problems and not nested:
-        return ""
+        if not warnings:
+            return ""
+        msg = f"Memory file {path.name} has a warning: " + "; ".join(warnings) + "."
+        return json.dumps(
+            {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": msg}}
+        )
     msg = message(mf, path.name, kind, problems, nested)
     return json.dumps(
         {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": msg}}

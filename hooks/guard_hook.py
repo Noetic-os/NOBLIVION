@@ -35,8 +35,11 @@ Bash
     the call is allowed or asked with ``updatedInput`` (the command in the shape of
     the rule); when ``NOBLIVION_GUARD_ASK`` is on and every hit is marked
     ``on_violation: ask``, the call is asked with the rule as the reason.
-    ``NOBLIVION_GUARD_ACT_SHADOW`` logs ``would-rewrite`` and ``would-ask`` and
-    denies as before. Any doubt or error keeps the deny. See docs/guards.md.
+    ``NOBLIVION_GUARD_ACT_SHADOW`` logs ``would-rewrite`` and ``would-ask``. A note
+    with a valid ``rewrite`` is a rewrite note, not a deny note: it never adds a
+    deny (``is_rewrite_note``); when no switch acts the call runs unchanged. A
+    note without ``rewrite`` denies as before, and an error keeps the deny. See
+    docs/guards.md.
   * No budget (WI-3c). Every hit is denied, at any count. The old budget (2
     denies, then allow) let a stubborn retry through: arm G trap t06, runs s2
     and s7 (RESULT-G.md). The deny count per memory id per agent of a session
@@ -1613,7 +1616,19 @@ class ActPlan:
 
     def __init__(self) -> None:
         self.final: Optional[Decision] = None
+        # True: the deny does not stand and the call runs unchanged (a rewrite
+        # note that could not act, NOBLIVION-122).
+        self.allow: bool = False
         self.also: List[Tuple[str, List[str], Dict[str, object]]] = []
+
+
+def is_rewrite_note(hit: Mapping[str, object]) -> bool:
+    """A note with a valid ``rewrite`` (the table drops a bad one) and no explicit
+    ``on_violation: deny``. It is a rewrite note, not a deny note: when the
+    rewrite cannot act it asks (``on_violation`` ask is its default) or lets the
+    call run, and it never denies. A note that says ``on_violation: deny``
+    keeps the deny."""
+    return bool(hit.get("rewrite")) and hit.get("on_violation") != "deny"
 
 
 def plan_act(
@@ -1629,12 +1644,20 @@ def plan_act(
     Rewrite: exactly one hit, that memory carries a valid ``rewrite``, the
     rewrite applies, and the new command hits no ``violates`` rule and (when
     the memory has ``complies``) matches it. Ask: every hit is marked
-    ``on_violation: ask``."""
+    ``on_violation: ask``.
+
+    A hit set that holds only rewrite notes (``is_rewrite_note``) never ends in
+    a deny: ``plan.allow`` is set when no rewrite and no ask took the call (the
+    switches are off, shadow only, the rewrite cannot be made and ask is off).
+    A hit set with a note that has no ``rewrite`` keeps the deny as before. An
+    error keeps the deny."""
     plan = ActPlan()
     if not any(h.get("rewrite") or h.get("on_violation") for h in hits):
         return plan  # a rule without the new fields: nothing is read, nothing is logged
     live_rw, live_ask, shadow = rewrite_on(env), ask_on(env), act_shadow(env)
+    soft = all(is_rewrite_note(h) for h in hits)
     if not (live_rw or live_ask or shadow):
+        plan.allow = soft  # all switches off: the call runs unchanged, nothing is logged
         return plan
     ids = [str(h.get("id", "")) for h in hits]
     try:
@@ -1673,7 +1696,11 @@ def plan_act(
                     )
                     return plan
                 plan.also.append(("would-rewrite", ids, {"kind": kind, "perm": perm}))
-        asks = [h for h in hits if h.get("on_violation") == "ask"]
+                if soft and not live_ask:  # shadow: the rewrite would be made, the call runs
+                    plan.allow = True
+                    return plan
+        # A rewrite note that is not rewritten asks (its default) when ask is on.
+        asks = [h for h in hits if h.get("on_violation") == "ask" or (soft and is_rewrite_note(h))]
         if asks and (live_ask or shadow):
             if len(asks) != len(hits):
                 plan.also.append(("ask-skipped", ids, {"why": "mixed_with_deny"}))
@@ -1686,8 +1713,10 @@ def plan_act(
                 return plan
             else:
                 plan.also.append(("would-ask", ids, {}))
+        plan.allow = soft and plan.final is None
     except Exception as exc:  # noqa: BLE001 - any error keeps the deny
         plan.final = None
+        plan.allow = False
         plan.also.append(("act-error", ids, {"error": type(exc).__name__}))
     return plan
 
@@ -1814,6 +1843,11 @@ def decide(
                     state.close(save=False)  # a rewrite or an ask charges nothing
                     plan.final.also = plan.also
                     return plan.final
+                if plan.allow:  # a rewrite note that did not act: no deny, the call runs
+                    state.close(save=False)
+                    passed = Decision()
+                    passed.also = plan.also
+                    return passed
             shown = sorted(hits, key=lambda h: state.denies.get(str(h["id"]), 0))
             count = state.denies.get(str(shown[0]["id"]), 0) + 1
             run_first = list(dict.fromkeys(str(h["run_first"]) for h in need))
@@ -2068,10 +2102,11 @@ def main(
         told = True
         armed = _arm(time_limit)  # charge and log get their own time limit
         d.commit()
-        if d.log:
+        if d.log or d.also:
             text = d.log_text() if d.log_text is not None else _log_text(event)
-            log_line(env, sid, tool, d.log[0], d.log[1], text, agent, **d.extra)
-            _trust_use(env, sid, d.log[0], d.log[1])
+            if d.log:
+                log_line(env, sid, tool, d.log[0], d.log[1], text, agent, **d.extra)
+                _trust_use(env, sid, d.log[0], d.log[1])
             for dec, dids, dextra in d.also:  # NOBLIVION-122: shadow decisions and skips
                 log_line(env, sid, tool, dec, dids, text, agent, **dextra)
         if any(line in (REBUILD_LATE_LINE, REBUILD_NONE_LINE) for line in notes):

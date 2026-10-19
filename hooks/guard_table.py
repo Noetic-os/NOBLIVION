@@ -251,6 +251,7 @@ def build(folder: Any) -> Dict[str, Any]:
     mf = _mf()
     entries: List[Dict[str, object]] = []
     skipped: List[Dict[str, object]] = []
+    warnings: List[Dict[str, object]] = []
     label_docs: List[Dict[str, object]] = []
     label_error = ""
     for path in _CFG.memory_files(present):
@@ -304,6 +305,8 @@ def build(folder: Any) -> Dict[str, Any]:
                     skipped.append({"id": mem_id, "rewrite": "invalid", "problems": rprobs})
                 else:
                     rewrite = str(fields.get("rewrite") or "")
+                    for w in getattr(mf, "rewrite_warnings", lambda f: [])(fields):
+                        warnings.append({"id": mem_id, "warning": w})
                 if oprobs:
                     skipped.append({"id": mem_id, "on_violation": "invalid", "problems": oprobs})
                 else:
@@ -348,6 +351,8 @@ def build(folder: Any) -> Dict[str, Any]:
         "entries": entries,
         "skipped": skipped,
     }
+    if warnings:  # NOBLIVION-122: a rewrite note that also says deny
+        table["warnings"] = warnings
     if not label_error:
         try:
             table["label_index"] = _ml().build_index(label_docs)
@@ -520,6 +525,12 @@ def skipped_line(table: Mapping[str, Any]) -> str:
         if len(group) > SKIPPED_NAMED:
             named.append(f"and {len(group) - SKIPPED_NAMED} more")
         parts.append(f"{len(group)} {one if len(group) == 1 else many}: " + "; ".join(named))
+    warned = [w for w in table.get("warnings") or [] if isinstance(w, dict)]
+    if warned:  # NOBLIVION-122: a rewrite note with on_violation: deny
+        names = ", ".join(_one_line(w.get("id"), SKIPPED_ID_CHARS) for w in warned[:SKIPPED_NAMED])
+        parts.append(
+            f"{len(warned)} note(s) carry rewrite and on_violation: deny ({names}); they deny"
+        )
     if not parts:
         return ""
     return (
@@ -1491,6 +1502,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 )
                 for s in table["skipped"]:
                     print(f"  skipped {s['id']}: {'; '.join(s['problems'])}")
+                for w in table.get("warnings") or []:
+                    print(f"  warning {w['id']}: {w['warning']}")
             else:
                 line = skipped_line(table)
                 if line:

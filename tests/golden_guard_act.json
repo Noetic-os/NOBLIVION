@@ -1,0 +1,570 @@
+{
+"000": [
+[
+"make clean",
+"0671d95d6472",
+[
+"deny"
+]
+],
+[
+"git remote prune origin",
+"2f95eb9ca583",
+[
+"deny"
+]
+],
+[
+"terraform apply",
+"eb4522c8183c",
+[
+"deny"
+]
+],
+[
+"git push --force origin x",
+"1973fb18e7e2",
+[
+"deny"
+]
+],
+[
+"deploy now",
+"ac0d595255a9",
+[
+"deny"
+]
+],
+[
+"deploy now  # guard-ok: checked by hand",
+"d5e4a9c89d19",
+[
+"deny"
+]
+],
+[
+"make clean; terraform apply",
+"890940bee7d7",
+[
+"deny"
+]
+],
+[
+"git remote prune origin; make clean",
+"ffdfcfc83304",
+[
+"deny"
+]
+],
+[
+"make clean",
+"4b3241f7e0bc",
+[
+"deny"
+]
+],
+[
+"git status",
+"da39a3ee5e6b",
+[]
+]
+],
+"001": [
+[
+"make clean",
+"0671d95d6472",
+[
+"deny"
+]
+],
+[
+"git remote prune origin",
+"2f95eb9ca583",
+[
+"deny",
+"would-ask"
+]
+],
+[
+"terraform apply",
+"eb4522c8183c",
+[
+"deny"
+]
+],
+[
+"git push --force origin x",
+"1973fb18e7e2",
+[
+"deny"
+]
+],
+[
+"deploy now",
+"ac0d595255a9",
+[
+"deny"
+]
+],
+[
+"deploy now  # guard-ok: checked by hand",
+"d5e4a9c89d19",
+[
+"deny"
+]
+],
+[
+"make clean; terraform apply",
+"890940bee7d7",
+[
+"deny"
+]
+],
+[
+"git remote prune origin; make clean",
+"ffdfcfc83304",
+[
+"deny",
+"ask-skipped"
+]
+],
+[
+"make clean",
+"4b3241f7e0bc",
+[
+"deny"
+]
+],
+[
+"git status",
+"da39a3ee5e6b",
+[]
+]
+],
+"010": [
+[
+"make clean",
+"0671d95d6472",
+[
+"deny"
+]
+],
+[
+"git remote prune origin",
+"3c33174dd746",
+[
+"asked"
+]
+],
+[
+"terraform apply",
+"eb4522c8183c",
+[
+"deny"
+]
+],
+[
+"git push --force origin x",
+"1973fb18e7e2",
+[
+"deny"
+]
+],
+[
+"deploy now",
+"ac0d595255a9",
+[
+"deny"
+]
+],
+[
+"deploy now  # guard-ok: checked by hand",
+"d5e4a9c89d19",
+[
+"deny"
+]
+],
+[
+"make clean; terraform apply",
+"890940bee7d7",
+[
+"deny"
+]
+],
+[
+"git remote prune origin; make clean",
+"ffdfcfc83304",
+[
+"deny",
+"ask-skipped"
+]
+],
+[
+"make clean",
+"4b3241f7e0bc",
+[
+"deny"
+]
+],
+[
+"git status",
+"da39a3ee5e6b",
+[]
+]
+],
+"011": [
+[
+"make clean",
+"0671d95d6472",
+[
+"deny"
+]
+],
+[
+"git remote prune origin",
+"3c33174dd746",
+[
+"asked"
+]
+],
+[
+"terraform apply",
+"eb4522c8183c",
+[
+"deny"
+]
+],
+[
+"git push --force origin x",
+"1973fb18e7e2",
+[
+"deny"
+]
+],
+[
+"deploy now",
+"ac0d595255a9",
+[
+"deny"
+]
+],
+[
+"deploy now  # guard-ok: checked by hand",
+"d5e4a9c89d19",
+[
+"deny"
+]
+],
+[
+"make clean; terraform apply",
+"890940bee7d7",
+[
+"deny"
+]
+],
+[
+"git remote prune origin; make clean",
+"ffdfcfc83304",
+[
+"deny",
+"ask-skipped"
+]
+],
+[
+"make clean",
+"4b3241f7e0bc",
+[
+"deny"
+]
+],
+[
+"git status",
+"da39a3ee5e6b",
+[]
+]
+],
+"100": [
+[
+"make clean",
+"0671d95d6472",
+[
+"deny"
+]
+],
+[
+"git remote prune origin",
+"2f95eb9ca583",
+[
+"deny"
+]
+],
+[
+"terraform apply",
+"eb4522c8183c",
+[
+"deny"
+]
+],
+[
+"git push --force origin x",
+"1973fb18e7e2",
+[
+"deny"
+]
+],
+[
+"deploy now",
+"ac0d595255a9",
+[
+"deny"
+]
+],
+[
+"deploy now  # guard-ok: checked by hand",
+"d5e4a9c89d19",
+[
+"deny"
+]
+],
+[
+"make clean; terraform apply",
+"890940bee7d7",
+[
+"deny"
+]
+],
+[
+"git remote prune origin; make clean",
+"ffdfcfc83304",
+[
+"deny"
+]
+],
+[
+"make clean",
+"4b3241f7e0bc",
+[
+"deny"
+]
+],
+[
+"git status",
+"da39a3ee5e6b",
+[]
+]
+],
+"101": [
+[
+"make clean",
+"0671d95d6472",
+[
+"deny"
+]
+],
+[
+"git remote prune origin",
+"2f95eb9ca583",
+[
+"deny",
+"would-ask"
+]
+],
+[
+"terraform apply",
+"eb4522c8183c",
+[
+"deny"
+]
+],
+[
+"git push --force origin x",
+"1973fb18e7e2",
+[
+"deny"
+]
+],
+[
+"deploy now",
+"ac0d595255a9",
+[
+"deny"
+]
+],
+[
+"deploy now  # guard-ok: checked by hand",
+"d5e4a9c89d19",
+[
+"deny"
+]
+],
+[
+"make clean; terraform apply",
+"890940bee7d7",
+[
+"deny"
+]
+],
+[
+"git remote prune origin; make clean",
+"ffdfcfc83304",
+[
+"deny",
+"ask-skipped"
+]
+],
+[
+"make clean",
+"4b3241f7e0bc",
+[
+"deny"
+]
+],
+[
+"git status",
+"da39a3ee5e6b",
+[]
+]
+],
+"110": [
+[
+"make clean",
+"0671d95d6472",
+[
+"deny"
+]
+],
+[
+"git remote prune origin",
+"3c33174dd746",
+[
+"asked"
+]
+],
+[
+"terraform apply",
+"eb4522c8183c",
+[
+"deny"
+]
+],
+[
+"git push --force origin x",
+"1973fb18e7e2",
+[
+"deny"
+]
+],
+[
+"deploy now",
+"ac0d595255a9",
+[
+"deny"
+]
+],
+[
+"deploy now  # guard-ok: checked by hand",
+"d5e4a9c89d19",
+[
+"deny"
+]
+],
+[
+"make clean; terraform apply",
+"890940bee7d7",
+[
+"deny"
+]
+],
+[
+"git remote prune origin; make clean",
+"ffdfcfc83304",
+[
+"deny",
+"ask-skipped"
+]
+],
+[
+"make clean",
+"4b3241f7e0bc",
+[
+"deny"
+]
+],
+[
+"git status",
+"da39a3ee5e6b",
+[]
+]
+],
+"111": [
+[
+"make clean",
+"0671d95d6472",
+[
+"deny"
+]
+],
+[
+"git remote prune origin",
+"3c33174dd746",
+[
+"asked"
+]
+],
+[
+"terraform apply",
+"eb4522c8183c",
+[
+"deny"
+]
+],
+[
+"git push --force origin x",
+"1973fb18e7e2",
+[
+"deny"
+]
+],
+[
+"deploy now",
+"ac0d595255a9",
+[
+"deny"
+]
+],
+[
+"deploy now  # guard-ok: checked by hand",
+"d5e4a9c89d19",
+[
+"deny"
+]
+],
+[
+"make clean; terraform apply",
+"890940bee7d7",
+[
+"deny"
+]
+],
+[
+"git remote prune origin; make clean",
+"ffdfcfc83304",
+[
+"deny",
+"ask-skipped"
+]
+],
+[
+"make clean",
+"4b3241f7e0bc",
+[
+"deny"
+]
+],
+[
+"git status",
+"da39a3ee5e6b",
+[]
+]
+]
+}

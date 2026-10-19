@@ -146,11 +146,11 @@ def decisions(env):
 
 
 # 1. switches off -----------------------------------------------------------
-def test_with_every_switch_off_a_rewrite_field_changes_nothing(env):
-    out = call(env, bash("pytest tests"))
-    assert out["permissionDecision"] == "deny"
-    assert "updatedInput" not in out
-    assert decisions(env) == ["deny"]
+def test_with_every_switch_off_a_rewrite_note_does_not_deny(env):
+    # NOBLIVION-122c: a rewrite note is not a deny note. With every switch off
+    # the plain command runs unchanged and nothing is logged.
+    assert call(env, bash("pytest tests")) is None
+    assert decisions(env) == []
 
 
 def test_with_every_switch_off_an_ask_field_still_denies(env):
@@ -221,13 +221,18 @@ def test_the_config_key_turns_the_rewrite_on(env, tmp_path):
         ("git status", "no_compliant_form"),
     ],
 )
-def test_a_doubtful_rewrite_keeps_the_deny_and_says_why(env, command, why):
+def test_a_doubtful_rewrite_falls_back_to_the_on_violation_decision(env, command, why):
+    # rewrite on, ask off: the call runs unchanged and the log says why
     e = on(env, "NOBLIVION_GUARD_REWRITE")
-    out = call(e, bash(command))
-    assert out["permissionDecision"] == "deny" and "updatedInput" not in out
+    assert call(e, bash(command)) is None
     rows = lines(e)
-    assert [r["decision"] for r in rows] == ["deny", "rewrite-skipped"]
-    assert rows[1]["why"] == why
+    assert [r["decision"] for r in rows] == ["rewrite-skipped"]
+    assert rows[0]["why"] == why
+    # rewrite on, ask on: the default of a rewrite note is to ask, never to deny
+    e = on(env, "NOBLIVION_GUARD_REWRITE", "NOBLIVION_GUARD_ASK")
+    out = call(e, bash(command))
+    assert out["permissionDecision"] == "ask" and "updatedInput" not in out
+    assert decisions(e) == ["rewrite-skipped", "asked", "rewrite-skipped"]
 
 
 def test_an_override_marker_is_an_override_and_never_a_rewrite(env):
@@ -294,13 +299,15 @@ def test_a_rewrite_comes_before_an_ask_and_an_ask_covers_a_failed_rewrite(env):
 
 
 # 5. shadow -------------------------------------------------------------------
-def test_shadow_logs_what_would_happen_and_denies(env):
+def test_shadow_logs_what_would_happen(env):
     e = on(env, "NOBLIVION_GUARD_ACT_SHADOW")
-    for cmd in ("pytest tests", "git remote prune origin"):
-        out = call(e, bash(cmd))
-        assert out["permissionDecision"] == "deny" and "updatedInput" not in out
-    assert decisions(e) == ["deny", "would-rewrite", "deny", "would-ask"]
-    assert lines(e)[1]["kind"] == "flag"
+    # a rewrite note: no deny, the command runs unchanged, the log says what would happen
+    assert call(e, bash("pytest tests")) is None
+    # a note with no rewrite keeps its deny
+    out = call(e, bash("git remote prune origin"))
+    assert out["permissionDecision"] == "deny" and "updatedInput" not in out
+    assert decisions(e) == ["would-rewrite", "deny", "would-ask"]
+    assert lines(e)[0]["kind"] == "flag"
 
 
 def test_a_live_switch_wins_over_the_shadow_for_its_own_kind(env):
@@ -436,3 +443,214 @@ def test_the_hook_records_the_trust_event_of_a_rewrite(env, tmp_path):
         for x in p.read_text().splitlines()
     ]
     assert any(s.get("src") == "rewrite" and s.get("kind") == "use" for s in spooled), spooled
+
+
+# 8. a rewrite note is not a deny note (NOBLIVION-122) ----------------------------
+# A note with a valid ``rewrite`` never adds a deny: with the rewrite and ask
+# switches off, or only shadow on, it logs and lets the command run unchanged.
+# A note without ``rewrite`` denies exactly as before (the golden file).
+RW, ASK, SH = "NOBLIVION_GUARD_REWRITE", "NOBLIVION_GUARD_ASK", "NOBLIVION_GUARD_ACT_SHADOW"
+COMBOS = [(r, a, s) for r in (0, 1) for a in (0, 1) for s in (0, 1)]
+
+
+def _names(r, a, s):
+    return [n for n, v in ((RW, r), (ASK, a), (SH, s)) if v]
+
+
+# (switches rewrite/ask/shadow) -> (decision of the hook, log lines in order)
+PLAIN = {  # "pytest tests": the rewrite can be made
+    (0, 0, 0): (None, []),
+    (0, 0, 1): (None, ["would-rewrite"]),
+    (0, 1, 0): ("ask", ["asked"]),
+    (0, 1, 1): ("ask", ["asked", "would-rewrite"]),
+    (1, 0, 0): ("ask", ["rewrote"]),
+    (1, 0, 1): ("ask", ["rewrote"]),
+    (1, 1, 0): ("ask", ["rewrote"]),
+    (1, 1, 1): ("ask", ["rewrote"]),
+}
+COMPOUND = {  # "cd x && pytest tests": the rewrite cannot be made
+    (0, 0, 0): (None, []),
+    (0, 0, 1): (None, ["rewrite-skipped", "would-ask"]),
+    (0, 1, 0): ("ask", ["asked"]),
+    (0, 1, 1): ("ask", ["asked", "rewrite-skipped"]),
+    (1, 0, 0): (None, ["rewrite-skipped"]),
+    (1, 0, 1): (None, ["rewrite-skipped", "would-ask"]),
+    (1, 1, 0): ("ask", ["asked", "rewrite-skipped"]),
+    (1, 1, 1): ("ask", ["asked", "rewrite-skipped"]),
+}
+
+
+@pytest.mark.parametrize("combo", COMBOS)
+@pytest.mark.parametrize(
+    "command,want", [("pytest tests", PLAIN), ("cd x && pytest tests", COMPOUND)]
+)
+def test_a_rewrite_note_never_denies_in_any_state_of_the_three_switches(env, combo, command, want):
+    e = on(env, *_names(*combo))
+    out = call(e, bash(command))
+    decision, log = want[combo]
+    assert (out or {}).get("permissionDecision") == decision
+    assert decisions(e) == log
+    assert "deny" not in decisions(e)
+    if combo[0] and command == "pytest tests":  # only a live rewrite changes the command
+        assert out["updatedInput"]["command"] == "pytest -q tests"
+    else:
+        assert "updatedInput" not in (out or {})
+
+
+def test_the_command_that_already_has_the_flag_is_left_alone(env):
+    e = on(env, RW)
+    assert call(e, bash("pytest -q tests")) is None
+    assert decisions(e) == []
+
+
+def test_a_rewrite_note_with_on_violation_deny_keeps_the_deny(env):
+    # the note says deny itself: it is a deny note (a doctor warning names the clash)
+    table = [
+        entry(
+            "feedback_both_say",
+            PYTEST_V,
+            rewrite="add-flag -q after pytest",
+            on_violation="deny",
+        )
+    ]
+    path = Path(env["NOBLIVION_GUARD_TABLE"])
+    path.write_text(json.dumps({"version": 1, "entries": table}))
+    assert call(env, bash("pytest tests"))["permissionDecision"] == "deny"
+    e = on(env, SH)
+    assert call(e, bash("pytest tests"))["permissionDecision"] == "deny"
+    out = call(on(env, RW), bash("pytest tests"))  # the live rewrite still acts
+    assert out["updatedInput"]["command"] == "pytest -q tests"
+
+
+@pytest.mark.parametrize("combo", COMBOS)
+def test_a_rewrite_note_mixed_with_a_deny_note_keeps_the_deny(env, combo):
+    e = on(env, *_names(*combo))
+    out = call(e, bash("pytest tests; git push --force origin x"))
+    assert out["permissionDecision"] == "deny" and "updatedInput" not in out
+
+
+def test_an_error_keeps_the_deny_with_every_switch_on(env, monkeypatch):
+    e = on(env, RW, ASK, SH)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(gh, "_rw", lambda: type("M", (), {"apply": staticmethod(boom)}))
+    assert call(e, bash("pytest tests"))["permissionDecision"] == "deny"
+
+
+def test_the_words_inside_a_heredoc_or_a_quoted_echo_are_not_touched(env):
+    e = on(env, RW)
+    for cmd in (
+        "cat <<'EOF'\npytest tests\nEOF",
+        "echo 'pytest tests'",
+        'echo "run pytest tests"',
+    ):
+        assert call(e, bash(cmd)) is None
+    assert decisions(e) == []
+
+
+GOLDEN_TABLE = [
+    entry("feedback_plain", r"^make\s+clean\b"),
+    entry("feedback_ask_only", ASK_V, on_violation="ask"),
+    entry("feedback_explicit_deny", r"^terraform\s+apply\b", on_violation="deny"),
+    entry("feedback_force", FORCE),
+    entry("feedback_needs_run", r"^deploy\b(?!\s+--check)", complies=r"^deploy\s+--check"),
+]
+GOLDEN_TABLE[-1]["run_first"] = "deploy --check"
+GOLDEN_COMMANDS = [
+    "make clean",
+    "git remote prune origin",
+    "terraform apply",
+    "git push --force origin x",
+    "deploy now",
+    "deploy now  # guard-ok: checked by hand",
+    "make clean; terraform apply",
+    "git remote prune origin; make clean",
+    "make clean",
+    "git status",
+]
+GOLDEN_FILE = Path(__file__).with_name("golden_guard_act.json")
+
+
+def golden_results(root: Path) -> dict:
+    """For every state of the three switches: what each command of
+    ``GOLDEN_COMMANDS`` gave (hook output, hashed, and the log lines). The table holds
+    no rewrite note. ``golden_guard_act.json`` was recorded with the hook of
+    commit fab09b5, before the change of this section."""
+    import hashlib
+
+    out: dict = {}
+    for combo in COMBOS:
+        d = root / ("c" + "".join(map(str, combo)))
+        d.mkdir()
+        table = d / "table.json"
+        table.write_text(json.dumps({"version": 1, "entries": [dict(e) for e in GOLDEN_TABLE]}))
+        env = {
+            "NOBLIVION_GUARD_TABLE": str(table),
+            "NOBLIVION_GUARD_STATE_DIR": str(d / "state"),
+            "NOBLIVION_GUARD_LOG": str(d / "log.jsonl"),
+            "NOBLIVION_CONFIG": str(d / "no-config.json"),
+            "NOBLIVION_TRUST_EVENTS": "0",
+        }
+        env = on(env, *_names(*combo))
+        rows = []
+        for cmd in GOLDEN_COMMANDS:
+            before = len(lines(env))
+            buf = io.StringIO()
+            gh.main(stdin=io.StringIO(json.dumps(bash(cmd))), stdout=buf, environ=env)
+            text = buf.getvalue().strip()
+            rows.append(
+                [
+                    cmd,
+                    hashlib.sha1(text.encode()).hexdigest()[:12],
+                    [x["decision"] for x in lines(env)[before:]],
+                ]
+            )
+        out["".join(map(str, combo))] = rows
+    return out
+
+
+def test_every_note_without_a_rewrite_denies_as_before(tmp_path):
+    golden = json.loads(GOLDEN_FILE.read_text())
+    got = golden_results(tmp_path)
+    assert got == golden
+    # the golden file is not empty and holds denies and asks
+    flat = [r for rows in golden.values() for r in rows]
+    assert len(flat) == 8 * len(GOLDEN_COMMANDS)
+    assert any("deny" in r[2] for r in flat) and any("asked" in r[2] for r in flat)
+
+
+# 9. the doctor warning: rewrite together with a deny-only field -----------------
+def test_rewrite_with_on_violation_deny_is_a_warning_and_changes_no_guard(tmp_path):
+    folder = tmp_path / "mem"
+    folder.mkdir()
+    _memory(
+        folder, "feedback_a.md", rewrite="add-flag --oneline after git log", on_violation="deny"
+    )
+    _memory(folder, "feedback_b.md", rewrite="add-flag --oneline after git log")
+    f = mf.read_fields((folder / "feedback_a.md").read_text())
+    assert mf.check_fields(f) == []  # a warning, not a problem
+    assert mf.rewrite_warnings(f) == [mf.REWRITE_DENY_WARNING]
+    assert mf.rewrite_warnings(mf.read_fields((folder / "feedback_b.md").read_text())) == []
+    table = gt.build(folder)
+    assert [w["id"] for w in table["warnings"]] == ["feedback_a"]
+    by = {e["id"]: e for e in table["entries"]}
+    assert by["feedback_a"]["violates"] == LOG_V and by["feedback_a"]["on_violation"] == "deny"
+    assert "feedback_a" in gt.skipped_line(table) and "deny" in gt.skipped_line(table)
+    (tmp_path / "mem2").mkdir()
+    _memory(tmp_path / "mem2", "feedback_c.md", rewrite="add-flag --oneline after git log")
+    assert "warnings" not in gt.build(tmp_path / "mem2")
+
+
+def test_the_write_hook_names_the_clash(tmp_path, monkeypatch):
+    hook = load_hook_with_config("memory_fields_hook", {}, "memory_fields_hook_act_t")
+    folder = tmp_path / "memory"
+    folder.mkdir()
+    _memory(
+        folder, "feedback_a.md", rewrite="add-flag --oneline after git log", on_violation="deny"
+    )
+    event = {"tool_name": "Write", "tool_input": {"file_path": str(folder / "feedback_a.md")}}
+    monkeypatch.setenv("NOBLIVION_MEMORY_DIR", str(folder))
+    out = hook.run(json.dumps(event))
+    assert "rewrite and on_violation: deny disagree" in out

@@ -38,6 +38,15 @@ All notable changes to NOBLIVION. The format follows
   (`guard.act_shadow`) logs `would-rewrite` and `would-ask` only. Every decision is a line in
   `guard-log.jsonl`. The memory fields check validates both fields on write. The new tool
   `tools/replay_guard_rewrite.py` measures the matcher on past commands.
+- Fix a deny that the rewrite settings could not remove (NOBLIVION-122). A note with a valid
+  `rewrite:` field is a rewrite note, not a deny note. It never adds a deny: with `guard.rewrite`
+  and `guard.ask` off, or with only `guard.act_shadow` on, the plain command runs unchanged (the
+  shadow switch logs `would-rewrite`). With `guard.rewrite` on, the guard rewrites the command;
+  when it cannot (a compound command, `cd x &&`, `git -C`), it falls back to the note's
+  `on_violation` decision, which is `ask` by default and needs `guard.ask` (with `guard.ask` off
+  the command runs unchanged and the log says why). A note without `rewrite`, and a note with
+  `on_violation: deny`, deny as before. The guard table build and the write hook warn about a
+  note that has `rewrite` and `on_violation: deny`.
 - Add a rules only prompt path, off by default. `NOBLIVION_RECALL_RULES_ONLY` (config key
   `recall.rules_only`) shows only rows whose note has both a `rule:` and an `apply:`, with a
   short apply text under each row, and applies the same rule to the label rows at the prompt

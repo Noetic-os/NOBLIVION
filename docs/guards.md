@@ -87,7 +87,7 @@ example_ok: "git -C /repo status"
 | `example_repeat` | Needed with `violates`. A command that `violates` must match. |
 | `example_ok` | Needed with `violates`. A command that `violates` must not match. |
 | `complies` | Optional, only with `violates`. A regular expression that `example_ok` must match. |
-| `rewrite` | Optional, only with `violates`. `add-flag <flag> after <prefix>`. See "Rewrite and ask". |
+| `rewrite` | Optional, only with `violates`. `add-flag <flag> after <prefix>`. A note with `rewrite` is a rewrite note, not a deny note. See "Rewrite and ask". |
 | `on_violation` | Optional, only with `violates`. `deny` (default) or `ask`. See "Rewrite and ask". |
 
 A `feedback_*.md` file needs `rule`, `apply` and `scope`. With scope `tool`,
@@ -205,8 +205,9 @@ failed in this session.
 ### Rewrite and ask
 
 Two switches, both off by default, let a rule act on the call instead of only
-denying it. With both off, the `rewrite` and `on_violation` fields do nothing
-and the guard writes no extra log line.
+denying it. With both off, the `on_violation` field does nothing, and a
+`rewrite` field makes its note a rewrite note (see "A rewrite note is not a deny
+note" below). The guard writes no extra log line.
 
 **Rewrite** (`NOBLIVION_GUARD_REWRITE=1`, config key `guard.rewrite`). When the
 `violates` expression of one note hits and the note has a valid `rewrite`
@@ -231,8 +232,10 @@ decision, which is why the hook never sends it with nothing else. Do not run
 a second hook that also rewrites Bash commands next to this one: two hooks that
 change the same call may not both apply.
 
-The hook rewrites only when nothing is in doubt. It keeps the old behaviour
-(deny, or ask) and logs `rewrite-skipped` with a `why` when:
+The hook rewrites only when nothing is in doubt. It falls back to the
+`on_violation` decision of the note (see "A rewrite note is not a deny note"; a
+hit that holds a note without `rewrite` keeps the deny) and logs
+`rewrite-skipped` with a `why` when:
 
 - more than one note hit (`multi_hit`);
 - the prefix is not at the very start of the command, the command has more than
@@ -257,7 +260,8 @@ not marked `ask`, the deny stays (`ask-skipped`). A rewrite is tried before an
 ask.
 
 **Shadow** (`NOBLIVION_GUARD_ACT_SHADOW=1`, config key `guard.act_shadow`). The
-hook only logs `would-rewrite` and `would-ask` and denies as before. A switch
+hook only logs `would-rewrite` and `would-ask`. A note without `rewrite` denies
+as before; a rewrite note runs unchanged. A switch
 that is on acts for real. Use shadow first, and read the log.
 
 The log lines are `rewrote`, `asked`, `would-rewrite`, `would-ask`,
@@ -269,6 +273,32 @@ rule text. A rewrite and an ask are trust events of kind `use` with the sources
 To measure on real commands before you turn a switch on:
 `python tools/replay_guard_rewrite.py "<transcripts glob>"`. It prints counts
 only.
+
+**A rewrite note is not a deny note.** A note with a valid `rewrite` field never
+adds a deny, so writing one cannot block the plain command while the switches
+are off. The states, for a hit set made only of rewrite notes:
+
+| `guard.rewrite` | `guard.ask` | `guard.act_shadow` | Rewrite possible | Result |
+|---|---|---|---|---|
+| off | off | off | - | The command runs unchanged. Nothing is logged. |
+| off | off | on | yes | The command runs unchanged. The log has `would-rewrite`. |
+| off | on | any | - | The hook asks, with the rule as the reason (`asked`). |
+| on | any | any | yes | The command is rewritten (`rewrote`). |
+| on | on | any | no | The hook asks (`asked`, with `rewrite-skipped`). |
+| on | off | any | no | The command runs unchanged. The log has `rewrite-skipped`. |
+
+`on_violation` of a rewrite note is `ask` when the field is absent. A rewrite
+note that has `on_violation: deny` is a deny note: it denies in every state and
+the rewrite acts only when `guard.rewrite` is on. The table build and the
+memory write hook warn about that clash, because it is almost always a mistake.
+If one hit is a note without `rewrite`, the deny stands as before. An error in
+the act step keeps the deny (`act-error`).
+
+Do not put `rewrite` on a note that guards a dangerous command. Such a note
+would stop denying while the rewrite settings are off. Write a deny note
+(no `rewrite`) for a command that must never run, and a rewrite note only for
+a command whose plain form is harmless and whose rewritten form is the same
+command with a flag that changes the form of the output.
 
 Undo: unset the switches. The fields stay in the notes and do nothing.
 
