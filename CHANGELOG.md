@@ -8,6 +8,19 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Add recall as a reflex (NOBLIVION-123). The descriptions of `noblivion_recall` and
+  `noblivion_remember` name the moments to call them (before "cannot verify", a merge, a restart
+  of a shared service, filing or commenting on a ticket, after an unexplained tool error, before
+  saving a memory). The MCP server sends the same moments as short `instructions`, because Claude
+  Code shows a deferred MCP tool by name only (`NOBLIVION_MCP_INSTRUCTIONS=0` leaves them out). The
+  plugin ships the skill `recall-first`. New hook `hooks/recall_nudge.py`, off by default:
+  `NOBLIVION_RECALL_NUDGE` (config key `recall.nudge`) adds one line of context under 120
+  characters before a ticket create or comment tool or a merge command, only when the session made
+  no recall call and got no line in its last 10 tool calls. `NOBLIVION_RECALL_NUDGE_SHADOW`
+  (`recall.nudge_shadow`) logs only. The matching tools and commands come from the config lists
+  `recall.nudge_tools` and `recall.nudge_commands`, with generic defaults. `nudge.log` counts the
+  lines and the recall calls per moment. The new tool `tools/replay_recall_nudge.py` counts the
+  lines on past transcripts. See `docs/recall-reflex.md`.
 - Add rules that act at the tool call, off by default. `NOBLIVION_GUARD_REWRITE` (config key
   `guard.rewrite`): when one note's `violates` expression hits and the note has a `rewrite:`
   field (`add-flag <flag> after <prefix>`, from a closed table: `-q` for the test runners,

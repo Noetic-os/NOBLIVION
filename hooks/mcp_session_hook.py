@@ -17,9 +17,12 @@ Standard library only.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import re
 import sys
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 # The shape ``corpus._SESSION_ID_RE`` accepts. ``tests/test_mcp_session.py`` keeps the two equal.
@@ -63,6 +66,22 @@ def decide(payload: Any) -> Optional[Dict[str, Any]]:
     }
 
 
+def _note_recall(payload: Any) -> None:
+    """NOBLIVION-123: count the recall call in ``nudge.log`` when a nudge switch is on. The module
+    is loaded from this folder; a failure changes nothing."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "recall_nudge", Path(__file__).resolve().parent / "recall_nudge.py"
+        )
+        if spec is None or spec.loader is None:
+            return
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.note_recall(payload, os.environ)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main(stdin=None, stdout=None) -> int:
     """Always returns 0: a failure here must never block a tool call."""
     try:
@@ -70,6 +89,7 @@ def main(stdin=None, stdout=None) -> int:
         out = decide(payload)
         if out is not None:
             (stdout or sys.stdout).write(json.dumps(out) + "\n")
+            _note_recall(payload)
     except Exception:  # noqa: BLE001 - fail open: print nothing, exit 0
         pass
     return 0

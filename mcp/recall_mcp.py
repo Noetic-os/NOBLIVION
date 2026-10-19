@@ -75,6 +75,26 @@ def _plugin_version() -> str:
 
 SERVER_VERSION = _plugin_version()
 PROTOCOL_VERSION = "2025-06-18"
+
+# NOBLIVION-123: Claude Code lists a plugin's MCP tools by name only when it defers them, so the
+# tool descriptions are not in the model's view. The server instructions are. One short text, on
+# by default; ``NOBLIVION_MCP_INSTRUCTIONS=0`` leaves it out.
+INSTRUCTIONS_ENV = "NOBLIVION_MCP_INSTRUCTIONS"
+INSTRUCTIONS = (
+    "NOBLIVION memory. Call noblivion_recall before you write 'cannot verify', before a "
+    "merge, before a restart of a shared service, before you file or comment on a ticket, "
+    "and after a tool error you cannot explain. Call it before noblivion_remember, so you "
+    "do not duplicate a note."
+)
+
+
+def instructions(environ: Optional[Mapping[str, str]] = None) -> str:
+    """The server instructions, or the empty text when the switch is off."""
+    env = os.environ if environ is None else environ
+    off = str(env.get(INSTRUCTIONS_ENV, "1")).strip().lower() in ("0", "false", "no", "off")
+    return "" if off else INSTRUCTIONS
+
+
 TOOL_NAME = "noblivion_recall"
 REMEMBER_NAME = "noblivion_remember"
 K_DEFAULT = 5
@@ -109,12 +129,12 @@ def _load_hook():
 TOOL_SCHEMA: Dict[str, Any] = {
     "name": TOOL_NAME,
     "description": (
-        "Search the local NOBLIVION memory store (indexed project Markdown "
-        "files) and return the matching memories as data: one line per hit, "
-        "'- [entity] title: body (score)'. Use it before you act on a repo, host, "
-        "ticket or process question that a past session may have settled. "
-        "Pass fetch_id instead of query to read ONE memory in full, by the id shown "
-        "on a line of a GROUNDED MEMORY INDEX."
+        "Search the local NOBLIVION memory store and return the matching memories as "
+        "data: one line per hit, '- [entity] title: body (score)'. Call it before you "
+        "write 'cannot verify', before a merge, before a restart of a shared service, "
+        "before you file or comment on a ticket, and after a tool error you cannot "
+        "explain. Pass fetch_id instead of query to read ONE memory in full, by the id "
+        "shown on a line of a GROUNDED MEMORY INDEX."
     ),
     "inputSchema": {
         "type": "object",
@@ -190,10 +210,11 @@ TOOL_SCHEMA: Dict[str, Any] = {
 REMEMBER_SCHEMA: Dict[str, Any] = {
     "name": REMEMBER_NAME,
     "description": (
-        "Save one verified, durable project lesson in the shared NOBLIVION "
-        "Markdown corpus. Supply evidence. Do not save secrets, guesses, "
-        "raw transcripts, or task chatter. The same note is available to "
-        "Codex and Claude Code after indexing."
+        "Save one verified, durable project lesson in the shared NOBLIVION Markdown "
+        "corpus. Call noblivion_recall first, so you do not duplicate a note. Save "
+        "after the user corrects you and after you find the cause of a failure. "
+        "Supply evidence. Do not save secrets, guesses, raw transcripts, or task "
+        "chatter."
     ),
     "inputSchema": {
         "type": "object",
@@ -824,14 +845,15 @@ def handle(message: Any, environ: Optional[Dict[str, str]] = None) -> Optional[D
         # supports it, else a version it does support. This server implements
         # exactly one, so the answer is always PROTOCOL_VERSION; echoing an
         # unknown request would claim support the server does not have.
-        return _result(
-            req_id,
-            {
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-            },
-        )
+        init: Dict[str, Any] = {
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+        }
+        text = instructions(environ)
+        if text:
+            init["instructions"] = text
+        return _result(req_id, init)
     if method == "ping":
         return _result(req_id, {})
     if method == "tools/list":

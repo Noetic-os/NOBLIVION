@@ -34,6 +34,7 @@ te = load_hook("trust_events", "switchtest_trust_events")
 me = load_hook("mine_session_end", "switchtest_mine_session_end")
 ts = load_hook("trust_signals", "switchtest_trust_signals")
 gh = load_hook("guard_hook", "switchtest_guard_hook")
+rn = load_hook("recall_nudge", "switchtest_recall_nudge")
 
 Reader = Callable[[Mapping[str, str]], bool]
 
@@ -53,6 +54,8 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_RECALL_INDEX_CHECK_LINE": rh.index_check_line,
     "NOBLIVION_RECALL_INDEX_DROP_NO_RULE": rh.index_drop_no_rule,
     "NOBLIVION_RECALL_RULES_ONLY": rh.rules_only,  # NOBLIVION-121
+    "NOBLIVION_RECALL_NUDGE": rn.nudge_on,  # NOBLIVION-123
+    "NOBLIVION_RECALL_NUDGE_SHADOW": rn.shadow_on,
     "NOBLIVION_SUBAGENT_RULES_OFF": sr.is_off,
     "NOBLIVION_CONTINUITY": ch.is_on,
     "NOBLIVION_CONTINUITY_BRIEFING": lambda e: ch._flag(e, ch.BRIEFING_ENV, True),

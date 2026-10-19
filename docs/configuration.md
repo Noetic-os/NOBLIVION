@@ -273,6 +273,20 @@ default floor `0.68` applies when the embedding model is
 installed. With another embedding model the index has no floor. To set a
 floor, add the variable under `recall.env`.
 
+## Recall reflex
+
+The nudge before a ticket tool or a merge command. It is off by default. See
+[recall-reflex.md](recall-reflex.md) for the moments, the two pattern lists, the log and how to
+measure it.
+
+| Env var | Config key | Default | Meaning |
+| --- | --- | --- | --- |
+| `NOBLIVION_RECALL_NUDGE` | `recall.nudge` | off (switch) | Before a matching call, adds one line of context: call `noblivion_recall` first. Only when the main session made no recall call and got no line in its last 10 tool calls. |
+| `NOBLIVION_RECALL_NUDGE_SHADOW` | `recall.nudge_shadow` | off (switch) | Logs what the nudge would do in `nudge.log` and prints nothing. |
+| none | `recall.nudge_tools` | generic ticket create and comment tool patterns | A list of regular expressions over the MCP tool name. A list that is set replaces the default. |
+| none | `recall.nudge_commands` | `gh pr merge` and `glab mr merge` | A list of regular expressions over each simple command of a Bash call, at its start. A list that is set replaces the default. |
+| `NOBLIVION_MCP_INSTRUCTIONS` | none | `1` (on) | The short text that the MCP server sends at start, with the moments to call `noblivion_recall`. `0`, `false`, `no` or `off` leaves it out. |
+
 ## Error recall hook
 
 | Env var | Config key | Default | Meaning |

@@ -90,6 +90,7 @@ def test_every_moved_module_is_present() -> None:
         "mcp_session_hook",  # NOBLIVION-110
         "memory_text",
         "recall_hook",
+        "recall_nudge",  # NOBLIVION-123
         "stop_checks",
         "store_client",
         "subagent_rules_hook",

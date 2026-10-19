@@ -97,9 +97,11 @@ EXPECTED = {
     ("UserPromptSubmit", "", "recall_hook.py", ""),
     ("UserPromptSubmit", "", "version_check.py", ""),
     ("PreToolUse", "Bash", "guard_hook.py", ""),
+    ("PreToolUse", "Bash", "recall_nudge.py", ""),  # NOBLIVION-123, off by default
     ("PreToolUse", "Read|Grep", "guard_hook.py", ""),
     ("PreToolUse", "Edit|Write|MultiEdit", "guard_hook.py", ""),
     ("PreToolUse", "mcp__.*noblivion_recall", "mcp_session_hook.py", ""),  # NOBLIVION-110
+    ("PreToolUse", "mcp__.*", "recall_nudge.py", ""),  # NOBLIVION-123, off by default
     ("PreToolUse", "Agent|Task", "subagent_rules_hook.py", ""),
     ("PostToolUse", "Write|Edit|MultiEdit", "memory_fields_hook.py", ""),
     ("PostToolUse", "Write|Edit|MultiEdit", "memory_sync_hook.py", ""),

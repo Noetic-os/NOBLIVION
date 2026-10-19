@@ -136,6 +136,7 @@ for the full steps and limits.
 - [Configuration](docs/configuration.md): every setting, with its default
 - [How recall works](docs/how-recall-works.md)
 - [Guards and stop checks](docs/guards.md)
+- [Recall as a reflex](docs/recall-reflex.md): the named moments, the skill and the nudge
 - [Trust](docs/trust.md)
 - [Duplicate sweep and privacy](docs/dedup-and-privacy.md)
 - [Transcript miner](docs/transcript-miner.md)
