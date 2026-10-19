@@ -87,6 +87,8 @@ example_ok: "git -C /repo status"
 | `example_repeat` | Needed with `violates`. A command that `violates` must match. |
 | `example_ok` | Needed with `violates`. A command that `violates` must not match. |
 | `complies` | Optional, only with `violates`. A regular expression that `example_ok` must match. |
+| `rewrite` | Optional, only with `violates`. `add-flag <flag> after <prefix>`. See "Rewrite and ask". |
+| `on_violation` | Optional, only with `violates`. `deny` (default) or `ask`. See "Rewrite and ask". |
 
 A `feedback_*.md` file needs `rule`, `apply` and `scope`. With scope `tool`,
 it needs a command trigger or a `tool:` trigger. With scope `file`, it
@@ -199,6 +201,76 @@ some-command  # guard-ok: <reason>
 The reason must hold a letter or a digit. When the rule has `complies`,
 the override works only after the right command (the `example_ok` shape)
 failed in this session.
+
+### Rewrite and ask
+
+Two switches, both off by default, let a rule act on the call instead of only
+denying it. With both off, the `rewrite` and `on_violation` fields do nothing
+and the guard writes no extra log line.
+
+**Rewrite** (`NOBLIVION_GUARD_REWRITE=1`, config key `guard.rewrite`). When the
+`violates` expression of one note hits and the note has a valid `rewrite`
+field, the hook runs the command in the shape of the rule. The hook sends the
+new command back as `updatedInput`, with `ask` as the permission decision (the
+user sees the new command) or `allow` (`NOBLIVION_GUARD_REWRITE_DECISION=allow`:
+the hook approves the command itself, so the settings prompt for it is
+skipped; deny rules in the settings still win). The model gets one line that
+names the new command and the `apply` text. The reason names the note id only.
+
+The `rewrite` field has one form, `add-flag <flag> after <prefix>`. The pair
+must be in a closed table in `hooks/guard_rewrite.py`: `-q` after `pytest`,
+`python -m pytest`, `python3 -m pytest` or `uv run pytest`; `--oneline` after
+`git log`; `-sb` after `git status`. These flags change the form of the
+output and keep the exit status. The table holds no flag that cuts data (`-20`,
+`-n`) and no pipe (`| head`): a cut hides data, and the matcher splits a command
+at every pipe, so a `violates` expression cannot tell `git log` from the first
+segment of `git log | head`.
+
+Claude Code applies `updatedInput` only together with an `allow` or `ask`
+decision, which is why the hook never sends it with nothing else. Do not run
+a second hook that also rewrites Bash commands next to this one: two hooks that
+change the same call may not both apply.
+
+The hook rewrites only when nothing is in doubt. It keeps the old behaviour
+(deny, or ask) and logs `rewrite-skipped` with a `why` when:
+
+- more than one note hit (`multi_hit`);
+- the prefix is not at the very start of the command, the command has more than
+  one stage, a redirect to a file, a heredoc or a substitution, or a flag of
+  the same kind is there (`not_applicable`). The only stage allowed is
+  `| tail` after a test runner;
+- the new command still hits a `violates` expression (`still_violates`);
+- the note has `complies` and the new command does not match it
+  (`no_compliant_form`).
+
+A rewrite is idempotent: the new command holds the flag, so it is not
+rewritten again. A `# guard-ok` marker is an override, never a rewrite. When
+the table is built, a bad `rewrite` is dropped alone and the deny stays. The
+check runs the rewrite on `example_repeat`: the result must not match
+`violates`, must match `complies` (if set), and the rewrite must not apply to
+the result or to `example_ok`.
+
+**Ask** (`NOBLIVION_GUARD_ASK=1`, config key `guard.ask`). A note with
+`on_violation: ask` makes the hook ask the user, with the rule, the apply text
+and the note id as the reason, instead of denying. If any note in the hit is
+not marked `ask`, the deny stays (`ask-skipped`). A rewrite is tried before an
+ask.
+
+**Shadow** (`NOBLIVION_GUARD_ACT_SHADOW=1`, config key `guard.act_shadow`). The
+hook only logs `would-rewrite` and `would-ask` and denies as before. A switch
+that is on acts for real. Use shadow first, and read the log.
+
+The log lines are `rewrote`, `asked`, `would-rewrite`, `would-ask`,
+`rewrite-skipped`, `ask-skipped` and `act-error`. They hold the note id, the
+command text as every guard line does, and `kind`, `perm` or `why`; they hold no
+rule text. A rewrite and an ask are trust events of kind `use` with the sources
+`rewrite` and `guard_ask`; shadow and skip lines are not.
+
+To measure on real commands before you turn a switch on:
+`python tools/replay_guard_rewrite.py "<transcripts glob>"`. It prints counts
+only.
+
+Undo: unset the switches. The fields stay in the notes and do nothing.
 
 ### Label rows
 
@@ -355,7 +427,7 @@ tool, the check does not fire and the log row notes `notify_skipped`.
 
 | File | What it holds |
 | --- | --- |
-| `<data dir>/guard-log.jsonl` | One line per guard decision: rows, deny, override, label rows, credential deny, error. It holds command text. Mode 0600. Rotated at 5 MB. |
+| `<data dir>/guard-log.jsonl` | One line per guard decision: rows, deny, override, rewrite, ask, label rows, credential deny, error. It holds command text. Mode 0600. Rotated at 5 MB. |
 | `<data dir>/guard-state/` | State per agent and session. Removed after 7 days. |
 | `<data dir>/guard-tables/<table>.probes` | The measured speed of each `violates` expression of that table. You can delete it: the next build measures again. |
 | `<data dir>/guard-tables/<table>.late` | The state of the memory folder whose rebuild ran out of time. While the folder has this state, the guard hook does not try the rebuild again. The guard hook removes the file when a rebuild that it starts itself, before a tool call, is done in time. The rebuild at the session start and the rebuild after a write of a memory file do not remove it. You can delete it: the next tool call then tries the rebuild again. |
@@ -368,6 +440,7 @@ tool, the check does not fire and the log row notes `notify_skipped`.
 | --- | --- |
 | Credential guard | `NOBLIVION_GUARD_CREDENTIAL=0` |
 | Label rows | `NOBLIVION_GUARD_LABELS=0` |
+| Rewrite, ask, shadow | They are off by default. Unset `NOBLIVION_GUARD_REWRITE`, `NOBLIVION_GUARD_ASK` and `NOBLIVION_GUARD_ACT_SHADOW`. |
 | Weak-trigger check | `NOBLIVION_GUARD_WEAK_SHARE=0` |
 | Stop checks | They do not block by default (`shadow` mode). In `enforce` mode: `NOBLIVION_STOP_CHECKS=none`, or `NOBLIVION_STOP_CHECK_MODE=shadow` |
 | Memory sync | `NOBLIVION_MEMORY_SYNC_OFF=1` |

@@ -836,7 +836,7 @@ def load_memory_fields(env: Mapping[str, str] | None = None) -> ModuleType:
 
 # -- merge engine (section 10.4) ------------------------------------------------
 
-GROUP = ("violates", "example_repeat", "example_ok", "complies")
+GROUP = ("violates", "example_repeat", "example_ok", "complies", "rewrite", "on_violation")
 _WIKI_ANY = re.compile(r"\[\[([^\[\]|#\n]+?)(?:\.md)?(?:[|#][^\]\n]*)?\]\]")
 _MD_ANY = re.compile(r"\]\((?:\./)?([^()\s/#]+?)\.md(?:#[^()\s]*)?\)")
 

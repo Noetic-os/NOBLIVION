@@ -278,6 +278,7 @@ def build(folder: Any) -> Dict[str, Any]:
             continue
         kind = "feedback" if path.name.startswith("feedback_") else "other"
         violates, complies, run_first = "", "", ""
+        rewrite, on_violation = "", ""
         cpat = str(fields.get("complies") or "")
         if pat:
             try:
@@ -288,13 +289,25 @@ def build(folder: Any) -> Dict[str, Any]:
                 other = sp(fields, kind) if sp else []
                 problems = [p for p in problems if p not in other]
                 cprobs = mf.complies_problems(fields) if cpat else []
+                rprobs = mf.rewrite_problems(fields)
+                oprobs = mf.on_violation_problems(fields)
             except Exception as exc:  # noqa: BLE001 - one file never stops the build
-                problems, cprobs = [f"check failed: {exc}"], []
-            vprobs = [p for p in problems if p not in cprobs]
+                problems, cprobs, rprobs, oprobs = [f"check failed: {exc}"], [], [], []
+            vprobs = [p for p in problems if p not in cprobs + rprobs + oprobs]
             if vprobs:
                 skipped.append({"id": mem_id, "violates": pat, "problems": vprobs})
             else:
                 violates = pat
+                # NOBLIVION-122: a bad rewrite or on_violation is dropped alone;
+                # the deny stays.
+                if rprobs:
+                    skipped.append({"id": mem_id, "rewrite": "invalid", "problems": rprobs})
+                else:
+                    rewrite = str(fields.get("rewrite") or "")
+                if oprobs:
+                    skipped.append({"id": mem_id, "on_violation": "invalid", "problems": oprobs})
+                else:
+                    on_violation = str(fields.get("on_violation") or "")
                 if cprobs:  # a bad complies is dropped alone
                     skipped.append({"id": mem_id, "complies": cpat, "problems": cprobs})
                 elif cpat:
@@ -321,6 +334,11 @@ def build(folder: Any) -> Dict[str, Any]:
                 "run_first": run_first,
             }
         )
+        # NOBLIVION-122: only a memory that carries the field has the key.
+        if rewrite:
+            entries[-1]["rewrite"] = rewrite
+        if on_violation:
+            entries[-1]["on_violation"] = on_violation
     table: Dict[str, Any] = {
         "version": TABLE_VERSION,
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -458,6 +476,16 @@ def _one_line(text: object, n: int) -> str:
     return out if len(out) <= n else out[: n - 3] + "..."
 
 
+def _skipped_kind(row: Mapping[str, Any]) -> str:
+    """Which field a ``skipped`` row is about: ``complies``, ``rewrite``
+    (also ``on_violation``, NOBLIVION-122) or ``violates``."""
+    if "complies" in row:
+        return "complies"
+    if "rewrite" in row or "on_violation" in row:
+        return "rewrite"
+    return "violates"
+
+
 def skipped_line(table: Mapping[str, Any]) -> str:
     """One line for the user about the rules that ``build`` skipped, ``""``
     when it skipped none. A skipped ``violates`` (or an unreadable file) is a
@@ -473,8 +501,13 @@ def skipped_line(table: Mapping[str, Any]) -> str:
             "complies field is skipped (the rule still blocks)",
             "complies fields are skipped (the rules still block)",
         ),
+        (
+            "rewrite",
+            "rewrite or on_violation field is skipped (the rule still blocks)",
+            "rewrite or on_violation fields are skipped (the rules still block)",
+        ),
     ):
-        group = [r for r in rows if ("complies" in r) == (kind == "complies")]
+        group = [r for r in rows if _skipped_kind(r) == kind]
         if not group:
             continue
         named = []
@@ -1303,6 +1336,8 @@ def match(command: str, table: Optional[Mapping[str, Any]] = None) -> List[Dict[
                     "segment": seg,
                     "complies": e.get("complies", "") or "",
                     "run_first": e.get("run_first", "") or "",
+                    "rewrite": e.get("rewrite", "") or "",
+                    "on_violation": e.get("on_violation", "") or "",
                 }
             )
     return hits

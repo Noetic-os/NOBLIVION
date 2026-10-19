@@ -19,6 +19,14 @@ carries, LAST in its front matter and in this fixed order:
                    apply form or its check), optional, only with violates
                    (WI-3d). The guard hook accepts a ``# guard-ok:`` override
                    of this memory only after such a run failed in the session.
+  rewrite:         a JSON string in the closed grammar of ``guard_rewrite``
+                   (``add-flag <flag> after <prefix>``),
+                   optional, only with violates (NOBLIVION-122). Off unless the
+                   guard switch NOBLIVION_GUARD_REWRITE is on.
+  on_violation:    ``deny`` (the default) or ``ask``, optional, only with
+                   violates (NOBLIVION-122). ``ask`` turns the deny of this
+                   memory into a question to the user when the guard switch
+                   NOBLIVION_GUARD_ASK is on.
 
 Why this serialization. Three hand-rolled single-line parsers read these files:
 the reference memory mirror (``parse_frontmatter``),
@@ -97,6 +105,11 @@ KEYS = (
     "example_ok",
     "complies",
 )
+# NOBLIVION-122: written after ``KEYS`` and only when a memory sets them, so
+# a file without them reads and writes exactly as before.
+OPTIONAL_KEYS = ("rewrite", "on_violation")
+ALL_KEYS = KEYS + OPTIONAL_KEYS
+ON_VIOLATION = ("deny", "ask")
 # The two fields of a project memory. Not part of KEYS: they are not written
 # last, ``strip_schema`` keeps them, and the writer leaves their lines in place.
 PROJECT_KEYS = ("status", "project")
@@ -108,7 +121,7 @@ PROJECT_FIX_LINE = (
     "matter (one line each; the slug is lower-case letters, digits and "
     "hyphens, 2 to 40 characters, for example proj-demo or global)"
 )
-JSON_KEYS = ("apply", "violates", "example_repeat", "example_ok", "complies")
+JSON_KEYS = ("apply", "violates", "example_repeat", "example_ok", "complies", "rewrite")
 
 SCHEMA_LINE = (
     "A feedback memory carries, last in its front matter: rule: <one imperative "
@@ -118,7 +131,8 @@ SCHEMA_LINE = (
     'violates: "<Python regex over the raw Bash command>" with example_repeat: '
     '"<command that breaks the rule>" and example_ok: "<compliant command>"; optional '
     'complies: "<Python regex that matches a run of the rule\'s own command>" '
-    "(it must match example_ok)."
+    "(it must match example_ok); optional rewrite: "
+    '"add-flag <flag> after <prefix>" and on_violation: deny|ask (both only with violates).'
 )
 
 # About 30 everyday commands. A `violates:` regex runs on EVERY Bash call, so
@@ -244,7 +258,7 @@ def strip_schema(text: str) -> str:
     annotation, for deriving triggers the same way on a re-run."""
     if split(text) is None:
         return text
-    return write_fields(text, {k: None for k in KEYS})
+    return write_fields(text, {k: None for k in ALL_KEYS})
 
 
 def body_of(text: str) -> str:
@@ -288,6 +302,8 @@ def _flow_items(inner: str) -> List[str]:
 
 
 def empty_fields() -> Dict[str, object]:
+    """Every field absent. ``rewrite`` and ``on_violation`` (NOBLIVION-122) are
+    not listed: ``read_fields`` adds them only when the file carries them."""
     return {
         "rule": "",
         "apply": "",
@@ -340,7 +356,7 @@ def _raw_fields(
         if key in PROJECT_KEYS:
             where.setdefault(key, (value, None))
             continue
-        if key not in KEYS:
+        if key not in ALL_KEYS:
             continue
         items: Optional[List[str]] = None
         if key == "triggers":
@@ -369,7 +385,7 @@ def _decode(key: str, value: str, items: Optional[List[str]]) -> object:
         return _plain_value(value)
     if key in JSON_KEYS:
         return _decode_json_string(value)
-    if key == "scope":
+    if key in ("scope", "on_violation"):
         return value.strip().strip("\"'").lower()
     if value.strip().startswith('"'):  # a quoted rule, see rule_line_value
         return _decode_json_string(value)
@@ -406,7 +422,7 @@ def nested_keys(text: str) -> List[str]:
         return []
     lines, close = s
     _, nested = _raw_fields(lines[1:close])
-    return [k for k in PROJECT_KEYS + KEYS if k in nested]
+    return [k for k in PROJECT_KEYS + ALL_KEYS if k in nested]
 
 
 def nested_problem(keys: List[str]) -> str:
@@ -439,7 +455,7 @@ def nested_rule_keys(text: str) -> List[str]:
         return []
     lines, close = s
     top, nested = _raw_fields(lines[1:close])
-    return [k for k in KEYS if k in nested and k not in top]
+    return [k for k in ALL_KEYS if k in nested and k not in top]
 
 
 # --------------------------------------------------------------------------
@@ -885,6 +901,48 @@ def status_project_problems_of(problems: List[str]) -> List[str]:
     return [p for p in problems if p.startswith(("status ", "project "))]
 
 
+def rewrite_problems(fields: Dict[str, object]) -> List[str]:
+    """Problems of the optional ``rewrite:`` field (NOBLIVION-122). The checker
+    and the grammar live in ``guard_rewrite``, loaded from this folder."""
+    if not fields.get("rewrite"):
+        return []
+    try:
+        return _guard_rewrite().problems(fields)
+    except Exception as exc:  # noqa: BLE001 - a missing sibling is a problem, not a crash
+        return [f"rewrite cannot be checked: {type(exc).__name__}"]
+
+
+def on_violation_problems(fields: Dict[str, object]) -> List[str]:
+    """Problems of the optional ``on_violation:`` field (NOBLIVION-122)."""
+    value = fields.get("on_violation") or ""
+    if not value:
+        return []
+    if value not in ON_VIOLATION:
+        return [f"on_violation {value!r} is not one of deny, ask"]
+    if not fields.get("violates"):
+        return ["on_violation is allowed only with violates"]
+    return []
+
+
+_GUARD_REWRITE: Any = None
+
+
+def _guard_rewrite() -> Any:
+    global _GUARD_REWRITE
+    if _GUARD_REWRITE is None:
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parent / "guard_rewrite.py"
+        spec = importlib.util.spec_from_file_location("guard_rewrite", path)
+        if spec is None or spec.loader is None:
+            raise ImportError("guard_rewrite")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _GUARD_REWRITE = mod
+    return _GUARD_REWRITE
+
+
 def check_fields(fields: Dict[str, object], kind: str = "feedback") -> List[str]:
     """Every problem with ``fields``, in plain words. ``[]`` means clean.
     ``kind`` is ``"feedback"`` (rule, apply and scope required), ``"project"``
@@ -895,6 +953,8 @@ def check_fields(fields: Dict[str, object], kind: str = "feedback") -> List[str]
         + scope_problems(fields, kind)
         + violates_problems(fields)
         + complies_problems(fields)
+        + rewrite_problems(fields)
+        + on_violation_problems(fields)
         + status_project_problems(fields, kind)
     )
 
@@ -942,10 +1002,15 @@ def _serialize(fields: Dict[str, Any]) -> List[str]:
             if p:
                 raise ValueError(p)
         out.append("triggers: [" + ", ".join(triggers) + "]")
-    for key in ("violates", "example_repeat", "example_ok", "complies"):
+    for key in ("violates", "example_repeat", "example_ok", "complies", "rewrite"):
         v = str(fields.get(key) or "")
         if v:
             out.append(f"{key}: " + json.dumps(v))
+    on_violation = str(fields.get("on_violation") or "")
+    if on_violation:
+        if on_violation not in ON_VIOLATION:
+            raise ValueError(f"on_violation {on_violation!r} is not in {ON_VIOLATION}")
+        out.append("on_violation: " + on_violation)
     return out
 
 
@@ -1003,7 +1068,7 @@ def write_fields(text: str, fields: Dict[str, object]) -> str:
         if k in PROJECT_KEYS:
             fm = _set_project_key(fm, k, str(v or ""), str(merged[k]))
             continue
-        if k not in KEYS:
+        if k not in ALL_KEYS:
             raise KeyError(f"unknown field {k!r}")
         merged[k] = v if v is not None else ([] if k == "triggers" else "")
     kept: List[str] = []
@@ -1016,7 +1081,7 @@ def write_fields(text: str, fields: Dict[str, object]) -> str:
             parent = m.group(1) if not m.group(2).strip() else ""
         else:  # a rule field under metadata: moves to the top level
             m = _NESTED_KEY.match(line) if parent == "metadata" else None
-        if m and m.group(1) in KEYS:
+        if m and m.group(1) in ALL_KEYS:
             i += 1
             if m.group(1) == "triggers" and not m.group(2).strip():
                 while i < len(fm) and re.match(r"^\s*-\s", fm[i]):

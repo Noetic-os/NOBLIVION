@@ -8,6 +8,16 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Add rules that act at the tool call, off by default. `NOBLIVION_GUARD_REWRITE` (config key
+  `guard.rewrite`): when one note's `violates` expression hits and the note has a `rewrite:`
+  field (`add-flag <flag> after <prefix>`, from a closed table: `-q` for the test runners,
+  `--oneline` for `git log`, `-sb` for `git status`), the guard sends the command back in the
+  shape of the rule as `updatedInput`. The user sees it first unless
+  `NOBLIVION_GUARD_REWRITE_DECISION=allow`. `NOBLIVION_GUARD_ASK` (`guard.ask`): a note with
+  `on_violation: ask` makes the guard ask instead of deny. `NOBLIVION_GUARD_ACT_SHADOW`
+  (`guard.act_shadow`) logs `would-rewrite` and `would-ask` only. Every decision is a line in
+  `guard-log.jsonl`. The memory fields check validates both fields on write. The new tool
+  `tools/replay_guard_rewrite.py` measures the matcher on past commands.
 - Add a rules only prompt path, off by default. `NOBLIVION_RECALL_RULES_ONLY` (config key
   `recall.rules_only`) shows only rows whose note has both a `rule:` and an `apply:`, with a
   short apply text under each row, and applies the same rule to the label rows at the prompt

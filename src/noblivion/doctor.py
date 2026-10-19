@@ -80,7 +80,8 @@ _FLOAT_KEYS = frozenset(
 _SWITCH_KEYS = frozenset(
     "embedding.allow_download embedding.allow_remote "
     "embedding.remote_include_mined trust.events trust.citation_use "
-    "trust.correction_contradict trust.behaviour_use recall.rules_only miner.enabled".split()
+    "trust.correction_contradict trust.behaviour_use recall.rules_only miner.enabled "
+    "guard.rewrite guard.ask guard.act_shadow".split()
 )
 _CHOICES = {
     "embedding.backend": ("fastembed", "ollama", "openrouter", "none"),
@@ -88,6 +89,7 @@ _CHOICES = {
     "log_level": config.LOG_LEVELS,
     "stop.mode": ("shadow", "enforce"),
     "dedup.judge": ("off", "openrouter"),
+    "guard.rewrite_decision": ("ask", "allow"),
 }
 KNOWN_KEYS = (
     _LIST_KEYS
@@ -130,6 +132,10 @@ ENV_KEYS = {
     "NOBLIVION_TRUST_CITATION_USE": "trust.citation_use",
     "NOBLIVION_TRUST_CORRECTION_CONTRADICT": "trust.correction_contradict",
     "NOBLIVION_TRUST_BEHAVIOUR_USE": "trust.behaviour_use",
+    "NOBLIVION_GUARD_REWRITE": "guard.rewrite",
+    "NOBLIVION_GUARD_ASK": "guard.ask",
+    "NOBLIVION_GUARD_ACT_SHADOW": "guard.act_shadow",
+    "NOBLIVION_GUARD_REWRITE_DECISION": "guard.rewrite_decision",
 }
 
 

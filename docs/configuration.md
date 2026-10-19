@@ -341,6 +341,10 @@ See [guards.md](guards.md) for what each guard does.
 | `NOBLIVION_GUARD_LABELS` | none | on (switch) | Label rows at tool time. |
 | `NOBLIVION_GUARD_LABEL_SESSION_CHARS` | none | `4000` | The most characters of label rows in one session. |
 | `NOBLIVION_GUARD_LABELS_FILE_TOOLS` | none | off (switch) | Label rows for Read, Grep and Glob, and for the text of an edit. |
+| `NOBLIVION_GUARD_REWRITE` | `guard.rewrite` | off (switch) | When a note's `violates` rule hits and the note carries a valid `rewrite:` field, the guard runs the command in the shape of the rule instead of denying it (see [guards.md](guards.md)). One hit only; any doubt keeps the deny. Off: the `rewrite:` field is ignored. |
+| `NOBLIVION_GUARD_ASK` | `guard.ask` | off (switch) | A note marked `on_violation: ask` makes the guard ask the user, with the rule as the reason, instead of denying. Off: the field is ignored and the guard denies. |
+| `NOBLIVION_GUARD_ACT_SHADOW` | `guard.act_shadow` | off (switch) | Shadow mode for the two switches above. The guard only logs `would-rewrite` and `would-ask` lines, and denies as before. A switch that is on acts for real. |
+| `NOBLIVION_GUARD_REWRITE_DECISION` | `guard.rewrite_decision` | `ask` | `ask` or `allow`. `ask` shows the user the rewritten command to approve. `allow` makes the hook approve it, so the settings prompt for that command is skipped (deny rules in the settings still win). |
 | none | `guard.generic_args_extra` | `[]` | More words that do not make a trigger specific. They add to the built-in list. |
 | none | `guard.evidence_stop_extra` | `[]` | More words that do not count as evidence. They add to the built-in list. |
 | none | `labels.ticket_prefixes` | `[]` | Ticket key prefixes, for example `PROJ`. With none, no ticket labels are made. |

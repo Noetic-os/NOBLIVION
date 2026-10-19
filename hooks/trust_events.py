@@ -74,12 +74,16 @@ SRC_FETCH = "fetch"
 SRC_GUARD_ROWS = "guard_rows"  # written by older hooks only; never a use now
 SRC_GUARD_DENY = "guard_deny"
 SRC_GUARD_OVERRIDE = "guard_override"
+SRC_REWRITE = "rewrite"  # NOBLIVION-122: the guard changed the command to the rule's shape
+SRC_GUARD_ASK = "guard_ask"  # NOBLIVION-122: the guard asked the user instead of a deny
 SRC_HITS = "hits"  # the replay's pre-index hit rows (exposure)
 # guard decision -> (kind, src). The decisions "rows" and "labels" are NOT
 # here on purpose: they only show a rule, so they are not a use, in any mode.
 GUARD_EVENTS = {
     "deny": (KIND_USE, SRC_GUARD_DENY),
     "override": (KIND_CONTRADICT, SRC_GUARD_OVERRIDE),
+    "rewrote": (KIND_USE, SRC_REWRITE),
+    "asked": (KIND_USE, SRC_GUARD_ASK),
 }
 
 # One setting for the three trust modes. "b" and "c" act in trust_rank. "a"

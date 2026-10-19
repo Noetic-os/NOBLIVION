@@ -33,6 +33,7 @@ ms = load_hook("memory_sync_hook", "switchtest_memory_sync_hook")
 te = load_hook("trust_events", "switchtest_trust_events")
 me = load_hook("mine_session_end", "switchtest_mine_session_end")
 ts = load_hook("trust_signals", "switchtest_trust_signals")
+gh = load_hook("guard_hook", "switchtest_guard_hook")
 
 Reader = Callable[[Mapping[str, str]], bool]
 
@@ -59,6 +60,9 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_CONTINUITY_REQUIRE_STATUS": lambda e: ch._flag(e, ch.REQUIRE_STATUS_ENV, False),
     "NOBLIVION_CONTINUITY_CURATED": lambda e: ch._flag(e, ch.CURATED_ENV, True),
     "NOBLIVION_GUARD_CREDENTIAL": cg.guard_on,
+    "NOBLIVION_GUARD_REWRITE": gh.rewrite_on,  # NOBLIVION-122
+    "NOBLIVION_GUARD_ASK": gh.ask_on,
+    "NOBLIVION_GUARD_ACT_SHADOW": gh.act_shadow,
     "NOBLIVION_GUARD_LABELS": lr.enabled,
     "NOBLIVION_GUARD_LABELS_FILE_TOOLS": lr.file_tools_enabled,
     "NOBLIVION_MEMORY_SYNC_OFF": ms.is_off,

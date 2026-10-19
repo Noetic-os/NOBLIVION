@@ -30,6 +30,13 @@ Bash
     ``<rule>\\nApply: <apply>\\nMemory: <id>`` and one last line that gives the
     override syntax. With several hits the memory denied least often in this
     agent leads and the others are listed after it.
+  * Rewrite and ask (NOBLIVION-122, off by default; ``plan_act``). Before the deny,
+    when ``NOBLIVION_GUARD_REWRITE`` is on and one hit carries a valid ``rewrite``,
+    the call is allowed or asked with ``updatedInput`` (the command in the shape of
+    the rule); when ``NOBLIVION_GUARD_ASK`` is on and every hit is marked
+    ``on_violation: ask``, the call is asked with the rule as the reason.
+    ``NOBLIVION_GUARD_ACT_SHADOW`` logs ``would-rewrite`` and ``would-ask`` and
+    denies as before. Any doubt or error keeps the deny. See docs/guards.md.
   * No budget (WI-3c). Every hit is denied, at any count. The old budget (2
     denies, then allow) let a stubborn retry through: arm G trap t06, runs s2
     and s7 (RESULT-G.md). The deny count per memory id per agent of a session
@@ -318,6 +325,7 @@ def _load(name: str):
 _GT = None
 _MF = None
 _MT = None
+_RW = None
 
 
 def _mf():
@@ -332,6 +340,13 @@ def _gt():
     if _GT is None:
         _GT = _load("guard_table")
     return _GT
+
+
+def _rw():
+    global _RW
+    if _RW is None:
+        _RW = _load("guard_rewrite")
+    return _RW
 
 
 def _mt():
@@ -1412,6 +1427,8 @@ class Decision:
         # text: ``main`` calls it after the print, so a slow text never costs
         # a decision.
         self.log_text = log_text
+        # More log lines after the main one (NOBLIVION-122): (decision, ids, extra).
+        self.also: List[Tuple[str, List[str], Dict[str, object]]] = []
 
     def commit(self) -> None:
         if self.state is None:
@@ -1525,6 +1542,152 @@ def _settled(pending: Optional[List[bool]]) -> None:
     loses rows only, so ``main`` prints no ``TIMEOUT_LINE``."""
     if pending:
         pending[0] = False
+
+
+# --------------------------------------------------------------------------
+# NOBLIVION-122: rules act at the tool call (rewrite and ask)
+# --------------------------------------------------------------------------
+# Three switches, all off by default. With none on, a ``rewrite:`` and an
+# ``on_violation:`` field are ignored and nothing is logged: the hook is as it
+# was. ``ACT_SHADOW`` logs what a live switch would do and changes nothing.
+REWRITE_ENV, REWRITE_KEY = "NOBLIVION_GUARD_REWRITE", "guard.rewrite"
+ASK_ENV, ASK_KEY = "NOBLIVION_GUARD_ASK", "guard.ask"
+SHADOW_ENV, SHADOW_KEY = "NOBLIVION_GUARD_ACT_SHADOW", "guard.act_shadow"
+PERM_ENV, PERM_KEY = "NOBLIVION_GUARD_REWRITE_DECISION", "guard.rewrite_decision"
+
+
+def _switch(env: Mapping[str, str], name: str, key: str) -> bool:
+    fn = getattr(_cfg(), "switch", None)
+    if fn is None:  # the stand-in: no hook_config.py next to this file
+        return False
+    try:
+        return bool(fn(name, False, env, key))
+    except Exception:  # noqa: BLE001 - a bad config never turns a switch on
+        return False
+
+
+def rewrite_on(env: Mapping[str, str]) -> bool:
+    return _switch(env, REWRITE_ENV, REWRITE_KEY)
+
+
+def ask_on(env: Mapping[str, str]) -> bool:
+    return _switch(env, ASK_ENV, ASK_KEY)
+
+
+def act_shadow(env: Mapping[str, str]) -> bool:
+    return _switch(env, SHADOW_ENV, SHADOW_KEY)
+
+
+def rewrite_permission(env: Mapping[str, str]) -> str:
+    """``ask`` (the default) or ``allow``. ``allow`` makes the hook approve the
+    rewritten command itself, so the settings prompt for that command is
+    skipped (deny rules of the settings still win). ``ask`` shows the user the
+    new command. Any other value is ``ask``."""
+    fn = getattr(_cfg(), "setting", None)
+    try:
+        raw = str(fn(PERM_ENV, PERM_KEY, "ask", env) if fn else "ask").strip().lower()
+    except Exception:  # noqa: BLE001
+        raw = "ask"
+    return "allow" if raw == "allow" else "ask"
+
+
+def _out_act(
+    permission: str, reason: str, updated: Optional[Dict[str, Any]] = None, context: str = ""
+) -> str:
+    hso: Dict[str, Any] = {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": permission,
+        "permissionDecisionReason": reason,
+    }
+    if updated is not None:
+        hso["updatedInput"] = updated
+    if context:
+        hso["additionalContext"] = context
+    return json.dumps({"hookSpecificOutput": hso}, ensure_ascii=False)
+
+
+class ActPlan:
+    """What the act switches decided for one call that has a hit. ``final`` is
+    a Decision that replaces the deny (rewrite or ask), or None (the deny
+    stands). ``also`` are log lines for the shadow decisions and the skips."""
+
+    def __init__(self) -> None:
+        self.final: Optional[Decision] = None
+        self.also: List[Tuple[str, List[str], Dict[str, object]]] = []
+
+
+def plan_act(
+    command: str,
+    ti: Mapping[str, Any],
+    hits: Sequence[Mapping[str, object]],
+    table: Mapping[str, Any],
+    env: Mapping[str, str],
+) -> ActPlan:
+    """Rewrite or ask instead of deny. Fails safe: any doubt or error keeps the
+    deny. Only called for a call with a hit and no override marker.
+
+    Rewrite: exactly one hit, that memory carries a valid ``rewrite``, the
+    rewrite applies, and the new command hits no ``violates`` rule and (when
+    the memory has ``complies``) matches it. Ask: every hit is marked
+    ``on_violation: ask``."""
+    plan = ActPlan()
+    live_rw, live_ask, shadow = rewrite_on(env), ask_on(env), act_shadow(env)
+    if not (live_rw or live_ask or shadow):
+        return plan
+    ids = [str(h.get("id", "")) for h in hits]
+    try:
+        carriers = [h for h in hits if h.get("rewrite")]
+        if carriers and (live_rw or shadow):
+            why, new, h = "", None, hits[0]
+            if len(hits) != 1:
+                why = "multi_hit"
+            else:
+                new = _rw().apply(command, h.get("rewrite"))
+                if new is None:
+                    why = "not_applicable"
+                elif _gt().match(new, table):
+                    why = "still_violates"
+                elif h.get("complies") and str(h.get("id")) not in _gt().complies_match(new, table):
+                    why = "no_compliant_form"
+            if why:
+                plan.also.append(("rewrite-skipped", ids, {"why": why}))
+            else:
+                kind = _rw().parse(h.get("rewrite"))[0]
+                perm = rewrite_permission(env)
+                if live_rw:
+                    mid = str(h.get("id", ""))
+                    updated = dict(ti)
+                    updated["command"] = new
+                    context = (
+                        f"NOBLIVION changed this command to follow a memory rule (memory {mid}). "
+                        f"The command that runs is: {new}\nApply: {h.get('apply', '')}"
+                    )
+                    plan.final = Decision(
+                        _out_act(
+                            perm, f"NOBLIVION rewrote this command (memory {mid})", updated, context
+                        ),
+                        log=("rewrote", ids),
+                        extra={"kind": kind, "perm": perm},
+                    )
+                    return plan
+                plan.also.append(("would-rewrite", ids, {"kind": kind, "perm": perm}))
+        asks = [h for h in hits if h.get("on_violation") == "ask"]
+        if asks and (live_ask or shadow):
+            if len(asks) != len(hits):
+                plan.also.append(("ask-skipped", ids, {"why": "mixed_with_deny"}))
+            elif live_ask:
+                first = hits[0]
+                reason = f"{first.get('rule', '')}\nApply: {first.get('apply', '')}\nMemory: {first.get('id', '')}"
+                if len(hits) > 1:
+                    reason += "\nAlso matches: " + ", ".join(str(h.get("id", "")) for h in hits[1:])
+                plan.final = Decision(_out_act("ask", reason), log=("asked", ids))
+                return plan
+            else:
+                plan.also.append(("would-ask", ids, {}))
+    except Exception as exc:  # noqa: BLE001 - any error keeps the deny
+        plan.final = None
+        plan.also.append(("act-error", ids, {"error": type(exc).__name__}))
+    return plan
 
 
 def decide(
@@ -1641,6 +1804,14 @@ def decide(
                     log=("override", ids),
                     extra={"reason": redact_reason(marker), "evidence": evidence},
                 )
+            # NOBLIVION-122: rewrite or ask instead of a deny (switches, off by default).
+            plan = ActPlan()
+            if marker is None and not marker_seen:
+                plan = plan_act(command, ti, hits, table, env)
+                if plan.final is not None:
+                    state.close(save=False)  # a rewrite or an ask charges nothing
+                    plan.final.also = plan.also
+                    return plan.final
             shown = sorted(hits, key=lambda h: state.denies.get(str(h["id"]), 0))
             count = state.denies.get(str(shown[0]["id"]), 0) + 1
             run_first = list(dict.fromkeys(str(h["run_first"]) for h in need))
@@ -1656,12 +1827,14 @@ def decide(
                 return extra
 
             bad_marker = marker_seen and marker is None
-            return Decision(
+            denied = Decision(
                 _out(deny=deny_reason(shown[0], shown[1:], count, bad_marker, run_first, refused)),
                 state,
                 charge_deny,
                 ("deny", ids),
             )
+            denied.also = plan.also
+            return denied
         rows = pick_rows(cands, state)
         budget = _int_env(env, "NOBLIVION_GUARD_ROWS_SESSION_CHARS", ROWS_SESSION_CHARS)
         # Which rows show, and in which calls: the old rule, charged at the old
@@ -1811,7 +1984,7 @@ def _trust_use(env: Mapping[str, str], sid: object, decision: str, ids: List[str
     are not a use (NOBLIVION-34). Only when ``trust_events.enabled`` (on by
     default); prints nothing. An ordinary error is dropped; the time limit
     still applies."""
-    if decision not in ("deny", "override"):
+    if decision not in ("deny", "override", "rewrote", "asked"):
         return
     try:
         te = _load("trust_events")
@@ -1897,6 +2070,8 @@ def main(
             text = d.log_text() if d.log_text is not None else _log_text(event)
             log_line(env, sid, tool, d.log[0], d.log[1], text, agent, **d.extra)
             _trust_use(env, sid, d.log[0], d.log[1])
+            for dec, dids, dextra in d.also:  # NOBLIVION-122: shadow decisions and skips
+                log_line(env, sid, tool, dec, dids, text, agent, **dextra)
         if any(line in (REBUILD_LATE_LINE, REBUILD_NONE_LINE) for line in notes):
             log_line(env, sid, tool, "error", [], "", agent, error="table rebuild timeout")
     except BaseException as exc:  # noqa: BLE001 - a guard fails open
