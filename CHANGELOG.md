@@ -8,6 +8,16 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Add a rules only prompt path, off by default. `NOBLIVION_RECALL_RULES_ONLY` (config key
+  `recall.rules_only`) shows only rows whose note has both a `rule:` and an `apply:`, with a
+  short apply text under each row, and applies the same rule to the label rows at the prompt
+  and at the tool call. `NOBLIVION_RECALL_PROMPT_ROWS` (`recall.prompt_rows`) caps the rows of
+  one prompt. `NOBLIVION_RECALL_HUB_DAYS` (`recall.hub_days`) moves the notes that the hook
+  would show in more than half of the sessions of the window behind the other rows and keeps
+  `NOBLIVION_RECALL_HUB_ROWS` (`recall.hub_rows`, default 1) of them. `recall.log` carries
+  `rules_dropN`, `hubN`, `hubcutM`, `rowcapN` and `wasC`. The new tool
+  `tools/replay_prompt_rows.py` measures characters, rows and hub share per prompt on past
+  sessions.
 - Add a behavioural `use` signal for the trust events, off by default
   (`NOBLIVION_TRUST_BEHAVIOUR_USE`, config key `trust.behaviour_use`). A tool call
   after the showing that runs a shown rule's `complies` command, fires one of its strong

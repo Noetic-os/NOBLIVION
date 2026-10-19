@@ -79,6 +79,7 @@ def test_every_moved_module_is_present() -> None:
         "guard_hook",
         "guard_table",
         "hook_config",
+        "hub_stats",  # NOBLIVION-121
         "label_rows",
         "learning_capture",
         "memory_fields",

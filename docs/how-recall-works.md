@@ -193,6 +193,36 @@ names no model. The hook then uses no default floor (`floor_off:no_model`)
 until the store runs the new version. A floor that you set applies to
 every model.
 
+### Rules only prompt path
+
+The ranked index can fill a prompt with rows that give the model little to
+act on: project and reference notes, and general notes that fit almost every
+prompt. Three settings, all off by default, shorten it. Each has an env var
+and a config key. The env var wins.
+
+| Setting | What it does |
+| --- | --- |
+| `NOBLIVION_RECALL_RULES_ONLY` (`recall.rules_only`) | Shows only a row whose file has both a `rule:` and an `apply:`. Each row carries a short apply text under it (400, 250 and 150 characters for ranks 1, 2 to 3 and 4 to 5). Label rows follow the same rule. A project or reference note stays reachable with the `noblivion_recall` tool. |
+| `NOBLIVION_RECALL_PROMPT_ROWS` (`recall.prompt_rows`) | The most rows one prompt shows. A suggested value is `5`. |
+| `NOBLIVION_RECALL_HUB_DAYS` (`recall.hub_days`) | Hub rows. A note that the hook would show in more than half of the sessions of the last N days (suggested: 14) is a hub. A hub row goes behind the other rows, and `NOBLIVION_RECALL_HUB_ROWS` (default 1) of them may stay. The hook counts in `<cache folder>/hub-stats.json`, and calls no note a hub before the window holds 10 sessions. |
+
+The settings work with the rule rows (`NOBLIVION_RECALL_INDEX_RULE_ROWS`) and
+need a memory folder. The line in `recall.log` has these notes:
+
+| Note | Meaning |
+| --- | --- |
+| `rules_dropN` | Rows of the ranked list that had no rule or no apply text. |
+| `hubN`, `hubcutM` | Hub rows among the rows that would show, and hub rows left out. |
+| `rowcapN` | Rows that the row cap left out. |
+| `wasC` | The characters the index would have had without these settings. `chars` is the number now. |
+| `rules_only_off:...` | The switch was set and ignored: no rule rows, or no memory folder. |
+
+To undo, unset the settings. The prompt then shows what it showed before.
+
+The tool `tools/replay_prompt_rows.py` replays past prompts through the hook
+with one set of settings per run, and reports the characters and rows per
+prompt and the share of hub rows. See the header of the file.
+
 ### Measured floors
 
 Each floor is measured on a made-up set of 36 notes, 57 prompts (20 of

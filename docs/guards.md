@@ -208,6 +208,12 @@ and have their own budget of 4000 characters per session. Ticket and
 service labels need `labels.ticket_prefixes` and
 `labels.service_prefixes` in the config.
 
+With `NOBLIVION_RECALL_RULES_ONLY` on (config key `recall.rules_only`), a
+label match shows only when its note has both a `rule:` and an `apply:`
+field. A note without them stays reachable with the `noblivion_recall` tool.
+The guard log line counts the matches that the rule left out in
+`label_no_apply`. The switch is off by default.
+
 ## The credential guard
 
 The credential guard runs first, before the rule checks. It blocks a

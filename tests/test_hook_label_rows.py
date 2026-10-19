@@ -785,3 +785,48 @@ def test_a_guard_call_with_trigger_and_label_rows_records_no_use(env, mode):
     out = call(e, bash("cat /etc/prometheus/prometheus.yml", sid=sid))
     assert label_ids(ctx(out)) == ["project_host_alpha"]
     assert _trust_uses(e, sid) == []
+
+
+# 9. NOBLIVION-121: with the rules-only switch a label row needs a rule and an apply text ------
+def test_rules_only_is_off_by_default(env):
+    assert lr.rules_only(dict(env)) is False
+    assert label_ids(ctx(call(env, bash("cat prometheus.yml")))) == ["project_host_alpha"]
+
+
+def test_rules_only_leaves_out_a_label_match_without_rule_and_apply(env):
+    e = dict(env, NOBLIVION_RECALL_RULES_ONLY="1")
+    assert call(e, bash("cat prometheus.yml", sid="ro1")) is None  # a project note: no fields
+    # a memory with a rule and an apply text still shows
+    assert label_ids(ctx(call(e, bash("bash alpha_tool.sh", sid="ro1")))) == ["feedback_named"]
+
+
+def test_rules_only_counts_the_matches_it_left_out_in_the_log(env):
+    e = dict(env, NOBLIVION_RECALL_RULES_ONLY="1")
+    call(e, bash("bash alpha_tool.sh multi_target.py", sid="ro2"))
+    rows = [r for r in log(e) if r.get("label_rows")]
+    assert rows and rows[-1]["label_no_apply"] >= 1
+    assert "feedback_named" in rows[-1]["label_rows"]
+
+
+def test_rules_only_applies_to_the_prompt_leg(env):
+    out = io.StringIO()
+    e = dict(env, NOBLIVION_RECALL_LABELS="1", NOBLIVION_RECALL_RULES_ONLY="1")
+    assert lr.prompt_leg(_prompt("ro3"), out, e) == 0  # only a project note matches
+    assert out.getvalue() == ""
+    out = io.StringIO()
+    assert lr.prompt_leg(_prompt("ro4", "Run alpha_tool.sh now"), out, e) > 0
+    assert label_ids(out.getvalue()) == ["feedback_named"]
+
+
+def test_rules_only_reads_the_config_key(env, hook_env):
+    hook_env["config"].write_text(json.dumps({"recall": {"rules_only": True}}))
+    e = dict(env, NOBLIVION_CONFIG=str(hook_env["config"]))
+    assert lr.rules_only(e) is True
+    assert call(e, bash("cat prometheus.yml", sid="ro5")) is None
+    assert lr.rules_only(dict(e, NOBLIVION_RECALL_RULES_ONLY="0")) is False
+
+
+def test_rules_only_drops_a_match_whose_file_cannot_be_read(env, mem):
+    (mem / "feedback_named.md").unlink()  # the table still lists it
+    e = dict(env, NOBLIVION_RECALL_RULES_ONLY="1")
+    assert call(e, bash("bash alpha_tool.sh", sid="ro6")) is None

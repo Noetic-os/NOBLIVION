@@ -69,7 +69,8 @@ _TEXT_KEYS = frozenset(
 )
 _INT_KEYS = frozenset(
     "port idle_exit_s index.interval_s index.delete_grace_days "
-    "dedup.archive_retention_days recall.index_k dedup.max_pairs".split()
+    "dedup.archive_retention_days recall.index_k dedup.max_pairs "
+    "recall.prompt_rows recall.hub_days recall.hub_rows".split()
 )
 _FLOAT_KEYS = frozenset(
     "recall.timeout_s recall.min_score trust.prior_mined dedup.min_cosine "
@@ -79,7 +80,7 @@ _FLOAT_KEYS = frozenset(
 _SWITCH_KEYS = frozenset(
     "embedding.allow_download embedding.allow_remote "
     "embedding.remote_include_mined trust.events trust.citation_use "
-    "trust.correction_contradict trust.behaviour_use miner.enabled".split()
+    "trust.correction_contradict trust.behaviour_use recall.rules_only miner.enabled".split()
 )
 _CHOICES = {
     "embedding.backend": ("fastembed", "ollama", "openrouter", "none"),
@@ -116,6 +117,10 @@ ENV_KEYS = {
     "NOBLIVION_RECALL_TIMEOUT_S": "recall.timeout_s",
     "NOBLIVION_RECALL_MIN_SCORE": "recall.min_score",
     "NOBLIVION_RECALL_INDEX_K": "recall.index_k",
+    "NOBLIVION_RECALL_RULES_ONLY": "recall.rules_only",
+    "NOBLIVION_RECALL_PROMPT_ROWS": "recall.prompt_rows",
+    "NOBLIVION_RECALL_HUB_DAYS": "recall.hub_days",
+    "NOBLIVION_RECALL_HUB_ROWS": "recall.hub_rows",
     "NOBLIVION_DEDUP_JUDGE": "dedup.judge",
     "NOBLIVION_DEDUP_MODEL": "dedup.model",
     "NOBLIVION_STOP_CHECK_MODE": "stop.mode",
@@ -322,6 +327,10 @@ def _valid(key: str, value: object) -> bool:
             return number <= 65535
         if key == "recall.index_k":
             return 1 <= number <= 100
+        if key in {"recall.prompt_rows", "recall.hub_rows"}:
+            return number <= 100
+        if key == "recall.hub_days":
+            return number <= 30
         if key == "recall.min_score":
             return -1 <= number <= 1
         if key == "dedup.min_cosine":

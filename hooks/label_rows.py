@@ -68,6 +68,8 @@ SESSION_CHARS = 4000  # label row text per agent of a session
 SESSION_CHARS_ENV = "NOBLIVION_GUARD_LABEL_SESSION_CHARS"
 SWITCH_ENV = "NOBLIVION_GUARD_LABELS"  # the tool-time leg: on unless 0/off/false/no
 PROMPT_ENV = "NOBLIVION_RECALL_LABELS"  # the prompt leg: off unless set
+RULES_ONLY_ENV = "NOBLIVION_RECALL_RULES_ONLY"  # NOBLIVION-121: only rows with rule and apply
+RULES_ONLY_KEY = "recall.rules_only"
 FILE_TOOLS_ENV = "NOBLIVION_GUARD_LABELS_FILE_TOOLS"  # the file-tool leg: off unless set
 READ_TOOLS = ("Read", "Grep", "Glob")  # tools the file-tool leg adds to the guard hook
 FILE_CONTENT_CHARS = 2000  # the Edit/Write/MultiEdit content the labeller reads
@@ -123,6 +125,22 @@ def file_tools_enabled(env: Mapping[str, str]) -> bool:
     on and the tool-time leg is on."""
     on = bool(_load("hook_config").switch(FILE_TOOLS_ENV, False, env))
     return on and enabled(env)
+
+
+def rules_only(env: Mapping[str, str]) -> bool:
+    """NOBLIVION-121. True when a label match shows only if its file has both a
+    ``rule:`` and an ``apply:`` (the recall hook's switch, config key
+    ``recall.rules_only``). Off by default."""
+    return bool(_load("hook_config").switch(RULES_ONLY_ENV, False, env, RULES_ONLY_KEY))
+
+
+def has_rule_and_apply(m: Any, table: Mapping[str, Any]) -> bool:
+    """NOBLIVION-121. The match's file has a rule and an apply text. A file that
+    cannot be read has neither."""
+    mem, known = _memory(m, table)
+    return bool(
+        known and str(mem.get("rule") or "").strip() and str(mem.get("apply") or "").strip()
+    )
 
 
 def _abs(raw: str, cwd: str) -> str:
@@ -345,16 +363,22 @@ class Pick:
     """Label rows chosen for one show: ``text`` to add, ``rows`` (matches),
     ``charge(state)`` to call when the show is committed."""
 
-    def __init__(self, rows: List[Any], text: str):
+    def __init__(self, rows: List[Any], text: str, skipped: int = 0):
         self.rows = rows
         self.text = text
+        # NOBLIVION-121: the matches left out because their file has no rule or
+        # no apply text.
+        self.skipped = skipped
 
     @property
     def ids(self) -> List[str]:
         return [m.id for m in self.rows]
 
     def log_extra(self) -> Dict[str, Any]:
-        return {"label_rows": {m.id: list(m.labels) for m in self.rows}}
+        extra: Dict[str, Any] = {"label_rows": {m.id: list(m.labels) for m in self.rows}}
+        if self.skipped:
+            extra["label_no_apply"] = self.skipped
+        return extra
 
     def charge(self, state: Any) -> Dict[str, Any]:
         shown = getattr(state, "labels", None)
@@ -399,10 +423,15 @@ def pick(
         rows: List[Any] = []
         parts: List[str] = [header]
         bound = min(room, left)
+        only = rules_only(env)
+        skipped = 0
         for m in matches:
             if len(rows) >= free:
                 break
             if m.id in have or m.name in have:
+                continue
+            if only and not has_rule_and_apply(m, table):
+                skipped += 1
                 continue
             for compact in (False, True):
                 row = render_row(m, table, query, subject, compact)
@@ -414,7 +443,7 @@ def pick(
             # shorter row may still fit the room.
         if not rows:
             return None
-        return Pick(rows, "\n".join(parts))
+        return Pick(rows, "\n".join(parts), skipped)
     except Exception:  # noqa: BLE001 - fail open: no label rows
         return None
 

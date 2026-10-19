@@ -172,7 +172,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 PERSONA = "claude_code"  # the default namespace
 PROJECT_ENV = "NOBLIVION_RECALL_PROJECT"
@@ -485,6 +485,43 @@ INDEX_CHECK_LINE = "Before a command that matches a shown trigger, write one lin
 INDEX_DROP_NO_RULE_ENV = "NOBLIVION_RECALL_INDEX_DROP_NO_RULE"
 INDEX_ROW_NO_RULE = "no rule on this memory; fetch it to read it"
 
+# ── NOBLIVION-121: a prompt path of rules only ──────────
+# Three settings, each off by default, so a release without them shows what the
+# release before showed. Each has an env var and a config key; the env var wins.
+#
+#   NOBLIVION_RECALL_RULES_ONLY   (recall.rules_only, switch)  only a row whose
+#       local file has BOTH a ``rule:`` and an ``apply:`` reaches the prompt. A
+#       project or reference note stays reachable through the noblivion_recall
+#       tool. A row with no local file has no fields and is left out. The label
+#       rows (``label_rows.pick``) follow the same rule, at prompt time and at
+#       tool time. With the switch on, the rows carry the apply text of
+#       RULES_ONLY_TIERS whether or not NOBLIVION_RECALL_INDEX_APPLY is set.
+#       Needs the rule rows and a memory folder; the log says when it is ignored.
+#   NOBLIVION_RECALL_PROMPT_ROWS  (recall.prompt_rows, number)  the most rows one
+#       prompt shows, 0 = no cap beyond NOBLIVION_RECALL_INDEX_K. Suggested: 5.
+#   NOBLIVION_RECALL_HUB_DAYS     (recall.hub_days, number)  the window for hub
+#       rows (``hub_stats``), 0 = off. Suggested: 14. A hub row (shown in more
+#       than half of the sessions of the window) goes behind the other rows, and
+#       NOBLIVION_RECALL_HUB_ROWS (recall.hub_rows, default 1) of them may stay.
+#
+# The log line of a prompt carries the notes: ``:rules_dropN`` (rows without
+# rule and apply, of the ranked list), ``:hubN`` and ``:hubcutM`` (hub rows
+# among the rows that would be shown, and hub rows left out), ``:rowcapN``
+# (rows the cap left out), and ``:wasC`` (the characters the index would have
+# had without these three settings, so the log holds both numbers).
+# The per-session file of ``hub_stats`` (a test keeps this equal to
+# ``hub_stats.SEEN_SUFFIX``); the session prune removes it with the others.
+HUB_SEEN_SUFFIX = ".hub-seen.json"
+RULES_ONLY_ENV = "NOBLIVION_RECALL_RULES_ONLY"
+RULES_ONLY_KEY = "recall.rules_only"
+PROMPT_ROWS_ENV = "NOBLIVION_RECALL_PROMPT_ROWS"
+PROMPT_ROWS_KEY = "recall.prompt_rows"
+PROMPT_ROWS_MAX = 100
+# The apply text of a rule-only row: (last rank, characters). The tiers of
+# APPLY_TIERS were set for 30 rows under a 9,000-character cap; five rows have
+# to fit in about 1,500 characters, header included.
+RULES_ONLY_TIERS: Tuple[Tuple[int, int], ...] = ((1, 400), (3, 250), (5, 150))
+
 # ── Phase 4 (W7): the tiered APPLY block (F2) ──────────
 # One variable, off unless set. With it, the top rows of the rule-shaped index
 # carry the file's ``apply:`` text under the row, so the "how" reaches the model
@@ -650,6 +687,9 @@ CONFIG_SETTINGS: Tuple[Tuple[str, Tuple[str, ...], str], ...] = (
     ("NOBLIVION_RECALL_TIMEOUT_S", (), "recall.timeout_s"),
     ("NOBLIVION_RECALL_MIN_SCORE", (), "recall.min_score"),
     ("NOBLIVION_RECALL_INDEX_K", (), "recall.index_k"),
+    ("NOBLIVION_RECALL_PROMPT_ROWS", (), "recall.prompt_rows"),
+    ("NOBLIVION_RECALL_HUB_DAYS", (), "recall.hub_days"),
+    ("NOBLIVION_RECALL_HUB_ROWS", (), "recall.hub_rows"),
     ("NOBLIVION_RECALL_PROJECT", ("NOBLIVION_PROJECT",), "namespace"),
 )
 # Config key ``recall.env``: an object of ``NOBLIVION_RECALL_*`` env defaults
@@ -1879,6 +1919,7 @@ def prune_session_files(
         "." + LAST_INDEX_NAME,
         "." + SHOWN_SET_NAME + ".lock",
         "." + LAST_INDEX_NAME + ".lock",
+        HUB_SEEN_SUFFIX,
     )
     sessions: Dict[str, List[str]] = {}
     newest: Dict[str, float] = {}
@@ -2488,6 +2529,48 @@ def drop_no_rule_index(lines: Sequence[IndexLine]) -> Tuple[List[IndexLine], int
     """
     kept = [ln for ln in lines if ln.has_rule_text()]
     return kept, len(lines) - len(kept)
+
+
+def rules_only(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """NOBLIVION-121. True when only a row with a ``rule:`` and an ``apply:``
+    may reach the prompt. Off by default; the config key is ``recall.rules_only``."""
+    env = os.environ if environ is None else environ
+    return bool(_sibling_module("hook_config").switch(RULES_ONLY_ENV, False, env, RULES_ONLY_KEY))
+
+
+def prompt_rows(environ: Optional[Mapping[str, str]] = None) -> int:
+    """NOBLIVION-121. The most rows one prompt shows, 0 = no cap. An unreadable
+    value is 0: this hook never fails a prompt over a malformed setting."""
+    env = os.environ if environ is None else environ
+    raw = str(_sibling_module("hook_config").setting(PROMPT_ROWS_ENV, PROMPT_ROWS_KEY, "", env))
+    try:
+        return max(0, min(int(raw.strip() or 0), PROMPT_ROWS_MAX))
+    except ValueError:
+        return 0
+
+
+def drop_unruled_index(lines: Sequence[IndexLine]) -> Tuple[List[IndexLine], int]:
+    """NOBLIVION-121. The rows whose local file has both a rule and an apply
+    text, in the order given, and how many rows were dropped. The rows must be
+    annotated first (``annotate_index``): a row with no local file has neither
+    field and is dropped."""
+    kept = [ln for ln in lines if (ln.rule or "").strip() and (ln.apply_block or "").strip()]
+    return kept, len(lines) - len(kept)
+
+
+def demote_hubs(
+    lines: Sequence[IndexLine], hubs: Set[str], cap: int, window: int
+) -> Tuple[List[IndexLine], int, int]:
+    """NOBLIVION-121. Hub rows go behind the others and at most ``cap`` of them
+    stay. Returns ``(rows, hubs among the first window rows, hub rows left out)``.
+    The order inside each group is kept. A hub row still shows when fewer
+    than the wanted rows are left without it."""
+    if not hubs:
+        return list(lines), 0, 0
+    plain = [ln for ln in lines if ln.title not in hubs]
+    hub = [ln for ln in lines if ln.title in hubs]
+    in_window = sum(1 for ln in list(lines)[: max(0, window)] if ln.title in hubs)
+    return plain + hub[: max(0, cap)], in_window, max(0, len(hub) - max(0, cap))
 
 
 def floor_index(lines: Sequence[IndexLine], floor: float) -> Tuple[List[IndexLine], int]:
@@ -3260,6 +3343,12 @@ def _serve_index(
     floor = index_min_score(environ, default=default_floor)
     drop_asked = index_drop_no_rule(environ)
     drop_on = drop_asked and rule_rows
+    # NOBLIVION-121. Three optional changes, each off by default.
+    rules_asked = rules_only(environ)
+    rules_on = rules_asked and rule_rows and bool(memory_dirs(environ))
+    row_cap = prompt_rows(environ)
+    hub_span = _sibling_module("hub_stats").window_days(environ)
+    changed = rules_on or row_cap > 0 or hub_span > 0
     local = hygiene or rerank or rule_rows
     # P3. Ask for more than will be shown, so that a dropped row costs the list
     # nothing: INDEX_CANDIDATE_TOP_K rows, not the shown k, and the route bounds
@@ -3271,7 +3360,9 @@ def _serve_index(
     # floor would have no row to give its place to, and k would not be a cap.
     # WI-18: the no-rule drop overfetches for the same reason.
     ask = (
-        max(k, INDEX_CANDIDATE_TOP_K) if (hygiene or rerank or floor is not None or drop_on) else k
+        max(k, INDEX_CANDIDATE_TOP_K)
+        if (hygiene or rerank or floor is not None or drop_on or rules_on or hub_span > 0)
+        else k
     )
     try:
         lines = (
@@ -3353,11 +3444,42 @@ def _serve_index(
         note += f":norule_drop{no_rule}"
     elif drop_asked:
         note += ":drop_no_rule_off:no_rule_rows"
+    if rules_asked and not rules_on:
+        note += ":rules_only_off:no_rule_rows" if not rule_rows else ":rules_only_off:no_memory_dir"
+    # NOBLIVION-121. The rows as the release before would have cut them, kept for
+    # the ``:wasC`` note. The three steps below change ``lines`` and not these.
+    before = list(lines) if changed and diagnostic is None else []
+    if rules_on:
+        # Annotated here, on the whole ranked list, because the admission reads
+        # the file's rule and apply.
+        annotate_index(lines, by_name)
+        lines, unruled = drop_unruled_index(lines)
+        trace("missing_rule_or_apply", lines)
+        note += f":rules_drop{unruled}"
+    k_shown = min(k, row_cap) if row_cap > 0 else k
+    hub_names: Set[str] = set()
+    hub_candidates: List[str] = []
+    if hub_span > 0:
+        hub_names, _hub_sessions = _sibling_module("hub_stats").hubs(
+            "" if diagnostic is not None else cache, hub_span
+        )
+        # The count is of the rows the hook WOULD show without this rule. Counting
+        # the rows it shows would let the demotion lower its own measure: a hub
+        # that is shown less drops under the share, stops being a hub, comes back,
+        # and the share settles at the threshold.
+        hub_candidates = [ln.title for ln in lines[:k]]
+        lines, hub_seen, hub_cut = demote_hubs(
+            lines, hub_names, _sibling_module("hub_stats").hub_rows(environ), k_shown
+        )
+        trace("hub_row_cap", lines)
+        note += f":hub{hub_seen}" + (f":hubcut{hub_cut}" if hub_cut else "")
+    if row_cap > 0 and min(len(lines), k) > k_shown:
+        note += f":rowcap{min(len(lines), k) - k_shown}"
     if local or floor is not None:
         # Renumbered after a drop or a re-rank, and after the floor: a printed
         # rank, and the APPLY tier that belongs to a rank, follow the rows that
         # are shown.
-        lines = renumber(lines[:k])
+        lines = renumber(lines[:k_shown])
         trace("top_k", lines)
     if local:
         if rule_rows:
@@ -3366,13 +3488,16 @@ def _serve_index(
             # store's summary and is counted here, not hidden.
             note += f":ruled{annotate_index(lines, by_name)}of{len(lines)}"
     tiers: Tuple[Tuple[int, int], ...] = ()
-    if apply_on and not rule_rows:
+    if rules_on:
+        tiers = tuple(RULES_ONLY_TIERS)
+    elif apply_on and not rule_rows:
         note += ":apply_off:no_rule_rows"
     elif apply_on:
         tiers = tuple(APPLY_TIERS)
     # WI-17. Before DP-6, so DP-6 counts only blocks of rows that will be shown.
     row_on = False
     reduced = False
+    seen_rows: Set[str] = set()
     if index_row_dedupe(environ):
         if not rule_rows:
             note += ":row_dedupe_off:no_rule_rows"
@@ -3382,6 +3507,7 @@ def _serve_index(
             row_on = True
             had = load_shown_set(cache, sid)
             seen = set(had.get(SHOWN_ROW_KIND) or ()) | set(had["apply"])
+            seen_rows = seen
             fresh = [ln for ln in lines if not (ln.title and ln.title in seen)]
             note += f":rows{len(fresh)}of{len(lines)}"
             reduced = len(fresh) < len(lines)
@@ -3414,6 +3540,24 @@ def _serve_index(
     text, shown, with_block = layout_index(
         lines, ms, index_cap(environ), recall_project(environ), rule_rows, tiers, reduced, check_on
     )
+    if before:
+        # NOBLIVION-121. What the release before would have printed for the same
+        # candidates: the same cut to k, the old tiers, the same row dedupe.
+        was_rows = renumber(before[:k])
+        if rule_rows:
+            annotate_index(was_rows, by_name)
+        was_fresh = [ln for ln in was_rows if not (ln.title and ln.title in seen_rows)]
+        was_text, _was_shown, _was_blocks = layout_index(
+            was_fresh,
+            ms,
+            index_cap(environ),
+            recall_project(environ),
+            rule_rows,
+            tuple(APPLY_TIERS) if (apply_on and rule_rows) else (),
+            row_on and len(was_fresh) < len(was_rows),
+            check_on,
+        )
+        note += f":was{len(was_text)}"
     if len(shown) < len(lines):
         # NOBLIVION-109: the cap cut rows from the bottom. Said in the log.
         note += f":capcut{len(lines) - len(shown)}of{len(lines)}"
@@ -3457,6 +3601,11 @@ def _serve_index(
         note += ":shown_unwritable"
     if chars:
         note += _record_shown_events(cache, sid, event, shown, environ)  # (E)
+    if hub_candidates and _valid_sid(sid):
+        # NOBLIVION-121. After the emit, so it cannot delay the prompt. The
+        # counts feed the hub rows of later prompts.
+        if not _sibling_module("hub_stats").record(cache, sid, hub_candidates, hub_span):
+            note += ":hub_unwritable"
     if _valid_sid(sid):
         # WI-9. After the emit, so it cannot delay the prompt. No log note: the
         # status of a call must not depend on what other sessions left behind.

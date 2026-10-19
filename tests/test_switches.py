@@ -51,6 +51,7 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_RECALL_INDEX_ROW_DEDUPE": rh.index_row_dedupe,
     "NOBLIVION_RECALL_INDEX_CHECK_LINE": rh.index_check_line,
     "NOBLIVION_RECALL_INDEX_DROP_NO_RULE": rh.index_drop_no_rule,
+    "NOBLIVION_RECALL_RULES_ONLY": rh.rules_only,  # NOBLIVION-121
     "NOBLIVION_SUBAGENT_RULES_OFF": sr.is_off,
     "NOBLIVION_CONTINUITY": ch.is_on,
     "NOBLIVION_CONTINUITY_BRIEFING": lambda e: ch._flag(e, ch.BRIEFING_ENV, True),
