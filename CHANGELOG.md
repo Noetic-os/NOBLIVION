@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.17 - 2026-10-19
+
 - Raise the precision of the behavioural use signal (NOBLIVION-120), still off by default
   (`NOBLIVION_TRUST_BEHAVIOUR_USE`). A `complies` regex now runs on the masked view of the Bash
   command, so heredoc bodies, quoted text and comments are no run. A command trigger counts only
