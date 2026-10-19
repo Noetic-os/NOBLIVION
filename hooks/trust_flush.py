@@ -248,18 +248,26 @@ def scan_transcripts(
 
 
 def scan_signals(
-    cache: str, sid: str, transcript: str, state: Dict[str, Any], environ: Mapping[str, str]
+    cache: str,
+    sid: str,
+    transcript: str,
+    state: Dict[str, Any],
+    environ: Mapping[str, str],
+    cwd: str = "",
 ) -> str:
-    """Append the citation ``use`` and correction ``contradict`` events
-    (``trust_signals``) of the main transcript since the last flush. Returns
-    a short log note: ``""`` when both signals are off or nothing was read,
-    else ``use:N,contradict:M`` or a failure reason. The offset moves only
-    once the events are on disk."""
+    """Append the citation ``use``, correction ``contradict`` and behaviour
+    ``use`` events (``trust_signals``, ``trust_behaviour``) of the main
+    transcript since the last flush. Returns a short log note: ``""`` when
+    all signals are off or nothing was read, else ``use:N,contradict:M`` or a
+    failure reason. The offset moves only once the events are on disk."""
     try:
         ts_mod = _load("trust_signals")
         citation = ts_mod.citation_on(environ)
         correction = ts_mod.correction_on(environ)
-        if not (citation or correction) or not transcript or not os.path.isfile(transcript):
+        behaviour = ts_mod.behaviour_on(environ)
+        if not (citation or correction or behaviour):
+            return ""
+        if not transcript or not os.path.isfile(transcript):
             return ""
         raw = state.get("signals")
         doc: Dict[str, Any] = raw if isinstance(raw, dict) else {}
@@ -272,9 +280,18 @@ def scan_signals(
             return ""
         shown = ts_mod.load_shown(cache, sid)
         exposures = ts_mod.load_exposures(cache, sid) if shown else {}
-        events, new_doc = ts_mod.scan(
-            [r for _, r in records], shown, exposures, doc, citation, correction
-        )
+        recs = [r for _, r in records]
+        events, new_doc = [], doc
+        if citation or correction:
+            events, new_doc = ts_mod.scan(recs, shown, exposures, doc, citation, correction)
+        if behaviour and shown:
+            bh = _load("trust_behaviour")
+            more, new_doc["behaviour"] = bh.scan(
+                recs, shown, exposures, bh.load_table(environ, cwd), doc.get("behaviour")
+            )
+            events = events + more
+        elif "behaviour" in doc:  # the setting is off now: keep what it knew
+            new_doc["behaviour"] = doc["behaviour"]
         if events and not te().append_events(cache, sid, events, environ):
             return "append_failed"
         new_doc["offset"] = new_offset
@@ -662,7 +679,7 @@ def run_child(
         if root:
             state["root"] = root
         fetched = scan_transcripts(cache, sid, transcript, state, environ)
-        signals = scan_signals(cache, sid, transcript, state, environ)
+        signals = scan_signals(cache, sid, transcript, state, environ, cwd)
         status = flush_events(cache, sid, state, environ, post, connect)
         save_state(cache, sid, state)
     status = f"{status} fetch_uses={fetched}" if fetched >= 0 else f"{status} fetch_append_failed"

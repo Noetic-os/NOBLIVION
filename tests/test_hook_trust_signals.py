@@ -447,8 +447,10 @@ def test_recall_hook_switch_names_match_the_module() -> None:
     assert rh.TRUST_SIGNAL_SWITCHES == (
         (sig.CITATION_ENV, sig.CITATION_KEY),
         (sig.CORRECTION_ENV, sig.CORRECTION_KEY),
+        (sig.BEHAVIOUR_ENV, sig.BEHAVIOUR_KEY),
     )
     assert sig.CITATION_DEFAULT is False and sig.CORRECTION_DEFAULT is False
+    assert sig.BEHAVIOUR_DEFAULT is False
 
 
 def test_recall_hook_writes_no_shown_text_by_default(tmp_path: Path) -> None:

@@ -19,7 +19,7 @@ There are three kinds of events:
 | Event | When |
 | --- | --- |
 | `recall` | The prompt hook showed the note in a ranked index row. This counts as exposure only. |
-| `use` | Claude Code opened the note with the MCP tool, or the guard denied a command because of the note's rule. With `trust.citation_use` on, also: a reply cited the note (see "Citations and corrections"). |
+| `use` | Claude Code opened the note with the MCP tool, or the guard denied a command because of the note's rule. With `trust.citation_use` on, also: a reply cited the note (see "Citations and corrections"). With `trust.behaviour_use` on, also: a later tool call followed the note's rule (see "Behaviour as `use`"). |
 | `contradict` | Claude Code overrode a guard deny of the note's rule with `# guard-ok: <reason>`. With `trust.correction_contradict` on, also: the user corrected a reply that cited the note (see "Citations and corrections"). |
 
 A guard that only shows a rule next to a command (guard rows or label rows)
@@ -65,15 +65,17 @@ To stop all of this, set `NOBLIVION_TRUST_EVENTS=0` or `trust.events` to
 
 ## Citations and corrections
 
-Two settings add events from the session transcript. Both are off by
-default, because their precision on a small labelled set was not high.
+Three settings add events from the session transcript. All are off by
+default, because their precision on a small labelled set was not high, or
+has not been measured yet.
 
 | Setting | Event | Default |
 | --- | --- | --- |
 | `NOBLIVION_TRUST_CITATION_USE` or `trust.citation_use` | `use` when a reply cites a shown note | off |
 | `NOBLIVION_TRUST_CORRECTION_CONTRADICT` or `trust.correction_contradict` | `contradict` when the user corrects a reply that cited a note | off |
+| `NOBLIVION_TRUST_BEHAVIOUR_USE` or `trust.behaviour_use` | `use` when a later tool call follows a shown rule | off |
 
-Both also need the trust events (`trust.events`).
+All of them also need the trust events (`trust.events`).
 
 When one of them is on, the prompt hook writes the name and the rule text of
 each note it shows to
@@ -103,6 +105,57 @@ A reply cites a note when all of these hold:
   a reply that names 5 or more shown notes at once.
 
 A tool call is not a reply: a note name in a command does not count.
+
+### Behaviour as `use`
+
+A reply that follows a rule without naming it is no citation. This signal
+reads the tool calls instead. A tool call is a `use` of a shown note when
+all of these hold:
+
+- the prompt hook showed the note before the call, and the note has a row
+  in the guard table (it has a `complies` regex or a `triggers` list);
+- the call is not a violation: the note's `violates` regex does not match
+  the Bash command;
+- one of these is true:
+  - the Bash command matches the note's `complies` regex, a run of the
+    rule's own command;
+  - a Bash command fires a strong command trigger of the note;
+  - a Write, Edit, MultiEdit or NotebookEdit call names a file that a
+    `glob:` trigger of the note matches.
+
+A strong trigger is one that the guard hook does not grade as weak
+(`weak_trigger`): it is not an everyday command, it names an argument, and
+few notes hold it. A trigger such as `git status` fires on most calls, so it
+counts for nothing.
+
+The `apply` field is prose, so it is not matched. A `phrase:` trigger is
+about the prompt, and a `tool:` trigger names no command, so neither is
+matched. A call of a subagent is not read.
+
+A note gets one behaviour `use` per session. The event carries the source
+`behaviour`. The trust flush worker reads the main transcript in the
+background, like the citation scan, so no hook gets slower.
+
+The store keeps no source (`sources` on an event is ignored), so the store
+cannot split the three kinds of `use` apart. The local spool file
+`<data dir>/cache/by-session/<session id>.trust-events.jsonl` keeps the
+source of each line until the flush deletes the file. To count the sources
+over past sessions, run the replay tool:
+
+```sh
+python tools/replay_transcripts.py --memory-dir DIR --since-days 7 \
+    --trace behaviour-trace.jsonl ~/.claude/projects/<project>/*.jsonl
+```
+
+It prints the uses by source (`citation`, `behaviour`, `fetch`) and the use
+rate (uses divided by shown notes). A guard deny is a live hook event that
+no transcript holds, so the replay cannot count it. The trace file holds one
+line per behaviour `use`, with the tool call and the match, so that a person
+can label a sample. The trace holds transcript text: keep it private.
+
+To undo: set `NOBLIVION_TRUST_BEHAVIOUR_USE=0`. The signal then adds no new
+event. A behaviour `use` that the store already holds stays in its counts;
+the source name is only in the spool and in the replay.
 
 ### Correction as `contradict`
 
@@ -486,6 +539,7 @@ The rules, fixed before the data was read:
 | --- | --- | --- |
 | `NOBLIVION_TRUST_CITATION_USE` | n 40, lower bound 0.087 < 0.70; after NOBLIVION-43 n 29, lower bound 0.344; stricter rule of NOBLIVION-45 n 6, lower bound 0.030 (not adopted) | off |
 | `NOBLIVION_TRUST_CORRECTION_CONTRADICT` | n 0 < 30 | off |
+| `NOBLIVION_TRUST_BEHAVIOUR_USE` | n 0 < 30: no labelled sample yet (NOBLIVION-120) | off |
 | Trust ranking | verdict `no gain` | off |
 
 No default changed.

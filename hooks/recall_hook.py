@@ -3099,12 +3099,13 @@ def _record_shown_events(
         return f":trust_events_off:{type(exc).__name__}"
 
 
-# NOBLIVION-38: the two transcript signals (trust_signals.CITATION_ENV and
-# CORRECTION_ENV with their config keys; a test keeps them equal). Both off by
-# default.
+# NOBLIVION-38, NOBLIVION-120: the transcript signals (trust_signals.CITATION_ENV,
+# CORRECTION_ENV and BEHAVIOUR_ENV with their config keys; a test keeps them
+# equal). All off by default.
 TRUST_SIGNAL_SWITCHES = (
     ("NOBLIVION_TRUST_CITATION_USE", "trust.citation_use"),
     ("NOBLIVION_TRUST_CORRECTION_CONTRADICT", "trust.correction_contradict"),
+    ("NOBLIVION_TRUST_BEHAVIOUR_USE", "trust.behaviour_use"),
 )
 
 
@@ -3112,7 +3113,7 @@ def _record_shown_text(
     cache: str, sid: Any, event: str, shown: Sequence[IndexLine], environ: Mapping[str, str]
 ) -> None:
     """NOBLIVION-38: the name and rule of each row just shown, once per
-    session, for the citation and correction signals (``trust_signals``).
+    session, for the citation, correction and behaviour signals (``trust_signals``).
     Only when one of them is on: the switches are read here first, so a
     prompt with both off does not load the module. Never raises."""
     try:

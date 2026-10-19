@@ -17,7 +17,10 @@
    Claude Code ignored a right note. A wrong ``contradict`` takes 2 uses off
    a good note.
 
-Both signals need the trust events (``trust_events.enabled``).
+A third source, behaviour, is in ``trust_behaviour`` (NOBLIVION-120). It
+reads the same transcript and the same shown notes.
+
+All signals need the trust events (``trust_events.enabled``).
 
 Where the data comes from:
 
@@ -55,6 +58,9 @@ CITATION_DEFAULT = False
 CORRECTION_ENV = "NOBLIVION_TRUST_CORRECTION_CONTRADICT"
 CORRECTION_KEY = "trust.correction_contradict"
 CORRECTION_DEFAULT = False
+BEHAVIOUR_ENV = "NOBLIVION_TRUST_BEHAVIOUR_USE"
+BEHAVIOUR_KEY = "trust.behaviour_use"
+BEHAVIOUR_DEFAULT = False
 
 SHOWN_NAME = "trust-shown.jsonl"
 SHOWN_MAX_BYTES = 1_000_000  # no more notes are added to a larger file
@@ -196,8 +202,14 @@ def correction_on(environ: Optional[Mapping[str, str]] = None) -> bool:
     return _switch(CORRECTION_ENV, CORRECTION_DEFAULT, CORRECTION_KEY, environ)
 
 
+def behaviour_on(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """A later tool call that follows a shown rule is a ``use`` (NOBLIVION-120,
+    ``trust_behaviour``). Off by default."""
+    return _switch(BEHAVIOUR_ENV, BEHAVIOUR_DEFAULT, BEHAVIOUR_KEY, environ)
+
+
 def any_on(environ: Optional[Mapping[str, str]] = None) -> bool:
-    return citation_on(environ) or correction_on(environ)
+    return citation_on(environ) or correction_on(environ) or behaviour_on(environ)
 
 
 # ── the shown notes (written by the prompt hook) ───────────────────────────

@@ -94,6 +94,7 @@ def test_every_moved_module_is_present() -> None:
         "trust_events",
         "trust_flush",
         "trust_rank",
+        "trust_behaviour",
         "trust_report",
         "trust_session_line",
         "trust_signals",

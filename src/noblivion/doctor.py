@@ -79,7 +79,7 @@ _FLOAT_KEYS = frozenset(
 _SWITCH_KEYS = frozenset(
     "embedding.allow_download embedding.allow_remote "
     "embedding.remote_include_mined trust.events trust.citation_use "
-    "trust.correction_contradict miner.enabled".split()
+    "trust.correction_contradict trust.behaviour_use miner.enabled".split()
 )
 _CHOICES = {
     "embedding.backend": ("fastembed", "ollama", "openrouter", "none"),
@@ -124,6 +124,7 @@ ENV_KEYS = {
     "NOBLIVION_TRUST_EVENTS": "trust.events",
     "NOBLIVION_TRUST_CITATION_USE": "trust.citation_use",
     "NOBLIVION_TRUST_CORRECTION_CONTRADICT": "trust.correction_contradict",
+    "NOBLIVION_TRUST_BEHAVIOUR_USE": "trust.behaviour_use",
 }
 
 

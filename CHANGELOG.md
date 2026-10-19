@@ -8,6 +8,13 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Add a behavioural `use` signal for the trust events, off by default
+  (`NOBLIVION_TRUST_BEHAVIOUR_USE`, config key `trust.behaviour_use`). A tool call
+  after the showing that runs a shown rule's `complies` command, fires one of its strong
+  triggers or edits a file that its `glob:` trigger names is a `use` with the source
+  `behaviour`, unless the rule's `violates` regex matches. The replay tool reports the uses
+  by source and the use rate.
+
 ## 0.1.16 - 2026-10-18
 
 - Add frozen held-out evaluation and paired injection replay with external task-state checks.

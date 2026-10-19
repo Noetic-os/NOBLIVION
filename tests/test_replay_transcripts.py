@@ -172,3 +172,84 @@ def test_replay_session_writes_events_with_the_original_times(
     line = got["trace"][0]
     assert (line["kind"], line["src"], line["name"]) == ("use", "citation", NAME)
     assert NAME in line["text"]
+
+
+def test_use_summary_splits_the_uses_by_source() -> None:
+    got = rt.use_summary(
+        {
+            "recall:index": 20,
+            "use:citation": 2,
+            "use:behaviour": 3,
+            "use:behaviour+citation": 1,
+            "use:fetch": 1,
+            "store:inserted": 27,
+        }
+    )
+    assert got == {
+        "uses": 7,
+        "recalls": 20,
+        "use_rate": 0.35,
+        "uses_by_source": {"behaviour": 4, "citation": 3, "fetch": 1},
+    }
+    assert rt.use_summary({}) == {"uses": 0, "recalls": 0, "use_rate": None, "uses_by_source": {}}
+
+
+def test_replay_env_turns_the_behaviour_source_on() -> None:
+    env = rt.replay_env({}, "/tmp/memory", False)
+    assert env["NOBLIVION_TRUST_BEHAVIOUR_USE"] == "1"
+
+
+def test_replay_session_counts_a_behaviour_use_and_traces_the_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_modules
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setenv("NOBLIVION_DATA_DIR", str(data))
+    monkeypatch.delenv("NOBLIVION_RECALL_CACHE_DIR", raising=False)
+    conn = db.open_db(data / "noblivion.db", create=True)
+    mid = add_memory(conn, NAME, RULE)
+    command = "make check-widgets --dry-run"
+    table = {
+        "entries": [
+            {
+                "id": NAME,
+                "rule": RULE,
+                "apply": command,
+                "scope": "tool",
+                "triggers": [],
+                "violates": r"^make\s+check-widgets\s+--force",
+                "complies": r"make\s+check-widgets\s+--dry-run",
+                "run_first": command,
+            }
+        ]
+    }
+    (tmp_path / "table.json").write_text(json.dumps(table), encoding="utf-8")
+    call = _assistant("2026-01-05T10:00:20.000Z", "Running the checks.")
+    call["message"]["content"].append(
+        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": command}}
+    )
+    path = _write(
+        tmp_path / "proj" / f"{SID}.jsonl",
+        [_user("2026-01-05T10:00:00.000Z", "please deploy the widget service"), call],
+    )
+
+    clock = rt.Clock()
+    plugin = rt.Plugin(clock)
+    base = {"NOBLIVION_DATA_DIR": str(data), "NOBLIVION_GUARD_TABLE": str(tmp_path / "table.json")}
+    env = rt.replay_env(base, str(tmp_path / "memory"), False)
+    cache = plugin.te.cache_dir(env)
+
+    def fake_prompt(sid: str, text: str, environ) -> None:
+        plugin.signals.record_shown(cache, sid, "UserPromptSubmit", [(mid, NAME, RULE)], environ)
+        plugin.te.record_index(cache, sid, "UserPromptSubmit", [mid], environ)
+
+    monkeypatch.setattr(plugin, "prompt", fake_prompt)
+    got = rt.replay_session(str(path), plugin, clock, env, conn)
+    conn.close()
+
+    assert got["events"]["use:behaviour"] == 1
+    assert got["events"]["recall:index"] == 1
+    assert len(got["trace"]) == 1
+    line = got["trace"][0]
+    assert (line["src"], line["why"], line["name"]) == ("behaviour", "complies", NAME)
+    assert line["text"] == f"Bash: {command}"

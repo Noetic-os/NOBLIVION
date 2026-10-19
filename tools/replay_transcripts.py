@@ -32,6 +32,12 @@ A prompt here is a user record that ``trust_signals.user_prompt`` accepts,
 less a compaction summary and the "[Request interrupted" marker: Claude Code
 runs no prompt hook for those. Subagent transcripts are not replayed.
 
+The report ends with the uses by source (citation, behaviour, fetch) and the
+use rate: uses divided by shown notes, one per session and note. A guard deny
+is a live hook event, so no transcript holds it and the replay cannot count
+it. ``--since-days N`` replays only the sessions of the last N days. The
+trace holds a line per behaviour use too: the tool call and the match.
+
 ``--birth-from-tool-calls``: the memory folder is read as it is today, so a
 note written in a later session could be shown at an earlier prompt. With
 this option a note exists only from the first tool call, in any transcript
@@ -78,6 +84,7 @@ HOOKS = Path(__file__).resolve().parent.parent / "hooks"
 STATE_NAME = "replay-state.json"
 INTERRUPT_PREFIX = "[Request interrupted"
 TRACE_TEXT_MAX = 1200
+SRC_BEHAVIOUR = "behaviour"  # trust_behaviour.SRC_BEHAVIOUR
 _MD_MARK_RE = re.compile(r"\[[a-z_]+:\s*([\w.-]{1,200}\.md)\]")
 _MD_NAME_RE = re.compile(r"[\w.-]{1,200}\.md")
 
@@ -276,6 +283,7 @@ def replay_env(base: Mapping[str, str], memory_dir: str, shadow: bool) -> dict[s
     env["NOBLIVION_MEMORY_DIR"] = memory_dir
     env["NOBLIVION_TRUST_CITATION_USE"] = "1"
     env["NOBLIVION_TRUST_CORRECTION_CONTRADICT"] = "1"
+    env["NOBLIVION_TRUST_BEHAVIOUR_USE"] = "1"
     env.pop("CLAUDE_PROJECT_DIR", None)
     if shadow:
         env["NOBLIVION_RECALL_INDEX_TRUST"] = "shadow"
@@ -292,6 +300,37 @@ def _cited_sentences(text: str, note: Mapping[str, str], signals: Any) -> str:
         if signals.cites(s, note.get("name", ""), note.get("rule", ""))
     ]
     return " | ".join(out)[:TRACE_TEXT_MAX]
+
+
+def _behaviour_line(
+    sid: str,
+    ev: Mapping[str, Any],
+    records: Sequence[Mapping[str, Any]],
+    shown: Mapping[int, Mapping[str, str]],
+    te: Any,
+    signals: Any,
+) -> dict:
+    """The trace line of a behaviour ``use``: the tool call that caused it and
+    the match (``why``), for labelling by hand."""
+    note = shown.get(int(ev["mv_id"]), {})
+    calls: list[str] = []
+    for rec in records:
+        if te.norm_ts(rec.get("timestamp")) != ev["ts"]:
+            continue
+        for name, inp in signals._load("trust_behaviour").tool_calls(rec):
+            arg = inp.get("command") or inp.get("file_path") or inp.get("notebook_path") or ""
+            calls.append(f"{name}: {arg}")
+    return {
+        "session": sid,
+        "ts": ev["ts"],
+        "kind": ev["kind"],
+        "src": ev["src"],
+        "mv_id": ev["mv_id"],
+        "name": note.get("name", ""),
+        "rule": note.get("rule", ""),
+        "why": ev.get("why", ""),
+        "text": " | ".join(calls)[:TRACE_TEXT_MAX],
+    }
 
 
 def trace_lines(
@@ -312,6 +351,9 @@ def trace_lines(
             by_ts.setdefault(ts, []).append(rec)
     out: list[dict] = []
     for ev in events:
+        if ev.get("src") == SRC_BEHAVIOUR:
+            out.append(_behaviour_line(sid, ev, records, shown, te, signals))
+            continue
         if ev.get("src") not in (signals.SRC_CITATION, signals.SRC_CORRECTION):
             continue
         note = shown.get(int(ev["mv_id"]), {})
@@ -375,12 +417,13 @@ def replay_session(
     plugin.exists = lambda name: True
     cache = te.cache_dir(env)
     state: dict[str, Any] = {}
+    plugin.flush.scan_transcripts(cache, sid, path, state, env)
     plugin.flush.scan_signals(cache, sid, path, state, env)
     events, _end, _bad = plugin.flush.read_unsent(cache, sid, 0)
     shown = signals.load_shown(cache, sid)
     counts["shown"] = len(shown)
     for ev in events:
-        key = f"{ev['kind']}:{ev.get('src', '')}"
+        key = f"{ev['kind']}:{'+'.join(ev.get('sources') or [])}"
         counts["events"][key] = counts["events"].get(key, 0) + 1
     spool = te.events_file(cache, sid)
     raw = (
@@ -397,6 +440,29 @@ def replay_session(
             for k, v in stored.items():
                 counts["events"][f"store:{k}"] = counts["events"].get(f"store:{k}", 0) + v
     return counts
+
+
+def use_summary(events: Mapping[str, int]) -> dict[str, Any]:
+    """Uses by source and the use rate from the ``kind:sources`` counts of a
+    replay. One use is a (session, note) pair, so a note used by two sources
+    counts once in ``uses`` and once under each source. A guard deny is a live
+    hook event: no transcript holds it, so the replay never counts it."""
+    by_source: dict[str, int] = {}
+    uses = recalls = 0
+    for key, n in events.items():
+        kind, _, src = key.partition(":")
+        if kind == "recall":
+            recalls += n
+        elif kind == "use":
+            uses += n
+            for one in src.split("+") if src else ["unknown"]:
+                by_source[one] = by_source.get(one, 0) + n
+    return {
+        "uses": uses,
+        "recalls": recalls,
+        "use_rate": round(uses / recalls, 4) if recalls else None,
+        "uses_by_source": dict(sorted(by_source.items())),
+    }
 
 
 # -- the run -----------------------------------------------------------------------
@@ -421,6 +487,9 @@ def run(args: argparse.Namespace, environ: Mapping[str, str]) -> dict[str, Any]:
     totals: dict[str, Any] = dict(state.get("totals") or {})
     memory_dir = os.path.abspath(os.path.expanduser(args.memory_dir))
     paths = main_transcripts(args.transcripts)
+    if args.since_days:
+        limit = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=args.since_days)
+        paths = [p for p in paths if (_iso(first_ts(p)) or limit) >= limit]
     births = None
     if args.birth_from_tool_calls:
         names = {p.name for p in Path(memory_dir).glob("*.md")}
@@ -428,6 +497,10 @@ def run(args: argparse.Namespace, environ: Mapping[str, str]) -> dict[str, Any]:
     clock = Clock()
     plugin = Plugin(clock)
     env = replay_env(environ, memory_dir, args.shadow)
+    # The behaviour source reads the guard table of the memory folder.
+    gt = _load("guard_table", "replay_guard_table")
+    folders = gt.source_dirs(None, env)
+    gt.rebuild(folders, gt.table_path(folders[0], env))
     conn = db.open_db(settings.db_path, allow_migrate=False)
     trace = open(args.trace, "a", encoding="utf-8") if args.trace else None  # noqa: SIM115
     t0 = time.monotonic()
@@ -456,6 +529,7 @@ def run(args: argparse.Namespace, environ: Mapping[str, str]) -> dict[str, Any]:
         if trace is not None:
             trace.close()
     return {
+        **use_summary(totals.get("events") or {}),
         "transcripts": len(paths),
         "replayed": len(done),
         "left": len([p for p in paths if p not in done]),
@@ -471,6 +545,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--birth-from-tool-calls", action="store_true")
     parser.add_argument(
         "--no-shadow", dest="shadow", action="store_false", help="do not write the hook's trust log"
+    )
+    parser.add_argument(
+        "--since-days",
+        type=float,
+        default=0.0,
+        help="replay only sessions that began this recently",
     )
     parser.add_argument("--max-seconds", type=float, default=0.0, help="stop after this long")
     parser.add_argument("--trace", help="write the signal events with their text here")

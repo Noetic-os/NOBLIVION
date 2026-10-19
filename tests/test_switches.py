@@ -65,6 +65,7 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_TRUST_EVENTS": te.enabled,
     "NOBLIVION_TRUST_CITATION_USE": ts.citation_on,
     "NOBLIVION_TRUST_CORRECTION_CONTRADICT": ts.correction_on,
+    "NOBLIVION_TRUST_BEHAVIOUR_USE": ts.behaviour_on,
     "NOBLIVION_MINER": me.is_enabled,
 }
 
