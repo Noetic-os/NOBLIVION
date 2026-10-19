@@ -6,10 +6,13 @@ What these tests hold:
 
 1. THE SETTING. Off by default, on by its env var or config key, and off when
    the trust events are off.
-2. THE MATCH. A tool call after the showing counts when it runs the rule's
-   ``complies`` command, fires a strong trigger, or edits a file that a
-   ``glob:`` trigger names. A call that matches ``violates`` never counts. A
-   weak or broad trigger never counts.
+2. THE MATCH. A Bash call after the showing counts when it runs the rule's
+   ``complies`` command, or fires a strong trigger that the rule's own text
+   tells the reader to run. Text that is only data in the command (a heredoc
+   body, a quoted argument, a comment) never counts. A call that matches
+   ``violates`` never counts. A weak, broad, shared or place-only trigger, a
+   trigger that the rule only mentions, and any file tool call never count
+   (NOBLIVION-120: precision gate).
 3. THE ONCE-PER-SESSION RULE, and the rule that a call before the showing
    does not count.
 4. THE FILES. The Stop flush appends the event with its own source, keeps the
@@ -46,7 +49,7 @@ PUBLISH = {
 }
 LINT = {
     "id": "feedback_run_the_widget_linter",
-    "rule": "Run the widget linter after an edit.",
+    "rule": "Run `python3 tools/widget_lint.py` after an edit.",
     "apply": "python3 tools/widget_lint.py",
     "scope": "tool",
     "triggers": ["python3 tools/widget_lint.py"],
@@ -160,7 +163,12 @@ def test_a_violates_match_blocks_a_complies_run_in_the_same_command() -> None:
 
 
 def test_a_trigger_with_a_specific_argument_counts() -> None:
-    specific = dict(PUBLISH, triggers=["make publish widgets-eu"], complies="")
+    specific = dict(
+        PUBLISH,
+        rule="Use `make publish widgets-eu` for the EU stock.",
+        triggers=["make publish widgets-eu"],
+        complies="",
+    )
     got = _run([_bash(T_CALL, "make publish widgets-eu --now")], table={"entries": [specific]})
     assert got == [(1, "make publish widgets-eu")]
 
@@ -187,14 +195,17 @@ def test_a_one_word_trigger_is_weak_and_is_not_a_use() -> None:
     assert got == []
 
 
-def test_a_glob_trigger_counts_on_a_file_edit() -> None:
-    got = _run([_call(T_CALL, "Edit", file_path="/work/app/db/schema.sql")])
-    assert got == [(4, "glob:db/schema.sql")]
+def test_a_glob_trigger_on_a_file_edit_is_not_a_use() -> None:
+    # A path says that the rule applies, not that it was followed (NOBLIVION-120).
+    assert _run([_call(T_CALL, "Edit", file_path="/work/app/db/schema.sql")]) == []
+    assert _run([_call(T_CALL, "Write", file_path="/work/app/db/schema.sql")]) == []
 
 
-def test_a_read_or_another_file_is_not_a_use() -> None:
-    assert _run([_call(T_CALL, "Read", file_path="/work/app/db/schema.sql")]) == []
-    assert _run([_call(T_CALL, "Edit", file_path="/work/app/db/other.sql")]) == []
+def test_a_file_write_with_the_command_in_its_text_is_not_a_use() -> None:
+    body = "run make publish-widgets --dry-run and python3 tools/widget_lint.py"
+    for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        rec = _call(T_CALL, tool, file_path="/work/notes.md", content=body, new_string=body)
+        assert _run([rec]) == []
 
 
 def test_a_subagent_call_is_not_read() -> None:
@@ -215,6 +226,136 @@ def test_a_note_without_a_table_row_is_not_matched() -> None:
 
 def test_an_empty_or_bad_call_is_skipped() -> None:
     assert _run([_bash(T_CALL, ""), _call(T_CALL, "Bash"), {"type": "assistant"}]) == []
+
+
+# ── 2b. the precision gate (NOBLIVION-120) ──────────────────────────────────
+
+
+def _one(entry: dict[str, Any], command: str) -> list[tuple[int, str]]:
+    shown = {1: {"name": entry["id"] + ".md", "rule": ""}}
+    return _run(
+        [_bash(T_CALL, command)],
+        table={"entries": [entry]},
+        shown=shown,
+        exposures={1: [T_SHOWN]},
+    )
+
+
+def test_complies_text_in_a_heredoc_body_is_not_a_use() -> None:
+    cmd = "cat >> notes.md <<'EOF'\nrun make publish-widgets --dry-run next\nEOF"
+    assert _run([_bash(T_CALL, cmd)]) == []
+    cmd = "cat > notes.md <<EOF\nmake publish-widgets --dry-run\nEOF\nls"
+    assert _run([_bash(T_CALL, cmd)]) == []
+
+
+def test_complies_text_in_a_quoted_argument_or_comment_is_not_a_use() -> None:
+    for cmd in (
+        'echo "make publish-widgets --dry-run"',
+        "git commit -m 'document make publish-widgets --dry-run'",
+        "ls  # make publish-widgets --dry-run",
+        'grep -rn "make publish-widgets --dry-run" docs',
+    ):
+        assert _run([_bash(T_CALL, cmd)]) == [], cmd
+
+
+def test_a_complies_run_after_a_heredoc_or_in_a_chain_still_counts() -> None:
+    cmd = "cat > a.txt <<EOF\nx\nEOF\nmake publish-widgets --dry-run"
+    assert _run([_bash(T_CALL, cmd)]) == [(1, "complies")]
+    assert _run([_bash(T_CALL, "cd /srv/app && make publish-widgets --dry-run | tail")]) == [
+        (1, "complies")
+    ]
+    assert _run([_bash(T_CALL, "bash -c 'make publish-widgets --dry-run'")]) == [(1, "complies")]
+
+
+def test_trigger_text_in_a_heredoc_body_or_quote_is_not_a_use() -> None:
+    cmd = "cat > todo.md <<EOF\npython3 tools/widget_lint.py\nEOF"
+    assert _run([_bash(T_CALL, cmd)]) == []
+    assert _run([_bash(T_CALL, 'echo "python3 tools/widget_lint.py"')]) == []
+
+
+def test_a_trigger_that_the_rule_only_mentions_is_not_a_use() -> None:
+    cases = {
+        "when": "When `python3 tools/widget_lint.py` fails, read the log first.",
+        "instead": "Use `make lint` instead of `python3 tools/widget_lint.py`.",
+        "never": "Never call `python3 tools/widget_lint.py` on a release branch.",
+        "plain": "Lint the widgets after an edit.",
+    }
+    for why, rule in cases.items():
+        entry = dict(LINT, rule=rule, apply="lint the widgets")
+        assert _one(entry, "python3 tools/widget_lint.py --all") == [], why
+
+
+def test_a_trigger_that_the_rule_tells_to_run_is_a_use() -> None:
+    entry = dict(
+        LINT, rule="Lint.", apply="Run `python3 tools/widget_lint.py --all` after an edit."
+    )
+    assert _one(entry, "python3 tools/widget_lint.py --all") == [
+        (1, "python3 tools/widget_lint.py")
+    ]
+    # a different subcommand than the one the rule names is not the rule's command
+    sub = dict(
+        LINT,
+        rule="Run `python3 tools/widget_lint.py fix`.",
+        triggers=["python3 tools/widget_lint.py"],
+    )
+    assert _one(sub, "python3 tools/widget_lint.py check") == []
+
+
+def test_a_trigger_two_notes_share_is_not_a_use() -> None:
+    other = dict(LINT, id="feedback_second_widget_note")
+    shown = {
+        2: {"name": LINT["id"] + ".md", "rule": ""},
+        5: {"name": other["id"] + ".md", "rule": ""},
+    }
+    got = _run(
+        [_bash(T_CALL, "python3 tools/widget_lint.py")],
+        table={"entries": [LINT, other]},
+        shown=shown,
+        exposures={2: [T_SHOWN], 5: [T_SHOWN]},
+    )
+    assert got == []
+
+
+def test_a_trigger_that_names_only_a_host_or_container_is_a_place_only() -> None:
+    for trig in (
+        "ssh build-host",
+        "ssh -o BatchMode=yes build-host",
+        "docker exec app-db",
+        "docker exec -i app-db",
+        "docker container logs app-db",
+        "kubectl exec app-pod",
+    ):
+        assert bh.names_a_place_only(trig), trig
+    for trig in (
+        "ssh build-host systemctl",
+        "docker exec app-db psql",
+        "docker compose up",
+        "python3 tools/x.py",
+        "make publish-widgets",
+    ):
+        assert not bh.names_a_place_only(trig), trig
+
+
+def test_a_place_only_trigger_is_not_a_use_even_when_the_rule_runs_it() -> None:
+    entry = dict(LINT, rule="Run `ssh build-host` and read the log.", triggers=["ssh build-host"])
+    assert _one(entry, "ssh build-host uptime") == []
+
+
+def test_only_the_complies_tier_can_be_switched_on_alone(monkeypatch: Any) -> None:
+    monkeypatch.setattr(bh, "TIER_TRIGGER", False)
+    assert _run([_bash(T_CALL, "python3 tools/widget_lint.py")]) == []
+    assert _run([_bash(T_CALL, "make publish-widgets --dry-run")]) == [(1, "complies")]
+    monkeypatch.setattr(bh, "TIER_TRIGGER", True)
+    monkeypatch.setattr(bh, "TIER_COMPLIES", False)
+    assert _run([_bash(T_CALL, "make publish-widgets --dry-run")]) == []
+    assert _run([_bash(T_CALL, "python3 tools/widget_lint.py")]) == [
+        (2, "python3 tools/widget_lint.py")
+    ]
+
+
+def test_the_shipped_tiers_are_the_ones_the_gate_passed() -> None:
+    assert bh.TIER_COMPLIES is True
+    assert bh.TIER_TRIGGER is True
 
 
 # ── 3. once per session, and only after the showing ─────────────────────────

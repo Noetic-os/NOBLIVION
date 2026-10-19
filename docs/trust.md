@@ -118,19 +118,46 @@ all of these hold:
   the Bash command;
 - one of these is true:
   - the Bash command matches the note's `complies` regex, a run of the
-    rule's own command;
-  - a Bash command fires a strong command trigger of the note;
-  - a Write, Edit, MultiEdit or NotebookEdit call names a file that a
-    `glob:` trigger of the note matches.
+    rule's own command. The regex runs on the command with heredoc bodies,
+    quoted text and comments masked, so a file written with `cat <<EOF`, a
+    commit message or an `echo` that only holds the text is no run. A string
+    that the shell runs (`bash -c '...'`) is read as its own command;
+  - a Bash command fires a command trigger of the note, and the trigger is
+    the rule's own command: the `rule` or `apply` text says `run`, `use`,
+    `call`, `execute` or `invoke` and then the command in backticks (its
+    words up to the first flag or placeholder equal the trigger), without
+    `never`, `not`, `avoid`, `without` or `instead of` before it. The trigger
+    must also be strong, held by this note alone, and not the name of a host
+    or container only (`ssh build-host`, `docker exec app-db`).
+
+A file tool call (Write, Edit, MultiEdit, NotebookEdit) is never a use, and
+a `glob:` trigger is not matched. A path says that a rule applies, not that
+the rule was followed, and the text of a Write is data.
 
 A strong trigger is one that the guard hook does not grade as weak
 (`weak_trigger`): it is not an everyday command, it names an argument, and
 few notes hold it. A trigger such as `git status` fires on most calls, so it
 counts for nothing.
 
-The `apply` field is prose, so it is not matched. A `phrase:` trigger is
-about the prompt, and a `tool:` trigger names no command, so neither is
-matched. A call of a subagent is not read.
+The `apply` field is prose, so it is not matched as a whole. A `phrase:`
+trigger is about the prompt, and a `tool:` trigger names no command, so
+neither is matched. A call of a subagent is not read.
+
+#### Precision gate
+
+A tier of the behaviour signal may stay on only when a hand-labelled sample
+of its matches gives a Wilson 95 percent lower bound of precision of 0.5 or
+more. The module switches `TIER_COMPLIES` and `TIER_TRIGGER` in
+`hooks/trust_behaviour.py` hold the result; a tier that fails stays `False`.
+The first sample (NOBLIVION-120, loose matcher) gave 10 true of 28 trigger
+matches: precision 0.36, lower bound 0.21. The matcher above is the answer to
+it. Second sample (7-day replay of 182 sessions, 13,067 shown rows, in a
+scratch copy of the store): `complies`, 10 of 10 calls true (lower bound
+0.72); trigger, 20 of 20 events true (lower bound 0.84). Limits of that
+sample: the `complies` tier had only 10 matching calls from 2 notes, and
+all trigger matches came from one note, so the bound says little about notes
+that were not in the window. Label a new sample after a change of the matcher
+or of the notes.
 
 A note gets one behaviour `use` per session. The event carries the source
 `behaviour`. The trust flush worker reads the main transcript in the

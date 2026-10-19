@@ -8,6 +8,13 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Raise the precision of the behavioural use signal (NOBLIVION-120), still off by default
+  (`NOBLIVION_TRUST_BEHAVIOUR_USE`). A `complies` regex now runs on the masked view of the Bash
+  command, so heredoc bodies, quoted text and comments are no run. A command trigger counts only
+  when the note's own `rule` or `apply` says to run that command, the trigger is held by this note
+  alone, and it is not the name of a host or container. `glob:` triggers and file tool calls are
+  dropped. Each tier has a code switch (`TIER_COMPLIES`, `TIER_TRIGGER`) that stays off until a
+  hand-labelled sample reaches a Wilson 95 percent lower bound of 0.5. See `docs/trust.md`.
 - Add recall as a reflex (NOBLIVION-123). The descriptions of `noblivion_recall` and
   `noblivion_remember` name the moments to call them (before "cannot verify", a merge, a restart
   of a shared service, filing or commenting on a ticket, after an unexplained tool error, before
