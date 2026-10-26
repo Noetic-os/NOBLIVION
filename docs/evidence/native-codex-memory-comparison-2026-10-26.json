@@ -1,0 +1,670 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-26",
+  "title": "Native Codex memory versus NOBLIVION 0.1.17: preliminary paired comparison",
+  "answer_model": "gpt-6-astra",
+  "answer_reasoning_effort": "ultra",
+  "codex_cli_version": "0.162.0-alpha.17.2",
+  "planned_answers": 96,
+  "completed_answers": 67,
+  "completed_by_arm": {
+    "native": 43,
+    "noblivion": 24
+  },
+  "primary": {
+    "case_count": 19,
+    "answer_count": 38,
+    "repetition": 1,
+    "summary": {
+      "native": {
+        "answers": 19,
+        "required_propositions_correct": 69,
+        "required_propositions_total": 69,
+        "contradicted_required_propositions": 0,
+        "false_additional_claims": 0,
+        "fully_complete_answers": 19,
+        "complete_answers_without_confirmed_error": 19.0,
+        "answers_with_confirmed_false_claim": 0.0,
+        "answers_with_unsupported_additions": 19.0,
+        "answers_with_forbidden_assertions": 0.0,
+        "honest_abstentions": 0,
+        "over_word_limit": 0,
+        "metric_means": {
+          "required_detail_recovery": 1.0,
+          "completion_criteria": 1.0,
+          "false_answer_rate": 0.0,
+          "unsupported_answer_rate": 1.0,
+          "forbidden_assertion_rate": 0.0,
+          "complete_without_confirmed_error": 1.0,
+          "honest_abstention_rate": 0.0
+        },
+        "latency_median_seconds": 152.4780237674713,
+        "categories": {
+          "conflicting_outdated_corrected_facts": {
+            "answers": 2,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "cross_root_multi_note_synthesis": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "long_note_detail_section_retrieval": {
+            "answers": 1,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "lower_trust_history_authority_unsupported": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "recurring_error_diagnosis_prevention": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "semantic_paraphrase_retrieval": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          }
+        }
+      },
+      "noblivion": {
+        "answers": 19,
+        "required_propositions_correct": 63,
+        "required_propositions_total": 69,
+        "contradicted_required_propositions": 0,
+        "false_additional_claims": 0,
+        "fully_complete_answers": 15,
+        "complete_answers_without_confirmed_error": 15.0,
+        "answers_with_confirmed_false_claim": 0.0,
+        "answers_with_unsupported_additions": 17.0,
+        "answers_with_forbidden_assertions": 0.0,
+        "honest_abstentions": 4,
+        "over_word_limit": 0,
+        "metric_means": {
+          "required_detail_recovery": 0.9035087719298246,
+          "completion_criteria": 0.868421052631579,
+          "false_answer_rate": 0.0,
+          "unsupported_answer_rate": 0.8947368421052632,
+          "forbidden_assertion_rate": 0.0,
+          "complete_without_confirmed_error": 0.7894736842105263,
+          "honest_abstention_rate": 0.21052631578947367
+        },
+        "latency_median_seconds": 69.0381760597229,
+        "categories": {
+          "conflicting_outdated_corrected_facts": {
+            "answers": 2,
+            "required_detail_recovery": 0.6666666666666666,
+            "completion_criteria": 0.5,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 0.5,
+            "honest_abstention_rate": 0.5
+          },
+          "cross_root_multi_note_synthesis": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "long_note_detail_section_retrieval": {
+            "answers": 1,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "lower_trust_history_authority_unsupported": {
+            "answers": 4,
+            "required_detail_recovery": 0.7083333333333334,
+            "completion_criteria": 0.625,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 0.5,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 0.25,
+            "honest_abstention_rate": 0.75
+          },
+          "recurring_error_diagnosis_prevention": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "semantic_paraphrase_retrieval": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          }
+        }
+      }
+    },
+    "paired_effects": {
+      "required_detail_recovery": {
+        "noblivion_minus_native": -0.09649122807017545,
+        "paired_case_bootstrap_95_interval": [
+          -0.20175438596491233,
+          -0.013157894736842105
+        ],
+        "independent_resampling_units": 19,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      },
+      "completion_criteria": {
+        "noblivion_minus_native": -0.13157894736842105,
+        "paired_case_bootstrap_95_interval": [
+          -0.2631578947368421,
+          -0.02631578947368421
+        ],
+        "independent_resampling_units": 19,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      },
+      "false_answer_rate": {
+        "noblivion_minus_native": 0.0,
+        "paired_case_bootstrap_95_interval": [
+          0.0,
+          0.0
+        ],
+        "independent_resampling_units": 19,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      },
+      "unsupported_answer_rate": {
+        "noblivion_minus_native": -0.10526315789473684,
+        "paired_case_bootstrap_95_interval": [
+          -0.2631578947368421,
+          0.0
+        ],
+        "independent_resampling_units": 19,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      },
+      "forbidden_assertion_rate": {
+        "noblivion_minus_native": 0.0,
+        "paired_case_bootstrap_95_interval": [
+          0.0,
+          0.0
+        ],
+        "independent_resampling_units": 19,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      },
+      "complete_without_confirmed_error": {
+        "noblivion_minus_native": -0.21052631578947367,
+        "paired_case_bootstrap_95_interval": [
+          -0.42105263157894735,
+          -0.05263157894736842
+        ],
+        "independent_resampling_units": 19,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      },
+      "honest_abstention_rate": {
+        "noblivion_minus_native": 0.21052631578947367,
+        "paired_case_bootstrap_95_interval": [
+          0.05263157894736842,
+          0.42105263157894735
+        ],
+        "independent_resampling_units": 19,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      }
+    },
+    "relative_false_answer_reduction": null
+  },
+  "all_first_repetition_secondary": {
+    "case_count": 24,
+    "answer_count": 48,
+    "repetition": 1,
+    "summary": {
+      "native": {
+        "answers": 24,
+        "required_propositions_correct": 88,
+        "required_propositions_total": 88,
+        "contradicted_required_propositions": 0,
+        "false_additional_claims": 0,
+        "fully_complete_answers": 24,
+        "complete_answers_without_confirmed_error": 24.0,
+        "answers_with_confirmed_false_claim": 0.0,
+        "answers_with_unsupported_additions": 24.0,
+        "answers_with_forbidden_assertions": 0.0,
+        "honest_abstentions": 0,
+        "over_word_limit": 0,
+        "metric_means": {
+          "required_detail_recovery": 1.0,
+          "completion_criteria": 1.0,
+          "false_answer_rate": 0.0,
+          "unsupported_answer_rate": 1.0,
+          "forbidden_assertion_rate": 0.0,
+          "complete_without_confirmed_error": 1.0,
+          "honest_abstention_rate": 0.0
+        },
+        "latency_median_seconds": 143.55056047439575,
+        "categories": {
+          "conflicting_outdated_corrected_facts": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "cross_root_multi_note_synthesis": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "long_note_detail_section_retrieval": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "lower_trust_history_authority_unsupported": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "recurring_error_diagnosis_prevention": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "semantic_paraphrase_retrieval": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          }
+        }
+      },
+      "noblivion": {
+        "answers": 24,
+        "required_propositions_correct": 80,
+        "required_propositions_total": 88,
+        "contradicted_required_propositions": 0,
+        "false_additional_claims": 0,
+        "fully_complete_answers": 19,
+        "complete_answers_without_confirmed_error": 19.0,
+        "answers_with_confirmed_false_claim": 0.0,
+        "answers_with_unsupported_additions": 21.0,
+        "answers_with_forbidden_assertions": 0.0,
+        "honest_abstentions": 5,
+        "over_word_limit": 0,
+        "metric_means": {
+          "required_detail_recovery": 0.9027777777777778,
+          "completion_criteria": 0.8541666666666666,
+          "false_answer_rate": 0.0,
+          "unsupported_answer_rate": 0.875,
+          "forbidden_assertion_rate": 0.0,
+          "complete_without_confirmed_error": 0.7916666666666666,
+          "honest_abstention_rate": 0.20833333333333334
+        },
+        "latency_median_seconds": 69.0213885307312,
+        "categories": {
+          "conflicting_outdated_corrected_facts": {
+            "answers": 4,
+            "required_detail_recovery": 0.8333333333333334,
+            "completion_criteria": 0.75,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 0.75,
+            "honest_abstention_rate": 0.25
+          },
+          "cross_root_multi_note_synthesis": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "long_note_detail_section_retrieval": {
+            "answers": 4,
+            "required_detail_recovery": 0.875,
+            "completion_criteria": 0.75,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 0.75,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 0.75,
+            "honest_abstention_rate": 0.25
+          },
+          "lower_trust_history_authority_unsupported": {
+            "answers": 4,
+            "required_detail_recovery": 0.7083333333333334,
+            "completion_criteria": 0.625,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 0.5,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 0.25,
+            "honest_abstention_rate": 0.75
+          },
+          "recurring_error_diagnosis_prevention": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "semantic_paraphrase_retrieval": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          }
+        }
+      }
+    },
+    "paired_effects": {
+      "required_detail_recovery": {
+        "noblivion_minus_native": -0.09722222222222222,
+        "paired_case_bootstrap_95_interval": [
+          -0.1875,
+          -0.020833333333333332
+        ],
+        "independent_resampling_units": 24,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      },
+      "completion_criteria": {
+        "noblivion_minus_native": -0.14583333333333334,
+        "paired_case_bootstrap_95_interval": [
+          -0.2708333333333333,
+          -0.041666666666666664
+        ],
+        "independent_resampling_units": 24,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      },
+      "false_answer_rate": {
+        "noblivion_minus_native": 0.0,
+        "paired_case_bootstrap_95_interval": [
+          0.0,
+          0.0
+        ],
+        "independent_resampling_units": 24,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      },
+      "unsupported_answer_rate": {
+        "noblivion_minus_native": -0.125,
+        "paired_case_bootstrap_95_interval": [
+          -0.25,
+          0.0
+        ],
+        "independent_resampling_units": 24,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      },
+      "forbidden_assertion_rate": {
+        "noblivion_minus_native": 0.0,
+        "paired_case_bootstrap_95_interval": [
+          0.0,
+          0.0
+        ],
+        "independent_resampling_units": 24,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      },
+      "complete_without_confirmed_error": {
+        "noblivion_minus_native": -0.20833333333333334,
+        "paired_case_bootstrap_95_interval": [
+          -0.375,
+          -0.08333333333333333
+        ],
+        "independent_resampling_units": 24,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      },
+      "honest_abstention_rate": {
+        "noblivion_minus_native": 0.20833333333333334,
+        "paired_case_bootstrap_95_interval": [
+          0.08333333333333333,
+          0.375
+        ],
+        "independent_resampling_units": 24,
+        "interpretation": "Descriptive resampling of whole cases in this purposive challenge set; not a population guarantee."
+      }
+    },
+    "relative_false_answer_reduction": null
+  },
+  "supplementary": {
+    "answer_count": 19,
+    "comparison_permitted": false,
+    "interpretation": "Partial additional repetitions are separate observations; no unequal-arm pooled comparison is calculated.",
+    "by_arm": {
+      "native": {
+        "answers": 19,
+        "required_propositions_correct": 60,
+        "required_propositions_total": 71,
+        "contradicted_required_propositions": 0,
+        "false_additional_claims": 0,
+        "fully_complete_answers": 16,
+        "complete_answers_without_confirmed_error": 16.0,
+        "answers_with_confirmed_false_claim": 0.0,
+        "answers_with_unsupported_additions": 15.0,
+        "answers_with_forbidden_assertions": 0.0,
+        "honest_abstentions": 3,
+        "over_word_limit": 0,
+        "metric_means": {
+          "required_detail_recovery": 0.8552631578947368,
+          "completion_criteria": 0.8421052631578947,
+          "false_answer_rate": 0.0,
+          "unsupported_answer_rate": 0.7894736842105263,
+          "forbidden_assertion_rate": 0.0,
+          "complete_without_confirmed_error": 0.8421052631578947,
+          "honest_abstention_rate": 0.15789473684210525
+        },
+        "latency_median_seconds": 131.55093789100647,
+        "categories": {
+          "conflicting_outdated_corrected_facts": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          },
+          "cross_root_multi_note_synthesis": {
+            "answers": 4,
+            "required_detail_recovery": 0.75,
+            "completion_criteria": 0.75,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 0.75,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 0.75,
+            "honest_abstention_rate": 0.25
+          },
+          "long_note_detail_section_retrieval": {
+            "answers": 3,
+            "required_detail_recovery": 0.6666666666666666,
+            "completion_criteria": 0.6666666666666666,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 0.6666666666666666,
+            "honest_abstention_rate": 0.3333333333333333
+          },
+          "lower_trust_history_authority_unsupported": {
+            "answers": 4,
+            "required_detail_recovery": 0.8125,
+            "completion_criteria": 0.75,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 0.25,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 0.75,
+            "honest_abstention_rate": 0.25
+          },
+          "recurring_error_diagnosis_prevention": {
+            "answers": 4,
+            "required_detail_recovery": 1.0,
+            "completion_criteria": 1.0,
+            "false_answer_rate": 0.0,
+            "unsupported_answer_rate": 1.0,
+            "forbidden_assertion_rate": 0.0,
+            "complete_without_confirmed_error": 1.0,
+            "honest_abstention_rate": 0.0
+          }
+        }
+      },
+      "noblivion": {
+        "answers": 0,
+        "metric_means": null,
+        "categories": {}
+      }
+    }
+  },
+  "matched_first_repetition_usage": {
+    "native": {
+      "answers": 24,
+      "tokens": {
+        "input_tokens": 20936060,
+        "cached_input_tokens": 19132928,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 150426,
+        "reasoning_output_tokens": 16088,
+        "total_tokens": 21086486,
+        "uncached_input_tokens": 1803132
+      },
+      "contexts_including_children": 51,
+      "median_elapsed_seconds": 143.55056047439575,
+      "sum_elapsed_seconds": 3310.781627178192
+    },
+    "noblivion": {
+      "answers": 24,
+      "tokens": {
+        "input_tokens": 7545827,
+        "cached_input_tokens": 6604032,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 41634,
+        "reasoning_output_tokens": 5011,
+        "total_tokens": 7587461,
+        "uncached_input_tokens": 941795
+      },
+      "contexts_including_children": 48,
+      "median_elapsed_seconds": 69.0213885307312,
+      "sum_elapsed_seconds": 1810.893862247467
+    }
+  },
+  "token_reductions_noblivion_relative_to_native": {
+    "input_tokens": 0.6395775040766982,
+    "uncached_input_tokens": 0.47768937604124384,
+    "output_tokens": 0.7232260380519325
+  },
+  "corpus": {
+    "active_records_supplied_to_each_system": 2339,
+    "native_source_chats": 100,
+    "original_source_jobs_successful": 100,
+    "native_nonempty_extractions": 98,
+    "native_terminal_jobs_without_retained_output": 2,
+    "native_generated_files_frozen": 106,
+    "extra_native_prior_history_sources": 3
+  },
+  "source_boundary_exclusions": {
+    "matched_cases": 5,
+    "neutral_case_codes": [
+      "C01",
+      "C02",
+      "L01",
+      "L02",
+      "L03"
+    ],
+    "metadata_listing_cases": 1,
+    "later_source_version_access_cases": 4,
+    "selection": "Fixed before grading; same case removed from both systems in primary."
+  },
+  "limitations": [
+    "The user requested an early stop before grading or provider results were inspected. The planned second repetition was not completed for both systems.",
+    "The primary comparison contains one answer per provider per clean case. The complete first repetition, including excluded cases, is a separate secondary comparison.",
+    "All completed additional repetitions are retained as supplementary observations. Unequal-arm pooled quality averages are not a provider comparison.",
+    "This is a purposive difficult challenge set, not a random sample of coding work; bootstrap intervals resample whole cases and describe this set only.",
+    "The source-boundary rule excludes each affected case from both providers in the primary comparison, including a case whose deviation occurred in a supplementary repetition. A boundary deviation does not itself prove factual contamination.",
+    "Native received historical records through carrier chats; the study measures full-corpus import and retained use, not automatic learning from equivalent real coding work or production incident reduction.",
+    "Native retained three genuine pre-existing user-history sources in addition to the supplied corpus. There is no no-memory baseline.",
+    "Provider labels were hidden from two independent graders and adjudication; answer citation styles can still reveal origin. Every alleged false claim was adjudicated.",
+    "The original ABBA plan has unequal time gaps, and its second half is incomplete. Order, cache warmth and repetition effects are not balanced by the early-stop analysis.",
+    "Noblivion trust ranking ran in shadow mode; this does not validate active trust ranking, cross-client capture, live invalidation or automatic error-hook prevention.",
+    "Background consolidation retained tool names but no arguments, so its complete file-access trace is unavailable. A supplementary marker scan does not establish complete isolation.",
+    "Answer usage includes child contexts. Preparation usage is incomplete, so the totals are not the full study cost. Completed answers retain their original timing and usage; no completed answer was rerun."
+  ],
+  "provenance": {
+    "full_private_results_sha256": "056dcdcd7b309bc3a95e8356e0265ae8a4305ea40f5691745526987faffa9631",
+    "full_private_evidence_zip_sha256": "c12a824d8d558bf06be14dafe7c9160068841fba3eaaf133b0b4ad7eea00190a",
+    "public_scope": "Aggregate results only. Private source records, answer text, case prompts, internal names, host details and local paths are omitted."
+  }
+}
