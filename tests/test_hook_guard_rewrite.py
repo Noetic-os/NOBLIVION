@@ -7,7 +7,9 @@ What these tests hold:
    the table parses; anything else is a problem. There is no pipe form (the
    matcher splits at pipes, see the module text).
 2. A fixture of more than 50 commands: each rewrite is exact, or None when the command is
-   not exactly the shape the rewrite knows (no guess).
+   not exactly the shape the rewrite knows (no guess). Since NOBLIVION-126 the rewrite
+   acts on each simple command of a list or a pipeline, after the wrappers of the deny
+   path, and ``python -m <prog>`` counts as ``<prog>``.
 3. Every rewrite is idempotent: it never applies to its own result.
 4. A rewrite never changes the exit status of a command, passing or failing. Run
    with stub programs in a real shell.
@@ -50,14 +52,10 @@ FIXTURE = [
     ("pytest -vv", Q, None),
     ("pytest -xq", Q, None),
     ("pytest --collect-only", Q, None),
-    ("cd x && pytest", Q, None),
-    ("FOO=1 pytest", Q, None),
-    (" pytest", Q, None),
     ("echo pytest", Q, None),
     ("bash -c 'pytest'", Q, None),
     ("pytest-xdist-report", Q, None),
     ("pytest $(cat args)", Q, None),
-    ("pytest # note", Q, None),
     ("cat <<EOF\npytest\nEOF", Q, None),
     ("git log --oneline", ONE, None),
     ("git log --format=%h", ONE, None),
@@ -77,14 +75,77 @@ FIXTURE = [
     ("git log main..HEAD | wc -l", ONE, None),
     ("git log | head -3 | sort", ONE, None),
     ("git log > out.txt", ONE, None),
-    ("git log && ls", ONE, None),
-    ("git log; ls", ONE, None),
-    ("git log &", ONE, None),
     ("git log $(echo x)", ONE, None),
     ("git log | tail -f", ONE, None),
     ("pytest > out.txt", Q, None),
-    ("pytest tests && pytest other", Q, None),
     ("pytest -k 'a|b'", Q, None),
+    # NOBLIVION-126: each matching simple command of a list or a pipeline, after
+    # the wrappers of the deny path; the other bytes stay as they are
+    ("cd x && pytest", Q, "cd x && pytest -q"),
+    ("cd ~/proj && pytest tests/unit", Q, "cd ~/proj && pytest -q tests/unit"),
+    ("make build; pytest tests", Q, "make build; pytest -q tests"),
+    ("make build\npytest tests", Q, "make build\npytest -q tests"),
+    ("make || pytest tests", Q, "make || pytest -q tests"),
+    ("ls | pytest tests", Q, "ls | pytest -q tests"),
+    ("pytest tests | tail -5 && echo done", Q, "pytest -q tests | tail -5 && echo done"),
+    ("cd x && pytest tests 2>&1 |& tail -5", Q, "cd x && pytest -q tests 2>&1 |& tail -5"),
+    ("pytest tests && pytest other", Q, "pytest -q tests && pytest -q other"),
+    ("pytest -v a && pytest b", Q, "pytest -v a && pytest -q b"),
+    ("cd  'my dir'  &&  pytest  t", Q, "cd  'my dir'  &&  pytest -q  t"),
+    ("FOO=1 pytest", Q, "FOO=1 pytest -q"),
+    ("env FOO=1 timeout 60 pytest tests", Q, "env FOO=1 timeout 60 pytest -q tests"),
+    ("timeout -s KILL 5m pytest", Q, "timeout -s KILL 5m pytest -q"),
+    ("sudo -u ci nice -n 5 pytest", Q, "sudo -u ci nice -n 5 pytest -q"),
+    (" pytest", Q, " pytest -q"),
+    ("pytest # note", Q, "pytest -q # note"),
+    ("pytest  # pytest -v here", Q, "pytest -q  # pytest -v here"),
+    ("git log && ls", ONE, "git log --oneline && ls"),
+    ("git log; ls", ONE, "git log --oneline; ls"),
+    ("git log &", ONE, "git log --oneline &"),
+    ("cd x && git log 2>&1", ONE, "cd x && git log --oneline 2>&1"),
+    # NOBLIVION-126: python -m <prog>, also by path, is <prog>
+    ("python3 -m pytest tests", Q, "python3 -m pytest -q tests"),
+    (".venv/bin/python -m pytest -x", Q, ".venv/bin/python -m pytest -q -x"),
+    ("/usr/bin/python3.12 -m pytest", Q, "/usr/bin/python3.12 -m pytest -q"),
+    ("cd x && ~/venv/bin/python3 -m pytest t", Q, "cd x && ~/venv/bin/python3 -m pytest -q t"),
+    ("pytest tests", "add-flag -q after python3 -m pytest", "pytest -q tests"),
+    (
+        "python -m pytest t | tail -3",
+        "add-flag -q after python -m pytest",
+        "python -m pytest -q t | tail -3",
+    ),
+    ("cd x && uv run pytest", "add-flag -q after uv run pytest", "cd x && uv run pytest -q"),
+    # NOBLIVION-126: still left alone
+    ("python3 -m pytest -q", Q, None),
+    ("python3 -c pytest", Q, None),
+    ("python3 -m pytest_x", Q, None),
+    ("python3 -u -m pytest", Q, None),
+    ("node -m pytest", Q, None),
+    ("'pytest' tests", Q, None),
+    ("uv run pytest", Q, None),
+    ("cd x && pytest > log", Q, None),
+    ("cd x && pytest | grep FAIL", Q, None),
+    ("pytest | tail -5 | grep x", Q, None),
+    ("pytest | tail -f", Q, None),
+    ("pytest a > log; pytest b", Q, None),
+    ("cd x && pytest $ARGS", Q, None),
+    ('cd x && pytest "$T"', Q, None),
+    ("(cd x && pytest)", Q, None),
+    ("{ pytest; } | grep x", Q, None),
+    ("if pytest; then echo ok; fi", Q, None),
+    ("for f in a b; do pytest; done > log", Q, None),
+    ("while true; do pytest; done", Q, None),
+    ("x=$(pytest)", Q, None),
+    ("echo `pytest`", Q, None),
+    ("cd x && bash -c 'pytest tests'", Q, None),
+    ("ssh example-host 'pytest tests'", Q, None),
+    ("cd x && eval 'pytest tests'", Q, None),
+    ("echo 'cd x && pytest tests'", Q, None),
+    ("ls # && pytest tests", Q, None),
+    ("cat <<EOF\npytest\nEOF\npytest tests", Q, None),
+    ("cd x && \\\npytest", Q, None),
+    ("git log && ls | head", ONE, "git log --oneline && ls | head"),
+    ("cd x && git log | tail -5", ONE, None),
     ("git push origin main", ONE, None),
     ("git branch -D x", ONE, None),
     ("ls -la", ONE, None),
@@ -102,6 +163,23 @@ def test_the_fixture(command, spec, want):
 def test_every_rewrite_is_idempotent(command, spec, want):
     assert rw.apply(want, spec) is None
     assert rw.apply(rw.apply(command, spec), spec) is None
+
+
+@pytest.mark.parametrize("command,spec,want", [f for f in FIXTURE if f[2]])
+def test_a_rewrite_only_inserts_the_flag_and_keeps_every_other_byte(command, spec, want):
+    # NOBLIVION-126: the other commands of the list stay byte for byte. Each
+    # " <flag>" that the rewrite added is removed again from the left: the
+    # original command must come back, and nothing else may differ.
+    flag = " " + rw.parse(spec)[1][1]
+    added = want.count(flag) - command.count(flag)
+    assert added >= 1 and len(want) == len(command) + added * len(flag)
+    rest = want
+    for _ in range(added):  # cut each insertion where the two texts part
+        k = next(x for x in range(len(rest)) if x >= len(command) or rest[x] != command[x])
+        k = rest.rfind(flag, 0, k + len(flag))
+        assert k >= 0, (command, rest)
+        rest = rest[:k] + rest[k + len(flag) :]
+    assert rest == command
 
 
 def test_the_fixture_has_at_least_30_commands_and_both_outcomes():
@@ -166,7 +244,13 @@ def _rc(command: str, env: dict) -> int:
 
 def test_a_rewrite_never_changes_the_status_of_a_command(tmp_path):
     env = _stubs(tmp_path)
-    for command, spec in (("git log", ONE), ("git log 2>&1", ONE), ("pytest tests", Q)):
+    for command, spec in (
+        ("git log", ONE),
+        ("git log 2>&1", ONE),
+        ("pytest tests", Q),
+        ("cd . && pytest tests", Q),  # NOBLIVION-126
+        ("true; pytest tests | tail -1", Q),
+    ):
         new = rw.apply(command, spec)
         assert new is not None and new != command
         for rc in ("0", "5"):

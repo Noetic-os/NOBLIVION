@@ -227,6 +227,24 @@ output and keep the exit status. The table holds no flag that cuts data (`-20`,
 at every pipe, so a `violates` expression cannot tell `git log` from the first
 segment of `git log | head`.
 
+`python -m <prog>`, `python3 -m <prog>` and a path to a python binary with
+`-m <prog>` (`.venv/bin/python -m pytest`) count as `<prog>`. So
+`add-flag -q after pytest` also rewrites `python3 -m pytest tests` into
+`python3 -m pytest -q tests`.
+
+The hook reads the command as the deny check does. It rewrites each simple
+command of a list or a pipeline that starts with the prefix, after the
+wrappers (`env`, `timeout <n>`, `VAR=value`, `sudo`, `nice`). Every other byte
+of the command stays as it was:
+
+| Command | Rewritten command |
+| --- | --- |
+| `cd ~/proj && pytest tests/unit` | `cd ~/proj && pytest -q tests/unit` |
+| `make; pytest tests \| tail -5` | `make; pytest -q tests \| tail -5` |
+| `env CI=1 timeout 600 pytest tests` | `env CI=1 timeout 600 pytest -q tests` |
+| `.venv/bin/python -m pytest -x` | `.venv/bin/python -m pytest -q -x` |
+| `git log && git status` (two notes) | not rewritten: two notes hit (`multi_hit`) |
+
 Claude Code applies `updatedInput` only together with an `allow` or `ask`
 decision, which is why the hook never sends it with nothing else. Do not run
 a second hook that also rewrites Bash commands next to this one: two hooks that
@@ -238,10 +256,15 @@ hit that holds a note without `rewrite` keeps the deny) and logs
 `rewrite-skipped` with a `why` when:
 
 - more than one note hit (`multi_hit`);
-- the prefix is not at the very start of the command, the command has more than
-  one stage, a redirect to a file, a heredoc or a substitution, or a flag of
-  the same kind is there (`not_applicable`). The only stage allowed is
-  `| tail` after a test runner;
+- no simple command starts with the prefix, or one that does is not plain
+  (`not_applicable`): its output goes to a pipe other than one `| tail` after
+  a test runner, it has a redirect to a file, a variable or a substitution, or
+  it is inside `( )`, `{ }`, `if`, `for`, `while` or `case`. A command with a
+  heredoc or a line continuation is not rewritten, and neither is a command
+  inside `bash -c '...'`, `eval` or `ssh host '...'`: that text is quoted. A
+  simple command that already holds the flag, or a flag of the same kind
+  (`-v` for `-q`), is kept as it is; when no other command changes, the
+  result is `not_applicable` too;
 - the new command still hits a `violates` expression (`still_violates`);
 - the note has `complies` and the new command does not match it
   (`no_compliant_form`).

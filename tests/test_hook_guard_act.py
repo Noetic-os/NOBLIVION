@@ -215,8 +215,11 @@ def test_the_config_key_turns_the_rewrite_on(env, tmp_path):
     "command,why",
     [
         ("pytest tests; git log", "multi_hit"),
-        ("cd x && pytest tests", "not_applicable"),
-        ("cd x && git log", "not_applicable"),
+        ("pytest tests > out.txt", "not_applicable"),
+        ("cd x && git log > out.txt", "not_applicable"),
+        ("cd x && pytest tests | grep FAIL", "not_applicable"),
+        ("(cd x && pytest tests)", "not_applicable"),
+        ("bash -c 'pytest tests'", "not_applicable"),
         ("uv run pytest", "still_violates"),
         ("git status", "no_compliant_form"),
     ],
@@ -293,9 +296,11 @@ def test_a_rewrite_comes_before_an_ask_and_an_ask_covers_a_failed_rewrite(env):
     e = on(env, "NOBLIVION_GUARD_REWRITE", "NOBLIVION_GUARD_ASK")
     out = call(e, bash("python -m pytest tests"))
     assert out["updatedInput"]["command"] == "python -m pytest -q tests"
-    out = call(e, bash("cd x && python -m pytest tests"))  # not at the start: no rewrite
+    out = call(e, bash("python -m pytest tests > log.txt"))  # a redirect: no rewrite
     assert out["permissionDecision"] == "ask" and "updatedInput" not in out
-    assert decisions(e) == ["rewrote", "asked", "rewrite-skipped"]
+    out = call(e, bash("cd x && python -m pytest tests"))  # NOBLIVION-126: in a list
+    assert out["updatedInput"]["command"] == "cd x && python -m pytest -q tests"
+    assert decisions(e) == ["rewrote", "asked", "rewrite-skipped", "rewrote"]
 
 
 # 5. shadow -------------------------------------------------------------------
@@ -319,7 +324,7 @@ def test_a_live_switch_wins_over_the_shadow_for_its_own_kind(env):
 
 def test_the_log_holds_ids_and_the_command_head_and_no_rule_text(env):
     e = on(env, "NOBLIVION_GUARD_REWRITE", "NOBLIVION_GUARD_ASK", "NOBLIVION_GUARD_ACT_SHADOW")
-    for cmd in ("pytest tests", "git remote prune origin", "cd x && pytest tests"):
+    for cmd in ("pytest tests", "git remote prune origin", "pytest tests > out.txt"):
         call(e, bash(cmd))
     blob = Path(e["NOBLIVION_GUARD_LOG"]).read_text()
     assert "rule of" not in blob and "apply of" not in blob
@@ -468,7 +473,7 @@ PLAIN = {  # "pytest tests": the rewrite can be made
     (1, 1, 0): ("ask", ["rewrote"]),
     (1, 1, 1): ("ask", ["rewrote"]),
 }
-COMPOUND = {  # "cd x && pytest tests": the rewrite cannot be made
+COMPOUND = {  # "pytest tests > out.txt": the rewrite cannot be made
     (0, 0, 0): (None, []),
     (0, 0, 1): (None, ["rewrite-skipped", "would-ask"]),
     (0, 1, 0): ("ask", ["asked"]),
@@ -480,9 +485,24 @@ COMPOUND = {  # "cd x && pytest tests": the rewrite cannot be made
 }
 
 
+# NOBLIVION-126: a simple command of a list or a pipeline, after wrappers, acts as the
+# plain command in every state of the three switches (shadow and ask included)
+NEW_SHAPES = {
+    "cd x && pytest tests": "cd x && pytest -q tests",
+    "make build; pytest tests": "make build; pytest -q tests",
+    "pytest tests | tail -5": "pytest -q tests | tail -5",
+    "cd ~/proj && env CI=1 timeout 600 pytest tests/unit 2>&1 | tail -20": (
+        "cd ~/proj && env CI=1 timeout 600 pytest -q tests/unit 2>&1 | tail -20"
+    ),
+}
+REWRITTEN = {"pytest tests": "pytest -q tests", **NEW_SHAPES}
+
+
 @pytest.mark.parametrize("combo", COMBOS)
 @pytest.mark.parametrize(
-    "command,want", [("pytest tests", PLAIN), ("cd x && pytest tests", COMPOUND)]
+    "command,want",
+    [("pytest tests", PLAIN), ("pytest tests > out.txt", COMPOUND)]
+    + [(c, PLAIN) for c in NEW_SHAPES],
 )
 def test_a_rewrite_note_never_denies_in_any_state_of_the_three_switches(env, combo, command, want):
     e = on(env, *_names(*combo))
@@ -491,10 +511,42 @@ def test_a_rewrite_note_never_denies_in_any_state_of_the_three_switches(env, com
     assert (out or {}).get("permissionDecision") == decision
     assert decisions(e) == log
     assert "deny" not in decisions(e)
-    if combo[0] and command == "pytest tests":  # only a live rewrite changes the command
-        assert out["updatedInput"]["command"] == "pytest -q tests"
+    if combo[0] and command in REWRITTEN:  # only a live rewrite changes the command
+        assert out["updatedInput"]["command"] == REWRITTEN[command]
     else:
         assert "updatedInput" not in (out or {})
+
+
+ANY_PYTEST = [
+    entry(
+        "feedback_pytest_any",
+        r"\bpytest\b(?!.*\s-q\b)",
+        rewrite="add-flag -q after pytest",
+        complies=r"\bpytest\s+-q\b",
+    )
+]
+
+
+@pytest.mark.parametrize(
+    "command,new",
+    [
+        ("python3 -m pytest tests", "python3 -m pytest -q tests"),
+        (".venv/bin/python -m pytest tests", ".venv/bin/python -m pytest -q tests"),
+        (
+            "cd ~/proj && .venv/bin/python -m pytest tests/unit | tail -5",
+            "cd ~/proj && .venv/bin/python -m pytest -q tests/unit | tail -5",
+        ),
+    ],
+)
+def test_python_dash_m_of_the_program_is_rewritten_as_the_program(env, command, new):
+    # NOBLIVION-126: the measured misses, end to end through the hook
+    Path(env["NOBLIVION_GUARD_TABLE"]).write_text(json.dumps({"version": 1, "entries": ANY_PYTEST}))
+    assert call(on(env, RW), bash(command))["updatedInput"]["command"] == new
+    assert call(on(env, SH), bash(command)) is None  # shadow: runs unchanged
+    out = call(on(env, ASK), bash(command))  # ask only: the rule is the reason
+    assert out["permissionDecision"] == "ask" and "updatedInput" not in out
+    assert decisions(env) == ["rewrote", "would-rewrite", "asked"]
+    assert call(on(env, RW), bash(new)) is None  # idempotent
 
 
 def test_the_command_that_already_has_the_flag_is_left_alone(env):

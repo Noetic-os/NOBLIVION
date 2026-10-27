@@ -11,15 +11,34 @@ command of its own.
 Grammar of the value of ``rewrite:`` (one form)
 
   ``add-flag <flag> after <prefix words>``
-      Put ``<flag>`` directly after the command prefix at the very start of the
-      command. Only a pair of ``FLAG_TABLE`` (a prefix and a flag that change
-      the form of the output and nothing else, so the exit status stays). The
-      command must be one simple command: its arguments, then at most ``2>&1``
-      and, for a test runner only (``TAIL_OK``), one ``| tail`` stage, because
-      the summary of a quiet run is still at the end. Any other command line
-      (``&&``, ``;``, another pipe, ``| head``, a redirect to a file, a heredoc,
-      a substitution) is left alone, because a later stage may read the output
-      and the flag would change what it reads.
+      Put ``<flag>`` directly after the command prefix. Only a pair of
+      ``FLAG_TABLE`` (a prefix and a flag that change the form of the output
+      and nothing else, so the exit status stays).
+
+Where a rewrite acts (NOBLIVION-126). The command is split with the lexer of
+the deny path (``guard_table.command_views`` and ``segments``), so the rewrite
+sees the same simple commands as ``guard_table.match``:
+
+  * Each simple command of a list or a pipeline that starts with the prefix is
+    rewritten: ``cd x && pytest``, ``a; pytest``, ``pytest | tail``. Every other
+    byte of the command stays as it was.
+  * The leading wrappers of the deny path are skipped first (``env``,
+    ``timeout <n>``, ``VAR=value``, ``sudo``, ``nice``, ``nohup``, ...).
+  * ``python -m <prog>``, ``python3 -m <prog>`` and a path to a python binary
+    (``.venv/bin/python -m <prog>``) count as ``<prog>``, in the command and in
+    the prefix of the spec.
+  * The arguments of a rewritten command are plain words, then at most
+    ``2>&1``. A pipe after it is allowed only into one ``tail`` stage, for a
+    test runner only (``TAIL_OK``), because the summary of a quiet run is still
+    at the end, and that ``tail`` must not pipe on. Any other shape of a
+    command that starts with the prefix (a redirect to a file, another pipe,
+    ``| head``, a substitution, a variable, a command inside ``( )``, ``{ }``,
+    ``if``, ``for``, ``while`` or ``case``) leaves the whole command alone,
+    because a later reader may read the output and the flag would change what
+    it reads.
+  * Quoted data, heredoc bodies and comments are never rewritten. A command
+    with a heredoc or a line continuation is left alone. A command inside
+    ``bash -c '...'``, ``eval`` or ``ssh host '...'`` is quoted data here.
 
 The table holds flags that change the form of the output only. It holds no flag
 that truncates (``-20``, ``-n``, ``| head``): a cap hides data, so it cannot be
@@ -29,12 +48,12 @@ a ``violates`` regex cannot tell ``git log`` from the first segment of
 ``git log | head``.
 
 A rewrite is never made when it is doubtful: the command has more than one
-hit, the prefix is not at the start of the raw command (``cd x && ...``,
-``VAR=1 ...``, ``bash -c '...'``, a heredoc), the flag is already there, or a
-flag of the same kind but another value is there (``-v`` and ``-q``). The
-hook then keeps the old behaviour (deny, or ask). The hook also checks the new
-command against the whole guard table: it must hit no ``violates`` rule and, if
-the memory has ``complies``, it must match that regex.
+hit, no simple command starts with the prefix, or a shape above leaves it
+alone. A simple command that already holds the flag, or a flag of the same kind
+but another value (``-v`` and ``-q``), is kept as it is. The hook then keeps
+the old behaviour (deny, or ask) when nothing changed. The hook also checks the
+new command against the whole guard table: it must hit no ``violates`` rule
+and, if the memory has ``complies``, it must match that regex.
 
 ``apply(command, spec)`` returns the new command or ``None``. It is pure
 and idempotent: ``apply(apply(c, s), s)`` is ``None``, because the new command
@@ -110,41 +129,145 @@ def _tokens(text: str) -> Optional[List[str]]:
         return None
 
 
-def _starts_with(command: str, prefix: Sequence[str]) -> int:
-    """The end of the prefix in the raw ``command`` (the words separated by
-    blanks, at its very start, ending at a blank or the end), or -1."""
-    m = re.match(r"[ \t]+".join(re.escape(w) for w in prefix) + r"(?=\s|$)", command)
-    return m.end() if m else -1
-
-
 # The pairs after which a ``| tail`` stage is safe (the quiet output ends with
 # the summary line, as the normal output does).
 TAIL_OK = frozenset(k for k in FLAG_TABLE if k[1] == "-q")
 
-# What may follow the arguments: nothing, or 2>&1, or one windowing stage.
-_STAGE = re.compile(
-    r"^(?P<args>[^;&|<>`$()\\#\n\r]*?)"
-    r"(?:\s+2>&1)?"
-    r"(?P<stage>\s*\|\s*tail(?:\s+-(?:n\s*)?[0-9]{1,4})?)?\s*$"
-)
+# The arguments of a rewritten command: plain words only. A variable, a
+# substitution, a redirect or an escape could hide a flag or send the output
+# to a later reader.
+_PLAIN_ARGS = re.compile(r"^[^;&|<>`$()\\#\n\r]*$")
+# The one stage that may read the output of a test runner.
+_TAIL = re.compile(r"^tail(?:[ \t]+-(?:n[ \t]*)?[0-9]{1,4})?$")
+# A pipe between two simple commands (``|`` or ``|&``, not ``||``).
+_PIPE = re.compile(r"(?<!\|)\|(?!\|)")
+# One shell word of the raw text: quoted parts, escapes and plain characters.
+_WORD = re.compile(r"""(?:'[^']*'|"(?:[^"\\]|\\.)*"|\\.|[^\s'"\\])+""")
+# A python launcher: ``python``, ``python3``, ``python3.12``, also by path.
+_PYTHON = re.compile(r"(?:[A-Za-z0-9_.~+/-]*/)?python(?:[0-9]+(?:\.[0-9]+)*)?")
+# The first word of a simple command that opens or closes a group or a
+# compound command: the output of a command inside may go to a later reader.
+_OPENS = frozenset(("if", "while", "until", "for", "case", "select", "{"))
+_CLOSES = frozenset(("fi", "done", "esac", "}"))
+
+_GT_MOD = None
+
+
+def _gt():
+    """``guard_table``, the lexer of the deny path, loaded once from this
+    folder. The guard hook sets ``_GT_MOD`` to its own copy."""
+    global _GT_MOD
+    if _GT_MOD is None:
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parent / "guard_table.py"
+        spec = importlib.util.spec_from_file_location("guard_rewrite_guard_table", path)
+        if spec is None or spec.loader is None:
+            raise ImportError("guard_table")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _GT_MOD = mod
+    return _GT_MOD
+
+
+def program(prefix: Sequence[str]) -> Tuple[str, ...]:
+    """The program words of a prefix: ``python -m pytest`` and
+    ``python3 -m pytest`` are ``pytest``; any other prefix is itself."""
+    words = tuple(prefix)
+    if len(words) >= 3 and _PYTHON.fullmatch(words[0]) and words[1] == "-m":
+        return words[2:]
+    return words
+
+
+def _spans(command: str) -> Optional[Tuple[str, str, List[Tuple[int, int]]]]:
+    """``(masked, raw, spans)``: the simple commands of the top level of
+    ``command`` as ``(start, end)`` offsets in ``command``, cut by the lexer of
+    the deny path. ``None`` when that view is not ``command`` byte for byte (a
+    heredoc body or a line continuation was cut out)."""
+    gt = _gt()
+    if gt.without_heredoc_bodies(command) != command:
+        return None
+    masked, raw, _dead = gt.command_views(command)[0]
+    if len(masked) != len(command):
+        return None
+    spans: List[Tuple[int, int]] = []
+    pos = 0
+    for seg in gt.segments(masked):
+        at = masked.find(seg, pos)
+        if at < 0:
+            return None
+        pos = at + len(seg)
+        spans.append((at, pos))
+    return masked, raw, spans
+
+
+def _after_wrappers(text: str) -> int:
+    """The offset in ``text`` (one simple command) after its leading wrappers,
+    as ``guard_table._normalize`` strips them: a wrapper goes only when a word
+    is left after it."""
+    wrapper = _gt()._WRAPPER
+    p = 0
+    while True:
+        m = wrapper.match(text[p:])
+        if not m or not text[p + m.end() :].strip():
+            return p
+        p += m.end()
 
 
 def _apply_flag(command: str, prefix: Tuple[str, ...], flag: str) -> Optional[str]:
-    end = _starts_with(command, prefix)
-    if end < 0:
+    view = _spans(command)
+    if view is None:
         return None
-    m = _STAGE.match(command)
-    if not m:
-        return None
-    if m.group("stage") and (prefix, flag) not in TAIL_OK:
-        return None
-    toks = _tokens(m.group("args"))
-    if toks is None or tuple(toks[: len(prefix)]) != prefix:
-        return None
-    rest = toks[len(prefix) :]
-    if flag in rest or FLAG_TABLE[(prefix, flag)](rest):
-        return None
-    return command[:end] + " " + flag + command[end:]
+    masked, raw, spans = view
+    gt = _gt()
+    prog = program(prefix)
+    conflict = FLAG_TABLE[(prefix, flag)]
+    inserts: List[int] = []
+    depth = 0
+    for k, (at, end) in enumerate(spans):
+        before = masked[spans[k - 1][1] if k else 0 : at]
+        depth += before.count("(") - before.count(")")  # a bare ( ) between commands
+        text = raw[at:end]
+        words = [m for m in _WORD.finditer(text) if gt.MASK not in m.group(0)]  # no comment
+        first = words[0].group(0) if words else ""
+        if first in _OPENS:
+            depth += 1
+        inside = depth > 0
+        if first in _CLOSES:
+            depth -= 1
+        start = _after_wrappers(text)
+        cmd = [m for m in words if m.start() >= start]
+        if len(cmd) >= 2 and _PYTHON.fullmatch(cmd[0].group(0)) and cmd[1].group(0) == "-m":
+            cmd = cmd[2:]
+        if tuple(m.group(0) for m in cmd[: len(prog)]) != prog:
+            continue  # another command: kept byte for byte
+        if inside:
+            return None
+        rest = cmd[len(prog) :]
+        if rest and rest[-1].group(0) == "2>&1":
+            rest = rest[:-1]
+        args = text[rest[0].start() : rest[-1].end()] if rest else ""
+        if not _PLAIN_ARGS.match(args):
+            return None
+        toks = _tokens(args)
+        if toks is None:
+            return None
+        nxt = spans[k + 1][0] if k + 1 < len(spans) else len(command)
+        if _PIPE.search(masked[end:nxt]):  # the output goes to the next command
+            if (prefix, flag) not in TAIL_OK or k + 1 >= len(spans):
+                return None
+            t_at, t_end = spans[k + 1]
+            after = spans[k + 2][0] if k + 2 < len(spans) else len(command)
+            if not _TAIL.match(raw[t_at:t_end].strip()) or _PIPE.search(masked[t_end:after]):
+                return None
+        if flag in toks or conflict(toks):
+            continue  # it holds the flag, or a flag of the same kind: kept as it is
+        inserts.append(at + cmd[len(prog) - 1].end())
+    new = command
+    for pos in reversed(inserts):
+        new = new[:pos] + " " + flag + new[pos:]
+    return new
 
 
 def apply(command: object, spec: object) -> Optional[str]:

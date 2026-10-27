@@ -8,6 +8,16 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Make the guard rewrite act on the commands a model types (NOBLIVION-126). The rewrite now
+  reads a command as the deny check does: it rewrites each simple command of a list or a
+  pipeline that starts with the prefix (`cd x && pytest`, `make; pytest`, `pytest | tail`),
+  after the wrappers `env`, `timeout`, `VAR=value`, `sudo` and `nice`. `python -m <prog>`,
+  `python3 -m <prog>` and a path to a python binary with `-m <prog>` count as `<prog>`. Every
+  other byte of the command stays. Quoted data, heredocs and comments are never rewritten, and a
+  command whose output goes to a pipe other than `| tail`, to a file, or out of a group or a loop
+  is left alone. Shadow and ask act on the new shapes as before. Off by default
+  (`NOBLIVION_GUARD_REWRITE`).
+
 ## 0.1.17 - 2026-10-19
 
 - Raise the precision of the behavioural use signal (NOBLIVION-120), still off by default

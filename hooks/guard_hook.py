@@ -349,6 +349,7 @@ def _rw():
     global _RW
     if _RW is None:
         _RW = _load("guard_rewrite")
+        _RW._GT_MOD = _gt()  # the rewrite splits a command with the lexer of the deny path
     return _RW
 
 
