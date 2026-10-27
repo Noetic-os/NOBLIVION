@@ -357,7 +357,10 @@ def test_the_store_indexes_the_global_folder_and_shares_its_root(world, shared):
     settings = store_config.load_settings(env)
     assert shared["folder"] in settings.resolved_memory_dirs()
     assert "rules" in store_config.load_store_settings(env).shared_roots
-    assert store_config.load_store_settings(world["env"]).shared_roots == ()
+    # No global folder: only the default home root (NOBLIVION-125).
+    home_root = hc.project_slug(world["home"])
+    assert store_config.load_store_settings(world["env"]).shared_roots == (home_root,)
+    assert home_root in store_config.load_store_settings(env).shared_roots
 
 
 def test_the_store_pool_lets_a_project_file_shadow_a_shared_root(tmp_path):

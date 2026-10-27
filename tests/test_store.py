@@ -1498,4 +1498,7 @@ def test_store_settings_from_env_file_and_defaults(tmp_path):
     )
     bad = {"NOBLIVION_CONFIG": str(tmp_path / "none.json"), "NOBLIVION_PORT": "70000"}
     bad.update(NOBLIVION_IDLE_EXIT_S="-1", NOBLIVION_TRUST_RANKING="loud")
-    assert config.load_store_settings(bad) == config.StoreSettings()
+    # recall.shared_roots not set: the home root (NOBLIVION-125).
+    home = config.home_root(bad)
+    assert home
+    assert config.load_store_settings(bad) == config.StoreSettings(shared_roots=(home,))

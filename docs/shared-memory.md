@@ -46,7 +46,9 @@ This works when both clients use the same folder, even if Codex runs in a
 Git worktree elsewhere. If Claude Code already uses an explicit
 `NOBLIVION_RECALL_ROOT`, pass that root to the Codex installer with
 `--root name`. A memory from a shared root can be used across projects when
-you add that root to `recall.shared_roots` in `config.json`.
+you add that root to `recall.shared_roots` in `config.json`. When that key is
+not set, the home root (the project folder of your home folder) is shared by
+default.
 
 See [configuration.md](configuration.md) for these settings.
 

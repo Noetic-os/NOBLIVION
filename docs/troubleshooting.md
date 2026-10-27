@@ -51,10 +51,12 @@ When the store answers but finds nothing:
 
 - Check that your notes are in `~/.claude/projects/<project>/memory/`.
   Files in sub-folders are not indexed.
-- Recall searches only the notes of the session's root: the project folder
-  of the session's working directory. A project with no memory folder of
-  its own finds nothing. List shared roots in `recall.shared_roots` so that
-  every session can find them.
+- Recall searches only the notes of the session's root (the project folder
+  of the session's working directory) and of the shared roots. When
+  `recall.shared_roots` is not set, the home root is shared, so the notes of
+  your home folder's project reach every session. An explicit list replaces
+  that default, and `[]` turns it off. List more roots in
+  `recall.shared_roots` so that every session can find them.
 - Run `noblivion index --json` and read the counts and the `skipped` list.
 - The hook drops a note whose vector score is below the floor: 0.68 for
   note text and for the ranked index. For the ranked index the log status

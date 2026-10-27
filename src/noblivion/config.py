@@ -11,12 +11,14 @@ A bad value falls back to the default. No code here holds a literal home path.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 DB_FILE = "noblivion.db"
 INDEX_LOCK_FILE = "index.lock"
@@ -357,10 +359,66 @@ class StoreSettings:
     log_level: str = "info"
 
 
+SHARED_ROOTS_KEY = "recall.shared_roots"
+HOOK_CONFIG_FILE = "hook_config.py"
+_HOOK_CONFIG: dict[str, ModuleType] = {}
+
+
+def _hook_config(env: Mapping[str, str]) -> ModuleType | None:
+    """``hooks/hook_config.py``, loaded by path from the first hooks folder
+    that holds it (``labels.hooks_dirs``), once per path and process. The
+    hooks are stdlib, so this package does not import them by name."""
+    from noblivion import labels  # labels imports this module
+
+    for folder in labels.hooks_dirs(env):
+        path = folder / HOOK_CONFIG_FILE
+        if not path.is_file():
+            continue
+        key = str(path.resolve())
+        mod = _HOOK_CONFIG.get(key)
+        if mod is None:
+            spec = importlib.util.spec_from_file_location("_noblivion_hook_config", path)
+            if spec is None or spec.loader is None:
+                return None
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _HOOK_CONFIG[key] = mod
+        return mod
+    return None
+
+
+def home_root(env: Mapping[str, str] | None = None) -> str | None:
+    """The root of the user's home-folder project (NOBLIVION-125): the name
+    Claude Code gives the project folder of ``Path.home()``, by the hooks'
+    own rule (``project_slug(project_folder(...))`` in ``hooks/hook_config.py``,
+    the rule of ``resolve_memory_dir``). A session started in the home folder
+    sends this root. None when the hooks folder is not found."""
+    env = os.environ if env is None else env
+    try:
+        mod = _hook_config(env)
+        if mod is None:
+            return None
+        name = mod.project_slug(mod.project_folder(str(Path.home())))
+    except Exception:  # noqa: BLE001 - no default root, as before
+        return None
+    return name if isinstance(name, str) and name else None
+
+
 def _shared_roots(env: Mapping[str, str], cfg: Mapping) -> tuple[str, ...]:
     """``recall.shared_roots``, plus the root of the global folder (the name
-    of its parent folder, as the indexer names roots) when it is set."""
-    roots = list(string_list(cfg, "recall.shared_roots"))
+    of its parent folder, as the indexer names roots) when it is set.
+
+    When the key is not set (or its value is not a list), the list is the
+    home root (``home_root``), so the notes of the home-folder project reach
+    every session. An explicit list is used as given; ``[]`` turns the
+    default off. The ranker drops the session's own root from the list, so a
+    session in the home folder sees no change."""
+    value = lookup(cfg, SHARED_ROOTS_KEY)
+    if isinstance(value, list):
+        roots = list(string_list(cfg, SHARED_ROOTS_KEY))
+    else:
+        home = home_root(env)
+        roots = [home] if home else []
     extra = global_memory_dir(env, cfg)
     if extra is not None:
         name = Path(os.path.normpath(str(extra))).parent.name

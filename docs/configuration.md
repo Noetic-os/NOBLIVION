@@ -113,7 +113,8 @@ When it is set:
 
 - The store indexes the folder and searches it in every session. Its root is
   the name of its parent folder, and the store adds that root to
-  `recall.shared_roots`.
+  `recall.shared_roots`: to the list you set, or to the default home root
+  (see "Shared roots").
 - Recall, the guard table and the stop checks read the project folder and the
   global folder.
 - A file of the project folder wins over a file with the same name in the
@@ -202,13 +203,51 @@ run `noblivion consent embeddings`. The `openrouter` backend also needs
 | `NOBLIVION_RECALL_PROJECT` | `namespace` | `claude_code` | The namespace to search. `NOBLIVION_PROJECT` is read when this is not set. |
 | `NOBLIVION_RECALL_MEMORY_DIR` | none | the session's memory folder (see "The session's memory folder") | The memory folder of the session. It sets the root (see below) and the folder for local re-ranking and rule rows. `NOBLIVION_MEMORY_DIR` is read when this is not set. |
 | `NOBLIVION_RECALL_ROOT` | none | the name of the project folder that holds the memory folder | The root. Recall searches only the notes of this root, plus the shared roots. |
-| none | `recall.shared_roots` | `[]` | Roots whose notes every session can find. |
+| none | `recall.shared_roots` | the home root (see "Shared roots") | Roots whose notes every session can find. `[]` turns the default off. |
 | `NOBLIVION_RECALL_CACHE_DIR` | none | `<data dir>/cache` | Hook state: session files, logs and the trust event spool. |
 | `NOBLIVION_RECALL_SESSION_KEEP_DAYS` | none | `7` | Days a session file stays in the cache. |
 | `NOBLIVION_RECALL_SESSION_KEEP_MAX` | none | `200` | The most session files the cache keeps. |
 | `NOBLIVION_RECALL_CORPUS_CACHE` | none | on (switch) | Keeps the parsed memory files in `<cache folder>/corpus_cache.json`, keyed by folder, file name, modification time and size, so a prompt reads only the files that changed. Turn it off to read and tokenize every file on every prompt. |
 | `NOBLIVION_RECALL_LABELS` | none | off (switch) | Adds label rows (notes that name a file, a tool, a ticket or a service in the prompt). The shipped config file turns it on under `recall.env`. |
 | `NOBLIVION_RECALL_MD_ONLY` | none | off (switch) | Makes the MCP tool return memory files only. |
+
+### Shared roots
+
+`recall.shared_roots` lists roots whose notes every session can find. A
+session always finds the notes of its own root, plus the notes of the shared
+roots.
+
+When the key is not set, the list holds one root: the home root. The home
+root is the root of the Claude Code project folder of your home folder, for
+example `-home-alice` for `/home/alice`. The store names it with the hooks'
+own rule, so it is the root that a session started in your home folder
+sends. General notes (rulings, conventions, tool traps) are often saved
+there, because general sessions run in the home folder. With the default,
+a session in any other project folder can find them too.
+
+- A value that is not a list counts as not set.
+- An explicit list is used as given. It replaces the default, so add the
+  home root to the list when you want to keep it.
+- `[]` turns the default off: each session finds only the notes of its own
+  root (and of the global folder, when it is set).
+- A session whose own root is the home root sees no change and gets no
+  duplicate rows.
+- The default can add notes of the home project to the prompts of other
+  projects. These notes pass the same relevance floor
+  (`NOBLIVION_RECALL_MIN_SCORE`, and `NOBLIVION_RECALL_INDEX_MIN_SCORE` for
+  the ranked index) and the same caps on rows and characters as any other
+  note. A file of the session's own root wins over a file with the same name
+  in the home root.
+- The default does not follow `autoMemoryDirectory` or other memory folder
+  overrides. When you use one, set the list yourself.
+- The guards, the label rows and the stop checks read memory folders, not
+  roots, so this setting does not change them.
+
+To turn the default off, put this in `config.json`:
+
+```json
+{"recall": {"shared_roots": []}}
+```
 
 ### Ranked index
 

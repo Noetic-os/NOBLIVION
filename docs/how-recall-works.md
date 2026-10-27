@@ -106,6 +106,12 @@ After Claude Code writes a memory file, the memory sync hook runs
 ### Ranking
 
 The store ranks the notes of the session's root and of the shared roots.
+When `recall.shared_roots` is not set, the shared root is the home root: the
+root of the Claude Code project folder of your home folder. So a note saved
+in a session in your home folder can reach a session in any other project
+folder. It passes the same relevance floor and the same caps as any other
+note. Set `recall.shared_roots` to `[]` to turn this off (see
+[Shared roots](configuration.md#shared-roots)).
 
 It also ranks the notes that `noblivion import` added (see
 [Import memories from a JSONL file](import.md)). They belong to no

@@ -25,6 +25,18 @@ All notable changes to NOBLIVION. The format follows
   (`/proc`); on other systems the check finds nothing. The memory fields check validates the
   field, the guard table carries it, and a dedup merge keeps it. See "Deny: protect a process" in
   `docs/guards.md`.
+- Share the home root by default (NOBLIVION-125). When `recall.shared_roots` is not set, it now
+  holds the home root: the root of the Claude Code project folder of the user's home folder, named
+  by the hooks' own rule (`project_slug(project_folder(home))` in `hooks/hook_config.py`). A note
+  saved in a home-folder session, such as a ruling, a convention or a tool trap, now reaches
+  sessions in other project folders through prompt recall, the ranked index (subagent rules, error
+  recall), the MCP recall tool, fetch and `noblivion explain`. Before, the default was `[]` and
+  such a note never left the home project. This can add home-project notes to other projects'
+  prompts; they pass the same relevance floor and caps as any other note, and a file of the
+  session's own root still wins over a file with the same name. An explicit list is used as
+  given; `"recall": {"shared_roots": []}` keeps the old behaviour. A session in the home folder
+  sees no change. The guards, label rows and stop checks read memory folders and do not change.
+  See `docs/configuration.md`, "Shared roots".
 
 ## 0.1.17 - 2026-10-19
 

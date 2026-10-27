@@ -390,7 +390,8 @@ General rules for every route:
 - Search, index and fetch accept `root` (new, optional): the memory folder
   key of the session (section 5.1). With `root`, the pool is the
   `claude_code_md` rows of that root plus the roots in
-  `recall.shared_roots`. Without `root`, the pool is every root, as one
+  `recall.shared_roots` (default: the home root, section 12.3). Without
+  `root`, the pool is every root, as one
   folder was in the reference implementation.
 - Read routes that fail inside the ranker answer 200 with an empty result
   and a `reason` string, as the reference implementation does. The fixed
@@ -792,8 +793,13 @@ the source of truth. The indexer never writes a memory file.
   working dir the same way Claude Code names its project folders, and send
   it as `root` (section 4). So one project's rules are not injected into
   another project, and a file name that exists in two folders cannot pull
-  the wrong file's rule. `recall.shared_roots` (default empty) lists roots
-  that every session sees.
+  the wrong file's rule. `recall.shared_roots` lists roots that every
+  session sees. When the key is not set, it holds the home root: the root of
+  the Claude Code project folder of the user's home folder, named by the
+  hooks' rule (`project_slug(project_folder(home))` in
+  `hooks/hook_config.py`). An explicit list, `[]` too, is used as given.
+  The pool drops the session's own root from the list, so a session in the
+  home folder sees no change (NOBLIVION-125).
 - A `path` trust event resolves in the `root` of its batch. Without a
   `root`, it resolves only when exactly one live row has that path; else it
   counts as `unknown`. An `mv_id` event is never ambiguous.
@@ -1353,7 +1359,8 @@ text is not embedded twice. The file vectors stay: the dedup sweep reads them.
 
 The pool for a query is the live rows (`archived_at IS NULL AND
 deleted_at IS NULL`) of the namespace, limited to the request `root` plus
-`recall.shared_roots` when the request has a `root`. `/search` and `/index` without `include_mined=1` also drop
+`recall.shared_roots` (default: the home root) when the request has a
+`root`. `/search` and `/index` without `include_mined=1` also drop
 `transcript_mined` rows. The pool filter runs before scoring, so a filtered
 row cannot change the ranks of the others.
 
@@ -1929,7 +1936,7 @@ path. Paths are built with `Path.home()` and `os.path.expanduser`.
 | `memory_dirs` | `NOBLIVION_MEMORY_DIRS` (`:`-separated) | all `~/.claude/projects/*/memory`; plus the hooks' folder `NOBLIVION_MEMORY_DIR` when it is set |
 | `index.interval_s` | `NOBLIVION_INDEX_INTERVAL_S` | `30` |
 | `index.delete_grace_days` | none | `14` |
-| `recall.shared_roots` | none | `[]` |
+| `recall.shared_roots` | none | the home root (section 5.1); `[]` turns it off |
 | `recall.timeout_s` | `NOBLIVION_RECALL_TIMEOUT_S` | `2.0` |
 | `recall.min_score` | `NOBLIVION_RECALL_MIN_SCORE` | `0.68` for the model `BAAI/bge-small-en-v1.5`, else none |
 | `recall.index_k` | `NOBLIVION_RECALL_INDEX_K` | `35` (shipped config: `30`) |
