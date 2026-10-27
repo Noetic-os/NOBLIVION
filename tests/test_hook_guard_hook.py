@@ -318,7 +318,9 @@ def test_rows_on_trigger_without_violation(env):
 def test_broad_trigger_gives_no_row(env):
     assert gh.broad_trigger("git push") and gh.broad_trigger("tail")
     assert not gh.broad_trigger("git push github") and not gh.broad_trigger("python -m pytest")
-    assert call(env, bash("git push origin x")) is None
+    # the switch of NOBLIVION-129 is off here: an everyday trigger gives a row only when graded
+    off = dict(env, NOBLIVION_GUARD_EVERYDAY_TRIGGERS="0")
+    assert call(off, bash("git push origin x")) is None
 
 
 def test_flag_only_and_keyword_triggers_are_broad():

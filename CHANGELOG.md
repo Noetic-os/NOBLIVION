@@ -8,6 +8,16 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Grade everyday triggers by relevance instead of dropping them (NOBLIVION-129). A note whose
+  trigger is `pytest`, `kill` or `git worktree` gave no row on the commands that matter. Now
+  the trigger goes through the weak-trigger grading: the row shows when the note's rule names
+  the command, or shares enough rare words with the command or with the call's description and
+  the last prompt of the session transcript, and stays quiet otherwise. These rows show the
+  rule line only, after every other row, at most 3 per call, with a budget of their own (1500
+  characters per agent and session); triggers on text plumbing (`cat`, `tail`, `grep`, `cd`)
+  stay dropped. `python -m X`, `python3 -m X` and `<path to python> -m X` now also fire a
+  trigger `X`. Rows only: no new deny. On by default; `NOBLIVION_GUARD_EVERYDAY_TRIGGERS=0`
+  (config key `guard.everyday_triggers`) restores the old behaviour. See `docs/guards.md`.
 - Make the guard rewrite act on the commands a model types (NOBLIVION-126). The rewrite now
   reads a command as the deny check does: it rewrites each simple command of a list or a
   pipeline that starts with the prefix (`cd x && pytest`, `make; pytest`, `pytest | tail`),

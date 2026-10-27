@@ -129,6 +129,19 @@ Bash
     (``weak_row``; the log line adds ``rule_only``). Else the row as above.
     Strong rows come first. A deny never passes here. Env
     ``NOBLIVION_GUARD_WEAK_SHARE=0`` turns the grading off (the rows before WI-3g).
+  * Everyday triggers (NOBLIVION-129). A trigger that is an everyday command
+    (``pytest``, ``kill``, ``git worktree``) gave no row. ``everyday_rows`` now
+    finds the notes that only such a trigger fires (not a text-plumbing one,
+    ``EVERYDAY_PLUMBING``), and ``grade_everyday`` keeps the ones that fit the call:
+    ``grade_rows`` on the segments that fire the trigger, then on the context (command,
+    call description, last prompt of the transcript), each with a minimum of evidence
+    (``EVERYDAY_COMMAND_MIN``, ``EVERYDAY_CONTEXT_MIN``, ``EVERYDAY_CONTEXT_WORDS``)
+    unless the rule names the trigger. At most ``EVERYDAY_MAX`` (3) rows, ranked after
+    every other row, shown as Rule lines, with a session budget of their own
+    (``EVERYDAY_SESSION_CHARS``); the ``ROW_REPEAT`` limit holds. ``python -m X`` also
+    fires ``X`` (``guard_rewrite.program``). Rows only, never a deny.
+    ``NOBLIVION_GUARD_EVERYDAY_TRIGGERS=0`` (config key ``guard.everyday_triggers``)
+    turns both off; ``WEAK_SHARE=0`` turns the rows off.
   * Label rows (``label_rows``). Where no
     ``violates:`` rule hits, the subject labels of the command or the path
     (host, ticket key, service, file name, tool) are matched against
@@ -211,6 +224,7 @@ of a session, not one per call. Standard library only.
 from __future__ import annotations
 
 import fcntl
+import functools
 import hashlib
 import importlib.util
 import json
@@ -282,6 +296,26 @@ READ_TOOLS = ("Read", "Grep", "Glob")  # label rows only, behind the file-tool s
 ESCALATE_AFTER = 2
 ROW_REPEAT = 3
 MAX_ROWS = 3
+# NOBLIVION-129: a trigger that is an everyday command (``pytest``, ``kill``,
+# ``git worktree``) is graded by relevance, not dropped. Switch, on by default.
+EVERYDAY_ENV, EVERYDAY_KEY = "NOBLIVION_GUARD_EVERYDAY_TRIGGERS", "guard.everyday_triggers"
+EVERYDAY_MAX = 3  # most rows from everyday triggers in one call
+EVERYDAY_CONTEXT_MIN = 4.0  # evidence in the prompt context (rarity of the shared words)
+EVERYDAY_SESSION_CHARS = 1500  # row text per agent of a session from everyday triggers
+EVERYDAY_RANK = 10.0  # their weight is lower than the weight of any other row by this
+EVERYDAY_COMMAND_MIN = 3.0  # the same for the segments of the command that fire the trigger
+EVERYDAY_CONTEXT_WORDS = 3  # and at least this many shared words
+# Text plumbing and shell wrappers: a trigger on one of these (``tail``, ``grep -n``,
+# ``cd``) is in nearly every call and names no situation, so it stays dropped.
+EVERYDAY_PLUMBING = frozenset(
+    (
+        "cat head tail grep egrep fgrep rg sed awk cut tr sort uniq wc ls echo printf cd pwd sleep "
+        "date xargs tee find test true false env timeout nohup setsid time bash sh stat file less "
+        "which basename dirname readlink realpath diff jq mkdir cp mv rm ln chmod touch export"
+    ).split()
+)
+CONTEXT_TAIL_BYTES = 512 * 1024  # the part of the transcript read for the last prompt
+CONTEXT_CHARS = 1500  # the most characters of the last prompt that count as context
 ROW_APPLY_CHARS = 220  # the legacy row (``legacy_row``) only
 ROWS_MAX_CHARS = 3600  # one show of rows (WI-3f): one full row and two compact rows fit
 ROWS_FULL_SESSION_CHARS = (
@@ -827,37 +861,84 @@ def _glob_weight(glob: str) -> int:
     return len(re.sub(r"[*?]", "", glob))
 
 
-def command_rows(
-    command: str, table: Mapping[str, Any]
-) -> List[Tuple[int, str, Dict[str, object]]]:
-    """``[(weight, trigger, entry)]`` for every entry with a plain trigger that
-    a segment of ``command`` fires. One per entry, its longest trigger. The
-    segments are those of ``guard_table.command_segments``: quoted
-    data and comments are masked, executed strings are their own lines."""
+@functools.lru_cache(maxsize=8)
+def _command_variants(command: str, python_m: bool) -> Tuple[str, ...]:
+    """The forms of ``command`` that a plain trigger is matched against: for
+    each shell segment of ``guard_table.command_segments`` (quoted data and
+    comments masked, executed strings as their own lines), its ``variants``.
+    With ``python_m`` (NOBLIVION-129), a form that runs a module
+    (``python3 -m pytest -v``, ``.venv/bin/python -m pytest -v``) gets the form
+    of the module (``pytest -v``) as well, by ``guard_rewrite.program``."""
     gt = _gt()
-    variants: List[str] = []
+    out: List[str] = []
     for s in gt.command_segments(command):  # quoted data and comments masked (F1)
         for v in gt.variants(s):
-            if v not in variants:
-                variants.append(v)
+            if v not in out:
+                out.append(v)
+            if python_m:
+                words = v.split()
+                prog = _rw().program(tuple(words))
+                if len(prog) < len(words):
+                    mod = " ".join(prog)
+                    if mod not in out:
+                        out.append(mod)
+    return tuple(out)
+
+
+def _scan_rows(
+    command: str, table: Mapping[str, Any], python_m: bool, everyday: bool
+) -> List[Tuple[int, str, Dict[str, object]]]:
+    """``[(weight, trigger, entry)]``, one per entry, its longest trigger that a
+    form of ``command`` fires. ``everyday`` False: the triggers that are not
+    ``broad_trigger``. ``everyday`` True: the entries that only a ``broad_trigger``
+    fires (an entry that a specific trigger fires is already a row)."""
+    variants = _command_variants(command, python_m)
     if not variants:
         return []
     out = []
     for e in table.get("entries") or []:
         if not isinstance(e, dict):
             continue
-        best = ""
+        best, best_broad = "", ""
         for t in e.get("triggers") or []:
             if not isinstance(t, str) or not t or t.startswith(("glob:", "tool:", "phrase:")):
                 continue
-            if len(t) <= len(best):
-                continue
             pre = t + " "
-            if any(v == t or v.startswith(pre) for v in variants) and not broad_trigger(t):
+            if not any(v == t or v.startswith(pre) for v in variants):
+                continue
+            if broad_trigger(t):
+                if len(t) > len(best_broad) and t.split()[0] not in EVERYDAY_PLUMBING:
+                    best_broad = t
+            elif len(t) > len(best):
                 best = t
-        if best:
+        if everyday:
+            if best_broad and not best:
+                out.append((len(best_broad), best_broad, e))
+        elif best:
             out.append((len(best), best, e))
     return out
+
+
+def command_rows(
+    command: str, table: Mapping[str, Any], python_m: bool = False
+) -> List[Tuple[int, str, Dict[str, object]]]:
+    """``[(weight, trigger, entry)]`` for every entry with a plain trigger that
+    a segment of ``command`` fires. One per entry, its longest trigger. The
+    segments are those of ``guard_table.command_segments``: quoted
+    data and comments are masked, executed strings are their own lines. A
+    trigger that is an everyday command (``broad_trigger``) gives no row here;
+    see ``everyday_rows``. ``python_m``: ``python3 -m X`` also fires as ``X``."""
+    return _scan_rows(command, table, python_m, False)
+
+
+def everyday_rows(
+    command: str, table: Mapping[str, Any], python_m: bool = True
+) -> List[Tuple[int, str, Dict[str, object]]]:
+    """Like ``command_rows``, for the entries that only a trigger that is an
+    everyday command fires (``pytest``, ``kill``, ``git worktree``;
+    NOBLIVION-129). These are candidates, not rows: ``grade_everyday`` keeps the
+    ones that fit the call."""
+    return _scan_rows(command, table, python_m, True)
 
 
 def path_rows(path: str, table: Mapping[str, Any]) -> List[Tuple[int, str, Dict[str, object]]]:
@@ -1107,6 +1188,8 @@ def grade_rows(
     table: Mapping[str, Any],
     weak_share: int = WEAK_SHARE,
     full_score: float = WEAK_FULL_SCORE,
+    min_score: float = 0.0,
+    min_words: int = 0,
 ) -> Tuple[List[Tuple[float, str, Dict[str, object]]], Dict[str, str]]:
     """``(cands, rule_only)``: a strong candidate keeps its weight; a weak one
     without evidence is dropped; a weak one with evidence comes after every
@@ -1120,9 +1203,10 @@ def grade_rows(
         if not weak_trigger(t, e, share.get(t, 0), weak_share):
             out.append((w, t, e))
             continue
-        score, _words = row_evidence(query, t, e, table)
-        score += named_evidence(t, e, table)
-        if score <= 0:
+        score, words = row_evidence(query, t, e, table)
+        named = named_evidence(t, e, table)
+        score += named
+        if score <= 0 or (named <= 0 and (score < min_score or len(words) < min_words)):
             continue
         if score >= full_score:
             out.append((-1 + score / 1000.0, t, e))
@@ -1239,6 +1323,113 @@ def render_rows(
         )
 
     return mt.render(mems, query, header=ROWS_HEADER, max_chars=max_chars, render_one=one)
+
+
+def _text_of(content: object) -> str:
+    """The text blocks of a transcript message content (a string, or a list of
+    blocks). A block that is not text (a tool result) gives nothing."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(b.get("text") or "")
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return ""
+
+
+def last_prompt(transcript: object) -> str:
+    """The text of the newest user message of the session transcript (the
+    ``transcript_path`` of the hook event), cut to ``CONTEXT_CHARS``. Only the
+    last ``CONTEXT_TAIL_BYTES`` of the file are read. A message that is a tool
+    result, a system note (starts with ``<``) or has no text is skipped.
+    "" when there is none or on any error."""
+    try:
+        if not isinstance(transcript, str) or not transcript:
+            return ""
+        with open(transcript, "rb") as fh:
+            size = fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, size - CONTEXT_TAIL_BYTES))
+            raw = fh.read().decode("utf-8", "replace")
+        for line in reversed(raw.splitlines()):
+            if '"user"' not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue  # also the cut first line
+            msg = row.get("message") if isinstance(row, dict) else None
+            if not isinstance(msg, dict) or msg.get("role") != "user" or row.get("isMeta"):
+                continue
+            text = _text_of(msg.get("content")).strip()
+            if text and not text.startswith("<"):
+                return text[:CONTEXT_CHARS]
+    except Exception:  # noqa: BLE001 - no context, no extra rows
+        pass
+    return ""
+
+
+def call_context(event: Mapping[str, object], command: str) -> str:
+    """The context of a Bash call for the relevance of an everyday trigger: the
+    command, the call's own ``description``, and the last prompt of the
+    session."""
+    ti = event.get("tool_input")
+    desc = str(ti.get("description") or "") if isinstance(ti, dict) else ""
+    return " ".join(x for x in (command, desc, last_prompt(event.get("transcript_path"))) if x)
+
+
+def grade_everyday(
+    cands: List[Tuple[int, str, Dict[str, object]]],
+    command: str,
+    context: Callable[[], str],
+    table: Mapping[str, Any],
+    weak_share: int = WEAK_SHARE,
+    limit: int = EVERYDAY_MAX,
+) -> Tuple[List[Tuple[float, str, Dict[str, object]]], Dict[str, str]]:
+    """NOBLIVION-129. ``(rows, rule_only)`` for the candidates of
+    ``everyday_rows``. A candidate is kept when ``grade_rows`` keeps it on the
+    segments of the command that fire its trigger (the note's rule names the
+    trigger, or shares words with those segments), else when its rule shares
+    ``EVERYDAY_CONTEXT_MIN`` of evidence in ``EVERYDAY_CONTEXT_WORDS`` words or
+    more with the context of the call (``context()``: the command, its
+    description and the last prompt, read once and only when needed). Never
+    more than ``limit``, best first. With ``weak_share`` 0 (grading off) there
+    are none: the grading is what keeps these triggers quiet. Rows only."""
+    if not cands or weak_share <= 0 or limit <= 0:
+        return [], {}
+    variants = _command_variants(command, True)
+    rows: List[Tuple[float, str, Dict[str, object]]] = []
+    rule_only: Dict[str, str] = {}
+    ctx: Optional[str] = None
+    for cand in cands:
+        _w, trig, _e = cand
+        fired = " ".join(v for v in variants if v == trig or v.startswith(trig + " "))
+        got, only = grade_rows(
+            [cand],
+            fired or command,
+            table,
+            weak_share,
+            min_score=EVERYDAY_COMMAND_MIN,
+            min_words=EVERYDAY_CONTEXT_WORDS,
+        )
+        if not got:
+            if ctx is None:
+                ctx = context()
+            got, only = grade_rows(
+                [cand],
+                ctx,
+                table,
+                weak_share,
+                min_score=EVERYDAY_CONTEXT_MIN,
+                min_words=EVERYDAY_CONTEXT_WORDS,
+            )
+        rows.extend(got)
+        rule_only.update(only)
+    rows.sort(key=lambda c: (-c[0], str(c[2].get("id", ""))))
+    rows = rows[:limit]
+    ids = {str(e.get("id", "")) for _w, _t, e in rows}
+    return rows, {i: t for i, t in rule_only.items() if i in ids}
 
 
 def pick_rows(
@@ -1644,14 +1835,20 @@ SHADOW_ENV, SHADOW_KEY = "NOBLIVION_GUARD_ACT_SHADOW", "guard.act_shadow"
 PERM_ENV, PERM_KEY = "NOBLIVION_GUARD_REWRITE_DECISION", "guard.rewrite_decision"
 
 
-def _switch(env: Mapping[str, str], name: str, key: str) -> bool:
+def _switch(env: Mapping[str, str], name: str, key: str, default: bool = False) -> bool:
     fn = getattr(_cfg(), "switch", None)
     if fn is None:  # the stand-in: no hook_config.py next to this file
-        return False
+        return default
     try:
-        return bool(fn(name, False, env, key))
-    except Exception:  # noqa: BLE001 - a bad config never turns a switch on
-        return False
+        return bool(fn(name, default, env, key))
+    except Exception:  # noqa: BLE001 - a bad config never turns an off switch on
+        return default
+
+
+def everyday_on(env: Mapping[str, str]) -> bool:
+    """The switch of NOBLIVION-129 (everyday triggers graded by relevance, and
+    ``python -m X`` read as ``X``). On by default."""
+    return _switch(env, EVERYDAY_ENV, EVERYDAY_KEY, True)
 
 
 def rewrite_on(env: Mapping[str, str]) -> bool:
@@ -1835,6 +2032,7 @@ def decide(
     if tool not in BASH_TOOLS:
         _settled(pending)  # only the credential guard denies these tools
     file_q: Optional[Tuple[str, str]] = None
+    everyday: List[Tuple[int, str, Dict[str, object]]] = []
     if tool not in BASH_TOOLS and _file_tools_on(env):
         file_q = _file_query(tool, ti, cwd)
     if tool in READ_TOOLS and file_q is None:
@@ -1859,7 +2057,13 @@ def decide(
         marker, marker_seen = override_marker(command) if hits else (None, False)
         # A call with a hit is denied or overridden: it shows no rows, so
         # nothing reads the command again before the deny is printed.
-        cands = [] if hits else command_rows(command, table)
+        py_m = everyday_on(env)  # NOBLIVION-129: python -m X is X; everyday triggers graded
+        cands = [] if hits else command_rows(command, table, py_m)
+        if py_m and not hits:
+            try:
+                everyday = everyday_rows(command, table)
+            except Exception:  # noqa: BLE001 - no everyday rows, the rows before NOBLIVION-129
+                everyday = []
         query, subject = command, "command"
         label_q, label_s = query, subject
     elif tool in READ_TOOLS and file_q is not None:
@@ -1881,18 +2085,34 @@ def decide(
         if not hits and table.get("label_index")
         else []
     )
-    if not hits and not cands and not labs:
+    if not hits and not cands and not everyday and not labs:
         return Decision()
     rule_only: Dict[str, str] = {}
+    everyday_ids: List[str] = []
     if not hits:
         # WI-3g: a weak trigger needs evidence in the call (``grade_rows``).
         # Denies never pass here. An error keeps the rows before WI-3g.
+        weak_share = _int_env(env, "NOBLIVION_GUARD_WEAK_SHARE", WEAK_SHARE)
         try:
-            cands, rule_only = grade_rows(
-                cands, query, table, _int_env(env, "NOBLIVION_GUARD_WEAK_SHARE", WEAK_SHARE)
-            )
+            cands, rule_only = grade_rows(cands, query, table, weak_share)
         except Exception:  # noqa: BLE001
             rule_only = {}
+        if everyday:
+            # NOBLIVION-129: an everyday trigger shows its row when the note fits
+            # the command or the context of the call. Rows only, never a deny.
+            try:
+                erows, eonly = grade_everyday(
+                    everyday, query, lambda: call_context(event, query), table, weak_share
+                )
+                have = {str(e.get("id", "")) for _w, _t, e in cands}
+                erows = [r for r in erows if str(r[2].get("id", "")) not in have]
+                # They fill free places only (after every other row), as Rule lines.
+                cands = cands + [(w - EVERYDAY_RANK, t, e) for w, t, e in erows]
+                for _w, t, e in erows:
+                    rule_only.setdefault(str(e.get("id", "")), t)
+                everyday_ids = [str(e.get("id", "")) for _w, _t, e in erows]
+            except Exception:  # noqa: BLE001 - no everyday rows
+                everyday_ids = []
         if not cands and not labs:
             return Decision()
 
@@ -1962,10 +2182,18 @@ def decide(
             return denied
         rows = pick_rows(cands, state)
         budget = _int_env(env, "NOBLIVION_GUARD_ROWS_SESSION_CHARS", ROWS_SESSION_CHARS)
+        # NOBLIVION-129: rows from everyday triggers have a budget of their own
+        # (``EVERYDAY_SESSION_CHARS``), so they never use up the budget below.
+        ev_rows = [e for e in rows if str(e.get("id", "")) in everyday_ids]
+        rows = [e for e in rows if str(e.get("id", "")) not in everyday_ids]
         # Which rows show, and in which calls: the old rule, charged at the old
         # row size, so the full text changes what a row says, not which rows.
         while rows and state.row_chars + len(legacy_text(rows)) > budget:
             rows = rows[:-1]
+        ev_left = EVERYDAY_SESSION_CHARS - int(state.notes.get("everyday_chars", 0))
+        while ev_rows and len(legacy_text(ev_rows)) > ev_left:
+            ev_rows = ev_rows[:-1]
+        rows = rows + ev_rows
         if not rows:
             lab = _label_pick(
                 labs, state, env, sid, agent, table, query, subject, [], ROWS_MAX_CHARS
@@ -2011,8 +2239,11 @@ def decide(
                 all_compact=True,
                 rule_only=rule_only,
             )
+        final_ev = [e for e in rows if str(e.get("id", "")) in everyday_ids]
+        final_normal = [e for e in rows if str(e.get("id", "")) not in everyday_ids]
+        normal_chars = len(legacy_text(final_normal)) if final_normal else 0
+        everyday_chars = len(legacy_text(final_ev)) if final_ev else 0
         shown_weak = [str(e.get("id", "")) for e in rows if str(e.get("id", "")) in rule_only]
-        legacy_chars = len(legacy_text(rows))
         # Label rows fill the free places, after the trigger rows.
         lab = _label_pick(
             labs,
@@ -2028,7 +2259,9 @@ def decide(
         )
 
         def charge_rows(st: SessionState) -> Optional[Dict[str, object]]:
-            st.row_chars += legacy_chars
+            st.row_chars += normal_chars
+            if everyday_chars:
+                st.notes["everyday_chars"] = int(st.notes.get("everyday_chars", 0)) + everyday_chars
             st.notes["full_chars"] = int(st.notes.get("full_chars", 0)) + len(text_out)
             for e in rows:
                 mid = str(e.get("id", ""))
@@ -2036,6 +2269,11 @@ def decide(
                 if mid not in shown_weak:  # a weak row showed the Rule line only
                     st.full[mid] = st.full.get(mid, 0) + 1
             extra: Dict[str, object] = {"rule_only": shown_weak} if shown_weak else {}
+            shown_everyday = [
+                str(e.get("id", "")) for e in rows if str(e.get("id", "")) in everyday_ids
+            ]
+            if shown_everyday:  # NOBLIVION-129: rows that an everyday trigger gave
+                extra["everyday"] = shown_everyday
             if lab is not None:
                 extra.update(lab.charge(st))
             return extra or None

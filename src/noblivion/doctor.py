@@ -81,7 +81,7 @@ _SWITCH_KEYS = frozenset(
     "embedding.allow_download embedding.allow_remote "
     "embedding.remote_include_mined trust.events trust.citation_use "
     "trust.correction_contradict trust.behaviour_use recall.rules_only miner.enabled "
-    "guard.rewrite guard.ask guard.act_shadow".split()
+    "guard.rewrite guard.ask guard.act_shadow guard.everyday_triggers".split()
 )
 _CHOICES = {
     "embedding.backend": ("fastembed", "ollama", "openrouter", "none"),
@@ -135,6 +135,7 @@ ENV_KEYS = {
     "NOBLIVION_GUARD_REWRITE": "guard.rewrite",
     "NOBLIVION_GUARD_ASK": "guard.ask",
     "NOBLIVION_GUARD_ACT_SHADOW": "guard.act_shadow",
+    "NOBLIVION_GUARD_EVERYDAY_TRIGGERS": "guard.everyday_triggers",
     "NOBLIVION_GUARD_REWRITE_DECISION": "guard.rewrite_decision",
 }
 

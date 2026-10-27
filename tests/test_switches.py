@@ -66,6 +66,7 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_GUARD_REWRITE": gh.rewrite_on,  # NOBLIVION-122
     "NOBLIVION_GUARD_ASK": gh.ask_on,
     "NOBLIVION_GUARD_ACT_SHADOW": gh.act_shadow,
+    "NOBLIVION_GUARD_EVERYDAY_TRIGGERS": gh.everyday_on,  # NOBLIVION-129
     "NOBLIVION_GUARD_LABELS": lr.enabled,
     "NOBLIVION_GUARD_LABELS_FILE_TOOLS": lr.file_tools_enabled,
     "NOBLIVION_MEMORY_SYNC_OFF": ms.is_off,

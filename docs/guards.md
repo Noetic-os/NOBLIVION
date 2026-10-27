@@ -134,6 +134,38 @@ or when 4 or more notes share it. Evidence means words of the call that
 also appear in the rule or apply text. With no evidence, the row is not
 shown. With little evidence, only the rule line is shown.
 
+An everyday command as a trigger (`pytest`, `kill`, `git worktree`, `git
+status`) is graded in the same way, and it is not dropped. The hook shows the
+row of such a trigger only when the note fits the call:
+
+- The note's rule names the command (`pytest` in "run pytest quiet"). Or the
+  rule shares enough rare words (3 words) with the part of the command that
+  fires the trigger.
+- Or the rule shares enough rare words (3 words) with the context of the
+  call: the command, the call's `description`, and the last prompt of the
+  session. The hook reads the prompt from the end of the transcript (the
+  last 512 KB). When it finds no prompt, only the command and the
+  description count.
+
+A note that does not fit the call shows no row. These rows are the weakest
+rows of a call:
+
+- They show the rule line only, after every other row, and only in a free
+  place. At most 3 rows come from everyday triggers in one call.
+- They have their own budget of 1500 characters per agent in a session, so
+  they never use up the budget of the other rows. The limit of 3 times per
+  note and agent holds for them too.
+- A trigger on text plumbing (`cat`, `head`, `tail`, `grep`, `sed`, `ls`,
+  `echo`, `cd` and similar) stays dropped. It names no situation.
+- They only add context: they never block a call. The grading above must be
+  on (`NOBLIVION_GUARD_WEAK_SHARE` is not `0`), because the grading is what
+  keeps these triggers quiet.
+
+For every plain trigger, `python -m X`, `python3 -m X` and `<path to
+python> -m X` also count as `X`. A trigger `pytest` fires on `python3 -m
+pytest -v`. Turn both changes off with `NOBLIVION_GUARD_EVERYDAY_TRIGGERS=0`
+(config key `guard.everyday_triggers`). They are on by default.
+
 ### Deny: block a command
 
 When a `violates` expression matches a Bash command, the hook blocks the
@@ -560,6 +592,7 @@ tool, the check does not fire and the log row notes `notify_skipped`.
 | Label rows | `NOBLIVION_GUARD_LABELS=0` |
 | Rewrite, ask, shadow | They are off by default. Unset `NOBLIVION_GUARD_REWRITE`, `NOBLIVION_GUARD_ASK` and `NOBLIVION_GUARD_ACT_SHADOW`. |
 | Weak-trigger check | `NOBLIVION_GUARD_WEAK_SHARE=0` |
+| Everyday triggers, `python -m X` | `NOBLIVION_GUARD_EVERYDAY_TRIGGERS=0` |
 | Stop checks | They do not block by default (`shadow` mode). In `enforce` mode: `NOBLIVION_STOP_CHECKS=none`, or `NOBLIVION_STOP_CHECK_MODE=shadow` |
 | Memory sync | `NOBLIVION_MEMORY_SYNC_OFF=1` |
 | Guard hook, memory fields hook | Remove the rule fields from the note, or turn off the plugin. These hooks have no switch. |
