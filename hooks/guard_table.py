@@ -275,12 +275,25 @@ def build(folder: Any) -> Dict[str, Any]:
             for t in (fields.get("triggers") or [])
             if isinstance(t, str) and not mf.trigger_problem(t)
         ]
-        if not (fields.get("rule") or pat or triggers):
+        ppat = str(fields.get("protects_process") or "")
+        if not (fields.get("rule") or pat or triggers or ppat):
             continue
         kind = "feedback" if path.name.startswith("feedback_") else "other"
         violates, complies, run_first = "", "", ""
-        rewrite, on_violation = "", ""
+        rewrite, on_violation, protects = "", "", ""
         cpat = str(fields.get("complies") or "")
+        # NOBLIVION-127: a bad protects_process is dropped alone; it never
+        # switches off a violates regex.
+        pprobs: List[str] = []
+        if ppat:
+            try:
+                pprobs = mf.protects_process_problems(fields)
+            except Exception as exc:  # noqa: BLE001 - one file never stops the build
+                pprobs = [f"check failed: {exc}"]
+            if pprobs:
+                skipped.append({"id": mem_id, "protects_process": ppat, "problems": pprobs})
+            else:
+                protects = ppat
         if pat:
             try:
                 problems = mf.check_fields(fields, kind)
@@ -294,7 +307,7 @@ def build(folder: Any) -> Dict[str, Any]:
                 oprobs = mf.on_violation_problems(fields)
             except Exception as exc:  # noqa: BLE001 - one file never stops the build
                 problems, cprobs, rprobs, oprobs = [f"check failed: {exc}"], [], [], []
-            vprobs = [p for p in problems if p not in cprobs + rprobs + oprobs]
+            vprobs = [p for p in problems if p not in cprobs + rprobs + oprobs + pprobs]
             if vprobs:
                 skipped.append({"id": mem_id, "violates": pat, "problems": vprobs})
             else:
@@ -342,6 +355,8 @@ def build(folder: Any) -> Dict[str, Any]:
             entries[-1]["rewrite"] = rewrite
         if on_violation:
             entries[-1]["on_violation"] = on_violation
+        if protects:  # NOBLIVION-127
+            entries[-1]["protects_process"] = protects
     table: Dict[str, Any] = {
         "version": TABLE_VERSION,
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -483,7 +498,10 @@ def _one_line(text: object, n: int) -> str:
 
 def _skipped_kind(row: Mapping[str, Any]) -> str:
     """Which field a ``skipped`` row is about: ``complies``, ``rewrite``
-    (also ``on_violation``, NOBLIVION-122) or ``violates``."""
+    (also ``on_violation``, NOBLIVION-122), ``protects_process``
+    (NOBLIVION-127) or ``violates``."""
+    if "protects_process" in row:
+        return "protects_process"
     if "complies" in row:
         return "complies"
     if "rewrite" in row or "on_violation" in row:
@@ -510,6 +528,11 @@ def skipped_line(table: Mapping[str, Any]) -> str:
             "rewrite",
             "rewrite or on_violation field is skipped (the rule still blocks)",
             "rewrite or on_violation fields are skipped (the rules still block)",
+        ),
+        (
+            "protects_process",
+            "protects_process field is skipped (the process is not protected)",
+            "protects_process fields are skipped (the processes are not protected)",
         ),
     ):
         group = [r for r in rows if _skipped_kind(r) == kind]

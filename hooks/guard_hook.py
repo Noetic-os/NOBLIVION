@@ -30,6 +30,13 @@ Bash
     ``<rule>\\nApply: <apply>\\nMemory: <id>`` and one last line that gives the
     override syntax. With several hits the memory denied least often in this
     agent leads and the others are listed after it.
+  * A protected process (NOBLIVION-127; ``process_hits``). A note with
+    ``protects_process:`` (a regex over a process command line) denies a
+    command that would signal a process whose command line matches:
+    ``kill PID``, ``kill -GROUP``, ``kill $(pgrep ...)``, ``pgrep ... | xargs
+    kill``, ``pkill`` and ``killall`` (``process_targets``, ``/proc``, Linux
+    only). Same deny output and override as a ``violates`` hit, plus one line
+    that names the process.
   * Rewrite and ask (NOBLIVION-122, off by default; ``plan_act``). Before the deny,
     when ``NOBLIVION_GUARD_REWRITE`` is on and one hit carries a valid ``rewrite``,
     the call is allowed or asked with ``updatedInput`` (the command in the shape of
@@ -329,6 +336,7 @@ _GT = None
 _MF = None
 _MT = None
 _RW = None
+_PT = None
 
 
 def _mf():
@@ -351,6 +359,78 @@ def _rw():
         _RW = _load("guard_rewrite")
         _RW._GT_MOD = _gt()  # the rewrite splits a command with the lexer of the deny path
     return _RW
+
+
+def _pt():
+    global _PT
+    if _PT is None:
+        _PT = _load("process_targets")
+        _PT._GT_MOD = _gt()  # the same lexer as the deny path
+    return _PT
+
+
+def _proc_table():
+    """The process table of the ``protects_process`` check (NOBLIVION-127):
+    ``/proc``, empty off Linux. The tests replace it with a fake table."""
+    return _pt().ProcTable.system()
+
+
+def process_hits(
+    command: str, table: Mapping[str, Any], hits: List[Dict[str, object]]
+) -> List[Dict[str, object]]:
+    """``hits`` plus a hit for each note whose ``protects_process`` regex
+    matches the command line of a process that ``command`` would signal
+    (``process_targets.targets``). A hit of this kind denies as a ``violates``
+    hit does, with the same override, and is never a rewrite: a note that also
+    hit by ``violates`` loses its ``rewrite`` for this call. Reads ``/proc``
+    only when a note has the field and the command holds ``kill``, ``pkill``
+    or ``killall``."""
+    guards = [
+        e for e in table.get("entries") or [] if isinstance(e, dict) and e.get("protects_process")
+    ]
+    if not guards:
+        return hits
+    pt = _pt()
+    if not pt.may_signal(command):
+        return hits
+    procs = pt.targets(command, _proc_table())
+    if not procs:
+        return hits
+    out = list(hits)
+    by_id = {str(h.get("id", "")): h for h in out}
+    for e in guards:
+        rx = _gt()._compile(str(e["protects_process"]))
+        if rx is None:
+            continue
+        p = next((q for q in procs if rx.search(q.cmdline)), None)
+        if p is None:
+            continue
+        what = f"{p.pid} ({redact(_short(p.cmdline, PROCESS_CHARS))})"
+        mid = str(e.get("id", ""))
+        h = by_id.get(mid)
+        if h is not None:
+            h["rewrite"] = ""
+            h["process"] = what
+            h["pid"] = p.pid
+            continue
+        h = {
+            "id": mid,
+            "regex": str(e["protects_process"]),
+            "rule": e.get("rule", ""),
+            "apply": e.get("apply", ""),
+            "scope": e.get("scope", ""),
+            "via": "process",
+            "segment": "",
+            "complies": e.get("complies", "") or "",
+            "run_first": e.get("run_first", "") or "",
+            "rewrite": "",
+            "on_violation": e.get("on_violation", "") or "",
+            "process": what,
+            "pid": p.pid,
+        }
+        out.append(h)
+        by_id[mid] = h
+    return out
 
 
 def _mt():
@@ -1349,6 +1429,8 @@ REFUSED_LINE = (
     "failed in this session."
 )
 RUN_FIRST_LINE = "Run this command first: {}"
+PROCESS_LINE = "This command would signal process {}, which this rule protects."
+PROCESS_CHARS = 100
 FAILS_FIRST_LINE = (
     "Override only if that command fails in this session: then end the command "
     f"with this shell comment: {MARKER}"
@@ -1381,6 +1463,8 @@ def deny_reason(
     lines.append(
         f"{first.get('rule', '')}\nApply: {first.get('apply', '')}\nMemory: {first.get('id', '')}"
     )
+    if first.get("process"):  # NOBLIVION-127
+        lines.append(PROCESS_LINE.format(first["process"]))
     if others:
         lines.append(
             "Also matches: "
@@ -1769,6 +1853,7 @@ def decide(
         if not isinstance(command, str) or not command.strip():
             return Decision()
         hits = _gt().match(command, table)
+        hits = process_hits(command, table, hits)  # NOBLIVION-127: a protected process
         if not hits:
             _settled(pending)
         marker, marker_seen = override_marker(command) if hits else (None, False)
@@ -1858,6 +1943,9 @@ def decide(
                 for i in ids:
                     st.denies[i] = st.denies.get(i, 0) + 1
                 extra: Dict[str, object] = {"counts": {i: st.denies.get(i, 0) for i in ids}}
+                pids = {str(h["id"]): h["pid"] for h in hits if h.get("pid")}
+                if pids:  # NOBLIVION-127: the protected process of each note
+                    extra["process"] = pids
                 if refused:  # the reason is read here, after the deny is printed
                     extra["override_refused"] = [str(h["id"]) for h in need]
                     extra["reason"] = redact_reason(marker or "")

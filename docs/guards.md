@@ -22,7 +22,7 @@ table. Each project has its own table,
   The store indexes the same folders, so recall and the guards read the same
   notes.
 - **Entry.** A file becomes an entry when it has a `rule:` field, a
-  `violates:` field or a valid trigger.
+  `violates:` field, a `protects_process:` field or a valid trigger.
 - **Rebuild.** The table is rebuilt at session start and after Claude Code
   writes a memory file of any kind. The guard hook also rebuilds it before a
   call when a memory file changed in another way: a shell command (`rm`,
@@ -89,6 +89,7 @@ example_ok: "git -C /repo status"
 | `complies` | Optional, only with `violates`. A regular expression that `example_ok` must match. |
 | `rewrite` | Optional, only with `violates`. `add-flag <flag> after <prefix>`. A note with `rewrite` is a rewrite note, not a deny note. See "Rewrite and ask". |
 | `on_violation` | Optional, only with `violates`. `deny` (default) or `ask`. See "Rewrite and ask". |
+| `protects_process` | Optional. A regular expression over the command line of a process. A command that would signal a matching process is blocked. At most 300 characters. See "Deny: protect a process". |
 
 A `feedback_*.md` file needs `rule`, `apply` and `scope`. With scope `tool`,
 it needs a command trigger or a `tool:` trigger. With scope `file`, it
@@ -189,6 +190,70 @@ the table with no such limit. The rebuild that ran out of time keeps what
 it measured, so the next one is faster. The guard log records
 `table rebuild timeout`. When there is no table from an earlier build, the
 line says that no deny rule is checked.
+
+### Deny: protect a process
+
+A `violates` expression guards one spelling of a command. A rule such as "do
+not run `pkill -f`, because the pattern also matches the CI runner" does not
+stop `ps`, then `kill 4711 4712`. The `protects_process` field guards the
+target instead:
+
+```yaml
+violates: "\\bpkill\\s+-f\\b"
+example_repeat: "pkill -f runner"
+example_ok: "kill 4711"
+protects_process: "/opt/ci/bin/ci-(runner|worker)\\b"
+```
+
+Before a Bash call, the hook finds the processes that the command would
+signal. When the command line of one of them matches a `protects_process`
+expression, the hook blocks the command. The block is the same as a
+`violates` block: the reason names the rule, and the same override works. The
+reason also names the process, for example
+`This command would signal process 4711 (/opt/ci/bin/ci-runner --listen), which this rule protects.`
+
+The command line of a process is its arguments joined by blanks, as `ps`
+shows them. The hook finds the targets of these commands:
+
+| Command | Targets |
+| --- | --- |
+| `kill [-SIG \| -s SIG \| -n N] PID...` | each PID that exists; a PID that does not exist is ignored |
+| `kill -- -PGID`, `kill -9 -PGID` | every process of the process group |
+| `kill -9 -1` | every process |
+| `kill $(pgrep [-f] PAT)`, `` kill `pgrep PAT` `` | the processes that `pgrep` prints |
+| `pgrep [-f] PAT \| xargs kill` | the processes that `pgrep` prints |
+| `pkill [-f] PAT` | as `pgrep`: `-f` matches the full command line, else the process name; `-x` the whole text; `-i` any case; `-v` the processes that do not match; `-P`, `-g` and `-s` filter by parent, group and session |
+| `killall NAME` | a process whose name, or the base name of its first argument, is `NAME`; `-r` reads `NAME` as an expression, `-I` any case, `-g` adds the group |
+
+- The hook reads the commands as the deny check does: in a list or a
+  pipeline, after wrappers (`sudo`, `env`, `timeout`, `VAR=value`), and
+  inside `bash -c '...'`, `sh -c`, `su -c`, `eval` and `$( )`. Quoted data,
+  comments and heredoc bodies are not commands.
+- A command inside `ssh host '...'`, `docker exec` or `kubectl exec` runs on
+  another machine or in another process table. The hook does not check it.
+- The hook reads the process table only when a rule has `protects_process`
+  and the command holds the word `kill`, `pkill` or `killall`. It reads
+  `/proc/PID` for `kill PID`, and all of `/proc` for a pattern or a group. In
+  a test with 900 processes, a full read took about 15 ms.
+- The check runs inside the time limit of the deny check. When the time runs
+  out, the hook allows the call and prints the line of the time limit, as for
+  a `violates` check.
+- The check works on Linux only. On another system it finds no target, and
+  the hook prints nothing about it.
+
+The check has these limits:
+
+- It does not resolve a PID that the command finds when it runs:
+  `kill $PID`, `kill $(cat app.pid)`, `kill %1`, `kill 0`, `pkill -P $$`, and
+  `ps aux | grep x | awk '{print $2}' | xargs kill`.
+- It does not resolve `pidof`, `fuser -k`, `systemctl stop` or
+  `docker stop`.
+- `pkill -u`, `-t`, `-n` and `-o` filters are not applied, so a command can
+  count more targets than it signals, never fewer. A pipe after `pgrep`
+  (`| head -1`) is not followed either.
+- `pkill -f PAT` also matches the shell that runs the command, because its
+  command line holds `PAT`. That shell does not exist yet when the hook runs,
+  so the hook cannot see it.
 
 ### Override
 

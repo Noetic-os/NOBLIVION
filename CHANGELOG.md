@@ -17,6 +17,14 @@ All notable changes to NOBLIVION. The format follows
   command whose output goes to a pipe other than `| tail`, to a file, or out of a group or a loop
   is left alone. Shadow and ask act on the new shapes as before. Off by default
   (`NOBLIVION_GUARD_REWRITE`).
+- Add the note field `protects_process` (NOBLIVION-127): a regex over the command line of a
+  process. Before a Bash call, the guard finds the processes the command would signal (`kill
+  PID`, `kill -PGID`, `kill $(pgrep ...)`, `pgrep ... | xargs kill`, `pkill`, `killall`) and
+  denies the call when one of them matches, with the same reason and override as a `violates`
+  deny. So `ps`, then `kill 4711`, is blocked when 4711 is a protected CI runner. Linux only
+  (`/proc`); on other systems the check finds nothing. The memory fields check validates the
+  field, the guard table carries it, and a dedup merge keeps it. See "Deny: protect a process" in
+  `docs/guards.md`.
 
 ## 0.1.17 - 2026-10-19
 

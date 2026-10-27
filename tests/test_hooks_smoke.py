@@ -78,6 +78,7 @@ def test_every_moved_module_is_present() -> None:
         "error_recall_hook",
         "guard_hook",
         "guard_rewrite",  # NOBLIVION-122
+        "process_targets",  # NOBLIVION-127
         "guard_table",
         "hook_config",
         "hub_stats",  # NOBLIVION-121

@@ -923,6 +923,9 @@ def merge_texts(
     l_group = tuple(str(lf.get(k) or "") for k in GROUP)
     if s_group[0] and l_group[0] and s_group != l_group:
         raise Refusal("both files hold a violates group and the groups differ")
+    s_prot, l_prot = (str(f.get("protects_process") or "") for f in (sf, lf))
+    if s_prot and l_prot and s_prot != l_prot:  # NOBLIVION-127
+        raise Refusal("both files hold a protects_process regex and the regexes differ")
     for key in ("status", "project"):
         if str(sf.get(key) or "") != str(lf.get(key) or ""):
             raise Refusal(f"{key} differs")
@@ -937,6 +940,8 @@ def merge_texts(
         changes["triggers"] = union
     if l_group[0] and not s_group[0]:
         changes.update({k: (lf.get(k) or None) for k in GROUP})
+    if l_prot and not s_prot:  # the survivor keeps the loser's protected process
+        changes["protects_process"] = l_prot
     lines, close = s_split
     meta, _ = indexer.parse_frontmatter(l_text)
     description = meta.get("description")

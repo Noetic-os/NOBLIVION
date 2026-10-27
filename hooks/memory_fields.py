@@ -29,6 +29,12 @@ carries, LAST in its front matter and in this fixed order:
                    violates (NOBLIVION-122). ``ask`` turns the deny of this
                    memory into a question to the user when the guard switch
                    NOBLIVION_GUARD_ASK is on.
+  protects_process: a JSON string: a Python regex, re.search over the command
+                   line of a process (its argv joined by blanks), optional
+                   (NOBLIVION-127). The guard hook denies a Bash command that
+                   would signal a process whose command line matches
+                   (``kill``, ``pkill``, ``killall``, ``pgrep | xargs kill``).
+                   Not tied to ``violates``.
 
 Why this serialization. Three hand-rolled single-line parsers read these files:
 the reference memory mirror (``parse_frontmatter``),
@@ -109,7 +115,7 @@ KEYS = (
 )
 # NOBLIVION-122: written after ``KEYS`` and only when a memory sets them, so
 # a file without them reads and writes exactly as before.
-OPTIONAL_KEYS = ("rewrite", "on_violation")
+OPTIONAL_KEYS = ("rewrite", "on_violation", "protects_process")  # 127: protects_process
 ALL_KEYS = KEYS + OPTIONAL_KEYS
 ON_VIOLATION = ("deny", "ask")
 # The two fields of a project memory. Not part of KEYS: they are not written
@@ -123,7 +129,15 @@ PROJECT_FIX_LINE = (
     "matter (one line each; the slug is lower-case letters, digits and "
     "hyphens, 2 to 40 characters, for example proj-demo or global)"
 )
-JSON_KEYS = ("apply", "violates", "example_repeat", "example_ok", "complies", "rewrite")
+JSON_KEYS = (
+    "apply",
+    "violates",
+    "example_repeat",
+    "example_ok",
+    "complies",
+    "rewrite",
+    "protects_process",
+)
 
 SCHEMA_LINE = (
     "A feedback memory carries, last in its front matter: rule: <one imperative "
@@ -134,7 +148,9 @@ SCHEMA_LINE = (
     '"<command that breaks the rule>" and example_ok: "<compliant command>"; optional '
     'complies: "<Python regex that matches a run of the rule\'s own command>" '
     "(it must match example_ok); optional rewrite: "
-    '"add-flag <flag> after <prefix>" and on_violation: deny|ask (both only with violates).'
+    '"add-flag <flag> after <prefix>" and on_violation: deny|ask (both only with violates); '
+    'optional protects_process: "<Python regex over the command line of a process that must '
+    'not be signalled>".'
 )
 
 # About 30 everyday commands. A `violates:` regex runs on EVERY Bash call, so
@@ -914,6 +930,56 @@ def rewrite_problems(fields: Dict[str, object]) -> List[str]:
         return [f"rewrite cannot be checked: {type(exc).__name__}"]
 
 
+# Command lines of everyday processes. A ``protects_process`` regex that
+# matches all of them protects every process, so it would deny every kill.
+EVERYDAY_PROCESSES = (
+    "/sbin/init splash",
+    "-bash",
+    "sleep 60",
+    "python3 -m http.server 8000",
+    "node server.js",
+    "[kworker/0:1]",
+)
+
+
+def protects_process_problems(fields: Dict[str, object]) -> List[str]:
+    """Problems of the optional ``protects_process:`` regex (NOBLIVION-127).
+    The same shape and time limits as ``violates``; it must not match an empty
+    command line or every everyday process."""
+    pat = fields.get("protects_process") or ""
+    if not pat:
+        return []
+    if not isinstance(pat, str):
+        return ["protects_process is not a string"]
+    out: List[str] = []
+    if len(pat) > VIOLATES_MAX:
+        out.append(f"protects_process is longer than {VIOLATES_MAX} characters")
+    try:
+        rx = re.compile(pat)
+    except re.error as exc:
+        out.append(f"protects_process does not compile: {exc}")
+        return out
+    slow_shape = False
+    if nested_quantifier(pat):
+        out.append("protects_process has a nested quantifier such as (.*)* or (.+)+")
+        slow_shape = True
+    if broad_unbounded_repeats(pat) > 1:
+        out.append(
+            "protects_process has more than one unbounded repeat of a broad class "
+            "such as .* or \\S+ or [^x]+"
+        )
+        slow_shape = True
+    if rx.search(""):
+        out.append("protects_process matches the empty command line, so it protects every process")
+    elif all(rx.search(c) for c in EVERYDAY_PROCESSES):
+        out.append("protects_process matches every everyday process, so it denies every kill")
+    if not slow_shape:
+        slow = regex_too_slow(pat, "", name="protects_process")
+        if slow:
+            out.append(slow)
+    return out
+
+
 def on_violation_problems(fields: Dict[str, object]) -> List[str]:
     """Problems of the optional ``on_violation:`` field (NOBLIVION-122)."""
     value = fields.get("on_violation") or ""
@@ -973,6 +1039,7 @@ def check_fields(fields: Dict[str, object], kind: str = "feedback") -> List[str]
         + complies_problems(fields)
         + rewrite_problems(fields)
         + on_violation_problems(fields)
+        + protects_process_problems(fields)
         + status_project_problems(fields, kind)
     )
 
@@ -1029,6 +1096,9 @@ def _serialize(fields: Dict[str, Any]) -> List[str]:
         if on_violation not in ON_VIOLATION:
             raise ValueError(f"on_violation {on_violation!r} is not in {ON_VIOLATION}")
         out.append("on_violation: " + on_violation)
+    protects = str(fields.get("protects_process") or "")
+    if protects:
+        out.append("protects_process: " + json.dumps(protects))
     return out
 
 

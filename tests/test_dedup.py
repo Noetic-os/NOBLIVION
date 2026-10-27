@@ -657,3 +657,21 @@ def test_settings_have_no_default_model(tmp_path):
         {"NOBLIVION_DATA_DIR": str(tmp_path), "NOBLIVION_DEDUP_JUDGE": "ollama"}
     )
     assert ds.judge == "off"
+
+
+def test_a_merge_keeps_the_protected_process_of_the_loser():
+    # NOBLIVION-127: a merge never drops a protects_process field
+    from hookload import load_hook
+
+    mf = load_hook("memory_fields", "memory_fields_dedup_protect_t")
+    base = "---\nname: n\ndescription: d\ntype: feedback\n---\nbody\n"
+    f = {"rule": "Do not stop the build agent.", "apply": "kill your own PID", "scope": "always"}
+    plain = mf.write_fields(base, f).encode()
+    guarded = mf.write_fields(base, dict(f, protects_process=r"build-agent\b")).encode()
+    other = mf.write_fields(base, dict(f, protects_process=r"ci-runner\b")).encode()
+    out = dedup.merge_texts(mf, "feedback_a.md", plain, "feedback_b.md", guarded, "2026-10-27")
+    assert mf.read_fields(out.decode())["protects_process"] == r"build-agent\b"
+    out = dedup.merge_texts(mf, "feedback_a.md", guarded, "feedback_b.md", plain, "2026-10-27")
+    assert mf.read_fields(out.decode())["protects_process"] == r"build-agent\b"
+    with pytest.raises(dedup.Refusal):
+        dedup.merge_texts(mf, "feedback_a.md", other, "feedback_b.md", guarded, "2026-10-27")
