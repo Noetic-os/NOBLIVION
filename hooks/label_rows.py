@@ -21,7 +21,10 @@ The rules:
   * A label held by more than the index cutoff (8) memories never matches
     alone; such a memory needs a second shared label
     (``memory_labels.match``). Rank: the sum of the inverse
-    document frequency of the shared labels.
+    document frequency of the shared labels. One exception (NOBLIVION-131): a
+    file label that is exactly the target file of the call (full file name or
+    full relative path) counts above the cutoff; at most 3 such memories show,
+    best first, and the log line has them under ``label_exact``.
   * Trigger rows come first. Label rows fill only the free places of
     ``MAX_ROWS`` (3) rows per call. At prompt time there are no trigger rows.
   * A memory already given in full in this agent of the session is skipped:
@@ -56,6 +59,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from collections.abc import Mapping, Sequence
@@ -234,6 +238,50 @@ def query_labels(
     return lab.labels(query[:PROMPT_CHARS] if subject == "prompt" else query)
 
 
+def _same_file(path: str, label: str) -> bool:
+    """True when ``path`` is the file ``label`` names, EXACTLY: the full file
+    name (the last part of the path) or the full relative path. A substring of a
+    name is no match: ``preferences.yaml`` is not ``role_preferences.yaml``."""
+    p = os.path.normpath(path.strip().strip("'\"")).replace("\\", "/").lower()
+    p = p[2:] if p.startswith("./") else p
+    return bool(p) and (p == label or p.endswith("/" + label))
+
+
+def exact_file_labels(
+    query: str,
+    subject: str,
+    found: Mapping[str, str],
+    strip: Optional[Callable[[str], str]] = None,
+) -> List[str]:
+    """NOBLIVION-131. The file labels of ``found`` (the labels of the call, from
+    ``query_labels``) that name the TARGET of the call exactly.
+
+    * ``file`` and ``read`` (Edit, Write, MultiEdit, Read): the first line of the
+      query is the target path (``file_tool_query``); the rest is content, and a
+      file named only in the content is no target.
+    * ``command``: a shell word of the command that is the path (quoted text with
+      spaces is one word, so ``git commit -m "fix a.yaml"`` names no target).
+    * ``prompt``: none. A prompt is no tool call.
+
+    A weak label (a ``.md`` file, a tool) is never returned: it never matches
+    alone at any count."""
+    files = {x: k for x, k in found.items() if k == _lab().KIND_FILE and not x.endswith(".md")}
+    if not files or subject not in ("file", "read", "command"):
+        return []
+    if subject == "command":
+        try:
+            lex = shlex.shlex(strip(query) if strip is not None else query, posix=True)
+            lex.whitespace_split = True
+            lex.commenters = "#"  # a comment names no target (a "#" inside a word cuts the rest)
+            words = list(lex)
+        except Exception:  # noqa: BLE001 - an unreadable command names no target
+            return []
+        paths = [w for word in words for w in re.split(r"[=<>;|&()]", word) if w]
+    else:
+        paths = [query.split("\n", 1)[0]]
+    return [x for x in files if any(_same_file(p, x) for p in paths)]
+
+
 def candidates(
     query: str,
     subject: str,
@@ -251,7 +299,8 @@ def candidates(
         idx = index_of(table)
         if idx is None:
             return []
-        return _lab().match(query_labels(query, subject, strip), idx)
+        found = query_labels(query, subject, strip)
+        return _lab().match(found, idx, exact=exact_file_labels(query, subject, found, strip))
     except Exception:  # noqa: BLE001 - fail open
         return []
 
@@ -378,6 +427,9 @@ class Pick:
         extra: Dict[str, Any] = {"label_rows": {m.id: list(m.labels) for m in self.rows}}
         if self.skipped:
             extra["label_no_apply"] = self.skipped
+        exact = [m.id for m in self.rows if getattr(m, "exact", False)]
+        if exact:
+            extra["label_exact"] = exact  # NOBLIVION-131: let in by an exact file match
         return extra
 
     def charge(self, state: Any) -> Dict[str, Any]:

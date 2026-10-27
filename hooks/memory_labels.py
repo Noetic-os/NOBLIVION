@@ -42,6 +42,13 @@ frequency of the shared labels; ties go to more shared labels, then the newer
 file. A tool or a document name (``.md``) is a weak label: it never matches
 alone. Without a specific label, the shared labels must be held together by
 at most ``cutoff`` memories.
+
+An exact file match is the exception (NOBLIVION-131): a file label that equals
+the target file of the tool call, by full file name or full relative path,
+counts although more than ``cutoff`` memories hold it. At most ``EXACT_MAX``
+(3) of those memories match, best first, and each is marked ``exact``. A partial
+or substring match, a weak label and a label that is not the target keep the
+rule above.
 """
 
 from __future__ import annotations
@@ -56,6 +63,7 @@ from typing import Any, Dict, List, Optional, Tuple
 LABELLER_VERSION = 1  # provenance in the index ("labeller"): which rules built it
 INDEX_VERSION = 1  # the index shape; a reader refuses another (fail open)
 DF_CUTOFF = 8  # a label of more memories never matches alone
+EXACT_MAX = 3  # NOBLIVION-131: notes shown for an exact file label above the cutoff
 SOURCE_PREFIX = "rule"  # memory_labels.source = "rule:<kind>" (the deterministic leg)
 TEXT_CHARS = 120  # the short render text of an index row
 
@@ -401,9 +409,16 @@ def weak_label(label: str, kind: str) -> bool:
 class Match:
     """One memory that shares labels with the query."""
 
-    __slots__ = ("doc", "id", "name", "labels", "score", "mtime", "text")
+    __slots__ = ("doc", "id", "name", "labels", "score", "mtime", "text", "exact")
 
-    def __init__(self, doc: int, row: Mapping[str, Any], labels_: List[str], score: float):
+    def __init__(
+        self,
+        doc: int,
+        row: Mapping[str, Any],
+        labels_: List[str],
+        score: float,
+        exact: bool = False,
+    ):
         self.doc = doc
         self.id = str(row.get("id") or "")
         self.name = str(row.get("name") or self.id)
@@ -411,18 +426,27 @@ class Match:
         self.score = score
         self.mtime = int(row.get("m") or 0)
         self.text = str(row.get("t") or "")
+        # NOBLIVION-131: True when only an exact file match above the cutoff let
+        # this memory match.
+        self.exact = exact
 
     def as_dict(self) -> Dict[str, Any]:
-        return {
+        out: Dict[str, Any] = {
             "id": self.id,
             "name": self.name,
             "labels": list(self.labels),
             "score": round(self.score, 3),
         }
+        if self.exact:
+            out["exact"] = True
+        return out
 
 
 def match(
-    query_labels: Iterable[str], index: Mapping[str, Any], cutoff: Optional[int] = None
+    query_labels: Iterable[str],
+    index: Mapping[str, Any],
+    cutoff: Optional[int] = None,
+    exact: Iterable[str] = (),
 ) -> List[Match]:
     """The memories that share a specific label set with the query, best
     first. A memory matches when it shares one SPECIFIC label: held by at most
@@ -431,7 +455,14 @@ def match(
     shared labels together must be held by at most ``cutoff`` memories (so
     ``example-host`` plus ``crontab`` does not match the dozens of memories that
     name both). Score: the sum of ln(N / df) over the shared labels. Ties:
-    more shared labels first, then the newer file, then the id."""
+    more shared labels first, then the newer file, then the id.
+
+    ``exact`` (NOBLIVION-131): the labels that name the target file of the call
+    exactly (``label_rows.exact_file_labels``). A memory that shares one of them
+    with the query matches although the label is held by more than ``cutoff``
+    memories. Of the memories that match only through this rule, the best
+    ``EXACT_MAX`` stay (the sort order above), marked ``exact``. A weak label
+    (``weak_label``) is never exact."""
     if not index_ok(index):
         return []
     cut = int(index.get("cutoff", DF_CUTOFF) if cutoff is None else cutoff)
@@ -448,23 +479,42 @@ def match(
     out: List[Match] = []
     kinds, labels_ = index.get("kinds") or [], index["labels"]
     sets: Dict[int, set] = {}
+    exact_set = {x for x in exact if isinstance(x, str) and x}
     for d, lis in shared.items():
+        via_exact = False
         if not any(
             dfs[li] <= cut and not weak_label(labels_[li], kinds[li] if li < len(kinds) else "")
             for li in lis
         ):
             # No specific label: a second shared label is needed, and the
             # memories that hold ALL the shared labels must be few.
-            if len(lis) < 2:
-                continue
-            for li in lis:
-                if li not in sets:
-                    sets[li] = set(posts[li])
-            if len(set.intersection(*(sets[li] for li in lis))) > cut:
-                continue
+            passes = False
+            if len(lis) >= 2:
+                for li in lis:
+                    if li not in sets:
+                        sets[li] = set(posts[li])
+                passes = len(set.intersection(*(sets[li] for li in lis))) <= cut
+            if not passes:
+                if not any(
+                    labels_[li] in exact_set
+                    and not weak_label(labels_[li], kinds[li] if li < len(kinds) else "")
+                    for li in lis
+                ):
+                    continue
+                via_exact = True  # NOBLIVION-131: the exact file name of the call
         score = sum(math.log(n / max(1, dfs[li])) for li in lis)
-        out.append(Match(d, docs[d], [labels_[li] for li in lis], score))
+        out.append(Match(d, docs[d], [labels_[li] for li in lis], score, via_exact))
     out.sort(key=lambda m: (-m.score, -len(m.labels), -m.mtime, m.id))
+    if exact_set:
+        shown = 0
+        capped: List[Match] = []
+        for m in out:  # best first: only EXACT_MAX of the exact-only matches stay
+            if m.exact:
+                shown += 1
+                if shown > EXACT_MAX:
+                    continue
+            capped.append(m)
+        out = capped
     return out
 
 

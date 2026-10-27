@@ -75,13 +75,13 @@ _INT_KEYS = frozenset(
 _FLOAT_KEYS = frozenset(
     "recall.timeout_s recall.min_score trust.prior_mined dedup.min_cosine "
     "dedup.daily_cost_cap_usd dedup.timeout_s dedup.min_interval_s dedup.price_in_per_mtok "
-    "dedup.price_out_per_mtok miner.max_run_s".split()
+    "dedup.price_out_per_mtok miner.max_run_s recall.floor_exempt_margin".split()
 )
 _SWITCH_KEYS = frozenset(
     "embedding.allow_download embedding.allow_remote "
     "embedding.remote_include_mined trust.events trust.citation_use "
     "trust.correction_contradict trust.behaviour_use recall.rules_only miner.enabled "
-    "guard.rewrite guard.ask guard.act_shadow guard.everyday_triggers".split()
+    "recall.floor_exempt guard.rewrite guard.ask guard.act_shadow guard.everyday_triggers".split()
 )
 _CHOICES = {
     "embedding.backend": ("fastembed", "ollama", "openrouter", "none"),
@@ -120,6 +120,8 @@ ENV_KEYS = {
     "NOBLIVION_RECALL_MIN_SCORE": "recall.min_score",
     "NOBLIVION_RECALL_INDEX_K": "recall.index_k",
     "NOBLIVION_RECALL_RULES_ONLY": "recall.rules_only",
+    "NOBLIVION_RECALL_FLOOR_EXEMPT": "recall.floor_exempt",
+    "NOBLIVION_RECALL_FLOOR_EXEMPT_MARGIN": "recall.floor_exempt_margin",
     "NOBLIVION_RECALL_PROMPT_ROWS": "recall.prompt_rows",
     "NOBLIVION_RECALL_HUB_DAYS": "recall.hub_days",
     "NOBLIVION_RECALL_HUB_ROWS": "recall.hub_rows",
@@ -340,6 +342,8 @@ def _valid(key: str, value: object) -> bool:
             return number <= 30
         if key == "recall.min_score":
             return -1 <= number <= 1
+        if key == "recall.floor_exempt_margin":
+            return 0 <= number <= 2
         if key == "dedup.min_cosine":
             return 0 <= number <= 1
         if key == "dedup.timeout_s":

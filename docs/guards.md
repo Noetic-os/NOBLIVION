@@ -436,6 +436,16 @@ field. A note without them stays reachable with the `noblivion_recall` tool.
 The guard log line counts the matches that the rule left out in
 `label_no_apply`. The switch is off by default.
 
+A label that more than 8 notes hold never matches alone. One exception: when
+the label is exactly the target file of the call, it counts. The target is the
+`file_path` of Edit, Write, MultiEdit and Read, or a word of a Bash command
+that is the path (a word in quotes with spaces, a comment and a prompt name
+no target). The label must equal the full file name or the full relative path:
+`preferences.yaml` is not `role_preferences.yaml`, and a file named only in the
+content of an edit is no target. At most 3 such notes show, the best by label
+score first, and the guard log line lists them in `label_exact`. A tool name
+and a `.md` file name never match alone, at any count.
+
 ## The credential guard
 
 The credential guard runs first, before the rule checks. It blocks a

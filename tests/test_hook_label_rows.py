@@ -210,8 +210,18 @@ def test_specific_label_adds_the_memory_and_logs_its_labels(env):
 
 
 def test_a_label_held_by_more_than_eight_memories_never_matches_alone(env):
-    assert call(env, bash("python busy_name.py")) is None
+    # The label is in a quoted message, not the file the call runs: the old limit holds.
+    assert call(env, bash('git commit -m "fix busy_name.py"')) is None
     assert log(env) == []
+
+
+def test_the_exact_file_of_the_call_counts_above_the_limit(env):
+    # NOBLIVION-131: busy_name.py is the file the command runs, so its 9 memories
+    # count; 3 show and the log marks them. tests/test_hook_label_exact.py has the rest.
+    out = call(env, bash("python busy_name.py"))
+    assert len(label_ids(ctx(out))) == 3
+    line = log(env)[-1]
+    assert sorted(line["label_exact"]) == sorted(line["ids"]) and len(line["ids"]) == 3
 
 
 def test_index_file_is_not_in_the_index_and_a_no_rule_memory_is(env):

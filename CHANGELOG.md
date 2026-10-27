@@ -18,6 +18,22 @@ All notable changes to NOBLIVION. The format follows
   stay dropped. `python -m X`, `python3 -m X` and `<path to python> -m X` now also fire a
   trigger `X`. Rows only: no new deny. On by default; `NOBLIVION_GUARD_EVERYDAY_TRIGGERS=0`
   (config key `guard.everyday_triggers`) restores the old behaviour. See `docs/guards.md`.
+- Keep a high-ranked row under the relevance floor (NOBLIVION-130). A row that stands in the top
+  30 of the re-ranked order stays in the prompt index although its cosine is under the floor
+  (0.68), when its cosine is at most 0.08 under the floor
+  (`NOBLIVION_RECALL_FLOOR_EXEMPT_MARGIN`, config key `recall.floor_exempt_margin`), its note has a
+  `rule:` or `apply:` line and the row shares a word with the prompt (its local keyword score is
+  above 0; a word in more than half of the notes does not count). A row with no rule, a pure
+  vector near-miss, a row past place 30 and a row far under the floor are still cut. The row count
+  and the character cap run after it and are unchanged. Off by default
+  (`NOBLIVION_RECALL_FLOOR_EXEMPT=1`, config key `recall.floor_exempt`, turns it on) because it adds
+  rows. The `recall.log` note `floor_exemptN` counts the kept rows. See `docs/how-recall-works.md`.
+- Let an exact file name match count above the 8-note label limit (NOBLIVION-131). A file label
+  that equals the target of the tool call (`file_path` of Edit, Write, MultiEdit and Read, or a
+  path word of a Bash command) by full file name or full relative path now matches although more
+  than 8 notes hold it. At most 3 such notes show, best first, and the guard log lists them under
+  `label_exact`. A partial or substring match, a name only in quoted text or edit content, a prompt,
+  and a weak label (a tool or a `.md` file) keep the old limit. See "Label rows" in `docs/guards.md`.
 - Make the guard rewrite act on the commands a model types (NOBLIVION-126). The rewrite now
   reads a command as the deny check does: it rewrites each simple command of a list or a
   pipeline that starts with the prefix (`cd x && pytest`, `make; pytest`, `pytest | tail`),
