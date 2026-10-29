@@ -114,6 +114,14 @@ validate_split = _REPLAY.validate_split
 REPO = HERE.parent
 DATA = HERE / "eval" / "thresholds.json"
 SHIPPED_CONFIG = REPO / "config" / "config.default.json"
+# NOBLIVION-121: the shipped config also turns on the rules-only prompt path (rows with a rule and
+# an apply text, at most 5). The floor curves measure the cosine floor over every note of the eval
+# store, which have no rule fields, so the curves switch these three settings off.
+FLOOR_ONLY = {
+    "NOBLIVION_RECALL_RULES_ONLY": "0",
+    "NOBLIVION_RECALL_PROMPT_ROWS": "0",
+    "NOBLIVION_RECALL_HUB_DAYS": "0",
+}
 NAMESPACE = "claude_code"
 RECALL_ROOT = "-eval-recall"
 DEDUP_ROOT = "-eval-dedup"
@@ -398,7 +406,11 @@ def measure_index(
 
     def at_floor(t: float, value: str | None, tag: str) -> Point:
         cache = es.tmp / f"cache-index-{tag}"
-        extra = {"NOBLIVION_CONFIG": str(SHIPPED_CONFIG), "NOBLIVION_RECALL_CACHE_DIR": str(cache)}
+        extra = {
+            "NOBLIVION_CONFIG": str(SHIPPED_CONFIG),
+            "NOBLIVION_RECALL_CACHE_DIR": str(cache),
+            **FLOOR_ONLY,
+        }
         if value is not None:
             extra["NOBLIVION_RECALL_INDEX_MIN_SCORE"] = value
         env = es.hook_env(RECALL_ROOT, **extra)
@@ -438,7 +450,11 @@ def measure_subagent(
 
     def at_floor(t: float, value: str | None, tag: str) -> Point:
         cache = es.tmp / f"cache-subagent-{tag}"
-        extra = {"NOBLIVION_CONFIG": str(SHIPPED_CONFIG), "NOBLIVION_RECALL_CACHE_DIR": str(cache)}
+        extra = {
+            "NOBLIVION_CONFIG": str(SHIPPED_CONFIG),
+            "NOBLIVION_RECALL_CACHE_DIR": str(cache),
+            **FLOOR_ONLY,
+        }
         if value is not None:
             extra["NOBLIVION_RECALL_INDEX_MIN_SCORE"] = value
         env = es.hook_env(RECALL_ROOT, **extra)
