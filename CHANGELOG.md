@@ -8,6 +8,16 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.18 - 2026-10-29
+
+- Token cost: measured on 16 model runs against the previous build (one run per slot). Prompt rows
+  fell from 32 to 5 per run, recall calls from 3.0 to 1.9, deferred tool-loading calls from 9 of 14
+  runs to 0 of 16. Total calls and input tokens were not shown lower (calls 29.6 against 28.1, input
+  tokens 1,314k against 1,268k; the intervals include zero), so the sample is too small to confirm a
+  total saving. Delivery, pass rate and errors were equal.
+- Upgrade: the new recall defaults (`recall.rules_only=1`, `recall.prompt_rows=5`,
+  `recall.hub_days=14`) apply to new installs only, because the installer keeps an existing
+  `config.json`. Add the three keys by hand on an existing install.
 - Drop "after a tool error you cannot explain" from the recall triggers (NOBLIVION-140). The error
   recall hook already answers a tool error at PostToolUseFailure with no model call, so the text
   asked the model for a second lookup. The server instructions, the tool description, the skill
