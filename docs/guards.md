@@ -169,6 +169,15 @@ python> -m X` also count as `X`. A trigger `pytest` fires on `python3 -m
 pytest -v`. Turn both changes off with `NOBLIVION_GUARD_EVERYDAY_TRIGGERS=0`
 (config key `guard.everyday_triggers`). They are on by default.
 
+A plain trigger also fires when the command runs with a directory path. The
+command word, and the script after an interpreter (`python3`, `bash`, `node`),
+count with each path suffix and without the interpreter. A trigger
+`docker compose down` fires on `/usr/bin/docker compose down`. A trigger
+`tools/worktree_guard.py remove` fires on `python3 tools/worktree_guard.py
+remove x` and on `python3 /srv/proj-a/tools/worktree_guard.py remove x`. A
+path that is an argument of another command (`cat /srv/tools/x.py`) does not
+count. This adds rows only: no new deny.
+
 ### Deny: block a command
 
 When a `violates` expression matches a Bash command, the hook blocks the

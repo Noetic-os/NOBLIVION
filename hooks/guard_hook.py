@@ -861,6 +861,37 @@ def _glob_weight(glob: str) -> int:
     return len(re.sub(r"[*?]", "", glob))
 
 
+_INTERPRETER = re.compile(r"(?:python[0-9.]*|bash|sh|zsh|dash|node|perl|ruby|php)")
+
+
+def _path_forms(form: str) -> Tuple[str, ...]:
+    """Forms of one command ``form`` for a command that runs with a directory
+    path (NOBLIVION-135). A trigger is written as the command is typed in the
+    project (``tools/worktree_guard.py remove``, ``docker compose down``), and
+    it matches the start of a form. So the command word, and the script word
+    after an interpreter (``python3``, ``bash``, ``node`` ...), are also tried
+    with each path suffix (``/usr/bin/docker`` as ``bin/docker`` and
+    ``docker``; ``/srv/p/tools/x.py`` as ``tools/x.py`` and ``x.py``), and the
+    script form without its interpreter (``python3 tools/x.py remove`` as
+    ``tools/x.py remove``). A path argument of any other command gives no form."""
+    words = form.split()
+    if not words:
+        return ()
+    starts = [0]
+    if len(words) > 1 and _INTERPRETER.fullmatch(words[0].rsplit("/", 1)[-1]):
+        if not words[1].startswith("-"):
+            starts.append(1)
+    out: List[str] = []
+    for i in starts:
+        if i:
+            out.append(" ".join(words[i:]))
+        word = words[i]
+        for k, ch in enumerate(word):
+            if ch == "/" and k + 1 < len(word):
+                out.append(" ".join([word[k + 1 :]] + words[i + 1 :]))
+    return tuple(out)
+
+
 @functools.lru_cache(maxsize=8)
 def _command_variants(command: str, python_m: bool) -> Tuple[str, ...]:
     """The forms of ``command`` that a plain trigger is matched against: for
@@ -873,15 +904,16 @@ def _command_variants(command: str, python_m: bool) -> Tuple[str, ...]:
     out: List[str] = []
     for s in gt.command_segments(command):  # quoted data and comments masked (F1)
         for v in gt.variants(s):
-            if v not in out:
-                out.append(v)
-            if python_m:
-                words = v.split()
-                prog = _rw().program(tuple(words))
-                if len(prog) < len(words):
-                    mod = " ".join(prog)
-                    if mod not in out:
-                        out.append(mod)
+            for form in (v,) + _path_forms(v):
+                if form not in out:
+                    out.append(form)
+                if python_m:
+                    words = form.split()
+                    prog = _rw().program(tuple(words))
+                    if len(prog) < len(words):
+                        mod = " ".join(prog)
+                        if mod not in out:
+                            out.append(mod)
     return tuple(out)
 
 

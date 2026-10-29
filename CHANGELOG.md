@@ -19,6 +19,13 @@ All notable changes to NOBLIVION. The format follows
   denies in the folders of other projects: an offline replay of 1206 recorded Bash calls of a
   second project went from 0.17 to 1.62 rows per call (the rate of the home folder), with no
   session budget in the replay. See `docs/configuration.md`.
+- Fire a command trigger when the command runs with a directory path (NOBLIVION-135). A trigger
+  such as `tools/worktree_guard.py remove` or `docker compose down` matched the start of the
+  command only, so `python3 /srv/proj-a/tools/worktree_guard.py remove x` and
+  `/usr/bin/docker compose down` gave no row. Now the command word, and the script after an
+  interpreter (`python3`, `bash`, `node`), also count with each path suffix and without the
+  interpreter. Offline replay of 2278 recorded Bash calls: 136 calls (6.0%) get a row they did not
+  get, 0 extra denies. Rows only. See `docs/guards.md`.
 - Grade everyday triggers by relevance instead of dropping them (NOBLIVION-129). A note whose
   trigger is `pytest`, `kill` or `git worktree` gave no row on the commands that matter. Now
   the trigger goes through the weak-trigger grading: the row shows when the note's rule names
