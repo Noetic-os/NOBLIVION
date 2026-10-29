@@ -93,7 +93,11 @@ def test_cli_redacts_parser_and_database_errors(store, capsys, monkeypatch):
     assert __main__.main(["explain", "private-prompt", "--private-secret"]) == 2
     out = capsys.readouterr().out
     assert "private-prompt" not in out and "private-secret" not in out
-    assert __main__.main(["explain", "private-prompt", "--root", "-bad"]) == 2
+    # a dash slug is a valid root now (NOBLIVION-132); a bad namespace is not
+    assert (
+        __main__.main(["explain", "private-prompt", "--root=-ok", "--namespace", "secret/path"])
+        == 2
+    )
     assert "private-prompt" not in capsys.readouterr().out
 
 
@@ -220,3 +224,35 @@ def test_chunk_budget_refuses_instead_of_partial_explanation(store, monkeypatch)
     monkeypatch.setattr(explain, "MAX_ROWS", 0)
     with pytest.raises(explain.Unavailable, match="row limit"):
         explain.explain("zebra", folder=folder, root="-proj-alpha", env={})
+
+
+# NOBLIVION-132: a root is a folder slug and starts with a dash.
+def run_explain(store, monkeypatch, capsys, *argv):
+    monkeypatch.setenv("NOBLIVION_DATA_DIR", str(store[0]))
+    code = __main__.main(["explain", "zebra", *argv])
+    return code, json.loads(capsys.readouterr().out)
+
+
+def test_root_after_a_space_takes_a_dash_slug(store, monkeypatch, capsys):
+    code, spaced = run_explain(store, monkeypatch, capsys, "--root", "-proj-alpha", "--json")
+    assert code == 0 and spaced["status"] == "ok"
+    code, joined = run_explain(store, monkeypatch, capsys, "--root=-proj-alpha", "--json")
+    assert code == 0 and joined["candidates"] == spaced["candidates"]
+
+
+def test_join_root_only_joins_a_single_dash_value():
+    assert explain.join_root(["x", "--root", "-a-b", "--json"]) == ["x", "--root=-a-b", "--json"]
+    assert explain.join_root(["x", "--root", "--json"]) == ["x", "--root", "--json"]
+    assert explain.join_root(["x", "--root", "plain"]) == ["x", "--root", "plain"]
+    assert explain.join_root(["x", "--root"]) == ["x", "--root"]
+
+
+def test_a_missing_value_names_its_option_and_echoes_nothing(store, monkeypatch, capsys):
+    code, out = run_explain(store, monkeypatch, capsys, "--root", "--json")
+    assert code == 2 and out["status"] == "unavailable"
+    assert "--root needs a value" in out["reason"]
+
+
+def test_an_unknown_option_is_still_not_echoed(store, monkeypatch, capsys):
+    code, out = run_explain(store, monkeypatch, capsys, "--private-secret")
+    assert code == 2 and "private-secret" not in json.dumps(out)

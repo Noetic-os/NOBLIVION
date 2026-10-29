@@ -247,9 +247,39 @@ def explain(query, *, folder=None, namespace=None, root=None, live=False, second
         return trace
 
 
+_MISSING_VALUE = re.compile(r"^argument (--[a-z-]+): expected one argument$")
+
+
 class Parser(argparse.ArgumentParser):
-    def error(self, _message):
-        raise Unavailable("Invalid diagnostic arguments; use --help.")
+    def error(self, message):
+        """Refuse with a reason that never echoes a value: the prompt and an
+        unknown option may be private. Only a fixed option name is named."""
+        reason = "Invalid diagnostic arguments; use --help."
+        found = _MISSING_VALUE.match(message)
+        if found:
+            reason = f"Invalid diagnostic arguments: {found.group(1)} needs a value; use --help."
+        elif message.startswith("the following arguments are required"):
+            reason = "Invalid diagnostic arguments: the prompt is missing; use --help."
+        raise Unavailable(reason)
+
+
+def join_root(argv):
+    """``--root -slug`` as ``--root=-slug``. A root is a folder slug and starts
+    with a dash, which argparse reads as a flag. A value that starts with
+    ``--`` stays an option, so ``--root --json`` is still an error."""
+    items = list(argv)
+    out = []
+    i = 0
+    while i < len(items):
+        item = items[i]
+        nxt = items[i + 1] if i + 1 < len(items) else None
+        if item == "--root" and nxt and nxt.startswith("-") and not nxt.startswith("--"):
+            out.append(f"--root={nxt}")
+            i += 2
+            continue
+        out.append(item)
+        i += 1
+    return out
 
 
 def main(argv=None):
@@ -269,7 +299,7 @@ def main(argv=None):
         ),
     )
     try:
-        args = parser.parse_args(argv)
+        args = parser.parse_args(join_root(sys.argv[1:] if argv is None else argv))
         result = explain(
             args.prompt,
             folder=args.data_dir,
