@@ -8,6 +8,17 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Read the error body behind a generic `curl` line in error recall (NOBLIVION-136). After a failed
+  call that printed `curl: (22) ...`, the search stopped at that line, which names the tool and
+  not the cause, and the quote check removed every double-quoted message, so a JSON body
+  `{"error":"..."}` gave no words. Now the weak error lines of a failed call are read after a
+  `curl: (N)` line, and the value of a JSON `error`, `message`, `detail`, `error_description`,
+  `msg` or `reason` key counts as the error message. A specific strong line still hides the weak
+  lines. A call with no error-form line (`gh pr checks` with exit 8) still shows nothing: a
+  search from the command text would give up the 0 false shows of the local mode. Offline replay
+  of 229 recorded failed Bash calls (fused mode, the same rule as an offline patch): shows 24 to 24,
+  0 extra characters.
+  See `docs/how-recall-works.md`.
 - Grade everyday triggers by relevance instead of dropping them (NOBLIVION-129). A note whose
   trigger is `pytest`, `kill` or `git worktree` gave no row on the commands that matter. Now
   the trigger goes through the weak-trigger grading: the row shows when the note's rule names

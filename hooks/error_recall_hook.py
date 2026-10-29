@@ -297,6 +297,13 @@ _STRONG = [
         r"^\s*(?:[\w./-]+: )?(?:cannot|can't|unable to|failed to) \w+.*: .*(?:No such file|Permission denied|not found|denied|refused|exists)",
     )
 ]
+# A strong line that names the exit of a tool and not the cause (NOBLIVION-136).
+# For a failed call the weak lines are read after it, as the error body.
+_GENERIC_EXIT = re.compile(r"^\s*curl: \(\d+\) ")
+# The message of a JSON error body: `{"error":"description is not valid"}`.
+_JSON_MESSAGE = re.compile(
+    r'"(?:error|message|detail|error_description|msg|reason)"\s*:\s*"([^"\\\n]{1,200})"'
+)
 # The Go template error of `docker inspect -f` (and any other Go template
 # CLI). Measured 2026-09-30 on docker 29.8.0: a format that fails on the typed
 # struct runs again on the raw JSON map, and a key docker omits (for example
@@ -615,7 +622,10 @@ def error_lines(text: str, failed: bool) -> List[str]:
             continue
         if x in from_pytest or any(p.search(x) for p in _STRONG):
             add(x)
-    if failed and not picked:
+    # A line that only names the tool's exit (``curl: (22) ...``) does not name the
+    # cause: the body the server sent is in the weak lines (NOBLIVION-136).
+    generic_only = bool(picked) and all(_GENERIC_EXIT.match(x) for x in picked)
+    if failed and (not picked or generic_only):
         for x in lines:
             if not _GO_TEMPLATE.match(x) and any(p.search(x) for p in _WEAK):
                 add(x)
@@ -758,6 +768,9 @@ def message_words(line: str) -> List[str]:
     """The message of one error line as words: line numbers, quoted values
     and paths removed (they name THIS case, not the error), then the leading
     shell or severity words."""
+    line = _JSON_MESSAGE.sub(
+        r" \1 ", line
+    )  # the message of a JSON body is the error (NOBLIVION-136)
     words = _words(_MSG_PATH.sub(" ", _MSG_QUOTED.sub(" ", _MSG_LINE_NO.sub(" ", line))))
     while words and words[0] in _PREFIX_WORDS:
         words = words[1:]
