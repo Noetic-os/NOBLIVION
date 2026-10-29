@@ -377,9 +377,9 @@ prints a short briefing at session start. It is off by default.
 | `NOBLIVION_CONTINUITY_PRECOMPACT_PRINT` | none | on (switch) | Before a compaction, print the saved rules as well as save them. |
 | `NOBLIVION_CONTINUITY_BUDGET_S` | none | `4.0` | The time budget, in seconds. |
 | `NOBLIVION_CONTINUITY_MAX_CHARS` | none | `1500` | The most characters of the briefing, 500 to 2000. |
-| `NOBLIVION_CONTINUITY_QUOTA_DECISION` | none | `8` | The most rows in the decisions section. |
-| `NOBLIVION_CONTINUITY_QUOTA_OPEN` | none | `5` | The most rows in the open items section. |
-| `NOBLIVION_CONTINUITY_QUOTA_TRAP` | none | `2` | The most rows in the traps section. |
+| `NOBLIVION_CONTINUITY_QUOTA_DECISION` | none | `2` | The most rows in the decisions section. |
+| `NOBLIVION_CONTINUITY_QUOTA_OPEN` | none | `2` | The most rows in the open items section. |
+| `NOBLIVION_CONTINUITY_QUOTA_TRAP` | none | `1` | The most rows in the traps section. |
 | `NOBLIVION_CONTINUITY_REQUIRE_STATUS` | none | off (switch) | A note needs a `status:` field to count as an open item. |
 | `NOBLIVION_CONTINUITY_CURATED` | none | on (switch) | The notes that the curated index files link come first in their sections. Off uses the ranked order only. |
 | none | `continuity.decision_files` | `["topic_decisions.md"]` | Index files in the memory folder. The notes they link are the first rows of the decisions section, in file order. |

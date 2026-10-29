@@ -139,7 +139,7 @@ NOBLIVION adds 21 capabilities on top of the memory files, and changes none of w
 
 | Feature | What NOBLIVION does | Claude Code built-in | Since, file |
 | --- | --- | --- | --- |
-| Session-start briefing | Up to 8 DECISION, 5 OPEN and 2 TRAP rows, at most 1,500 characters; skips files that `MEMORY.md` already links; off by default (`NOBLIVION_CONTINUITY`) | Loads the first 200 lines or 25 KB of `MEMORY.md`, nothing else | 0.1.0, `hooks/continuity_hook.py` |
+| Session-start briefing | Up to 2 DECISION, 2 OPEN and 1 TRAP rows, at most 1,500 characters; skips files that `MEMORY.md` already links; off by default (`NOBLIVION_CONTINUITY`) | Loads the first 200 lines or 25 KB of `MEMORY.md`, nothing else | 0.1.0, `hooks/continuity_hook.py` |
 | Ranked rules on every prompt | Embeds the prompt with BAAI/bge-small-en-v1.5, keeps rows above cosine 0.68, injects up to 30 rows and 9,000 characters with an APPLY line each; re-rank, hygiene, row dedupe; since 0.1.15 keyword weight for rule, apply and trigger words, label boost and section chunks | None; Claude reads a topic file when it decides the task relates | 0.1.0, floor 0.1.6; `hooks/recall_hook.py`, `src/noblivion/ranking.py` |
 | Prompt label rows | Up to 3 rows for notes that name a file, tool, ticket or service found in the prompt | None | `hooks/label_rows.py` |
 | Tool-call guard rows and deny | Before Bash, Read, Grep, Edit and Write: shows up to 3 rule rows; a `violates:` regex blocks a Bash command; `# guard-ok: <reason>` overrides; stamp check about 0.3 ms | PreToolUse hooks exist, but no memory-driven rules; CLAUDE.md is guidance only | 0.1.0, per-project tables 0.1.3; `hooks/guard_hook.py`, `docs/guards.md` |

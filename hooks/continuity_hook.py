@@ -24,7 +24,7 @@ SessionStart, source ``compact``
     does not depend on what the summary kept.
 
 SessionStart, source ``startup``, ``resume``, ``clear`` (and ``fork``)
-    Prints a briefing: one header line and at most 8 DECISION, 5 OPEN and 2
+    Prints a briefing: one header line and at most 2 DECISION, 2 OPEN and 1
     TRAP rows (standing decisions, open work, live traps), within
     ``BRIEF_MAX_CHARS`` characters (1,500; ``NOBLIVION_CONTINUITY_MAX_CHARS``
     sets it, 500 to 2,000). Once per session id. Each quota is
@@ -125,13 +125,13 @@ STATE_SUBDIR = "continuity"
 LOG_NAME = "continuity.log"
 
 # The briefing. One header line plus the rows; the row limit is the sum of the
-# quotas (15 by default).
+# quotas (5 by default; 15 before NOBLIVION-138).
 BRIEF_MAX_CHARS = 1500
 BRIEF_TEXT_MAX = 80  # the row text: the longest of 80, 75, ... 60 that fits
 BRIEF_TEXT_MIN = 60
 BRIEF_TEXT_STEP = 5
 BRIEF_REF_MAX = 255  # a file name is never cut; this only bounds it
-QUOTA: Tuple[Tuple[str, int], ...] = (("DECISION", 8), ("OPEN", 5), ("TRAP", 2))
+QUOTA: Tuple[Tuple[str, int], ...] = (("DECISION", 2), ("OPEN", 2), ("TRAP", 1))
 QUOTA_ENV_PREFIX = "NOBLIVION_CONTINUITY_QUOTA_"  # + DECISION, OPEN or TRAP
 QUOTA_MAX = 20
 MAX_CHARS_ENV = "NOBLIVION_CONTINUITY_MAX_CHARS"

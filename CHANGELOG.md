@@ -17,6 +17,13 @@ All notable changes to NOBLIVION. The format follows
   51.9k to 46.3k, calls with rows 58 to 57, guard actions unchanged (4 of 32 runs, 12 calls). The
   lowering of `MAX_ROWS` from 3 to 2 was tried and held back: it dropped the third row, the lesson
   row of one reserve scenario. See `docs/guards.md`.
+- Cap the session briefing at 5 rows (NOBLIVION-138). The SessionStart briefing printed up to 8
+  decision, 5 open and 2 trap rows, and it rides on every later call of the session. Now the
+  default quotas are 2, 2 and 1 (`NOBLIVION_CONTINUITY_QUOTA_DECISION`, `..._OPEN`, `..._TRAP` set
+  them back). The briefing is a hook that is off unless `NOBLIVION_CONTINUITY` is set. Measured in
+  a replay on a large home memory folder (about 190 notes): 15 rows and 1,454 characters to 5 rows
+  and 670 characters. The save before a compaction and the restore after it do not change. Gate 0
+  verdicts of all 46 primary and reserve checks are identical. See `docs/configuration.md`.
 - Fire a command trigger when the command runs with a directory path (NOBLIVION-135). A trigger
   such as `tools/worktree_guard.py remove` or `docker compose down` matched the start of the
   command only, so `python3 /srv/proj-a/tools/worktree_guard.py remove x` and

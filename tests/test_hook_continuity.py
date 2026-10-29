@@ -179,8 +179,24 @@ def world(tmp_path):
         "NOBLIVION_MEMORY_DIR": str(mem),
         "HOME": str(tmp_path / "home"),
         "NOBLIVION_DATA_DIR": str(tmp_path / "data"),
+        **LEGACY_QUOTAS,
     }
     return mem, cache, env
+
+
+# The quotas before NOBLIVION-138 (8, 5 and 2). The `world` env sets them, so the tests that
+# count rows by section keep their meaning; `_default_quotas` removes them.
+LEGACY_QUOTAS = {
+    "NOBLIVION_CONTINUITY_QUOTA_DECISION": "8",
+    "NOBLIVION_CONTINUITY_QUOTA_OPEN": "5",
+    "NOBLIVION_CONTINUITY_QUOTA_TRAP": "2",
+}
+
+
+def _default_quotas(env):
+    for k in LEGACY_QUOTAS:
+        env.pop(k, None)
+    return env
 
 
 def _event(name: str, sid: str = "sess-1", **extra) -> str:
@@ -253,6 +269,7 @@ def test_briefing_has_the_three_sections_and_skips_memory_md_rows(world):
 
 def test_briefing_limits_hold_on_a_large_folder(world):
     mem, cache, env = world
+    _default_quotas(env)
     for i in range(40):
         _memory(
             mem,
@@ -274,9 +291,9 @@ def test_briefing_limits_hold_on_a_large_folder(world):
         )
     text = ch.run(_event("SessionStart", source="clear"), env, index=_no_daemon)
     lines = text.splitlines()
-    assert len(lines) <= ch.BRIEF_MAX_LINES == 16
+    assert len(lines) <= ch.BRIEF_MAX_LINES == 6
     assert len(text) <= ch.BRIEF_MAX_CHARS == 1500
-    assert ch.QUOTA == (("DECISION", 8), ("OPEN", 5), ("TRAP", 2))
+    assert ch.QUOTA == (("DECISION", 2), ("OPEN", 2), ("TRAP", 1))
     for label, quota in ch.QUOTA:
         assert sum(ln.startswith(f"- {label}: ") for ln in lines) <= quota
     assert all("\n" not in ln and len(ln) < 160 for ln in lines[1:])
@@ -794,7 +811,7 @@ def test_curated_rows_keep_the_quota_and_the_limits(world):
     text = _brief(env)
     assert [r[12:19] for r in _rows(text, "DECISION")] == [f"Order {i}" for i in range(8)]
     assert "Order 8" not in text  # over the quota: not moved to OPEN either
-    assert len(text.splitlines()) <= ch.BRIEF_MAX_LINES and len(text) <= ch.BRIEF_MAX_CHARS
+    assert len(text.splitlines()) <= 16 and len(text) <= ch.BRIEF_MAX_CHARS  # the old quotas
     assert len(_rows(text, "OPEN")) == 5 and len(_rows(text, "TRAP")) == 2
     assert _rows(text, "OPEN")[0].startswith("- OPEN: Item P")
     # served once
@@ -905,28 +922,29 @@ def _text_lengths(text: str):
     return [len(ln.split(": ", 1)[1].rsplit(" [", 1)[0]) for ln in text.splitlines()[1:]]
 
 
-def test_the_default_quotas_are_8_5_2_and_the_row_limit_is_their_sum(world):
+def test_the_default_quotas_are_2_2_1_and_the_row_limit_is_their_sum(world):
     mem, cache, env = world
+    _default_quotas(env)
     _big_world(mem)
     text = _brief(dict(env, NOBLIVION_CONTINUITY_MAX_CHARS="2000"))
-    assert _counts(text) == (8, 5, 2) and len(text.splitlines()) == 16 == ch.BRIEF_MAX_LINES
-    assert ch.quotas({}) == ch.QUOTA == (("DECISION", 8), ("OPEN", 5), ("TRAP", 2))
+    assert _counts(text) == (2, 2, 1) and len(text.splitlines()) == 6 == ch.BRIEF_MAX_LINES
+    assert ch.quotas({}) == ch.QUOTA == (("DECISION", 2), ("OPEN", 2), ("TRAP", 1))
     assert dict(
         ch.quotas(
             {"NOBLIVION_CONTINUITY_QUOTA_TRAP": "20", "NOBLIVION_CONTINUITY_QUOTA_OPEN": " 0 "}
         )
-    ) == {"DECISION": 8, "OPEN": 0, "TRAP": 20}
+    ) == {"DECISION": 2, "OPEN": 0, "TRAP": 20}
 
 
 @pytest.mark.parametrize(
     "over,want",
     [
-        ({"NOBLIVION_CONTINUITY_QUOTA_DECISION": "3"}, (3, 5, 2)),
-        ({"NOBLIVION_CONTINUITY_QUOTA_OPEN": "7"}, (8, 7, 2)),
-        ({"NOBLIVION_CONTINUITY_QUOTA_TRAP": "4"}, (8, 5, 4)),
+        ({"NOBLIVION_CONTINUITY_QUOTA_DECISION": "3"}, (3, 2, 1)),
+        ({"NOBLIVION_CONTINUITY_QUOTA_OPEN": "7"}, (2, 7, 1)),
+        ({"NOBLIVION_CONTINUITY_QUOTA_TRAP": "4"}, (2, 2, 4)),
         (
             {"NOBLIVION_CONTINUITY_QUOTA_DECISION": "0", "NOBLIVION_CONTINUITY_QUOTA_TRAP": "0"},
-            (0, 5, 0),
+            (0, 2, 0),
         ),
         (
             {
@@ -942,12 +960,13 @@ def test_the_default_quotas_are_8_5_2_and_the_row_limit_is_their_sum(world):
                 "NOBLIVION_CONTINUITY_QUOTA_OPEN": "-1",
                 "NOBLIVION_CONTINUITY_QUOTA_TRAP": "21",
             },
-            (8, 5, 2),
+            (2, 2, 1),
         ),
     ],
 )
 def test_each_quota_is_settable_and_a_bad_value_keeps_the_default(world, over, want):
     mem, cache, env = world
+    _default_quotas(env)
     _big_world(mem)
     for base in ("feedback_use_worktree.md", "feedback_no_stash.md"):
         (mem / base).unlink()
@@ -958,6 +977,7 @@ def test_each_quota_is_settable_and_a_bad_value_keeps_the_default(world, over, w
 
 def test_a_quota_of_zero_makes_no_daemon_call_for_that_section(world):
     mem, cache, env = world
+    _default_quotas(env)
     asked = []
 
     def index(query, k, e):
@@ -969,7 +989,7 @@ def test_a_quota_of_zero_makes_no_daemon_call_for_that_section(world):
         dict(env, NOBLIVION_CONTINUITY_QUOTA_OPEN="0"),
         index=index,
     )
-    assert _counts(text) == (2, 0, 2) and len(asked) == 2
+    assert _counts(text) == (2, 0, 1) and len(asked) == 2
     assert " ok" in _log(cache)
 
 
