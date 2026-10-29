@@ -153,6 +153,15 @@ SCHEMA_LINE = (
     'not be signalled>".'
 )
 
+# NOBLIVION-139: the nag after a memory write carries this short line, not SCHEMA_LINE.
+# The optional fields are in docs/guards.md.
+SCHEMA_LINE_SHORT = (
+    "Last in the front matter write: rule: <one imperative sentence>; "
+    'apply: "<JSON string, the exact shape>"; scope: tool|stop|file|always; '
+    "triggers: [command prefix, glob:<path>, tool:<Name>, phrase:<words>] "
+    "(optional fields: docs/guards.md)."
+)
+
 # About 30 everyday commands. A `violates:` regex runs on EVERY Bash call, so
 # one that matches any of these would deny ordinary work.
 BENIGN_COMMANDS: Tuple[str, ...] = (

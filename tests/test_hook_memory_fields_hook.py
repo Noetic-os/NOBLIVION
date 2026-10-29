@@ -107,6 +107,10 @@ def test_warns_on_bare_feedback_memory(mem):
     ctx = hso["additionalContext"]
     assert "rule is missing" in ctx and "scope is missing" in ctx
     assert "triggers: [" in ctx  # the one-line schema is carried
+    # NOBLIVION-139: one line with the fix, not the full schema with the optional fields
+    assert "\n" not in ctx and len(ctx) <= 450, len(ctx)
+    assert "rule:" in ctx and "apply:" in ctx and "scope:" in ctx
+    assert "complies" not in ctx and "protects_process" not in ctx
     assert secs < 2.0
 
 

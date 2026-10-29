@@ -24,6 +24,13 @@ All notable changes to NOBLIVION. The format follows
   a replay on a large home memory folder (about 190 notes): 15 rows and 1,454 characters to 5 rows
   and 670 characters. The save before a compaction and the restore after it do not change. Gate 0
   verdicts of all 46 primary and reserve checks are identical. See `docs/configuration.md`.
+- Shorten the memory format message to the fix (NOBLIVION-139). After a write of a feedback memory
+  with a missing or wrong rule field, the PostToolUse hook added a rule schema of 780 characters,
+  with the optional fields (`violates`, `complies`, `rewrite`, `protects_process`). One benchmark
+  run spent 4 calls on it. Now the message names the problems and the four required fields in one
+  line (`SCHEMA_LINE_SHORT`); the optional fields are in `docs/guards.md`. A bare feedback file:
+  912 to 371 characters; a feedback file with a rule only: 895 to 354. The message of a project
+  memory (323 characters) does not change. The hook still never blocks a write.
 - Fire a command trigger when the command runs with a directory path (NOBLIVION-135). A trigger
   such as `tools/worktree_guard.py remove` or `docker compose down` matched the start of the
   command only, so `python3 /srv/proj-a/tools/worktree_guard.py remove x` and

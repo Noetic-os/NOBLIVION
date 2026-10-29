@@ -122,7 +122,7 @@ def kind_of(path: Path) -> Optional[str]:
 def message(mf, name: str, kind: str, problems: list, nested: Optional[list] = None) -> str:
     """The warning text. It names the exact lines to add for ``status`` and
     ``project``, the exact lines to move out of ``metadata:`` (``nested``), and
-    carries the rule schema when a rule field is wrong."""
+    carries the short rule schema (``SCHEMA_LINE_SHORT``) when a rule field is wrong."""
     nested = list(nested or [])
     sp = set(mf.status_project_problems_of(problems))
     rule_problems = [p for p in problems if p not in sp]
@@ -135,7 +135,7 @@ def message(mf, name: str, kind: str, problems: list, nested: Optional[list] = N
         msg += ": " + "; ".join(fixes)
     msg += "."
     if kind == "feedback" or rule_problems:
-        msg += " " + mf.SCHEMA_LINE
+        msg += " " + getattr(mf, "SCHEMA_LINE_SHORT", mf.SCHEMA_LINE)
     return msg
 
 
