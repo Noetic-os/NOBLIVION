@@ -81,6 +81,17 @@ All notable changes to NOBLIVION. The format follows
   given; `"recall": {"shared_roots": []}` keeps the old behaviour. A session in the home folder
   sees no change. The guards, label rows and stop checks read memory folders and do not change.
   See `docs/configuration.md`, "Shared roots".
+- Read the error body behind a generic `curl` line in error recall (NOBLIVION-136). After a failed
+  call that printed `curl: (22) ...`, the search stopped at that line, which names the tool and
+  not the cause, and the quote check removed every double-quoted message, so a JSON body
+  `{"error":"..."}` gave no words. Now the weak error lines of a failed call are read after a
+  `curl: (N)` line, and the value of a JSON `error`, `message`, `detail`, `error_description`,
+  `msg` or `reason` key counts as the error message. A specific strong line still hides the weak
+  lines. A call with no error-form line (`gh pr checks` with exit 8) still shows nothing: a
+  search from the command text would give up the 0 false shows of the local mode. Offline replay
+  of 229 recorded failed Bash calls (fused mode, the same rule as an offline patch): shows 24 to 24,
+  0 extra characters.
+  See `docs/how-recall-works.md`.
 
 ## 0.1.17 - 2026-10-19
 

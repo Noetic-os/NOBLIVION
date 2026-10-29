@@ -332,6 +332,16 @@ note was used.
   share of at least 0.39, where a rare word counts more. Then the hook
   shows the note only when it quotes three words in a row from the error
   message. It shows at most 2 notes.
+  - A failed `curl` call prints a line that names the tool (`curl: (22)
+    The requested URL returned error: 400`) and the error body after it.
+    The hook searches the body lines too. The message of a JSON body
+    (`{"error":"description is not valid"}`) counts as the error message
+    for the quote check. The keys are `error`, `message`, `detail`,
+    `error_description`, `msg` and `reason`.
+  - A call whose output holds no line of error form (for example `gh pr
+    checks` with exit 8 prints a table) shows nothing. The hook does not
+    search from the command text, because that would give up the 0 false
+    shows of this mode.
 - **Subagent rules.** When Claude Code starts a subagent, the hook sends
   the task text to the store and adds up to 8 matching rules to the
   subagent's context.
