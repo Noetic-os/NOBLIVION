@@ -370,7 +370,42 @@ def test_row_repeat_cap(env):
     for _ in range(5):
         out = call(env, bash("python -m pytest -q"))
         shown.append(out["additionalContext"].count("- Memory feedback_pytest (") if out else 0)
-    assert shown == [1, 1, 1, 0, 0]
+    assert shown == [1, 0, 0, 0, 0]  # NOBLIVION-137: one show per memory and tool
+
+
+def test_guard_row_bounds_are_three_rows_and_1800_chars():
+    assert gh.MAX_ROWS == 3 and gh.ROWS_MAX_CHARS == 1800 and gh.ROW_REPEAT_TOOL == 1
+
+
+def test_row_repeat_is_per_memory_and_tool(env):
+    """A trigger row shows once per memory and tool; another tool shows it once more."""
+    env = ungraded(env)
+    both = entry(
+        "feedback_both",
+        rule="Check before deploy.",
+        triggers=["make deploy-all", "glob:deploy/prod.cfg"],
+    )
+    Path(env["NOBLIVION_GUARD_TABLE"]).write_text(json.dumps({"entries": [both]}))
+    edit = {
+        "session_id": "s1",
+        "tool_name": "Edit",
+        "cwd": "/repo",
+        "tool_input": {"file_path": "deploy/prod.cfg", "old_string": "a", "new_string": "b"},
+    }
+    assert "feedback_both" in call(env, bash("make deploy-all now"))["additionalContext"]
+    assert call(env, bash("make deploy-all again")) is None
+    assert "feedback_both" in call(env, edit)["additionalContext"]
+    assert call(env, edit) is None
+
+
+def test_a_deny_is_never_cut_by_the_row_repeat(env):
+    """The once-per-tool bound is for rows only: a deny repeats at every call."""
+    Path(env["NOBLIVION_GUARD_TABLE"]).write_text(
+        json.dumps({"entries": [entry("feedback_nope", rule="No.", violates="rm -rf /data")]})
+    )
+    for _ in range(3):
+        out = call(env, bash("rm -rf /data/x"))
+        assert out["permissionDecision"] == "deny"
 
 
 def test_rows_capped_at_three_and_short(env, tmp_path):
@@ -1438,7 +1473,8 @@ def test_row_memory_text_is_redacted_and_inert(env, tmp_path):
     assert all(x.startswith(("- Memory ", "  ")) for x in ctx.splitlines()[1:])
 
 
-def test_row_shown_before_is_rule_and_apply_only(env, tmp_path):
+def test_row_shown_before_is_rule_and_apply_only(env, tmp_path, monkeypatch):
+    monkeypatch.setattr(gh, "ROW_REPEAT_TOOL", 3)  # the compact text is for a show after a show
     env = ungraded(env)
     mem = tmp_path / "mem"
     _memfile(mem, "feedback_deploy", "A body the model already read.")
@@ -1477,7 +1513,9 @@ def test_rows_three_long_bodies_stay_under_the_show_bound(env, tmp_path):
     _table_with_source(env, mem, [f"feedback_d{i}" for i in range(3)])
     ctx = call(env, bash("make deploy-all now"))["additionalContext"]
     assert ctx.count("- Memory ") == 3 and len(ctx) <= gh.ROWS_MAX_CHARS
-    assert "  Text (start): Line 0: make deploy-all" in ctx.split("- Memory feedback_d1")[0]
+    # NOBLIVION-137: under 1800 characters the bodies drop out; Rule and Apply stay
+    assert ctx.count("  Rule: Run the deploy script with the lock.") == 3
+    assert ctx.count("  Apply: Use `make deploy-all LOCK=1`") == 3
 
 
 def test_rows_fall_back_to_legacy_rows_without_the_formatter(env, tmp_path, monkeypatch):
@@ -1659,9 +1697,10 @@ def test_weak_trigger_with_little_evidence_shows_the_rule_line_only(env):
     assert log(env)[-1]["rule_only"] == ["feedback_canary"]
 
 
-def test_a_weak_row_does_not_count_as_shown_in_full(env, tmp_path):
+def test_a_weak_row_does_not_count_as_shown_in_full(env, tmp_path, monkeypatch):
     """Review item 9 (2026-09-30): a Rule-line-only row is not "the full text
     was shown earlier". It still counts toward ``ROW_REPEAT``."""
+    monkeypatch.setattr(gh, "ROW_REPEAT_TOOL", 3)  # this test is about the full-text count
     mem = tmp_path / "mem"
     _memfile(
         mem,

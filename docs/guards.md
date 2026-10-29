@@ -126,7 +126,10 @@ When a trigger fires, the hook adds the rule to the context of the call.
 It does not block the call.
 
 - It adds at most 3 rules per call.
-- It shows one rule at most 3 times per agent in a session.
+- It shows one rule at most 3 times per agent in a session, and at most
+  once for each tool (for example once for Bash and once for Edit). A deny
+  is not a row: it repeats at every call.
+- One show of rows is at most 1800 characters.
 - It shows the full rule until 12,000 characters per session. After that
   it shows only the rule and apply lines.
 - All rows of a session are capped at 6000 characters.

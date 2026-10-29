@@ -260,7 +260,7 @@ def test_at_most_three_rows_come_from_everyday_triggers(tmp_path):
 
 def test_a_row_is_not_repeated_on_every_call(env):
     results = [call(env, bash("pytest -v")) for _ in range(5)]
-    assert [r is not None for r in results] == [True, True, True, False, False]
+    assert [r is not None for r in results] == [True, False, False, False, False]
 
 
 # 4. the switches ---------------------------------------------------------------------

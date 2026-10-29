@@ -8,6 +8,15 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Show guard rows once per memory and tool, and cap one show at 1800 characters (NOBLIVION-137).
+  A trigger row was shown up to 3 times per agent in a session, and one show could reach 3600
+  characters, so the same rule rode along on later calls. Now a memory's trigger row shows once for
+  each tool (Bash, Edit ...) in a session, and `ROWS_MAX_CHARS` is 1800 (was 3600). The deny is
+  decided before any row is rendered and does not change; a deny still repeats at every call. Offline
+  replay of the 499 Bash calls of the 32 recorded stock-memory runs: rows shown 116 to 108, characters
+  51.9k to 46.3k, calls with rows 58 to 57, guard actions unchanged (4 of 32 runs, 12 calls). The
+  lowering of `MAX_ROWS` from 3 to 2 was tried and held back: it dropped the third row, the lesson
+  row of one reserve scenario. See `docs/guards.md`.
 - Fire a command trigger when the command runs with a directory path (NOBLIVION-135). A trigger
   such as `tools/worktree_guard.py remove` or `docker compose down` matched the start of the
   command only, so `python3 /srv/proj-a/tools/worktree_guard.py remove x` and

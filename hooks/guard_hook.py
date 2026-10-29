@@ -99,14 +99,15 @@ Bash
     and the header says no file lookup is needed. Memory text is redacted
     (``redact_memory``) and made inert. A memory shown before in this agent of
     the session shows Rule and Apply only. One show stays under
-    ``ROWS_MAX_CHARS`` (3600): a later row gets a shorter text, then Rule and
+    ``ROWS_MAX_CHARS`` (1800): a later row gets a shorter text, then Rule and
     Apply only; a row is dropped only when Rule and Apply alone break it (fields
     over the schema caps). The rows text of one agent of a session is full
     while under ``ROWS_FULL_SESSION_CHARS`` (12000; env
     ``NOBLIVION_GUARD_ROWS_FULL_SESSION_CHARS``), then Rule and Apply only. A plain trigger item fires when a shell segment of
     the command (the WI-2 split, also tried with its wrappers and git global
     options removed) equals it or starts with it plus a space. One memory's row
-    is shown at most ``ROW_REPEAT`` (3) times per agent of a session, and all rows
+    is shown at most ``ROW_REPEAT`` (3) times per agent of a session, and at most
+    ``ROW_REPEAT_TOOL`` (1) time for each tool (NOBLIVION-137; a deny repeats at every call), and all rows
     of one agent of a session together stay under ``ROWS_SESSION_CHARS`` (6000 characters, about
     1.5K tokens; env ``NOBLIVION_GUARD_ROWS_SESSION_CHARS``), counted at the size of the
     row before WI-3f (``legacy_text``), so the same rows show in the same calls. A trigger that fires on one of the everyday
@@ -295,6 +296,7 @@ FILE_TOOLS = ("Edit", "Write", "MultiEdit")
 READ_TOOLS = ("Read", "Grep", "Glob")  # label rows only, behind the file-tool switch
 ESCALATE_AFTER = 2
 ROW_REPEAT = 3
+ROW_REPEAT_TOOL = 1  # NOBLIVION-137: one show of a memory's row per tool and agent of a session
 MAX_ROWS = 3
 # NOBLIVION-129: a trigger that is an everyday command (``pytest``, ``kill``,
 # ``git worktree``) is graded by relevance, not dropped. Switch, on by default.
@@ -317,7 +319,9 @@ EVERYDAY_PLUMBING = frozenset(
 CONTEXT_TAIL_BYTES = 512 * 1024  # the part of the transcript read for the last prompt
 CONTEXT_CHARS = 1500  # the most characters of the last prompt that count as context
 ROW_APPLY_CHARS = 220  # the legacy row (``legacy_row``) only
-ROWS_MAX_CHARS = 3600  # one show of rows (WI-3f): one full row and two compact rows fit
+ROWS_MAX_CHARS = (
+    1800  # one show of rows (WI-3f, NOBLIVION-137): one full row and two compact rows fit
+)
 ROWS_FULL_SESSION_CHARS = (
     12000  # row text per agent of a session before rows show Rule and Apply only
 )
@@ -735,6 +739,7 @@ class SessionState:
             data = {}
         self.denies: Dict[str, int] = dict(data.get("denies") or {})
         self.rows: Dict[str, int] = dict(data.get("rows") or {})
+        self.tool_rows: Dict[str, int] = dict(data.get("tool_rows") or {})
         self.full: Dict[str, int] = dict(data.get("full") or {})
         self.row_chars = int(data.get("row_chars") or 0)
         self.notes: Dict[str, int] = dict(data.get("notes") or {})
@@ -753,6 +758,7 @@ class SessionState:
                         {
                             "denies": self.denies,
                             "rows": self.rows,
+                            "tool_rows": self.tool_rows,
                             "full": self.full,
                             "row_chars": self.row_chars,
                             "notes": self.notes,
@@ -1464,16 +1470,23 @@ def grade_everyday(
     return rows, {i: t for i, t in rule_only.items() if i in ids}
 
 
+def tool_row_key(tool: str, mid: str) -> str:
+    return f"{tool}|{mid}"
+
+
 def pick_rows(
-    cands: Sequence[Tuple[float, str, Dict[str, object]]], state: SessionState
+    cands: Sequence[Tuple[float, str, Dict[str, object]]], state: SessionState, tool: str = ""
 ) -> List[Dict[str, object]]:
     """At most ``MAX_ROWS`` entries, most specific first, each shown fewer than
-    ``ROW_REPEAT`` times this session. Entries without a rule are not shown."""
+    ``ROW_REPEAT`` times this session and fewer than ``ROW_REPEAT_TOOL`` times
+    for this ``tool``. Entries without a rule are not shown."""
     cands = sorted(cands, key=lambda c: (-c[0], str(c[2].get("id", ""))))
     out = []
     for _w, _t, e in cands:
         mid = str(e.get("id", ""))
         if not e.get("rule") or state.rows.get(mid, 0) >= ROW_REPEAT:
+            continue
+        if state.tool_rows.get(tool_row_key(tool, mid), 0) >= ROW_REPEAT_TOOL:
             continue
         out.append(e)
         if len(out) >= MAX_ROWS:
@@ -2212,7 +2225,8 @@ def decide(
             )
             denied.also = plan.also
             return denied
-        rows = pick_rows(cands, state)
+        tool = str(event.get("tool_name") or "")
+        rows = pick_rows(cands, state, tool)
         budget = _int_env(env, "NOBLIVION_GUARD_ROWS_SESSION_CHARS", ROWS_SESSION_CHARS)
         # NOBLIVION-129: rows from everyday triggers have a budget of their own
         # (``EVERYDAY_SESSION_CHARS``), so they never use up the budget below.
@@ -2298,6 +2312,8 @@ def decide(
             for e in rows:
                 mid = str(e.get("id", ""))
                 st.rows[mid] = st.rows.get(mid, 0) + 1
+                tk = tool_row_key(tool, mid)
+                st.tool_rows[tk] = st.tool_rows.get(tk, 0) + 1
                 if mid not in shown_weak:  # a weak row showed the Rule line only
                     st.full[mid] = st.full.get(mid, 0) + 1
             extra: Dict[str, object] = {"rule_only": shown_weak} if shown_weak else {}
