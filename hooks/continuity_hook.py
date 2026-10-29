@@ -327,10 +327,24 @@ def _clean(text: str, limit: int) -> str:
 
 
 def _corpus(env: Mapping[str, str]) -> List[Any]:
+    """The notes of the project folder, the global folder and the folders of the
+    shared roots (NOBLIVION-134), as the recall hook reads them. On a file name
+    that two folders hold, the first folder's file is kept (the project file
+    first). Empty when the project folder is not set or is not a folder."""
     folder = memory_dir(env)
     if not folder or not os.path.isdir(folder):
         return []
-    return recall_module().load_memory_corpus(folder)
+    folders = [folder]
+    for extra in [_CFG.global_memory_dir(env)] + list(_CFG.shared_memory_dirs(env)):
+        if extra is None or not os.path.isdir(str(extra)):
+            continue
+        if not any(os.path.realpath(f) == os.path.realpath(str(extra)) for f in folders):
+            folders.append(str(extra))
+    seen: Dict[str, Any] = {}
+    for one in folders:
+        for md in recall_module().load_memory_corpus(one):
+            seen.setdefault(md.rel_path, md)
+    return [seen[name] for name in sorted(seen)]
 
 
 # ── the rules kept across a compaction ──────────────────────────────────────

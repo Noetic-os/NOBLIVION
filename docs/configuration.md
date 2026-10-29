@@ -240,8 +240,14 @@ a session in any other project folder can find them too.
   in the home root.
 - The default does not follow `autoMemoryDirectory` or other memory folder
   overrides. When you use one, set the list yourself.
-- The guards, the label rows and the stop checks read memory folders, not
-  roots, so this setting does not change them.
+- The local steps read the memory folder of each shared root too
+  (`<config dir>/projects/<root>/memory`, when the folder exists): the rule
+  text of a prompt row, the guard table (the `violates` rule and the triggers
+  of the note), and the continuity print after a compaction. So a home note
+  that a session finds by ranking also shows its rule and guards the
+  session. With `[]` these steps read the project folder and the global
+  folder only. The stop checks read memory folders, not roots, so this
+  setting does not change them.
 
 To turn the default off, put this in `config.json`:
 

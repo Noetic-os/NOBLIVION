@@ -544,10 +544,51 @@ def _same_dir(a: Path, b: Path) -> bool:
         return str(a) == str(b)
 
 
+SHARED_ROOTS_KEY = "recall.shared_roots"
+
+
+def shared_root_names(env: Optional[Mapping[str, str]] = None) -> Tuple[str, ...]:
+    """The roots the store shares with every session (NOBLIVION-125,
+    ``recall.shared_roots``): the list as given when the key holds a list
+    (``[]`` is none), else the root of the home-folder project. Same rule as
+    ``noblivion.config._shared_roots`` without the global folder, which
+    ``memory_dirs`` reads on its own."""
+    value = get(SHARED_ROOTS_KEY, None, env)
+    if isinstance(value, list):
+        names = [v.strip() for v in value if isinstance(v, str) and v.strip()]
+    else:
+        names = [project_slug(project_folder(str(Path.home())))]
+    return tuple(n for n in names if n not in (".", "..") and "/" not in n and "\\" not in n)
+
+
+def shared_memory_dirs(env: Optional[Mapping[str, str]] = None) -> List[Path]:
+    """The memory folders of the shared roots (NOBLIVION-133): the folder
+    ``<projects base>/<root>/memory`` for each root in ``shared_root_names``
+    that exists. The store ranks the notes of a shared root in every session;
+    the local steps (the prompt rows' rule join, the guard table, the
+    continuity print) must read the same notes."""
+    e = _env(env)
+    config = claude_config_dir(e)
+    remote = str(e.get(REMOTE_MEMORY_ENV) or "")
+    base = Path(remote) if remote else config
+    out: List[Path] = []
+    for name in shared_root_names(env):
+        folder = Path(unicodedata.normalize("NFC", str(base / "projects" / name / "memory")))
+        try:
+            if folder.is_dir():
+                out.append(folder)
+        except OSError:
+            continue
+    return out
+
+
 def memory_dirs(cwd: Optional[str], env: Optional[Mapping[str, str]] = None) -> List[Path]:
     """The folders a session at ``cwd`` reads rules from, in order: the
     project folder (``resolve_memory_dir``), then the global folder when it
-    is set and is not the project folder. A folder may not exist."""
+    is set, then the folder of each shared root (``shared_memory_dirs``). A
+    folder that is already in the list is left out. The global folder and the
+    project folder may not exist; a shared root folder is listed only when it
+    exists."""
     out: List[Path] = []
     project = resolve_memory_dir(cwd, env)
     if project is not None:
@@ -555,6 +596,9 @@ def memory_dirs(cwd: Optional[str], env: Optional[Mapping[str, str]] = None) -> 
     extra = global_memory_dir(env)
     if extra is not None and not any(_same_dir(extra, p) for p in out):
         out.append(extra)
+    for shared in shared_memory_dirs(env):
+        if not any(_same_dir(shared, p) for p in out):
+            out.append(shared)
     return out
 
 

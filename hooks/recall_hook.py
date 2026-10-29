@@ -2701,8 +2701,14 @@ def global_memory_dir(environ: Optional[Mapping[str, str]] = None) -> Optional[s
 
 def memory_dirs(environ: Optional[Mapping[str, str]] = None) -> List[str]:
     """The folders the local steps read: the project folder, then the global
-    folder."""
-    return [f for f in (memory_dir(environ), global_memory_dir(environ)) if f]
+    folder, then the folder of each shared root (NOBLIVION-133), as the store
+    ranks the notes of those roots in every session."""
+    env = os.environ if environ is None else environ
+    out = [f for f in (memory_dir(env), global_memory_dir(env)) if f]
+    for folder in _sibling_module("hook_config").shared_memory_dirs(env):
+        if not any(os.path.realpath(f) == os.path.realpath(str(folder)) for f in out):
+            out.append(str(folder))
+    return out
 
 
 class CorpusIndex(Dict[str, MemoryFile]):
@@ -2759,8 +2765,8 @@ def corpus_cache_path(environ: Optional[Mapping[str, str]] = None) -> Optional[s
 
 
 def load_session_corpus(environ: Optional[Mapping[str, str]] = None) -> List[MemoryFile]:
-    """The local corpus of ``memory_dirs``. On a file name that both folders
-    hold, the project file is kept and the global file is left out, as the
+    """The local corpus of ``memory_dirs``. On a file name that two folders
+    hold, the first folder's file is kept (the project file first), as the
     store does for a shared root."""
     seen: Dict[str, MemoryFile] = {}
     cache_path = corpus_cache_path(environ)
