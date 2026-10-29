@@ -15,6 +15,17 @@ All notable changes to NOBLIVION. The format follows
   interpreter (`python3`, `bash`, `node`), also count with each path suffix and without the
   interpreter. Offline replay of 2278 recorded Bash calls: 136 calls (6.0%) get a row they did not
   get, 0 extra denies. Rows only. See `docs/guards.md`.
+- Read the notes of the shared roots in the local steps (NOBLIVION-133, NOBLIVION-134). The store
+  ranked the notes of `recall.shared_roots` (by default the home root) in every session, but the
+  prompt row's rule join, the guard table and the continuity print read the session's own folder
+  and `global_memory_dir` only. So a note from another project folder showed its summary and no
+  rule, its `violates` rule and triggers did nothing, and the print and restore after a compaction
+  were empty although the saved list held the lesson. Now these steps also read
+  `<config dir>/projects/<root>/memory` for each shared root that exists. The project folder wins
+  on a file name that two folders hold. `recall.shared_roots: []` turns it off. This adds rows and
+  denies in the folders of other projects: an offline replay of 1206 recorded Bash calls of a
+  second project went from 0.17 to 1.62 rows per call (the rate of the home folder), with no
+  session budget in the replay. See `docs/configuration.md`.
 - Grade everyday triggers by relevance instead of dropping them (NOBLIVION-129). A note whose
   trigger is `pytest`, `kill` or `git worktree` gave no row on the commands that matter. Now
   the trigger goes through the weak-trigger grading: the row shows when the note's rule names
