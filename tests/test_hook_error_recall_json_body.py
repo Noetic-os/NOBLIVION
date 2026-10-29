@@ -8,20 +8,17 @@
 2. The message of a JSON error body (``{"error":"description is not valid"}``)
    gives query words: the quote check kept no word of a double-quoted value.
 3. A call whose output has no error-form line (``gh pr checks`` with exit 8
-   prints a table) still shows nothing. That case is out of scope: see
-   ``test_a_table_with_no_error_line_still_shows_nothing``.
+   prints a table) still shows nothing. That case is out of scope. The test
+   with the memory folder is in ``test_hook_error_recall.py``.
 
 Fictional data only.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from hookload import load_hook
-from test_hook_error_recall import _mem, env, fail_event, run, write_memory  # noqa: F401
 
 er = load_hook("error_recall_hook", "error_recall_hook_t_json_body")
 
@@ -64,6 +61,10 @@ def test_a_double_quoted_value_of_another_key_is_still_removed():
     assert er.message_words('{"id":"abc","name":"widget"}') == []
 
 
+def _mem(body, rule="r", apply="a"):
+    return {"id": "m", "rule": rule, "apply": apply, "description": "", "body": body}
+
+
 def test_a_memory_that_quotes_the_json_message_passes():
     mem = _mem("A Jira create call answers `description is not valid` when the body is markdown.")
     assert er.quotes_error(mem, f"{CURL} | {BODY}")
@@ -72,30 +73,3 @@ def test_a_memory_that_quotes_the_json_message_passes():
 def test_a_memory_that_does_not_quote_the_json_message_fails():
     mem = _mem("A Jira create call with a markdown body fails. Use the MCP tool.")
     assert not er.quotes_error(mem, BODY)
-
-
-def test_the_note_shows_after_a_curl_call_with_a_json_body(env):  # noqa: F811
-    folder = Path(env["NOBLIVION_ERROR_RECALL_MEMORY_DIR"])
-    write_memory(
-        folder,
-        "feedback_issue_create_markdown",
-        "A Jira create call with a markdown body fails; use the MCP tool.",
-        "Call the create tool, not curl.",
-        "`curl -sf` on the create call exits 22 with an HTTP 400. The body says\n"
-        "`description is not valid` when the description is markdown.\n",
-    )
-    ev = fail_event(
-        f"Exit code 22\n{CURL}\n{BODY}",
-        command="curl -sf -X POST https://example.invalid/api/issue -d @body.json",
-    )
-    out = run(ev, env)
-    assert "feedback_issue_create_markdown" in out
-
-
-def test_a_table_with_no_error_line_still_shows_nothing(env):  # noqa: F811
-    ev = fail_event(
-        "Exit code 8\nbuild\tfail\t1m2s\thttps://ci.example.test/runs/1\nlint\tpass\t10s\t-",
-        command="gh pr checks 12",
-    )
-    assert er.failure_of(ev) is None
-    assert run(ev, env) == ""

@@ -1528,3 +1528,32 @@ def test_memory_prose_words_are_not_read_as_secrets():
         assert er.redact_memory(cmd) == cmd
     assert "Hunter2Pass" not in er.redact_memory("mysql -p'Hunter2Pass' db")
     assert "hunter2" not in er.redact_memory("psql --password hunter2secret")
+
+
+# NOBLIVION-136: the error body behind a generic curl line
+def test_the_note_shows_after_a_curl_call_with_a_json_body(env):
+    folder = Path(env["NOBLIVION_ERROR_RECALL_MEMORY_DIR"])
+    write_memory(
+        folder,
+        "feedback_issue_create_markdown",
+        "A Jira create call with a markdown body fails; use the MCP tool.",
+        "Call the create tool, not curl.",
+        "`curl -sf` on the create call exits 22 with an HTTP 400. The body says\n"
+        "`description is not valid` when the description is markdown.\n",
+    )
+    ev = fail_event(
+        "Exit code 22\ncurl: (22) The requested URL returned error: 400\n"
+        '{"error":"description is not valid"}',
+        command="curl -sf -X POST https://example.invalid/api/issue -d @body.json",
+    )
+    out = run(ev, env)
+    assert "feedback_issue_create_markdown" in out
+
+
+def test_a_table_with_no_error_line_still_shows_nothing(env):
+    ev = fail_event(
+        "Exit code 8\nbuild\tfail\t1m2s\thttps://ci.example.test/runs/1\nlint\tpass\t10s\t-",
+        command="gh pr checks 12",
+    )
+    assert er.failure_of(ev) is None
+    assert run(ev, env) == ""
