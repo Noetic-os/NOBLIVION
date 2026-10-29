@@ -10,7 +10,6 @@ moments where a lookup pays. The moments are:
 - before a merge;
 - before a restart of a shared service;
 - before you file or comment on a ticket;
-- after a tool error you cannot explain;
 - before you save a memory (recall first, so you do not save a second note).
 
 ## What ships

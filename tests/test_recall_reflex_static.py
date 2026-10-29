@@ -29,7 +29,7 @@ INSTRUCTIONS_MAX = 330
 SKILL_DESCRIPTION_MAX = 200
 SKILL_BODY_MAX = 1100
 
-MOMENTS = ("cannot verify", "merge", "restart", "ticket", "error")
+MOMENTS = ("cannot verify", "merge", "restart", "ticket")
 
 
 def _load_mcp():
@@ -109,7 +109,7 @@ def test_skill_front_matter():
     front, _body = _skill_parts()
     assert front["name"] == "recall-first" == SKILL.parent.name
     assert 0 < len(front["description"]) <= SKILL_DESCRIPTION_MAX
-    for moment in ("cannot verify", "merge", "restart", "ticket", "memory", "error"):
+    for moment in ("cannot verify", "merge", "restart", "ticket", "memory"):
         assert moment in front["description"], moment
     # the model may call it: the setup skill is the only one that switches that off
     assert "disable-model-invocation" not in front
@@ -127,3 +127,12 @@ def test_skill_is_inside_the_plugin_folder_the_plugin_loads():
     manifest = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert "skills" not in manifest
     assert SKILL.is_file()
+
+
+def test_no_text_asks_for_a_lookup_after_a_tool_error():
+    """NOBLIVION-140: the error recall hook answers a tool error at PostToolUseFailure with no
+    model call, so no static text asks the model for a second lookup."""
+    front, _body = _skill_parts()
+    texts = [mcp.TOOL_SCHEMA["description"], mcp.INSTRUCTIONS, front["description"]]
+    for text in texts:
+        assert "tool error" not in text and "error you cannot" not in text, text

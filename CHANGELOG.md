@@ -8,6 +8,15 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Drop "after a tool error you cannot explain" from the recall triggers (NOBLIVION-140). The error
+  recall hook already answers a tool error at PostToolUseFailure with no model call, so the text
+  asked the model for a second lookup. The server instructions, the tool description, the skill
+  description and `docs/recall-reflex.md` now name five moments: cannot verify, merge, restart,
+  ticket and remember. Count over the 32 NOBLIVION runs of the recorded test 2 campaign: 94
+  `noblivion_recall` calls, 3 of them straight after a tool error, none of them with the lesson
+  note in the result, so the recorded deliveries lost through this trigger: 0. The sentence "read
+  it in full with `fetch_id`" stays: in 5 of the 13 runs where the lesson came through the recall
+  tool, the note appeared only in a `fetch_id` result.
 - Show guard rows once per memory and tool, and cap one show at 1800 characters (NOBLIVION-137).
   A trigger row was shown up to 3 times per agent in a session, and one show could reach 3600
   characters, so the same rule rode along on later calls. Now a memory's trigger row shows once for

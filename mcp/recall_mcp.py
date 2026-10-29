@@ -82,9 +82,8 @@ PROTOCOL_VERSION = "2025-06-18"
 INSTRUCTIONS_ENV = "NOBLIVION_MCP_INSTRUCTIONS"
 INSTRUCTIONS = (
     "NOBLIVION memory. Call noblivion_recall before you write 'cannot verify', before a "
-    "merge, before a restart of a shared service, before you file or comment on a ticket, "
-    "and after a tool error you cannot explain. Call it before noblivion_remember, so you "
-    "do not duplicate a note."
+    "merge, before a restart of a shared service, and before you file or comment on a ticket. "
+    "Call it before noblivion_remember, so you do not duplicate a note."
 )
 
 
@@ -132,8 +131,8 @@ TOOL_SCHEMA: Dict[str, Any] = {
         "Search the local NOBLIVION memory store and return the matching memories as "
         "data: one line per hit, '- [entity] title: body (score)'. Call it before you "
         "write 'cannot verify', before a merge, before a restart of a shared service, "
-        "before you file or comment on a ticket, and after a tool error you cannot "
-        "explain. Pass fetch_id instead of query to read ONE memory in full, by the id "
+        "and before you file or comment on a ticket. "
+        "Pass fetch_id instead of query to read ONE memory in full, by the id "
         "shown on a line of a GROUNDED MEMORY INDEX."
     ),
     "inputSchema": {

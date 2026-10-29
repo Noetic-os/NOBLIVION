@@ -1,7 +1,7 @@
 ---
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: recall-first
-description: Call noblivion_recall before you write "cannot verify", merge, restart a shared service, file or comment on a ticket, or save a memory, and after a tool error you cannot explain.
+description: Call noblivion_recall before you write "cannot verify", merge, restart a shared service, file or comment on a ticket, or save a memory.
 ---
 
 # Recall first
