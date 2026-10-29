@@ -294,7 +294,10 @@ model is the default model, `BAAI/bge-small-en-v1.5`.
 
 `install.sh` copies `config/config.default.json` to
 `<data dir>/config.json` when that file does not exist. The shipped file
-sets `recall.index_k` to `30`. Under the key `recall.env` it also sets
+sets `recall.index_k` to `30`, `recall.rules_only` to `1`, `recall.prompt_rows` to `5` and
+`recall.hub_days` to `14` (NOBLIVION-121: the prompt shows at most 5 rows, each with a rule and an
+apply text). The built-in default of each of the three stays off or 0, so a config file written
+before this release keeps its old behaviour until you add the keys. Under the key `recall.env` it also sets
 these hook variables:
 
 | Variable | Value |

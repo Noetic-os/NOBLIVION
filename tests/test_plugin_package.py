@@ -337,6 +337,18 @@ def test_default_config_recall_env_names_are_real_settings():
     assert isinstance(doc["recall"]["index_k"], int)
 
 
+def test_shipped_config_turns_on_the_rules_only_prompt_path(tmp_path):
+    """NOBLIVION-121: the shipped config sets recall.rules_only, prompt_rows and hub_days."""
+    recall = _load(DEFAULT_CONFIG)["recall"]
+    assert recall["rules_only"] == 1 and recall["prompt_rows"] == 5 and recall["hub_days"] == 14
+    hook = _recall_hook()
+    env = {"NOBLIVION_CONFIG": str(DEFAULT_CONFIG), "NOBLIVION_DATA_DIR": str(tmp_path)}
+    assert hook.rules_only(env) is True and hook.prompt_rows(env) == 5
+    # an env var that is set wins over the file
+    assert hook.rules_only(dict(env, NOBLIVION_RECALL_RULES_ONLY="0")) is False
+    assert hook.prompt_rows(dict(env, NOBLIVION_RECALL_PROMPT_ROWS="0")) == 0
+
+
 def test_recall_env_defaults_reach_the_session_env(tmp_path):
     hook = _recall_hook()
     data = tmp_path / "data"

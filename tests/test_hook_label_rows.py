@@ -477,8 +477,10 @@ def test_recall_hook_takes_the_labels_switch_from_the_shipped_config_file(env, h
     env var is set. An env var that is set still wins over the file."""
     shipped = json.loads(SHIPPED_CONFIG.read_text())["recall"]["env"]
     assert shipped["NOBLIVION_RECALL_LABELS"] == "1"
+    # NOBLIVION-121: the shipped file also turns rules_only on, and this project note has no rule
     e = _config_env(env, hook_env, tmp_path)
     assert "NOBLIVION_RECALL_LABELS" not in e
+    e["NOBLIVION_RECALL_RULES_ONLY"] = "0"
     assert label_ids(_recall_main(e, _prompt("c1"))) == ["project_host_alpha"]
     assert _recall_main(dict(e, NOBLIVION_RECALL_LABELS="0"), _prompt("c2")) == ""
 

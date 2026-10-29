@@ -31,6 +31,18 @@ All notable changes to NOBLIVION. The format follows
   line (`SCHEMA_LINE_SHORT`); the optional fields are in `docs/guards.md`. A bare feedback file:
   912 to 371 characters; a feedback file with a rule only: 895 to 354. The message of a project
   memory (323 characters) does not change. The hook still never blocks a write.
+- Ship the rules-only prompt path in the default config file (NOBLIVION-121). The prompt hook
+  showed up to 30 rows, about 7,100 characters, on a first prompt, and 98 percent of them were not
+  used. `config/config.default.json` now sets `recall.rules_only` to 1, `recall.prompt_rows` to 5
+  and `recall.hub_days` to 14, so a new install shows at most 5 rows that each carry a rule and an
+  apply text. The code defaults are unchanged, and `install.sh` keeps an existing `config.json`, so
+  an installed config needs the three keys added by hand. Offline replay of the 25 prompts of the
+  frozen test scenarios in the gate 0 box (a copy of the same large home memory folder): rows
+  521 to 100, characters 139,465 to 48,027 (-65.6%), and the lesson row keeps its rank in all 25
+  (no lesson row left the top 5; one sits at rank 4) and still carries its rule and apply text.
+  Gate 0 verdicts of all 46 checks are identical. Replay of the 499 Bash calls of the 32 stock runs
+  through the guard (label rows follow the switch): calls with rows 58 to 46, rows 116 to 90,
+  characters 51.9k to 43.0k, guard actions unchanged. See `docs/configuration.md`.
 - Fire a command trigger when the command runs with a directory path (NOBLIVION-135). A trigger
   such as `tools/worktree_guard.py remove` or `docker compose down` matched the start of the
   command only, so `python3 /srv/proj-a/tools/worktree_guard.py remove x` and
