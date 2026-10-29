@@ -17,6 +17,14 @@ All notable changes to NOBLIVION. The format follows
   note in the result, so the recorded deliveries lost through this trigger: 0. The sentence "read
   it in full with `fetch_id`" stays: in 5 of the 13 runs where the lesson came through the recall
   tool, the note appeared only in a `fetch_id` result.
+- Load the two NOBLIVION MCP tools eagerly (NOBLIVION-141). Claude Code lists a plugin's MCP tools
+  by name only, so the model paid one `ToolSearch` call (0.9 calls and about 30,000 input tokens
+  per run in the benchmark) to load `noblivion_recall` before its first use. `.mcp.json` now sets
+  `"alwaysLoad": true` for the server. The Claude Code 2.1.261 binary reads that key in the config
+  of a stdio server and then keeps each of its tools out of the deferred list; a plugin run with
+  the key connected the server with no error. The cost: the two tool definitions, 2,591 characters
+  (about 650 tokens), ride on every call, about 17,000 tokens over a 26-call run. Whether the model
+  then makes no `ToolSearch` call needs a model run.
 - Show guard rows once per memory and tool, and cap one show at 1800 characters (NOBLIVION-137).
   A trigger row was shown up to 3 times per agent in a session, and one show could reach 3600
   characters, so the same rule rode along on later calls. Now a memory's trigger row shows once for

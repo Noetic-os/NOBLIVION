@@ -221,6 +221,13 @@ def test_mcp_json_runs_the_recall_server():
 
 
 # The ${...} names Claude Code expands in a plugin's JSON files, per field.
+def test_the_mcp_server_loads_its_tools_eagerly():
+    """NOBLIVION-141: ``alwaysLoad`` (read by Claude Code 2.1.261 in the config of a stdio
+    server) keeps the two tools out of the deferred list, so no ToolSearch call is needed."""
+    (name,) = _load(MCP_JSON)["mcpServers"]
+    assert _load(MCP_JSON)["mcpServers"][name].get("alwaysLoad") is True
+
+
 # Measured on Claude Code 2.1.92 and 2.1.261 (NOBLIVION-24): in .mcp.json
 # "command" and "args" expand ${CLAUDE_PLUGIN_ROOT}, but an "env" value
 # "${CLAUDE_PLUGIN_DATA}" reached the server as literal text. The plugin
