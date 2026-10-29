@@ -17,7 +17,10 @@ table. Each project has its own table,
   "The session's memory folder" in [configuration.md](configuration.md)),
   or `NOBLIVION_MEMORY_DIR` when it is set. When
   `NOBLIVION_GLOBAL_MEMORY_DIR` is set, the table also holds the files of
-  that folder; a project file wins over a global file with the same name.
+  that folder, and with the memory folder of each shared root
+  (`recall.shared_roots`; by default the home root, see "Shared roots" in
+  [configuration.md](configuration.md)) when it exists. A project file wins
+  over a global or shared file with the same name.
   The files `MEMORY.md`, `MEMORY_ARCHIVE.md` and `topic_*.md` are skipped.
   The store indexes the same folders, so recall and the guards read the same
   notes.
