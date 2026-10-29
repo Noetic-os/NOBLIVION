@@ -50,6 +50,11 @@ All notable changes to NOBLIVION. The format follows
   command whose output goes to a pipe other than `| tail`, to a file, or out of a group or a loop
   is left alone. Shadow and ask act on the new shapes as before. Off by default
   (`NOBLIVION_GUARD_REWRITE`).
+- Accept a root that starts with a dash in `noblivion explain` (NOBLIVION-132). A root is a folder
+  slug such as `-home-alice`, and argparse read the value after `--root` as a flag, so
+  `noblivion explain 'x' --root -home-alice` failed with `Invalid diagnostic arguments`. Now
+  `--root -slug` works like `--root=-slug`. A missing value names its option (`--root needs a value`).
+  The reason never echoes the prompt or an unknown option.
 - Add the note field `protects_process` (NOBLIVION-127): a regex over the command line of a
   process. Before a Bash call, the guard finds the processes the command would signal (`kill
   PID`, `kill -PGID`, `kill $(pgrep ...)`, `pgrep ... | xargs kill`, `pkill`, `killall`) and
