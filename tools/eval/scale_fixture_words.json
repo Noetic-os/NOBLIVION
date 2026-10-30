@@ -1,0 +1,248 @@
+{
+  "projects": [
+    "atlas", "birch", "cedar", "dune", "ember", "fjord", "granite", "harbor", "indigo", "juniper",
+    "kestrel", "lagoon", "meadow", "nimbus", "onyx", "pebble", "quartz", "ridge", "sierra", "tundra",
+    "umber", "vale", "willow", "xenon", "yarrow", "zephyr", "alder", "basalt", "coral", "drift",
+    "elm", "flint", "grove", "heron", "iris", "jade", "kelp", "lark", "moss", "nettle",
+    "oak", "pine", "quill", "reef", "sage", "thorn", "ursa", "vine", "wren", "yew",
+    "aspen", "brook", "clover", "dusk", "fern", "glade", "hazel", "ivy", "jasper", "knoll"
+  ],
+  "services": [
+    "api-gateway", "auth-service", "billing", "cart", "catalog", "checkout", "customer-portal", "dashboard",
+    "data-pipeline", "edge-proxy", "email-sender", "event-bus", "feature-store", "file-store", "fulfilment",
+    "geo-lookup", "image-resizer", "inventory", "invoice-writer", "job-runner", "kafka-bridge", "ledger",
+    "load-balancer", "log-shipper", "mail-relay", "media-encoder", "metrics-store", "mobile-backend",
+    "notification-hub", "object-store", "order-router", "payment-worker", "pdf-renderer", "pricing",
+    "profile-service", "push-gateway", "queue-broker", "rate-limiter", "recommender", "report-builder",
+    "search-index", "session-store", "shipping-quotes", "sms-sender", "static-site", "stock-sync",
+    "subscription", "support-desk", "tax-engine", "telemetry", "tenant-admin", "thumbnailer", "token-issuer",
+    "transcoder", "translation", "upload-service", "usage-meter", "user-directory", "vector-search",
+    "video-player", "warehouse-loader", "webhook-sender", "wiki", "worker-pool", "workflow-engine",
+    "audit-trail", "backup-agent", "build-farm", "cache-tier", "cert-manager", "config-server", "cron-runner",
+    "dns-updater", "export-service", "form-handler", "health-probe", "identity-broker", "import-service",
+    "license-server", "map-tiles", "partner-api", "reconciler", "registry-mirror", "scheduler", "secret-broker"
+  ],
+  "tools": [
+    "make", "terraform", "ansible", "pytest", "tox", "uv", "poetry", "npm", "pnpm", "yarn",
+    "cargo", "gradle", "maven", "bazel", "rsync", "scp", "curl", "wget", "tar", "gzip",
+    "psql", "redis-cli", "mysql", "sqlite3", "nginx", "haproxy", "envoy", "docker", "podman", "buildah",
+    "helm", "kustomize", "argocd", "flux", "vault", "consul", "nomad", "packer", "vagrant", "jq",
+    "yq", "sed", "awk", "grep", "ripgrep", "fzf", "tmux", "htop", "iotop", "strace",
+    "lsof", "tcpdump", "dig", "nslookup", "openssl", "ssh-keygen", "certbot", "logrotate", "cron", "systemd-run",
+    "pre-commit", "black", "isort", "flake8", "eslint", "prettier", "webpack", "vite", "rollup", "esbuild",
+    "alembic", "flyway", "liquibase", "celery", "gunicorn", "uvicorn", "sidekiq", "locust", "k6", "wrk"
+  ],
+  "guard_tools": [
+    "zonectl", "pagectl", "shardctl", "tierctl", "meshctl", "lockctl", "snapctl", "spoolctl",
+    "ringctl", "brokerctl", "gridctl", "routectl", "feedctl", "sinkctl", "linkctl", "hubctl"
+  ],
+  "subcommands": [
+    "apply", "audit", "build", "check", "clean", "compact", "copy", "create", "diff", "dump",
+    "export", "fetch", "format", "import", "init", "inspect", "install", "list", "load", "lint",
+    "merge", "migrate", "pack", "plan", "probe", "prune", "publish", "pull", "push", "rebuild",
+    "reload", "remove", "render", "repair", "replay", "report", "reset", "restart", "restore", "resume",
+    "rollback", "rotate", "run", "scan", "seed", "serve", "show", "snapshot", "start", "status",
+    "stop", "sync", "tag", "test", "trace", "unpack", "update", "upload", "validate", "verify"
+  ],
+  "flags": [
+    "--all", "--apply", "--batch", "--cache-dir", "--check", "--color", "--concurrency", "--config",
+    "--context", "--cwd", "--debug", "--depth", "--diff", "--dry-run", "--env", "--exclude", "--fail-fast",
+    "--file", "--filter", "--follow", "--force", "--format", "--from", "--grace", "--group", "--host",
+    "--include", "--input", "--interval", "--jobs", "--json", "--keep", "--label", "--level", "--limit",
+    "--list", "--log-level", "--max-age", "--max-size", "--name", "--namespace", "--no-cache", "--no-color",
+    "--node", "--offset", "--once", "--output", "--overwrite", "--parallel", "--path", "--pattern", "--port",
+    "--prefix", "--profile", "--progress", "--prune", "--quiet", "--rate", "--recursive", "--region",
+    "--replicas", "--retries", "--retry-delay", "--revision", "--root", "--sample", "--shard", "--since",
+    "--size", "--skip", "--sleep", "--source", "--stage", "--stats", "--strict", "--tail", "--target",
+    "--tenant", "--threads", "--timeout", "--to", "--trace", "--until", "--update", "--verbose", "--version",
+    "--wait", "--watch", "--window", "--workers", "--zone"
+  ],
+  "files": [
+    "Dockerfile", "Makefile", "compose.yaml", "values.yaml", "chart.yaml", "deploy.yaml", "ingress.yaml",
+    "service.yaml", "cronjob.yaml", "pipeline.yml", "workflow.yml", "settings.toml", "project.toml",
+    "server.conf", "nginx.conf", "haproxy.cfg", "logging.ini", "alembic.ini", "pool.ini", "limits.conf",
+    "routes.py", "models.py", "views.py", "tasks.py", "schema.py", "client.py", "worker.py", "handler.py",
+    "cli.py", "api.py", "db.py", "cache.py", "queue.py", "auth.py", "metrics.py", "health.py",
+    "migrate.sh", "deploy.sh", "backup.sh", "restore.sh", "rotate.sh", "sync.sh", "bootstrap.sh", "cleanup.sh",
+    "schema.sql", "seed.sql", "indexes.sql", "report.sql", "views.sql", "grants.sql", "partition.sql",
+    "package.json", "tsconfig.json", "openapi.json", "manifest.json", "policy.json", "rules.json", "flags.json",
+    "app.tsx", "router.ts", "store.ts", "client.ts", "index.css", "theme.css", "layout.html", "error.html",
+    "RUNBOOK.md", "DESIGN.md", "CONTRIBUTING.md", "SECURITY.md", "UPGRADE.md", "backup.timer", "worker.service",
+    "sync.timer", "gateway.service", "main.go", "server.go", "lib.rs", "config.rs", "records.csv", "sample.jsonl"
+  ],
+  "nouns": [
+    "account", "alert", "alias", "allowlist", "archive", "artifact", "attachment", "audit", "backlog", "backup",
+    "badge", "balance", "banner", "baseline", "batch", "binary", "blob", "bookmark", "boundary", "branch",
+    "breaker", "broker", "buffer", "bucket", "bundle", "cache", "callback", "canary", "capacity", "certificate",
+    "changelog", "channel", "chart", "checkpoint", "checksum", "chunk", "client", "clone", "cluster", "column",
+    "commit", "config", "connection", "consumer", "container", "contract", "cookie", "counter", "coverage", "credential",
+    "cursor", "dashboard", "database", "dataset", "deadline", "default", "dependency", "deployment", "digest", "directory",
+    "disk", "document", "domain", "draft", "driver", "dump", "duration", "endpoint", "entry", "environment",
+    "error", "event", "exception", "exit-code", "export", "extension", "failover", "field", "filter", "fingerprint",
+    "firewall", "fixture", "flag", "folder", "footer", "fork", "format", "fragment", "gateway", "gauge",
+    "generator", "graph", "group", "handler", "hash", "header", "heartbeat", "histogram", "hook", "hostname",
+    "image", "import", "incident", "index", "ingress", "instance", "interface", "interval", "inventory", "invoice",
+    "issue", "iterator", "job", "journal", "key", "kernel", "label", "latency", "layer", "layout",
+    "lease", "ledger", "library", "license", "limit", "link", "listener", "loader", "lock", "log",
+    "lookup", "mailbox", "manifest", "mapping", "marker", "memory", "message", "metric", "middleware", "migration",
+    "mirror", "mock", "model", "module", "mount", "namespace", "network", "node", "notification", "offset",
+    "option", "order", "origin", "outage", "output", "overlay", "owner", "package", "page", "pager",
+    "parser", "partition", "patch", "path", "payload", "peer", "permission", "pipeline", "plan", "platform",
+    "plugin", "pod", "pointer", "policy", "pool", "port", "prefix", "preview", "primary", "probe",
+    "process", "profile", "prompt", "protocol", "provider", "proxy", "query", "queue", "quota", "rack",
+    "ranking", "rate", "record", "redirect", "reference", "refresh", "region", "registry", "release", "replica",
+    "report", "repository", "request", "resolver", "resource", "response", "result", "retention", "retry", "revision",
+    "role", "rollback", "rollout", "root", "rotation", "route", "row", "rule", "runbook", "runner",
+    "sample", "sandbox", "scanner", "schedule", "schema", "scope", "script", "search", "secret", "section",
+    "segment", "selector", "sequence", "server", "service", "session", "setting", "shard", "shell", "sidecar",
+    "signal", "signature", "sitemap", "snapshot", "socket", "source", "span", "spec", "stack", "stage",
+    "state", "status", "storage", "stream", "subnet", "subscriber", "suite", "summary", "switch", "table",
+    "tag", "target", "task", "template", "tenant", "test", "thread", "threshold", "ticket", "timeout",
+    "timer", "tolerance", "tool", "topic", "trace", "tracker", "traffic", "transaction", "tree", "trigger",
+    "tunnel", "type", "unit", "update", "upload", "upstream", "usage", "user", "validator", "value",
+    "variable", "vendor", "version", "view", "volume", "warning", "watcher", "webhook", "widget", "window",
+    "worker", "workflow", "workspace", "zone"
+  ],
+  "verbs": [
+    "add", "adjust", "allow", "apply", "archive", "attach", "audit", "back up", "block", "bump",
+    "cache", "cancel", "change", "check", "clean", "clear", "close", "collect", "compare", "compress",
+    "confirm", "connect", "convert", "copy", "count", "create", "decode", "delete", "deploy", "detach",
+    "disable", "drain", "drop", "edit", "enable", "encode", "expire", "export", "extend", "fetch",
+    "filter", "fix", "flush", "follow", "freeze", "generate", "grant", "group", "import", "index",
+    "inspect", "install", "invalidate", "isolate", "join", "keep", "kill", "label", "limit", "link",
+    "list", "load", "lock", "log", "lower", "map", "mark", "measure", "merge", "migrate",
+    "mirror", "monitor", "mount", "move", "mute", "normalize", "open", "pack", "page", "parse",
+    "patch", "pause", "pin", "poll", "prepare", "promote", "protect", "prune", "publish", "pull",
+    "purge", "push", "queue", "raise", "rebuild", "record", "reduce", "refresh", "register", "reload",
+    "remove", "rename", "render", "repair", "replace", "replay", "reset", "resize", "resolve", "restart",
+    "restore", "resume", "retry", "review", "revoke", "roll back", "rotate", "route", "sample", "scale",
+    "scan", "schedule", "scrub", "seal", "send", "ship", "shrink", "skip", "snapshot", "split",
+    "stage", "start", "stop", "store", "stream", "strip", "suspend", "swap", "sync", "tag",
+    "throttle", "tighten", "toggle", "trace", "track", "trim", "tune", "unlock", "unpin", "update",
+    "upgrade", "upload", "validate", "verify", "watch", "wipe", "wrap"
+  ],
+  "adjectives": [
+    "active", "archived", "async", "automatic", "blocked", "broken", "cached", "central", "clean", "cold",
+    "compressed", "concurrent", "corrupt", "current", "custom", "daily", "default", "deferred", "degraded", "dirty",
+    "disabled", "distributed", "duplicate", "dynamic", "empty", "encrypted", "exclusive", "expired", "external", "failed",
+    "fresh", "frozen", "full", "generated", "global", "hidden", "hourly", "idle", "immutable", "inactive",
+    "incremental", "inherited", "initial", "inner", "internal", "invalid", "isolated", "large", "latest", "legacy",
+    "local", "locked", "long", "manual", "mapped", "missing", "monthly", "mounted", "nested", "nightly",
+    "offline", "old", "open", "optional", "orphaned", "outdated", "paged", "paid", "parallel", "partial",
+    "paused", "pending", "persistent", "pinned", "planned", "primary", "private", "public", "queued", "read-only",
+    "ready", "regional", "remote", "replicated", "required", "reserved", "retired", "rotated", "running", "scheduled",
+    "scoped", "sealed", "secondary", "shared", "short", "signed", "single", "slow", "small", "stale",
+    "standby", "static", "sticky", "stopped", "strict", "stuck", "suspended", "synced", "temporary", "throttled",
+    "timed", "unsigned", "unused", "updated", "upstream", "valid", "verified", "versioned", "warm", "weekly"
+  ],
+  "environments": [
+    "staging", "preview", "canary", "production", "development", "integration", "qa", "sandbox", "the demo tier",
+    "the blue stack", "the green stack", "the eu region", "the us region", "the asia region", "the nightly box",
+    "the build host", "the bastion", "the jump box", "the shared runner", "the test cluster"
+  ],
+  "sections": [
+    "Deploy", "Database", "Testing", "Networking", "Storage", "Observability", "Security", "Build", "Release",
+    "Incidents", "Scheduling", "Clients", "Data", "Tooling", "Access", "Cost", "Process", "Runbooks"
+  ],
+  "title_templates": [
+    "{V} the {n} of {s}", "{V} {s} before {m} changes", "{A} {n} on {s}", "{V} the {a} {n}", "{s} {n} after {t} {c}",
+    "Check {n} of {s} on {e}", "Keep {n} in {x}", "{s} moved its {n}", "{A} {m} in {x}", "{V} {m} with {t}"
+  ],
+  "description_templates": [
+    "The {a} {n} of {s} needs a {m} check on {e}, because {t} {c} fails when the {a2} {n2} is missing.",
+    "Notes on how {s} handles the {n} and the {m}, with the {t} steps and the port it listens on.",
+    "When {s} shows a {a} {n}, {v} the {m} first and keep the change in {x} so the next run stays clean.",
+    "{A} {n} seen on {e}: {t} {c} reports it, and the fix sits in {x} next to the {m} of {s}.",
+    "How to {v} the {n} of {s} with {t}, what the {a} {m} means, and what to read in {x} afterwards."
+  ],
+  "rule_templates": [
+    "Run {t} {c} before you {v} the {n} on {s}.",
+    "Keep the {a} {n} of {s} in {x} and {v} it after each {m} change.",
+    "Do not {v} the {n} of {s} while the {m} is {a}.",
+    "Check the {m} of {s} with {t} {c} before you {v} the {n}.",
+    "Use {f} with {t} {c} when you {v} the {n} on {e}.",
+    "{V} the {a} {n} first when {s} reports a {m} problem.",
+    "Read {x} before you {v} the {n} of {s}.",
+    "Never {v} the {n} on {e} without a {a} {m}."
+  ],
+  "apply_templates": [
+    "Open {x} and find the {n} block. {V} the {m} and run {t} {c} {f} on {e}. Compare the {a} {n2} before and after. If {s} still reports the {a2} {m}, {v2} the {n} and repeat the check once.",
+    "First run {t} {c} on {s}. Then {v} the {a} {n} and record the result in {x}. Stop when the {m} reports {a2} and ask the owner of {s} before the next step.",
+    "Before any change, {v} the {n} of {s}. Then run {t} {c} {f}. Confirm that the {m} on {e} stays {a}. Keep the output in {x} for the review."
+  ],
+  "sentence_templates": [
+    "Run `{t} {c} {f}` on {s} before you {v} the {n}.",
+    "The {s} listens on port {p} behind {h}.",
+    "Keep `{x}` in step with the {a} {n} of {s}.",
+    "On {e} the {n} of {s} can {v} the {m}, so check `{x}` first.",
+    "`{t} {c}` reports the {a} {n} and exits non-zero when the {m} is missing.",
+    "Do not {v} the {n} while {s} handles a {a} {m}.",
+    "The {a} {n} lives in `{x}`, and `{t}` reads it at start.",
+    "After a restart of {s}, {v} the {n} and compare it with the {m} on {e}.",
+    "The {m} of {s} moved to port {p} on {e}.",
+    "Use `{f}` with `{t} {c}` when the {n} is {a}.",
+    "A {a} {n} on {s} points to the {m} in `{x}`.",
+    "Ask {s} for the {n} through {h} on port {p}.",
+    "The last {n} run on {e} took {d} minutes because the {m} was {a}.",
+    "`{t} {c}` needs the {a} {m} of {s}, so {v} it before the run.",
+    "When the {n} is {a}, the {m} of {s} falls back to the value in `{x}`.",
+    "Set `{f}` to {d} for {s} and leave the {a} {m} as it is.",
+    "The {n} check in `{x}` passes on {e} but fails on {e2}.",
+    "Traffic from {s} reaches the {m} through port {p}.",
+    "We {v} the {m} once a week and keep {d} copies of the {n}.",
+    "Compare the {n} of {s} with the {m} before you close the ticket.",
+    "The owner of {s} wants the {a} {n} kept out of `{x}`.",
+    "A failed {t} run leaves a {a} {m} behind, so {v} it by hand.",
+    "The {a} {n} grew to {d} items after the last {m} change.",
+    "`{x}` holds the {n} that {s} loads at start."
+  ],
+  "why_templates": [
+    "A {a} {n} on {s} cost {d} minutes of {m} on {e}.",
+    "The {m} of {s} went {a} after a {t} run, and the {n} did not recover.",
+    "Nobody saw the {a} {m} until the {n} of {s} failed on {e}."
+  ],
+  "bullet_templates": [
+    "- `{t} {c}` for the {n} of {s}",
+    "- the {a} {m} in `{x}`",
+    "- port {p} on {e}",
+    "- {v} the {n} after each {m} change"
+  ],
+  "plain_line_templates": [
+    "- {A} {n} on {e}: see {s}.",
+    "- {s} port {p}, {a} {m}.",
+    "- {V} the {n} after {t} {c}.",
+    "- {x} holds the {a} {n}."
+  ],
+  "hook_templates": [
+    "{A} {n} of {s} on {e}, with the {t} {c} steps and the {a2} {m} that the last run left behind in {x}, kept here for the next person who has to {v} it on a quiet evening.",
+    "How {s} treats the {a} {m} on {e}, why {t} {c} stops at the {n}, and what to {v} in {x} when the {a2} {n2} shows up during a release or a scheduled task.",
+    "The {n} and the {m} of {s}, the order of the {t} {c} steps, the {a} {n2} on {e}, and the reason the value in {x} must stay as it is until the owner says otherwise."
+  ],
+  "pad_templates": [
+    "Keep the {topic} steps in the runbook of {s}.",
+    "The last {topic} on {e} took {d} minutes.",
+    "Ask the owner of {s} before you change the {topic} steps.",
+    "Record the {topic} result in `{x}` after each run.",
+    "The {topic} check runs on {e} first, then on {e2}.",
+    "`{t} {c}` shows the state of the {topic} on {s}.",
+    "A {a} {n} often shows up after the {topic} on {s}.",
+    "Compare the {n} of {s} before and after the {topic}.",
+    "Do not mix the {topic} with a {a} {m} change.",
+    "Write the {topic} outcome into the ticket for {s}.",
+    "The {topic} notes in `{x}` stay short on purpose.",
+    "Repeat the {topic} once when the {m} of {s} looks {a}."
+  ],
+  "v5_templates": [
+    "Write a short glossary entry that explains {topic} for new hires.",
+    "Who first came up with {topic} and in what year?",
+    "Draw a diagram of {topic} for the architecture slide deck.",
+    "Translate the {topic} page into German for the Berlin office.",
+    "Estimate the yearly licence cost of the {topic} vendor.",
+    "Compare {topic} with what our competitor describes in their blog.",
+    "Book a thirty minute talk about {topic} for the next team lunch.",
+    "Summarise the history of {topic} in three plain sentences.",
+    "Suggest a friendlier name for {topic} in the admin screens.",
+    "List the university courses that teach {topic}."
+  ],
+  "cd_folders": ["/srv/app", "/opt/service", "/var/lib/worker", "/home/dev/src", "/tmp/build", "/data/repo"]
+}
