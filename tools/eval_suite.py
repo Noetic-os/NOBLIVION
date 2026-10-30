@@ -119,7 +119,7 @@ GUARD_TOOLS = ("Bash", "Read", "Grep", "Edit", "Write", "MultiEdit")
 AGENT_TOOLS = ("Agent", "Task")
 PLUGIN_MARKS = ("CLAUDE_PLUGIN_ROOT}/hooks/", "/plugins/cache/noblivion/")
 SCRIPT_RE = re.compile(r"hooks/([a-z_]+\.py)(\s+--[a-z-]+)?")
-LOG_STATE_RE = re.compile(r" ms=\d+ (\S+)")
+LOG_STATE_RE = re.compile(r" ms=\d+(?: kind=\S+)? (\S+)")
 TEXT_MAX = 200_000  # the longest tool result a replay keeps
 BUSY_LOAD = 0.75  # load per CPU over which the timing of a run is not comparable
 
@@ -237,6 +237,8 @@ def fail_states(lines: Iterable[str]) -> Counter:
         match = LOG_STATE_RE.search(line)
         if match:
             state = match.group(1)
+            if state == "skip:task_notification":
+                continue  # the hook adds no rows to a notification, by design (NOBLIVION-148)
             states["keyword" if ":keyword" in state else state.split(":")[0]] += 1
     return states
 

@@ -676,6 +676,19 @@ def test_fail_states_counts_a_fail_open_and_a_keyword_answer() -> None:
     assert tool.fail_states(lines) == {"ok": 1, "fail": 1, "keyword": 1}
 
 
+def test_fail_states_reads_the_prompt_kind_and_skips_a_notification() -> None:
+    """NOBLIVION-148. A line carries ``kind=`` before the status, and a task
+    notification that got no rows by design is not a failed hook."""
+    tool = load_tool()
+    lines = [
+        "ts event=UserPromptSubmit session=a hits=1 chars=9 ms=12 kind=prompt ok:joined1of1",
+        "ts event=UserPromptSubmit session=a hits=0 chars=0 ms=0 kind=task_notification"
+        " skip:task_notification",
+        "ts event=UserPromptSubmit session=a hits=0 chars=0 ms=2001 kind=prompt fail:timeout",
+    ]
+    assert tool.fail_states(lines) == {"ok": 1, "fail": 1}
+
+
 def test_model_text_is_what_the_model_reads() -> None:
     tool = load_tool()
     context = json.dumps({"hookSpecificOutput": {"additionalContext": "ROWS"}})
