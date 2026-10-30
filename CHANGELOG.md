@@ -100,6 +100,11 @@ All notable changes to NOBLIVION. The format follows
   and a few more) or held by more than 3 memory folders now matches a note only with a relative path
   that both name, or when the note is in the project folder (not a shared root). The guard table is
   version 3 and rebuilds itself on the first call.
+- Prompt recall: add no rows to a `<task-notification>` prompt (a subagent or background task that
+  reports back; NOBLIVION-148). The text is a report, not a task. The status line in `recall.log`
+  is `skip:task_notification`. Every prompt line in `recall.log` now carries `kind=prompt` or
+  `kind=task_notification` before the status. The guard hook still covers every action the report
+  leads to.
 
 ## 0.1.18 - 2026-10-29
 

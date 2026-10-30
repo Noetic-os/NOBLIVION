@@ -92,9 +92,12 @@ Dedupe and cap
 
 Log
   One line per call appended to ``<cache dir>/recall.log``:
-  ``<iso ts> event=<name> session=<id> hits=<n> chars=<n> ms=<n> <ok|fail:<reason>|skip:<reason>>``
+  ``<iso ts> event=<name> session=<id> hits=<n> chars=<n> ms=<n> [kind=<prompt|task_notification>] <ok|fail:<reason>|skip:<reason>>``
+  The ``kind`` field is on a UserPromptSubmit line once the payload is read.
   No query text and no memory body ever reach the log. Past LOG_MAX_BYTES
   (5 MB) the log moves to ``recall.log.1``; ``memory-dir.log`` likewise.
+  A prompt that starts with ``<task-notification`` (a subagent or background
+  task reporting back) gets no rows and the status ``skip:task_notification``.
 
 Environment (config file keys in design doc section 12.3)
   NOBLIVION_DATA_DIR            the data dir (store.json, token, cache)
@@ -2298,13 +2301,20 @@ def log_memory_dir_missing(cache: str, event: str, session_id: Any, root: Any) -
         pass
 
 
+# NOBLIVION-148. The kind of the prompt that ``run`` is serving: ``prompt`` or
+# ``task_notification``. ``log_line`` writes it on a UserPromptSubmit line. The
+# hook is one process per call, and ``run`` sets it on every call.
+_PROMPT_KIND = ""
+
+
 def log_line(
     cache: str, event: str, session_id: Any, hits: int, chars: int, ms: int, status: str
 ) -> None:
     """Append one line. Never raises. Carries no query text and no memory body."""
     sid = session_id if isinstance(session_id, str) and _SESSION_ID_RE.match(session_id) else "-"
     ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
-    line = f"{ts} event={event} session={sid} hits={hits} chars={chars} ms={ms} {status}\n"
+    kind = f" kind={_PROMPT_KIND}" if _PROMPT_KIND and event == "UserPromptSubmit" else ""
+    line = f"{ts} event={event} session={sid} hits={hits} chars={chars} ms={ms}{kind} {status}\n"
     try:
         _make_dirs(cache)
         path = os.path.join(cache, "recall.log")
@@ -2316,6 +2326,21 @@ def log_line(
 
 
 # ── the hook ────────────────────────────────────────────────────────────────
+
+# NOBLIVION-148. A subagent or background task that reports back arrives as a
+# user turn that starts with this tag. Its text is a report, not a task, so
+# prompt rows on it are noise.
+TASK_NOTIFICATION_TAG = "<task-notification"
+
+
+def is_task_notification(payload: Dict[str, Any]) -> bool:
+    """True for a ``UserPromptSubmit`` whose prompt is a task notification."""
+    if payload.get("hook_event_name") != "UserPromptSubmit":
+        return False
+    q = payload.get("prompt")
+    if not isinstance(q, str):
+        q = payload.get("user_input")
+    return isinstance(q, str) and q.lstrip().startswith(TASK_NOTIFICATION_TAG)
 
 
 def query_for(payload: Dict[str, Any], max_chars: int = QUERY_MAX_CHARS) -> Optional[str]:
@@ -3777,6 +3802,8 @@ def hit_dropped(hit: Hit, files: Optional[Mapping[str, MemoryFile]]) -> bool:
 
 
 def run(stdin_text: str, stdout, environ: Dict[str, str]) -> None:
+    global _PROMPT_KIND
+    _PROMPT_KIND = ""
     t0 = time.monotonic()
     cache = cache_dir(environ)
     try:
@@ -3789,6 +3816,9 @@ def run(stdin_text: str, stdout, environ: Dict[str, str]) -> None:
         return
     event = str(payload.get("hook_event_name") or "-")
     sid = payload.get("session_id")
+    notification = is_task_notification(payload)
+    if event == "UserPromptSubmit":
+        _PROMPT_KIND = "task_notification" if notification else "prompt"
     environ = session_env(environ, payload)
     if recall_disabled(environ):
         log_line(cache, event, sid, 0, 0, 0, "skip:disabled")
@@ -3801,6 +3831,9 @@ def run(stdin_text: str, stdout, environ: Dict[str, str]) -> None:
     # but the conditional says so, so no future default can leak into it.
     serving_index = index_mode(environ)
     cut = index_query_chars(environ) if serving_index else QUERY_MAX_CHARS
+    if notification:
+        log_line(cache, event, sid, 0, 0, 0, "skip:task_notification")
+        return
     query = query_for(payload, cut)
     if query is None:
         if event == "UserPromptSubmit":

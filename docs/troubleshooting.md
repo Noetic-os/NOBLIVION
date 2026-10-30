@@ -10,7 +10,7 @@ In the commands below, `<data dir>` is the NOBLIVION data dir (see
 
 | File | What it tells you |
 | --- | --- |
-| `<data dir>/cache/recall.log` | One line per prompt: hits, characters, time, and `ok`, `fail:<reason>` or `skip:<reason>`. Rotated at 5 MB. |
+| `<data dir>/cache/recall.log` | One line per prompt: hits, characters, time, the prompt kind (`kind=prompt` or `kind=task_notification`), and `ok`, `fail:<reason>` or `skip:<reason>`. Rotated at 5 MB. |
 | `<data dir>/logs/store.log` | Store start, stop, index scans and embedding state. |
 | `<data dir>/guard-log.jsonl` | Guard decisions. Rotated at 5 MB. |
 | `<data dir>/error-recall-log.jsonl` | Error recall decisions. |

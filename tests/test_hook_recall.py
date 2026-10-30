@@ -462,6 +462,34 @@ def test_blank_prompt_makes_no_call(daemon, env):
     assert read_log(env)[-1].endswith("skip:empty_query")
 
 
+NOTIFICATION = (
+    "<task-notification>\n<task-id>a1b2c3</task-id>\n<status>completed</status>\n"
+    "<summary>Agent finished the search</summary>\n</task-notification>"
+)
+
+
+@pytest.mark.parametrize("lead", ["", "  \n"])
+def test_task_notification_prompt_gets_no_rows(daemon, env, lead):
+    """NOBLIVION-148. A subagent report is not a task: no store call, no
+    output, and the log line names the prompt kind."""
+    code, out = run_hook(_prompt(lead + NOTIFICATION), env)
+    assert (code, out) == (0, "")
+    assert daemon.requests == [] and daemon.health == []
+    assert read_log(env)[-1].endswith("kind=task_notification skip:task_notification")
+
+
+def test_task_notification_skip_is_only_for_user_prompts(daemon, env):
+    """A command that mentions the tag is still a tool call, and a human prompt
+    that mentions it after other text is still a human prompt."""
+    text = "why does <task-notification> show up in my prompt rows"
+    assert not hook.is_task_notification(_prompt(text))
+    assert hook.is_task_notification(_prompt(NOTIFICATION))
+    assert not hook.is_task_notification(_tool("Bash", {"command": NOTIFICATION}))
+    run_hook(_prompt(text), env)
+    assert " kind=prompt " in read_log(env)[-1]
+    assert not read_log(env)[-1].endswith("skip:task_notification")
+
+
 def test_query_trimmed_to_300_chars(daemon, env):
     run_hook(_prompt("q" * 900), env)
     assert len(daemon.requests[-1]["qs"]["q"]) == hook.QUERY_MAX_CHARS == 300
@@ -898,7 +926,7 @@ def test_log_line_has_the_fields_and_no_query_or_body(daemon, env):
     line = read_log(env)[-1]
     assert re.match(
         r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00 event=UserPromptSubmit session=sess-1 "
-        r"hits=2 chars=\d+ ms=\d+ ok$",
+        r"hits=2 chars=\d+ ms=\d+ kind=prompt ok$",
         line,
     ), line
     assert "SECRET-QUERY-TOKEN" not in line
