@@ -80,7 +80,8 @@ _FLOAT_KEYS = frozenset(
 _SWITCH_KEYS = frozenset(
     "embedding.allow_download embedding.allow_remote "
     "embedding.remote_include_mined trust.events trust.citation_use "
-    "trust.correction_contradict trust.behaviour_use recall.rules_only miner.enabled "
+    "trust.correction_contradict trust.behaviour_use recall.rules_only recall.task_file "
+    "miner.enabled "
     "guard.rewrite guard.ask guard.act_shadow guard.everyday_triggers".split()
 )
 _CHOICES = {
@@ -121,6 +122,7 @@ ENV_KEYS = {
     "NOBLIVION_RECALL_INDEX_K": "recall.index_k",
     "NOBLIVION_RECALL_RULES_ONLY": "recall.rules_only",
     "NOBLIVION_RECALL_SCORE_WINDOW": "recall.score_window",
+    "NOBLIVION_RECALL_TASK_FILE": "recall.task_file",
     "NOBLIVION_RECALL_PROMPT_ROWS": "recall.prompt_rows",
     "NOBLIVION_RECALL_HUB_DAYS": "recall.hub_days",
     "NOBLIVION_RECALL_HUB_ROWS": "recall.hub_rows",

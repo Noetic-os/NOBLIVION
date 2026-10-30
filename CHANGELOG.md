@@ -24,6 +24,16 @@ All notable changes to NOBLIVION. The format follows
   empty. A note must hold one rare name from the error (an identifier, a module name, a path tail, a
   quoted value) besides quoting its message, so one generic message such as `column ... does not exist`
   no longer shows one migration note every time. A true hit that holds no such name is no longer shown.
+- Prompt recall ranks on the text of a task file (NOBLIVION-158). When the prompt is, or starts with, the
+  path of a readable `.md` or `.txt` file under the home folder, the query is the first 2,000
+  characters of that file and not the path. The hook reads at most 8,000 bytes of a regular file, and
+  not through a link that leaves the home folder, a file whose name holds `credential`, `secret`,
+  `token` or `password`, or a key folder such as `.ssh`. Any other prompt keeps the prompt text.
+  New setting `NOBLIVION_RECALL_TASK_FILE` (config key `recall.task_file`), on by default; the
+  `recall.log` note `:taskfile` marks a call that used file text. Replay of 98 path prompts of one
+  host (14 days, zero paid calls, scratch store): with the path 1 prompt had rows (5 rows); with the
+  file text 97 prompts had rows (485 rows, 129 distinct notes). Labels are model judgment: 15 of 20
+  sampled file-text rows were relevant to the task (75%), 3 of the 5 path rows (60%).
 - Prompt recall follows the scores of the prompt (NOBLIVION-151). The store's rank 1 now stays in the
   prompt index when its cosine is at most 0.02 under the relevance floor (0.68) and its note shares
   an informative word with the prompt (a word in more than half of the notes does not count; needs

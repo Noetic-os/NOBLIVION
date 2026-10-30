@@ -5,6 +5,7 @@
     "prompt_rows": 5,
     "hub_days": 14,
     "score_window": 0,
+    "task_file": 1,
     "env": {
       "NOBLIVION_RECALL_INDEX": "1",
       "NOBLIVION_RECALL_INDEX_APPLY": "1",

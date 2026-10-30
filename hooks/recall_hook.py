@@ -171,6 +171,7 @@ import math
 import os
 import re
 import socket
+import stat
 import sys
 import threading
 import time
@@ -2314,6 +2315,8 @@ def log_line(
     sid = session_id if isinstance(session_id, str) and _SESSION_ID_RE.match(session_id) else "-"
     ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     kind = f" kind={_PROMPT_KIND}" if _PROMPT_KIND and event == "UserPromptSubmit" else ""
+    if _TASK_FILE_USED and status.startswith("ok"):
+        status += ":taskfile"
     line = f"{ts} event={event} session={sid} hits={hits} chars={chars} ms={ms}{kind} {status}\n"
     try:
         _make_dirs(cache)
@@ -2377,6 +2380,69 @@ def query_for(payload: Dict[str, Any], max_chars: int = QUERY_MAX_CHARS) -> Opti
         return None
     q = _collapse(q)[: max(1, int(max_chars))]
     return q or None
+
+
+# NOBLIVION-158. On a host where a prompt is mostly the path of a task file, the
+# words of the path ("plan-4-release.md") say little about the task, so the rows
+# match the file name and not the work. When the prompt is, or starts with, the
+# path of a ``.md`` or ``.txt`` file under the home folder, the query is the first
+# TASK_FILE_CHARS characters of that file. The hook reads only a file the user
+# named, a regular file, never through a link that leaves the home folder, and at
+# most TASK_FILE_BYTES bytes of it. A path outside the home folder, an unreadable
+# one, another extension, a file whose name says it holds a credential and a
+# folder of keys all keep the query on the prompt text. The store redacts the
+# query text as it does for any prompt.
+TASK_FILE_ENV = "NOBLIVION_RECALL_TASK_FILE"
+TASK_FILE_KEY = "recall.task_file"
+TASK_FILE_CHARS = 2000  # the store caps a query at 2,000 characters
+TASK_FILE_BYTES = 4 * TASK_FILE_CHARS  # enough bytes for 2,000 characters of UTF-8
+_TASK_FILE_PATH_RE = re.compile(r"""^\s*["'`]?((?:~|/)[^\s"'`]+\.(?:md|txt))(?![\w.])""", re.I)
+_TASK_FILE_PRIVATE_NAME_RE = re.compile(r"credential|secret|token|password|passwd", re.I)
+_TASK_FILE_PRIVATE_DIRS = frozenset(
+    {".ssh", ".gnupg", ".aws", ".kube", ".docker", ".password-store"}
+)
+# Set by ``run`` when the query of this call is task file text; ``log_line`` adds
+# the note ``:taskfile`` to an ``ok`` line.
+_TASK_FILE_USED = False
+
+
+def task_file_on(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """``NOBLIVION_RECALL_TASK_FILE`` / ``recall.task_file``: on unless off."""
+    env = os.environ if environ is None else environ
+    return bool(_sibling_module("hook_config").switch(TASK_FILE_ENV, True, env, TASK_FILE_KEY))
+
+
+def task_file_text(prompt: Any, home: Optional[str] = None) -> Optional[str]:
+    """The first TASK_FILE_CHARS characters of the file that ``prompt`` starts
+    with, white space collapsed, or None when the prompt does not start with the
+    path of a file this hook may read. Never raises."""
+    if not isinstance(prompt, str):
+        return None
+    m = _TASK_FILE_PATH_RE.match(prompt[:4096])
+    if m is None:
+        return None
+    try:
+        root = os.path.realpath(home if home else os.path.expanduser("~"))
+        path = os.path.realpath(os.path.expanduser(m.group(1)))
+        rel = os.path.relpath(path, root)
+        if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
+            return None
+        parts = rel.split(os.sep)
+        if _TASK_FILE_PRIVATE_NAME_RE.search(parts[-1]) or _TASK_FILE_PRIVATE_DIRS & set(parts):
+            return None
+        if not path.lower().endswith((".md", ".txt")):
+            return None
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOCTTY", 0))
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return None
+            raw = os.read(fd, TASK_FILE_BYTES)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        return None
+    text = _collapse(raw.decode("utf-8", errors="replace"))[:TASK_FILE_CHARS]
+    return text or None
 
 
 def cosine_setting(raw: Any) -> Optional[float]:
@@ -3802,8 +3868,9 @@ def hit_dropped(hit: Hit, files: Optional[Mapping[str, MemoryFile]]) -> bool:
 
 
 def run(stdin_text: str, stdout, environ: Dict[str, str]) -> None:
-    global _PROMPT_KIND
+    global _PROMPT_KIND, _TASK_FILE_USED
     _PROMPT_KIND = ""
+    _TASK_FILE_USED = False
     t0 = time.monotonic()
     cache = cache_dir(environ)
     try:
@@ -3835,6 +3902,12 @@ def run(stdin_text: str, stdout, environ: Dict[str, str]) -> None:
         log_line(cache, event, sid, 0, 0, 0, "skip:task_notification")
         return
     query = query_for(payload, cut)
+    if query is not None and event == "UserPromptSubmit" and task_file_on(environ):
+        # NOBLIVION-158. A prompt that is a task file path ranks on the file text.
+        task = task_file_text(payload.get("prompt") or payload.get("user_input"))
+        if task is not None:
+            query = task
+            _TASK_FILE_USED = True
     if query is None:
         if event == "UserPromptSubmit":
             reason = "empty_query"
