@@ -161,18 +161,10 @@ def hub_notes(per_prompt: Sequence[Mapping[str, Any]], share: float = 0.5) -> se
     return {k for k, c in count.items() if c / n > share}
 
 
-def run_arm(
-    rt: types.ModuleType,
-    paths: Sequence[str],
-    base_env: Mapping[str, str],
-    settings: Mapping[str, str],
-    work: Path,
-    name: str,
-    memory_dir: str,
-    births: Mapping[str, _dt.datetime] | None,
-) -> list[dict[str, Any]]:
-    """Every prompt of ``paths`` through a fresh copy of the prompt hook."""
-    arm_dir = work / name
+def arm_env(
+    base_env: Mapping[str, str], work: Path, arm_dir: Path, memory_dir: str
+) -> dict[str, str]:
+    """The env of a replay run: its own cache and guard files, never the live ones."""
     arm_dir.mkdir(parents=True, exist_ok=True)
     env = dict(base_env)
     env.update(
@@ -185,17 +177,41 @@ def run_arm(
         }
     )
     env.pop("CLAUDE_PROJECT_DIR", None)
-    env.update(settings)
-    clock = rt.Clock()
-    hook = _load(HOOKS / "recall_hook.py", f"replay_rows_hook_{name}")
-    stats = hook._sibling_module("hub_stats")
-    stats._dt = clock.module
-    signals = hook._sibling_module("trust_signals")
-    exists = {"fn": lambda n: True}
+    return env
+
+
+def filtered_hook(
+    rt: types.ModuleType, hooks: Path, alias: str
+) -> tuple[types.ModuleType, dict[str, Any]]:
+    """The prompt hook and ``{"fn": exists}``: the hook gets the store's answer
+    without the notes for which ``fn(file name)`` is false."""
+    hook = _load(hooks / "recall_hook.py", alias)
+    exists: dict[str, Any] = {"fn": lambda n: True}
     store_get = hook.store_get
     hook.store_get = lambda build, environ, timeout_s: rt.filter_payload(
         store_get(build, environ, timeout_s), exists["fn"]
     )
+    return hook, exists
+
+
+def run_arm(
+    rt: types.ModuleType,
+    paths: Sequence[str],
+    base_env: Mapping[str, str],
+    settings: Mapping[str, str],
+    work: Path,
+    name: str,
+    memory_dir: str,
+    births: Mapping[str, _dt.datetime] | None,
+) -> list[dict[str, Any]]:
+    """Every prompt of ``paths`` through a fresh copy of the prompt hook."""
+    env = arm_env(base_env, work, work / name, memory_dir)
+    env.update(settings)
+    clock = rt.Clock()
+    hook, exists = filtered_hook(rt, HOOKS, f"replay_rows_hook_{name}")
+    stats = hook._sibling_module("hub_stats")
+    stats._dt = clock.module
+    signals = hook._sibling_module("trust_signals")
     out: list[dict[str, Any]] = []
     for path in paths:
         sid = Path(path).stem
