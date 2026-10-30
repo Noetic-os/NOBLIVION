@@ -587,10 +587,16 @@ def test_the_scratch_copy_takes_the_allowlist_and_never_the_token(tmp_path):
     (data / "config.json").write_text("{}", encoding="utf-8")
     (data / "models").mkdir()
     (data / "models" / "model.onnx").write_text("m", encoding="utf-8")
+    (data / "cache" / "subagent").mkdir(parents=True)
+    (data / "cache" / "hub-stats.json").write_text("{}", encoding="utf-8")
+    (data / "cache" / "subagent" / "hub-stats.json").write_text("{}", encoding="utf-8")
+    (data / "cache" / "by-session.json").write_text("{}", encoding="utf-8")
     target = tmp_path / "scratch"
     ho.copy_store_inputs(data, target)
     names = sorted(p.name for p in target.iterdir())
-    assert names == ["config.json", "models", "noblivion.db"]
+    assert names == ["config.json", "hub", "models", "noblivion.db"]
+    assert (target / "hub" / "subagent" / "hub-stats.json").is_file()
+    assert sorted(p.name for p in (target / "hub").iterdir()) == ["hub-stats.json", "subagent"]
     assert stat.S_IMODE((target / "noblivion.db").stat().st_mode) == 0o600
     assert sorted(p.name for p in data.iterdir() if p.name == "token") == ["token"]
 
@@ -645,6 +651,23 @@ def test_replay_of_a_subagent_task_uses_the_subagent_hook(tmp_path):
     replay = _replay(tmp_path)
     prompt = ho.Prompt("subagent_task", "repair the widget", "s", "-home-user", MOMENT)
     assert replay.rows(prompt, "heldout-a") == [42]
+
+
+def test_each_prompt_starts_from_the_hub_counts_of_its_own_hook(tmp_path):
+    hub = tmp_path / "hub"
+    (hub / "subagent").mkdir(parents=True)
+    (hub / "hub-stats.json").write_text("prompt counts", encoding="utf-8")
+    (hub / "subagent" / "hub-stats.json").write_text("subagent counts", encoding="utf-8")
+    replay = _replay(tmp_path)
+    replay.hub_dir = hub
+    cache = replay.cache
+    replay.rows(ho.Prompt("home", "a", "s", "-p", MOMENT), "heldout-a")
+    (cache / "hub-stats.json").write_text("changed by the hook", encoding="utf-8")
+    replay.rows(ho.Prompt("home", "b", "s", "-p", MOMENT), "heldout-b")
+    assert (cache / "hub-stats.json").read_text(encoding="utf-8") == "prompt counts"
+    assert not (cache / "subagent" / "hub-stats.json").exists()
+    replay.rows(ho.Prompt("subagent_task", "c", "s", "-p", MOMENT), "heldout-c")
+    assert (cache / "subagent" / "hub-stats.json").read_text(encoding="utf-8") == "subagent counts"
 
 
 def test_replay_drops_a_note_born_after_the_prompt(tmp_path):

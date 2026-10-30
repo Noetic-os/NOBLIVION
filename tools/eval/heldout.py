@@ -117,7 +117,7 @@ TASK_KEY = "key-tasks.json"
 SEALED_LOG = "sealed-opened.jsonl"
 DB_FILE = "noblivion.db"
 COPY_FILES = ("config.json",)  # an allowlist: never the token, a log or a lock
-HUB_FILE = Path("cache") / "hub-stats.json"
+HUB_FILES = ("hub-stats.json", "subagent/hub-stats.json")  # the hook and the subagent hook
 STORE_WAIT_S = 120
 
 PARTS = (
@@ -593,6 +593,10 @@ def copy_store_inputs(data_dir: Path, target: Path) -> None:
     for name in COPY_FILES:
         if (data_dir / name).is_file():
             shutil.copyfile(data_dir / name, target / name)
+    for name in HUB_FILES:
+        if (data_dir / "cache" / name).is_file():
+            (target / "hub" / name).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            shutil.copyfile(data_dir / "cache" / name, target / "hub" / name)
     if (data_dir / "models").is_dir():
         shutil.copytree(data_dir / "models", target / "models", symlinks=True)
     harden(target)
@@ -666,13 +670,13 @@ class Replay:
         projects: Path,
         births: Mapping[str, _dt.datetime] | None,
         rt: types.ModuleType,
-        hub_file: Path | None = None,
+        hub_dir: Path | None = None,
     ) -> None:
         rp = _load(TOOLS / "replay_prompt_rows.py", "heldout_replay_rows")
         self.work = work
         self.projects = projects
         self.births = births
-        self.hub_file = hub_file
+        self.hub_dir = hub_dir
         self.env = rp.arm_env(env, work, work / "arm", "")
         self.env.pop("NOBLIVION_MEMORY_DIR", None)
         self.env.update({"NOBLIVION_RECALL_LABELS": "0", "NOBLIVION_RECALL_TIMEOUT_S": "30"})
@@ -697,10 +701,17 @@ class Replay:
             env["NOBLIVION_RECALL_ROOT"] = project
         return env
 
+    def _seed_hub(self, name: str) -> None:
+        """Each prompt starts from the same hub counts, so its order cannot move a
+        row. The hub rule stays on the install's counts of today: a few sampled
+        prompts cannot rebuild them."""
+        if self.hub_dir is not None and (self.hub_dir / name).is_file():
+            (self.cache / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(self.hub_dir / name, self.cache / name)
+
     def rows(self, prompt: Prompt, sid: str) -> list[int]:
         """The memory ids of the rows, best first, at most ``TOP``."""
-        if self.hub_file is not None:
-            shutil.copyfile(self.hub_file, self.cache / "hub-stats.json")
+        self._seed_hub(HUB_FILES[1 if prompt.stratum == "subagent_task" else 0])
         self.exists["fn"] = alive_at(self.births, prompt.moment)
         env = self._scope(prompt.project)
         buf = io.StringIO()
@@ -965,8 +976,7 @@ def build(args: argparse.Namespace) -> int:
     work.mkdir(mode=0o700, exist_ok=True)
     try:
         with scratch_store(data_dir, work, build_dir, memory_dirs) as env:
-            hub = data_dir / HUB_FILE
-            replay = Replay(hooks, env, work, projects, births, rt, hub if hub.is_file() else None)
+            replay = Replay(hooks, env, work, projects, births, rt, work / "data" / "hub")
             inputs = Inputs(
                 prompts=prompts,
                 errors=read_log(data_dir / "error-recall-log.jsonl", rt),
