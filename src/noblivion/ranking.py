@@ -56,6 +56,15 @@ INDEX_FIELDS_REPEAT = 2
 # over a strong one. A BM25 score is about 1 to 15 for a short query.
 LABEL_BOOST = 0.4
 LABEL_BOOST_MAX_LABELS = 2
+# NOBLIVION-153. The keyword-only relevance gate (``keyword_gate``). A word is informative when
+# its document frequency is at or under the cut where the words up to it hold half of all word
+# uses (``BM25.df_cut``): its idf is above that of the median word of the running text. It is
+# rare when it is at or under the cut of the rarest tenth of the word uses (about the top 10% of
+# idf). The gate needs a pool of this many units: below it an idf says nothing.
+GATE_MIN_UNITS = 20
+GATE_INFORMATIVE_MASS = 0.5
+GATE_RARE_MASS = 0.1
+GATE_MIN_WORDS = 2
 _MARKER_LINE_RE = re.compile(r"^\[(?:claude_code_md|transcript_mined): [^\]\n]*\][ \t]*$", re.M)
 
 
@@ -210,6 +219,39 @@ def label_boost(labels: Sequence[str], query_tokens: Iterable[str]) -> float:
         1 for label in labels if label in tokens or any(p.endswith("/" + label) for p in paths)
     )
     return min(found, LABEL_BOOST_MAX_LABELS) * LABEL_BOOST
+
+
+def keyword_gate(
+    ranked: RankResult, index: bm25.BM25, tokens: Sequence[str], named: Iterable[str]
+) -> RankResult:
+    """The relevance gate of keyword-only mode (NOBLIVION-153). Without a cosine no floor can
+    judge a row, so any prompt with a word in common got its rows. The gate keeps the rows
+    only when the top row holds at least ``GATE_MIN_WORDS`` informative words of the query, or
+    when every term of the query that the pool knows is rare and in the top row (a short
+    prompt with one rare word), or when a label of the top row is named by the query; else it
+    returns no row.
+
+    A stop word is not a term for the gate unless the query has no other term. ``tokens`` are
+    the tokens of the query and ``named`` those of the query and the target (the label match
+    reads both). A pool under ``GATE_MIN_UNITS`` units passes: its idf is not a measure.
+    """
+    if ranked.mode != MODE_KEYWORD or not ranked.hits or index.n < GATE_MIN_UNITS:
+        return ranked
+    top = ranked.hits[0].row
+    if top.labels and label_boost(top.labels, named) > 0:
+        return ranked
+    terms = index.real_terms(tokens)
+    terms = {w for w in terms if w not in bm25.STOP_WORDS} or terms
+    shared = terms & set(top.tokens)
+    # A word in more than half of the units is never informative, whatever the cut.
+    cap = index.n // 2
+    informative = min(index.df_cut(GATE_INFORMATIVE_MASS), cap)
+    rare = min(index.df_cut(GATE_RARE_MASS), cap)
+    if sum(1 for w in shared if index.df[w] <= informative) >= GATE_MIN_WORDS:
+        return ranked
+    if terms and all(w in shared and index.df[w] <= rare for w in terms):
+        return ranked
+    return RankResult(ranked.mode, [], ranked.pool_size)
 
 
 def collapse_to_files(
@@ -573,13 +615,15 @@ class RankIndex:
         shared_roots: Iterable[str] = (),
         include_mined: bool = False,
         target: str = "",
+        gate: bool = False,
     ) -> RankResult:
         """Rank the pool of section 8.1 for ``query``. No database access.
 
         Hybrid when ``query_vector`` is given and at least one pool row has a
         vector of the index model with the same dim; keyword-only otherwise.
         ``target`` is the text of the tool target (a path or a command): it takes part in the
-        label boost only, never in the keyword score (NOBLIVION-104).
+        label boost only, never in the keyword score (NOBLIVION-104). ``gate`` applies the keyword
+        gate (``keyword_gate``) to a keyword-only answer; the prompt index asks for it.
         """
         snap = self._snap
         key = self.pool_key(project, root, shared_roots, include_mined)
@@ -590,11 +634,11 @@ class RankIndex:
         tokens = bm25.tokenize(query)
         scores = index.scores(tokens)
         matched = index.matches(tokens)
+        named = {*tokens, *bm25.tokenize(target)}
         if any(u.labels for u in units):
             # NOBLIVION-104: a label that the query or the target names adds a bounded boost to
             # the score of a file. It does not make a file a keyword match: a file that holds no
             # query word stays out, as before.
-            named = {*tokens, *bm25.tokenize(target)}
             per_file: dict[int, float] = {}
             boosts = [
                 per_file.setdefault(u.id, label_boost(u.labels, named)) if u.labels else 0.0
@@ -605,7 +649,8 @@ class RankIndex:
         cosines = self._cosines(snap, key, units, query_vector) if query_vector else {}
         # Rank every unit, then keep the best unit of each file (NOBLIVION-103).
         ranked = rank_pool(units, scores, cosines, len(units), matched)
-        return collapse_to_files(ranked, units, cosines, top_k, n_files)
+        collapsed = collapse_to_files(ranked, units, cosines, top_k, n_files)
+        return keyword_gate(collapsed, index, tokens, named) if gate else collapsed
 
 
 class Ranker:
@@ -639,6 +684,7 @@ class Ranker:
         shared_roots: Iterable[str] = (),
         include_mined: bool = False,
         target: str = "",
+        gate: bool = False,
     ) -> RankResult:
         model_id = self.embedding.model_id if self.embedding is not None else None
         if np is None:
@@ -657,4 +703,5 @@ class Ranker:
             shared_roots=shared_roots,
             include_mined=include_mined,
             target=target,
+            gate=gate,
         )

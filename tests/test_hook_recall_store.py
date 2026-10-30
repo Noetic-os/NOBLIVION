@@ -530,6 +530,27 @@ def test_end_to_end_keyword_store(rh, tmp_path):
     assert ":floor_off:keyword" in _log(env)
 
 
+def test_the_index_route_gates_a_keyword_answer_and_the_search_route_does_not(tmp_path):
+    # NOBLIVION-153. 24 notes make a pool of 24 units or more, where an idf says something.
+    folder = _memory_folder(tmp_path)
+    for n in range(24):
+        write_memory(folder, f"note {n:02d}", f"Topic {n:02d}.", f"A common filler fact {n:02d}.")
+    write_memory(folder, "fern care", "Water the fern weekly.", "The fern likes shade and filler.")
+    service = embedding.EmbeddingService(embedding.EmbeddingSettings(backend="none"))
+    run = Running(make_store(tmp_path, embedding_service=service))
+    try:
+        assert wait_for(lambda: run.store.index_state == store.INDEX_IDLE)
+        index = "/api/memories/index?project=claude_code&top_k=5&root=" + ROOT
+        status, body = run.get(index + "&q=filler")
+        assert status == 200 and body["mode"] == "keyword" and body["results"] == []
+        status, body = run.get(index + "&q=fern+shade")
+        assert [r["title"] for r in body["results"]] == ["fern care"]
+        status, body = run.get("/api/memories/search?project=claude_code&top_k=5&q=filler")
+        assert status == 200 and body["results"]
+    finally:
+        run.stop()
+
+
 # -- a hybrid answer over a pool where most rows have no vector (NOBLIVION-49) --------------
 
 NO_VECTOR = "unembeddable"  # the fake embedder fails on a text that holds this word

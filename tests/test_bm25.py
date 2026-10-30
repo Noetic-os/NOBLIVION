@@ -103,6 +103,41 @@ def test_a_stop_word_is_not_a_match():
     assert index.scores(["the"])[1] > 0
 
 
+def _stop_word_pool(n_docs: int):
+    docs = [f"note{i} about the general topic" for i in range(n_docs)]
+    docs[0] += " until the cache is warm"
+    docs[1] += " the pump runs until noon"
+    return bm25.BM25([bm25.tokenize(d) for d in docs])
+
+
+def test_a_rare_stop_word_is_a_match_in_a_large_pool():
+    # NOBLIVION-82. "until" is a stop word, and in 2 of 60 notes it names the topic.
+    index = _stop_word_pool(60)
+    assert index.real_terms(["until"]) == {"until"}
+    assert [i for i, hit in enumerate(index.matches(["until"])) if hit] == [0, 1]
+    # "the" is in every note: still not a term.
+    assert index.real_terms(["the", "until"]) == {"until"}
+    assert index.matches(["the"]) == [False] * 60
+
+
+def test_a_stop_word_is_no_term_in_a_pool_too_small_for_a_share():
+    index = _stop_word_pool(10)  # 2 of 10 notes is over 1/20
+    assert index.real_terms(["until"]) == set()
+    assert index.matches(["until"]) == [False] * 10
+
+
+def test_df_cut_is_where_the_word_uses_reach_the_mass():
+    # 40 documents: a word of its own in each (40 uses, df 1), "mid" in 10 (30 uses, df 10),
+    # "all" in every one (200 uses, df 40). 270 uses: 10% is 27, 50% is 135.
+    docs = [[f"u{i}"] + (["mid"] * 3 if i < 10 else []) + ["all"] * 5 for i in range(40)]
+    index = bm25.BM25(docs)
+    assert index.df["mid"] == 10 and index.df["all"] == 40
+    assert index.df_cut(0.1) == 1
+    assert index.df_cut(0.5) == 40
+    assert index.df_cut(0.25) == 10
+    assert bm25.BM25([]).df_cut(0.5) == 0
+
+
 def test_the_stop_words_are_tokens_of_the_tokenizer():
     assert bm25.STOP_WORDS
     for word in bm25.STOP_WORDS:

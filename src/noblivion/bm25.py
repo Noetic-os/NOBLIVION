@@ -49,6 +49,10 @@ STOP_WORDS = frozenset(
 )
 
 
+# A stop word counts as a real term when it is in at most 1/20 of the documents.
+STOP_WORD_RARE_SHARE_DIV = 20
+
+
 def tokenize(text: str) -> list[str]:
     """The tokenizer of the reference store: lower case, split on every
     character that is not ``a-z 0-9 _ . - /``, keep tokens of 2 or more
@@ -77,7 +81,7 @@ class BM25:
     cannot change the scores inside it.
     """
 
-    __slots__ = ("idf", "tf", "dl", "avgdl", "n", "k1", "b")
+    __slots__ = ("idf", "df", "tf", "dl", "avgdl", "n", "k1", "b", "_cuts")
 
     def __init__(
         self,
@@ -89,12 +93,14 @@ class BM25:
         self.k1 = k1
         self.b = b
         self.n = len(corpus_tokens)
+        self._cuts: dict[float, int] = {}
         self.tf = [Counter(doc) for doc in corpus_tokens]
         self.dl = [len(doc) for doc in corpus_tokens]
         self.avgdl = (sum(self.dl) / self.n) if self.n else 0.0
         df: Counter[str] = Counter()
         for counts in self.tf:
             df.update(counts.keys())
+        self.df = df
         idf: dict[str, float] = {}
         total = 0.0
         negative: list[str] = []
@@ -127,10 +133,48 @@ class BM25:
         """One score per document, in corpus order."""
         return [self.score(query_tokens, i) for i in range(self.n)]
 
+    def real_terms(self, query_tokens: Sequence[str]) -> set[str]:
+        """The query tokens of the corpus that can make a document a match: every
+        token that is not in STOP_WORDS, and a stop word that is rare here (in at
+        most 1/``STOP_WORD_RARE_SHARE_DIV`` of the documents). Such a word names a
+        topic in a pool where few documents use it, so a query for "until" finds
+        its note (NOBLIVION-82). A pool too small for the share has none."""
+        words = set(query_tokens) & self.idf.keys()
+        return {
+            w
+            for w in words
+            if w not in STOP_WORDS or self.df[w] * STOP_WORD_RARE_SHARE_DIV <= self.n
+        }
+
     def matches(self, query_tokens: Sequence[str]) -> list[bool]:
         """One flag per document, in corpus order: True when the document
-        holds a query token that is not in STOP_WORDS. The score cannot say
+        holds a real term of the query (``real_terms``). The score cannot say
         this: a token in exactly half of the documents has an idf of 0, so it
         adds 0 to the score."""
-        words = (set(query_tokens) - STOP_WORDS) & self.idf.keys()
+        words = self.real_terms(query_tokens)
         return [any(word in tf for word in words) for tf in self.tf]
+
+    def df_cut(self, mass: float) -> int:
+        """The document frequency at which the words up to it hold ``mass`` of
+        all word uses in the corpus (0 to 1). It is the median at 0.5: a word
+        at or under that frequency has a higher idf than half of the running
+        text. A median over the distinct words would sit at 2 documents, because
+        a quarter of the words are in one document (paths, hashes), and would
+        reject every word of a normal query."""
+        cached = self._cuts.get(mass)
+        if cached is not None:
+            return cached
+        uses: Counter[int] = Counter()
+        for counts in self.tf:
+            for word, freq in counts.items():
+                uses[self.df[word]] += freq
+        total = sum(uses.values())
+        seen = 0
+        cut = 0
+        for frequency in sorted(uses):
+            seen += uses[frequency]
+            cut = frequency
+            if seen >= mass * total:
+                break
+        self._cuts[mass] = cut
+        return cut

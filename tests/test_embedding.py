@@ -14,6 +14,7 @@ import math
 import os
 import sqlite3
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -205,6 +206,55 @@ def test_model_change_triggers_reembed_and_drops_old_vectors(conn):
     assert set(vectors(conn)) == {(a, "fake:new")}
     assert db.get_meta(conn, "embed_model") == "new"
     assert embedding.needs_reembed(conn, new) is False
+
+
+def test_the_start_embeds_one_query_before_the_state_is_ready(conn):
+    # NOBLIVION-153. The first embed of a loaded model is slow; it runs in the start, so the
+    # first prompt query is not the one to pay for it.
+    embedder = FakeEmbedder()
+    service = embedding.EmbeddingService(embedding.EmbeddingSettings(), factory=lambda *a: embedder)
+    assert service.start(conn) in ("ready", "reembedding")
+    assert embedder.queries == [embedding.WARM_UP_TEXT]
+    assert service.model_id == "fake:fake-model"
+
+
+def test_the_first_prompt_after_a_start_embeds_inside_the_query_time(conn):
+    # NOBLIVION-153. The model needs 0.4 s for its first embed and is fast after it. Without the
+    # warm-up the first prompt query runs over its 0.15 s limit and the answer is keyword-only.
+    class FirstEmbedSlow(FakeEmbedder):
+        def embed_query(self, text):
+            if not self.queries:
+                time.sleep(0.4)
+            return super().embed_query(text)
+
+    service = embedding.EmbeddingService(
+        embedding.EmbeddingSettings(), factory=lambda *a: FirstEmbedSlow()
+    )
+    service.start(conn)
+    assert service.embed_query("first prompt", 0.15) is not None
+    service.close()
+
+
+def test_a_failed_warm_up_does_not_fail_the_load(conn):
+    class SlowFirstEmbed(FakeEmbedder):
+        def embed_query(self, text):
+            raise RuntimeError("first embed failed")
+
+    service = embedding.EmbeddingService(
+        embedding.EmbeddingSettings(), factory=lambda *a: SlowFirstEmbed()
+    )
+    assert service.start(conn) in ("ready", "reembedding")
+    assert service.model_id == "fake:fake-model"
+
+
+def test_the_start_sends_no_warm_up_to_a_remote_backend(conn):
+    class Remote(FakeEmbedder):
+        remote = True
+
+    embedder = Remote()
+    service = embedding.EmbeddingService(embedding.EmbeddingSettings(), factory=lambda *a: embedder)
+    service.start(conn)
+    assert embedder.queries == []
 
 
 def test_service_reports_reembedding_then_ready(conn):
@@ -655,7 +705,8 @@ def test_a_local_backend_never_reads_the_consent(conn, remote, monkeypatch):
         assert service.embed_query("alpha", conn=conn) is not None
         assert service.consent_state(conn) == "not_needed"
         service.close()
-    assert len(remote.requests) == 2  # the loopback Ollama server got both calls
+    # The loopback Ollama server got the warm-up of the start, the backfill and the query.
+    assert len(remote.requests) == 3
 
 
 # -- HTTP backends against a fake loopback server ----------------------------------------

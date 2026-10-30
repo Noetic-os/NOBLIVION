@@ -377,7 +377,7 @@ def test_hybrid_search_with_a_fake_model(conn):
     assert result.mode == "hybrid"
     assert result.hits[0].row.id == ids["tests"]
     assert all(h.score is not None for h in result.hits)
-    assert embedder.queries == ["pytest venv python"]
+    assert embedder.queries == [embedding.WARM_UP_TEXT, "pytest venv python"]
 
 
 def half_pool(conn):
@@ -497,7 +497,7 @@ def test_keyword_only_without_numpy(conn, monkeypatch):
     monkeypatch.setattr(ranking, "np", None)
     result = ranking.Ranker(service).search(conn, "deploy", project="claude_code", top_k=5)
     assert result.mode == "keyword"
-    assert embedder.queries == []
+    assert embedder.queries == [embedding.WARM_UP_TEXT]  # the start's warm-up only
 
 
 def test_keyword_only_when_the_query_embed_is_too_slow(conn):
@@ -555,3 +555,96 @@ def test_ranker_switches_the_index_model(conn):
 
 def test_tokenizer_matches_the_store_leg():
     assert bm25.tokenize("tests_use_venv") == ["tests_use_venv"]
+
+
+# -- the keyword gate (NOBLIVION-153) ----------------------------------------------------
+
+
+def _gate_pool(labelled: str = "ticket-1"):
+    """40 units. A word of its own in each (``u<i>``, df 1), ``mid`` and ``mid2`` in the first
+    10 (df 10), ``all`` in every one (df 40), and a label on unit 5. With these counts a word
+    is informative at df 20 or less (half of 40 units caps the cut) and rare at df 1."""
+    docs = [
+        [f"u{i}"] + (["mid"] * 2 + ["mid2"] * 2 if i < 10 else []) + ["all"] * 5 for i in range(40)
+    ]
+    rows = [
+        ranking.PoolRow(
+            id=i,
+            project="claude_code",
+            root="r",
+            path=f"n{i}.md",
+            source_type=db.SOURCE_MD,
+            content="",
+            weight=1.0,
+            tokens=tuple(tokens),
+            labels=(labelled,) if i == 5 else (),
+        )
+        for i, tokens in enumerate(docs)
+    ]
+    return rows, bm25.BM25(docs)
+
+
+def _gate(query: str, top: int, mode: str = ranking.MODE_KEYWORD, rows=None, index=None):
+    if rows is None:
+        rows, index = _gate_pool()
+    hit = ranking.Hit(1, rows[top], None, 0.016, 1.0)
+    tokens = bm25.tokenize(query)
+    return ranking.keyword_gate(ranking.RankResult(mode, [hit], len(rows)), index, tokens, tokens)
+
+
+def test_the_gate_drops_the_rows_for_one_ordinary_shared_word():
+    assert _gate("mid", 0).hits == []
+    assert _gate("mid and some other words", 0).hits == []
+
+
+def test_the_gate_keeps_the_rows_for_two_informative_words():
+    assert len(_gate("mid mid2", 0).hits) == 1
+
+
+def test_the_gate_keeps_the_rows_for_one_rare_word_alone():
+    assert len(_gate("u3", 3).hits) == 1
+    # Words that the pool does not hold do not count against it.
+    assert len(_gate("please explain u3 xyzzy", 3).hits) == 1
+
+
+def test_the_gate_drops_the_rows_for_a_rare_word_next_to_a_common_one():
+    # "all" is in every unit: it is a term of the query that the pool knows, and it is not rare.
+    assert _gate("u3 all", 3).hits == []
+    # A rare word that the top row does not hold gives no row either.
+    assert _gate("u3", 4).hits == []
+
+
+def test_the_gate_keeps_the_rows_for_a_label_named_by_the_query():
+    assert len(_gate("mid ticket-1", 5).hits) == 1
+    assert _gate("mid ticket-2", 5).hits == []
+
+
+def test_the_gate_does_not_count_a_stop_word_next_to_a_real_term():
+    rows, index = _gate_pool()
+    # "until" and "which" are stop words; each is rare here, in the first unit only.
+    tokens_in_top = ("until", "which", "mid")
+    rows[0] = ranking.PoolRow(**{**rows[0].__dict__, "tokens": rows[0].tokens + tokens_in_top})
+    index = bm25.BM25([list(r.tokens) for r in rows])
+    assert _gate("mid until which", 0, rows=rows, index=index).hits == []
+
+
+def test_the_gate_leaves_hybrid_answers_and_small_pools_alone():
+    assert len(_gate("mid", 0, mode=ranking.MODE_HYBRID).hits) == 1
+    rows, _ = _gate_pool()
+    small = rows[:19]
+    index = bm25.BM25([list(r.tokens) for r in small])
+    assert len(_gate("mid", 0, rows=small, index=index).hits) == 1
+
+
+def test_the_gate_is_applied_only_when_asked(conn):
+    for n in range(25):  # the gate needs a pool of 20 units or more
+        add_memory(conn, f"note_{n:02d}", f"common filler text alpha{n} beta{n}")
+    add_memory(conn, "fern_care", "water the fern weekly in shade")
+    index = ranking.RankIndex()
+    index.refresh(conn)
+    # "filler" is in 25 of 26 notes: one shared ordinary word.
+    plain = index.rank("filler", project="claude_code", top_k=5)
+    assert plain.mode == "keyword" and plain.hits
+    gated = index.rank("filler", project="claude_code", top_k=5, gate=True)
+    assert gated.mode == "keyword" and gated.hits == []
+    assert index.rank("fern", project="claude_code", top_k=5, gate=True).hits

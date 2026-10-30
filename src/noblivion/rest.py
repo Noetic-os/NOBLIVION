@@ -721,6 +721,7 @@ class Handler(BaseHTTPRequestHandler):
             include_mined=include_mined,
             session_id=first(params, "session_id"),
             target=first(params, "target")[:MAX_Q_CHARS],
+            gate=True,
         )
         trust = None
         if result is not None and store.store_settings.trust_ranking in ("shadow", "on"):

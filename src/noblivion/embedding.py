@@ -83,6 +83,9 @@ QUERY_PREFIXES = {
     "BAAI/bge-large-en-v1.5": "Represent this sentence for searching relevant passages: ",
 }
 
+# The text of the warm-up embed (``EmbeddingService.start``). It is a fixed word list, no user text.
+WARM_UP_TEXT = "warm up"
+
 STATE_NONE = "none"
 STATE_LOADING = "loading"
 STATE_READY = "ready"
@@ -869,6 +872,7 @@ class EmbeddingService:
                     self.state = STATE_NONE
                     return self.state
                 embedder.load()
+                self._warm(embedder)
             except Exception as exc:  # noqa: BLE001 - any fault means keyword mode
                 self.embedder = None
                 self.state = STATE_FAILED
@@ -890,6 +894,20 @@ class EmbeddingService:
             self._no_consent = False
             self.state = STATE_REEMBEDDING if needs_reembed(conn, embedder) else STATE_READY
             return self.state
+
+    @staticmethod
+    def _warm(embedder: Embedder) -> None:
+        """One throw-away query embed before the state is ``ready`` (NOBLIVION-153). The
+        first embed of a loaded model builds its runtime buffers and can take longer than
+        ``QUERY_TIMEOUT_S``, so the first prompt after a start ranked by keyword only. A
+        backend that sends text off the machine is not called: it needs a consent read, and
+        the text is a prompt. A fault here is not a load fault: the next embed tries again."""
+        if embedder.remote:
+            return
+        try:
+            embedder.embed_query(WARM_UP_TEXT)
+        except Exception as exc:  # noqa: BLE001 - the model is loaded; only the warm-up failed
+            log.warning("embedding warm-up failed (%s)", type(exc).__name__)
 
     def _retry_waits(self, conn: sqlite3.Connection) -> bool:
         """True while ``start`` makes no new attempt after a failed load: the

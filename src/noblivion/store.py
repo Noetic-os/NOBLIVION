@@ -311,8 +311,10 @@ class Store:
         include_mined: bool = False,
         session_id: str = "",
         target: str = "",
+        gate: bool = False,
     ) -> ranking.RankResult | None:
-        """Rank for a read route; None on an internal fault (logged, no text)."""
+        """Rank for a read route; None on an internal fault (logged, no text).
+        ``gate`` is the keyword relevance gate of the prompt index (NOBLIVION-153)."""
         try:
             with self.connection() as conn:
                 from noblivion.learning_runtime import use_allowed
@@ -328,6 +330,7 @@ class Store:
                     shared_roots=self.store_settings.shared_roots,
                     include_mined=include_mined,
                     target=target,
+                    gate=gate,
                 )
                 # Shared roots have their own use controls. Filter against
                 # live state even when the ranker's snapshot is warm.

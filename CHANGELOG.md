@@ -8,6 +8,19 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Keyword-only mode shows rows only when the top row is relevant, and the embedder is warm at the first
+  prompt (NOBLIVION-153, takes in NOBLIVION-97 and NOBLIVION-82). Without a cosine no floor can judge a
+  row, so every prompt with one non-stop word got its five rows. The prompt index now keeps the rows only
+  when the top row holds 2 informative words of the query (document frequency at or under the point where
+  the words hold half of all word uses), or when every term of the query that the pool knows is rare (the
+  rarest tenth of the word uses) and in the top row, or when the query names a label of the top row.
+  A pool under 20 units passes. The search route and hybrid answers are not changed. The store also embeds
+  one throw-away query after its model loads and before it reports `ready`, so the first prompt after a
+  start does not run over the 1 s query limit and fall back to keyword. A stop word that is in at most
+  1/20 of the notes now counts as a match term, so a note whose key word is `until` or `between` is
+  found. Measure on a copy of one install store (4,346 units): 20 generic off-topic prompts showed rows
+  on 20 of 20 before and 5 of 20 after; 50 dev-split real prompts kept the relevant row in the top 5 on
+  22 of 24 where it was there before. The target of at most 2 of 20 is not reached.
 - Remove the transcript miner (NOBLIVION-154). The SessionEnd hook, the Codex SessionEnd mine step, the
   `noblivion mine` command, its documentation page and its settings table are gone. Error recall no longer
   asks the store for mined rows, so `fused` and `store` modes show memory files only. The measure: a
