@@ -225,6 +225,26 @@ def test_off_unless_the_variable_is_set(world):
     assert not cache.exists()
 
 
+def test_the_default_environment_gives_no_briefing_on_any_source(world):
+    """NOBLIVION-150: the continuity briefing is off unless it is asked for."""
+    mem, cache, env = world
+    for name in [n for n in env if n.startswith("NOBLIVION_CONTINUITY")]:
+        env.pop(name)
+    assert ch.is_on(env) is False
+    for source in ("startup", "resume", "clear", "compact"):
+        assert ch.run(_event("SessionStart", source=source), env, index=_no_daemon) == ""
+
+
+def test_a_warm_resume_gets_no_briefing_and_a_cold_one_does(world):
+    mem, cache, env = world
+    warm = _event("SessionStart", sid="warm", source="resume", prompt_cache_likely_expired=False)
+    assert ch.run(warm, env, index=_no_daemon) == ""
+    assert "warm_resume" in _log(cache)
+    assert ch.run(_event("SessionStart", sid="bare", source="resume"), env, index=_no_daemon) == ""
+    cold = _event("SessionStart", sid="cold", source="resume", prompt_cache_likely_expired=True)
+    assert "Work in a git worktree" in ch.run(cold, env, index=_no_daemon)
+
+
 def test_process_exits_0_and_is_silent_on_bad_input(world):
     mem, cache, env = world
     for stdin in ("", "not json", "[1]", '{"hook_event_name": "Stop"}'):
@@ -345,7 +365,7 @@ def test_a_daemon_failure_falls_back_to_recency_after_one_call(world):
 def test_briefing_is_served_once_per_session_id(world):
     mem, cache, env = world
     assert ch.run(_event("SessionStart", source="startup"), env, index=_no_daemon)
-    assert ch.run(_event("SessionStart", source="resume"), env, index=_no_daemon) == ""
+    assert ch.run(_event("SessionStart", source="clear"), env, index=_no_daemon) == ""
     assert "already_briefed" in _log(cache)
     assert ch.run(_event("SessionStart", "sess-2", source="clear"), env, index=_no_daemon)
 

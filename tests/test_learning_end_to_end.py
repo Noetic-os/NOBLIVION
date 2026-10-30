@@ -130,13 +130,15 @@ def test_capture_to_background_memory_to_independent_recall(tmp_path):
         assert statement in json.dumps(summary)
         (st.data_dir / "learning-client.json").write_text(json.dumps(client))
 
-        def hook_summary(client_kind, session_id="fresh-session", cwd=None):
+        def hook_summary(client_kind, session_id="fresh-session", cwd=None, **extra):
             env = {"NOBLIVION_DATA_DIR": str(st.data_dir)}
             env.update(NOBLIVION_RECALL_PROJECT=namespace, NOBLIVION_RECALL_ROOT=root)
             result = subprocess.run(
                 [sys.executable, str(Path(client["repo_root"]) / "hooks/learning_summary.py")]
                 + (["--codex"] if client_kind == "codex" else []),
-                input=json.dumps({**event, "session_id": session_id, "cwd": cwd or event["cwd"]}),
+                input=json.dumps(
+                    {**event, "session_id": session_id, "cwd": cwd or event["cwd"], **extra}
+                ),
                 text=True,
                 capture_output=True,
                 env=env,
@@ -148,6 +150,13 @@ def test_capture_to_background_memory_to_independent_recall(tmp_path):
         for kind in ("codex", "claude"):
             assert statement in hook_summary(kind)
         assert hook_summary("claude", cwd=str(tmp_path / "unmapped")) == ""
+        # NOBLIVION-150: a warm resume holds the summary already; a cold one does not.
+        assert hook_summary("claude", source="resume") == ""
+        assert hook_summary("claude", source="resume", prompt_cache_likely_expired=False) == ""
+        assert statement in hook_summary(
+            "claude", source="resume", prompt_cache_likely_expired=True
+        )
+        assert statement in hook_summary("claude", source="compact")
         for flags in ({"use": False}, {"sessions": {"fresh-session": {"use": False}}}):
             (st.data_dir / "learning-client.json").write_text(
                 json.dumps({**client, "learning": {**client["learning"], **flags}})

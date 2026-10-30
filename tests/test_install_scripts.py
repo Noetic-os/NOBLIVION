@@ -361,6 +361,28 @@ def test_session_start_prints_the_notice_only_under_the_plugin(tmp_path):
         assert (expect in proc.stdout) if expect else proc.stdout == ""
 
 
+def test_the_session_start_notice_is_a_system_message_with_no_model_context(tmp_path):
+    """NOBLIVION-150: the setup notice is for the user, so it adds no model tokens."""
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(tmp_path),
+        "NOBLIVION_DATA_DIR": str(tmp_path / "data"),
+        "CLAUDE_PLUGIN_ROOT": str(ROOT),
+    }
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "hooks" / "store_client.py")],
+        input="{}",
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+        check=False,
+    )
+    doc = json.loads(proc.stdout)
+    assert list(doc) == ["systemMessage"]
+    assert "not installed" in doc["systemMessage"] and "/noblivion:setup" in doc["systemMessage"]
+
+
 # ── the venv's install stamp (a terminal command finds the plugin) ──────────
 
 

@@ -522,7 +522,9 @@ def main(
             )
         )
     elif lines:
-        print(lines[0])
+        # A notice for the user only: systemMessage adds no model context
+        # (NOBLIVION-150).
+        print(json.dumps({"systemMessage": lines[0]}))
     return 0
 
 

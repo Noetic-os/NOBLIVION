@@ -26,6 +26,9 @@ def load(path: Path, name: str):
 def run(event: dict, environ: dict, *, codex: bool = False) -> dict:
     if event.get("hook_event_name") != "SessionStart" or not event.get("session_id"):
         return {}
+    # A resume with a warm prompt cache holds the summary already (NOBLIVION-150).
+    if event.get("source") == "resume" and event.get("prompt_cache_likely_expired") is not True:
+        return {}
     root = Path(__file__).resolve().parents[1]
     env = dict(environ)
     # Codex supplies its already resolved scope. Claude resolves the same

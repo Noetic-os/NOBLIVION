@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""SessionStart hook: at most two short lines about memory upkeep.
-Part H of the adaptive memory trust work, and the dedup status.
+"""SessionStart hook: at most two short lines about memory upkeep for the user.
+Part H of the adaptive memory trust work, and the dedup status. The lines go
+out as one ``systemMessage`` (the user sees them, the model does not), so they
+cost no model tokens (NOBLIVION-150).
 
 It reads two local files only. No daemon call, no memory folder scan; the work
 is two small JSON reads (well under 5 ms):
@@ -12,11 +14,12 @@ is two small JSON reads (well under 5 ms):
 - the dedup status file (contract C4; ``NOBLIVION_DEDUP_STATUS_FILE``, default
   ``<data dir>/cache/dedup-last-run.json``, written by every ``noblivion dedup``
   plan, apply and undo) -> for example
-  ``Memory dedup: N merged on <date>, M proposals``
+  ``Memory dedup REFUSED on <date>, nothing merged: <reason>``
 
 A missing or unreadable file gives no line. A line whose counts are all zero is
-not printed either: it would ask for an action that has nothing to act on, and
-SessionStart text is re-sent on every later call of the session. A dry run
+not printed either: it would ask for an action that has nothing to act on. A
+finished run that merged pairs gives no line: it asks for no action and its
+date goes stale (NOBLIVION-150). A dry run
 and a plan say so and name the next command; each line names the date of the
 run. A refused run (C4 "outcome": "refused") gives ``Memory dedup REFUSED on
 <date>, nothing merged: <reason>``, except for a ``refused_code`` in
@@ -130,7 +133,7 @@ def dedup_line(doc: Any, now: Optional[_dt.datetime] = None) -> str:
             f"Memory dedup dry run {when}: {pairs} candidate pairs, nothing sent. "
             "Run noblivion dedup plan to judge them"
         )
-    merged, proposals = _count(doc.get("merged")), _count(doc.get("proposals"))
+    proposals = _count(doc.get("proposals"))
     if doc.get("mode") == "plan":
         run = _safe(doc.get("run_id") or "")
         if not proposals or not run:
@@ -139,9 +142,7 @@ def dedup_line(doc: Any, now: Optional[_dt.datetime] = None) -> str:
             f"Memory dedup plan {run} {when}: {proposals} merge proposals. "
             f"Read the plan, then run noblivion dedup apply {run}"
         )
-    if merged is None or proposals is None or not (merged or proposals):
-        return ""
-    return f"Memory dedup: {merged} merged {when}, {proposals} proposals"
+    return ""  # a finished run: nothing to act on (NOBLIVION-150)
 
 
 def _when(doc: Mapping[str, Any]) -> str:
@@ -182,7 +183,7 @@ def main(stdin=None, stdout=None, environ: Optional[Mapping[str, str]] = None) -
         out = lines(env)
         if out:
             w = stdout or sys.stdout
-            w.write("\n".join(out) + "\n")
+            w.write(json.dumps({"systemMessage": "\n".join(out)}) + "\n")
             w.flush()
     except Exception:  # noqa: BLE001, S110 - a hook fails open
         pass

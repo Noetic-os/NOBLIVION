@@ -24,7 +24,8 @@ SessionStart, source ``compact``
     does not depend on what the summary kept.
 
 SessionStart, source ``startup``, ``resume``, ``clear`` (and ``fork``)
-    Prints a briefing: one header line and at most 2 DECISION, 2 OPEN and 1
+    Prints a briefing (not on a ``resume`` unless the hook input has
+    ``prompt_cache_likely_expired`` true: the resumed context holds it): one header line and at most 2 DECISION, 2 OPEN and 1
     TRAP rows (standing decisions, open work, live traps), within
     ``BRIEF_MAX_CHARS`` characters (1,500; ``NOBLIVION_CONTINUITY_MAX_CHARS``
     sets it, 500 to 2,000). Once per session id. Each quota is
@@ -714,6 +715,12 @@ def briefing(
     return "\n".join([BRIEF_HEADER] + lines), rows, status
 
 
+def warm_resume(event: Mapping[str, Any]) -> bool:
+    """True for a ``resume`` whose prompt cache is still warm: the resumed
+    context holds the briefing already (NOBLIVION-150)."""
+    return event.get("source") == "resume" and event.get("prompt_cache_likely_expired") is not True
+
+
 def session_start(
     event: Mapping[str, Any],
     env: Mapping[str, str],
@@ -723,6 +730,8 @@ def session_start(
         return after_compact(event, env)
     if not _flag(env, BRIEFING_ENV, True):
         return "", 0, "briefing_off"
+    if warm_resume(event):
+        return "", 0, "warm_resume"
     cache = cache_dir(env)
     sid = event.get("session_id")
     state = load_state(cache, sid)

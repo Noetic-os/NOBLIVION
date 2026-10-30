@@ -71,6 +71,15 @@ All notable changes to NOBLIVION. The format follows
     whose name holds create or add with issue, ticket or comment. It started on every Bash and MCP
     call before. If you set `recall.nudge_commands` to other commands, the `if` rules in
     `hooks/hooks.json` still limit it to those merge commands.
+- Session start: lower the model context that the hooks add (NOBLIVION-150). The setup notice of
+  `store_client.py` and the memory upkeep lines of `trust_session_line.py` now go out as a
+  `systemMessage` (the user sees them, the model does not). The finished-run line
+  `Memory dedup: N merged on <date>` is gone: it asked for no action and went stale. On a `resume`
+  with a warm prompt cache, `continuity_hook.py` and `learning_summary.py` add nothing, because the
+  resumed context holds them. They still run when `prompt_cache_likely_expired` is true, and after a
+  compaction. The continuity briefing stays off unless `NOBLIVION_CONTINUITY` is set. Count in the
+  recorded session starts of one host: 45,000 characters of notices and 11,000 characters of resume
+  briefings and summaries (about 14k tokens in all, before re-send) no longer reach the model.
 
 ## 0.1.18 - 2026-10-29
 

@@ -79,13 +79,14 @@ REPORT = {
 DEDUP = {
     "stamp": "s",
     "finished_at": "2026-10-02T03:10:00+00:00",
-    "mode": "apply",
-    "merged": 4,
-    "proposals": 2,
-    "refused": 1,
+    "mode": "dry-run",
+    "pairs": 4,
 }
 TRUST_LINE = "Memory trust: 2 to retire, 1 to promote, 0 to demote. Run noblivion trust report"
-DEDUP_LINE = "Memory dedup: 4 merged on 2026-10-02, 2 proposals"
+DEDUP_LINE = (
+    "Memory dedup dry run on 2026-10-02: 4 candidate pairs, nothing sent. "
+    "Run noblivion dedup plan to judge them"
+)
 
 
 @pytest.fixture
@@ -147,7 +148,8 @@ def test_fix_count_shows_only_when_there_is_one(files):
 
 def test_a_dry_run_and_a_plan_say_so_and_every_line_names_its_date():
     old = {"mode": "apply", "merged": 3, "proposals": 0, "finished_at": "2026-09-28T03:00:00Z"}
-    assert sl.dedup_line(old, NOW) == "Memory dedup: 3 merged on 2026-09-28, 0 proposals"
+    assert sl.dedup_line(old, NOW) == ""  # a finished run is stale text (NOBLIVION-150)
+    assert sl.dedup_line(dict(old, proposals=2), NOW) == ""
     dry = {"mode": "dry-run", "pairs": 5, "finished_at": "2026-10-02T03:00:00Z"}
     assert sl.dedup_line(dry, NOW) == (
         "Memory dedup dry run on 2026-10-02: 5 candidate pairs, nothing sent. "
@@ -171,7 +173,16 @@ def test_compact_prints_nothing_and_startup_prints_the_lines(files):
     assert out.getvalue() == ""
     startup = json.dumps({"hook_event_name": "SessionStart", "source": "startup"})
     assert sl.main(io.StringIO(startup), out, files) == 0
-    assert out.getvalue().count("\n") == 2
+    assert json.loads(out.getvalue()) == {"systemMessage": TRUST_LINE + "\n" + DEDUP_LINE}
+
+
+def test_a_finished_merge_run_gives_no_line_and_no_output(files):
+    done = {"mode": "apply", "merged": 2, "proposals": 0, "finished_at": "2026-10-14T03:00:00Z"}
+    Path(files[DEDUP_ENV]).write_text(json.dumps(done))
+    Path(files[TRUST_ENV]).write_text("{}")
+    out = io.StringIO()
+    assert sl.main(io.StringIO('{"source": "startup"}'), out, files) == 0
+    assert out.getvalue() == ""
 
 
 def test_the_hook_takes_under_5_ms(files):
@@ -193,7 +204,8 @@ def test_the_hook_as_a_subprocess_exits_0_and_prints_the_lines(files):
         timeout=30,
     )
     assert r.returncode == 0 and r.stderr == ""
-    assert r.stdout.splitlines() == [TRUST_LINE, DEDUP_LINE]
+    # User only: one systemMessage and no model context (NOBLIVION-150).
+    assert json.loads(r.stdout) == {"systemMessage": TRUST_LINE + "\n" + DEDUP_LINE}
 
 
 # a refused nightly sweep (status file "outcome": "refused") ---------------
