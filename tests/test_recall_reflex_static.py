@@ -19,10 +19,10 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 SKILL = ROOT / "skills" / "recall-first" / "SKILL.md"
 
-# Characters of the compact JSON of the tool list at origin/main (before this ticket), and the
-# growth that the named moments may cost: about 30 tokens, paid on every turn.
-OLD_TOOL_LIST_CHARS = 2385
-TOOL_LIST_GROWTH_MAX = 130
+# Characters of the compact JSON of the tool list. It was 2,457 before NOBLIVION-161, which
+# shortened every description; the ceiling holds that cut, because the list is paid on every turn.
+OLD_TOOL_LIST_CHARS = 1850
+TOOL_LIST_GROWTH_MAX = 0
 RECALL_DESCRIPTION_MAX = 520
 REMEMBER_DESCRIPTION_MAX = 320
 INSTRUCTIONS_MAX = 330

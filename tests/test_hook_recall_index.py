@@ -445,7 +445,8 @@ _BODY = (
 def test_the_tool_advertises_fetch_id(daemon, env):
     out = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, env)
     schema = out["result"]["tools"][0]["inputSchema"]
-    assert schema["properties"]["fetch_id"]["type"] == "integer"
+    kinds = [alt["type"] for alt in schema["properties"]["fetch_id"]["anyOf"]]
+    assert kinds == ["integer", "array"]  # one id, or a list (NOBLIVION-161)
     assert schema["required"] == []
 
 

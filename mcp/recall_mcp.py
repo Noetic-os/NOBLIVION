@@ -9,8 +9,9 @@ This server is the explicit path: the model calls
 store route, same rendering, no session dedupe and no output cap beyond k.
 
 ``noblivion_recall(fetch_id=<n>)`` reads ONE memory in full, by the id a
-ranked-index line carries (``GET /api/memories/fetch/{id}``). Exactly one of
-``query`` and ``fetch_id`` per call. ``include_mined=true`` (design doc
+ranked-index line carries (``GET /api/memories/fetch/{id}``); a list of ids reads each
+(NOBLIVION-161). A query answer holds the full text of its first hit when that hit clearly
+leads. Exactly one of ``query`` and ``fetch_id`` per call. ``include_mined=true`` (design doc
 section 11.3) lists candidates from the ranked index with the
 transcript-mined rows included (``GET /api/memories/index?include_mined=1``);
 the model reads one with ``fetch_id``.
@@ -125,77 +126,60 @@ def _load_hook():
     return mod
 
 
+# NOBLIVION-161. The listing is paid on every call, so each text is short. The three reserved
+# fields stay in the schema: the PreToolUse hook adds them after the model's call, and this
+# server cannot prove here that Claude Code lets a field outside the schema through.
+RESERVED = "Set by the host hook. Omit."
+FETCH_LIST_MAX = 5
+
 TOOL_SCHEMA: Dict[str, Any] = {
     "name": TOOL_NAME,
     "description": (
-        "Search the local NOBLIVION memory store and return the matching memories as "
-        "data: one line per hit, '- [entity] title: body (score)'. Call it before you "
-        "write 'cannot verify', before a merge, before a restart of a shared service, "
-        "and before you file or comment on a ticket. "
-        "Pass fetch_id instead of query to read ONE memory in full, by the id "
-        "shown on a line of a GROUNDED MEMORY INDEX."
+        "Search NOBLIVION memory: one line per hit, and the full text of a clearly leading "
+        "top hit. Call it before you write 'cannot verify', merge, restart a shared service, "
+        "or file a ticket. Pass fetch_id (one id or a list) instead of query to read "
+        "memories in full."
     ),
     "inputSchema": {
         "type": "object",
         "properties": {
-            "query": {
-                "type": "string",
-                "description": "What to recall, free text (trimmed to 300 chars).",
-            },
+            "query": {"type": "string", "description": "Free text, 300 characters at most."},
             "k": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": K_MAX,
                 "default": K_DEFAULT,
-                "description": "Maximum number of hits.",
+                "description": "Most hits.",
             },
             "fetch_id": {
-                "type": "integer",
-                "minimum": 1,
-                "description": (
-                    "(R1): read one memory in full by its id, as "
-                    "shown on a GROUNDED MEMORY INDEX line. Use this OR query, "
-                    "not both."
-                ),
+                "anyOf": [
+                    {"type": "integer", "minimum": 1},
+                    {
+                        "type": "array",
+                        "items": {"type": "integer", "minimum": 1},
+                        "minItems": 1,
+                        "maxItems": FETCH_LIST_MAX,
+                    },
+                ],
+                "description": "Memory id, or a list of ids, from a row. Use instead of query.",
             },
             "chunk": {
                 "type": "integer",
                 "minimum": 0,
-                "description": (
-                    "With fetch_id: read one section of the memory, by the chunk number "
-                    "that a fetch of a long memory lists. A long memory comes back as its "
-                    "summary and the list of its sections when you pass neither chunk nor "
-                    "section."
-                ),
+                "description": "With one fetch_id: a section number from the section list.",
             },
             "section": {
                 "type": "string",
-                "description": (
-                    "With fetch_id: read the section of the memory that best matches these "
-                    "words (trimmed to 300 chars). Use this OR chunk."
-                ),
+                "description": "With one fetch_id: words that name a section.",
             },
             "include_mined": {
                 "type": "boolean",
                 "default": False,
-                "description": (
-                    "List candidates from the ranked index with the rows "
-                    "mined from past transcripts included (lower trust; "
-                    "they quote other sessions). Read one with fetch_id."
-                ),
+                "description": "Also list rows mined from past transcripts (lower trust).",
             },
-            "read_capability": {
-                "type": "string",
-                "description": "Reserved for the native host hook; omit this argument.",
-            },
-            "session_key": {
-                "type": "string",
-                "description": "Reserved for the native host hook; omit this argument.",
-            },
-            "agent_key": {
-                "type": "string",
-                "description": "Reserved for the native host hook; omit this argument.",
-            },
+            "read_capability": {"type": "string", "description": RESERVED},
+            "session_key": {"type": "string", "description": RESERVED},
+            "agent_key": {"type": "string", "description": RESERVED},
         },
         # `query` is not required, because a fetch has no
         # query. Exactly one of the two is required, which a JSON Schema this
@@ -209,11 +193,9 @@ TOOL_SCHEMA: Dict[str, Any] = {
 REMEMBER_SCHEMA: Dict[str, Any] = {
     "name": REMEMBER_NAME,
     "description": (
-        "Save one verified, durable project lesson in the shared NOBLIVION Markdown "
-        "corpus. Call noblivion_recall first, so you do not duplicate a note. Save "
-        "after the user corrects you and after you find the cause of a failure. "
-        "Supply evidence. Do not save secrets, guesses, raw transcripts, or task "
-        "chatter."
+        "Save one verified, durable project lesson. Call noblivion_recall first, so you do "
+        "not duplicate a note. Supply evidence. Do not save secrets, guesses, transcripts "
+        "or chatter."
     ),
     "inputSchema": {
         "type": "object",
@@ -391,9 +373,8 @@ def tool_schema(environ: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         return TOOL_SCHEMA
     doc = copy.deepcopy(TOOL_SCHEMA)
     doc["inputSchema"]["properties"]["fetch_id"]["description"] += (
-        " The rule index shows no rank, so a number from 1 to "
-        f"{hook.FETCH_RANK_MAX} that is not an id is read as the POSITION of a "
-        "row in the index you were last shown."
+        f" A number from 1 to {hook.FETCH_RANK_MAX} that is not an id is read as the "
+        "position of a row in the last index."
     )
     return doc
 
@@ -432,8 +413,9 @@ def noblivion_recall(
     """The tool body. Returns an MCP tools/call result dict.
 
     Two modes, and exactly one of them per call: ``query`` searches and returns
-    one line per hit, and ``fetch_id`` (R1) returns ONE memory in
-    full, by the id a ranked index line carries.
+    one line per hit (and the full text of a clearly leading first hit,
+    NOBLIVION-161), and ``fetch_id`` (R1) returns a memory in full, by the id a
+    ranked index line carries, or up to ``FETCH_LIST_MAX`` memories for a list of ids.
     """
     hook = _load_hook()
     environ = tool_env(hook, environ)
@@ -480,6 +462,8 @@ def noblivion_recall(
         if isinstance(query, str) and query.strip():
             return _tool_error("pass query OR fetch_id, not both")
         session, environ = _cache_identity(hook, environ, session_key, agent_key)
+        if isinstance(fetch_id, (list, tuple)):
+            return _fetch_many(hook, list(fetch_id), environ, chunk, section, session)
         return _fetch_one(hook, fetch_id, environ, chunk, section, session)
     if chunk is not None or section:
         return _tool_error("chunk and section go with fetch_id")
@@ -518,7 +502,30 @@ def noblivion_recall(
     text = hook.render(hits, ms, cap=None, project=project, query=q) or hook.HEADER.format(
         persona=project, n=0, ms=ms
     )
+    full = _leading_full(hook, hits, environ, session_key, agent_key)
+    if full:
+        text += "\n" + full
     return {"content": [{"type": "text", "text": text}], "isError": False}
+
+
+def _leading_full(
+    hook: Any, hits: Any, environ: Dict[str, str], session_key: Any, agent_key: Any
+) -> str:
+    """NOBLIVION-161. The full text of the first hit when it clearly leads (``hook.leading_hit``),
+    so one call holds what a query and a ``fetch_id`` held. Empty when no hit leads, or when the
+    hit line already shows the whole text. The hit is recorded as fetched, as a ``fetch_id`` would
+    do, so the index does not give it a block again."""
+    lead = hook.leading_hit(hits)
+    if lead is None or len(hook._collapse(lead.text)) <= hook.BODY_MAX_CHARS:
+        return ""
+    body = hook.neutral_block(lead.text)
+    if not body.strip():
+        return ""
+    title = hook._neutral(lead.title, hook.TITLE_MAX_CHARS) or "memory"
+    if hook.shown_set_on(environ):
+        session, cache_env = _cache_identity(hook, environ, session_key, agent_key)
+        hook.record_shown(hook.cache_dir(cache_env), session, "fetched", [lead.title])
+    return f"TOP HIT IN FULL: {title}\n{body}"
 
 
 def _mined_index(hook: Any, query: str, k: int, env: Mapping[str, str]) -> Dict[str, Any]:
@@ -610,6 +617,32 @@ def _resolve_fetch_id(
         if row["rank"] == value:
             return row["id"], f"fetch_id {value} read as rank {value} = id {row['id']}"
     return value, ""
+
+
+def _fetch_many(
+    hook: Any,
+    ids: list,
+    environ: Optional[Dict[str, str]],
+    chunk: Any,
+    section: Any,
+    session: Optional[str],
+) -> Dict[str, Any]:
+    """NOBLIVION-161. ``fetch_id`` as a list: each memory as ``_fetch_one`` returns it, one after
+    the other, in the order asked and each id once. A bad id is its own error line and does not
+    stop the others. The result is an error only when every id failed."""
+    if chunk is not None or section:
+        return _tool_error("chunk and section go with one fetch_id, not a list")
+    if not ids:
+        return _tool_error("fetch_id list is empty")
+    unique = list(dict.fromkeys(str(i).strip() for i in ids))
+    if len(unique) > FETCH_LIST_MAX:
+        return _tool_error(f"fetch_id list has more than {FETCH_LIST_MAX} ids")
+    answers = [_fetch_one(hook, i, environ, None, None, session) for i in unique]
+    text = "\n\n".join(a["content"][0]["text"] for a in answers)
+    return {
+        "content": [{"type": "text", "text": text}],
+        "isError": all(a["isError"] for a in answers),
+    }
 
 
 class _RowKey:

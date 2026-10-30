@@ -228,6 +228,12 @@ The pull path (the `noblivion_recall` tool with a query) is the other side of
 the same rule. It always returns the store's top hit when its score is 0.60 or
 more, even under the floor, and marks it `weak match` in its line.
 
+When the first hit clearly leads, the answer also holds its full text after
+the hit lines, under `TOP HIT IN FULL:`, so one call does the work of a query
+and a `fetch_id`. A hit leads when it is a note file (not a mined row, not a
+weak match), scores 0.80 or more, and every other hit scores at least 0.05
+less. A hit line that already shows the whole note adds no second copy.
+
 #### Rows of the project folder
 
 In a project folder the home root outranks the notes of the folder, and the
@@ -322,9 +328,9 @@ Claude Code can call `noblivion_recall` with these arguments:
 | --- | --- |
 | `query` | What to find, free text, cut to 300 characters. |
 | `k` | The most hits, 1 to 20. Default 5. |
-| `fetch_id` | The id of one note to open. A long note opens as its summary and the list of its sections. |
-| `chunk` | With `fetch_id`: the number of one section to read. |
-| `section` | With `fetch_id`: words. The section that best matches them is read. Use `chunk` or `section`, not both. |
+| `fetch_id` | The id of one note to open, or a list of up to 5 ids. A long note opens as its summary and the list of its sections. |
+| `chunk` | With one `fetch_id`: the number of one section to read. |
+| `section` | With one `fetch_id`: words. The section that best matches them is read. Use `chunk` or `section`, not both. |
 | `include_mined` | `true` lists the ranked index with the transcript-mined notes. Default `false`. |
 
 Give `query` or `fetch_id`, not both. `chunk` and `section` go with

@@ -346,6 +346,20 @@ INDEX_RULE_HEADER_REDUCED = (
     "apply and are not repeated. {tiers}Follow a rule where it fits the task "
     "before your first command. noblivion_recall fetch_id=<id> returns the memory."
 )
+# NOBLIVION-161. A row that carries an APPLY block already holds the instruction, so the header
+# of an index in which EVERY shown row carries one drops the fetch sentence. An index with one
+# bare row keeps it: that row is only a rule, and its id is the way on. (Dropping it for a
+# mixed index was tried on the recorded bench runs: 2 of the 13 lessons that came through a
+# fetch sat on a bare row of such an index.)
+INDEX_RULE_HEADER_APPLY = (
+    "MEMORY RULES ranked for this task. {tiers}Follow a rule where it fits the "
+    "task before your first command."
+)
+INDEX_RULE_HEADER_REDUCED_APPLY = (
+    "MEMORY RULES new for this task. Rules shown earlier in this session still "
+    "apply and are not repeated. {tiers}Follow a rule where it fits the task "
+    "before your first command."
+)
 INDEX_RULE_HEADER_TIERS = "An indented APPLY line under a row says how to apply it. "
 # F3. The rows the model was last shown, written by the hook and read by the MCP
 # server, which is a separate process and knows no session id. One file per
@@ -499,6 +513,13 @@ OWN_DESC_MAX_CHARS = 150
 # The pull path (NOBLIVION-151): the store's top hit is returned although it is
 # under the floor, from this cosine up, and marked ``weak match``.
 WEAK_MATCH_MIN_SCORE = 0.60
+# The pull path (NOBLIVION-161): a query answer carries the full text of its first hit when that
+# hit clearly leads. "Clearly" is two tests: the score is at least LEAD_MIN_SCORE, and every
+# other hit scores at least LEAD_MARGIN lower. Set from the 60 recorded query answers of the
+# bench (scores run 0.68 to 0.90 and the second hit is mostly within 0.03 of the first), not
+# from the held-out set, which holds no per-hit scores.
+LEAD_MIN_SCORE = 0.80
+LEAD_MARGIN = 0.05
 INDEX_MIN_SCORE_ENV = "NOBLIVION_RECALL_INDEX_MIN_SCORE"
 INDEX_MIN_SCORE_OFF = "off"  # this value of the variable: no floor
 INDEX_MIN_SCORE_OFF_WORDS = (INDEX_MIN_SCORE_OFF, "none", "false", "no")  # read as "off"
@@ -2622,6 +2643,25 @@ def recall(
     return hits[:k]
 
 
+def leading_hit(hits: Sequence[Hit]) -> Optional[Hit]:
+    """NOBLIVION-161. The first hit when it clearly leads, else None.
+
+    It leads when it is a mirrored memory file (not a mined row, not a weak match), has a score
+    of at least ``LEAD_MIN_SCORE``, and every other scored hit is at least ``LEAD_MARGIN`` below
+    it. A hit with no score never leads and never blocks a lead. The store's order is the
+    ranking, so the first hit is the one tested, even when a later hit scores higher: then
+    nothing leads."""
+    if not hits:
+        return None
+    top = hits[0]
+    if not top.md or top.weak or top.score is None or top.score < LEAD_MIN_SCORE:
+        return None
+    for other in hits[1:]:
+        if other.score is not None and top.score - other.score < LEAD_MARGIN - 1e-9:
+            return None
+    return top
+
+
 def index_mode(environ: Optional[Mapping[str, str]] = None) -> bool:
     """True when this hook should serve a ranked index instead of hits."""
     env = os.environ if environ is None else environ
@@ -3443,6 +3483,7 @@ def index_header(
     tier_k: int = 0,
     reduced: bool = False,
     check_line: bool = False,
+    all_apply: bool = False,
 ) -> str:
     """The header of whichever index shape is being rendered.
 
@@ -3459,7 +3500,10 @@ def index_header(
         return INDEX_HEADER.format(persona=project, n=n, ms=int(ms))
     tiers = INDEX_RULE_HEADER_TIERS.format(k=int(tier_k)) if tier_k > 0 else ""
     # WI-17: ``reduced`` is True only when the row dedupe left rows out.
-    template = INDEX_RULE_HEADER_REDUCED if reduced else INDEX_RULE_HEADER
+    if tier_k > 0 and all_apply:
+        template = INDEX_RULE_HEADER_REDUCED_APPLY if reduced else INDEX_RULE_HEADER_APPLY
+    else:
+        template = INDEX_RULE_HEADER_REDUCED if reduced else INDEX_RULE_HEADER
     head = template.format(tiers=tiers)
     return f"{head}\n{INDEX_CHECK_LINE}" if check_line else head
 
@@ -3538,8 +3582,9 @@ def layout_index(
     # printed at the end (with the real tier count) is never longer than it.
     header = index_header(len(lines), ms, project, rule_rows, apply_k(tiers), reduced, check_line)
     if cap is None:
+        every = bool(lines) and all(block_of(ln) for ln in lines)
         header = index_header(
-            len(lines), ms, project, rule_rows, carried(lines), reduced, check_line
+            len(lines), ms, project, rule_rows, carried(lines), reduced, check_line, every
         )
         out_all: List[str] = [header]
         with_block: List[IndexLine] = []
@@ -3594,7 +3639,14 @@ def layout_index(
     rendered = [f"{heads[i]}\n{blocks[i]}" if i in kept else heads[i] for i in picked]
     with_block = [lines[i] for i in picked if i in kept]
     header = index_header(
-        len(shown), ms, project, rule_rows, carried(with_block), reduced, check_line
+        len(shown),
+        ms,
+        project,
+        rule_rows,
+        carried(with_block),
+        reduced,
+        check_line,
+        len(with_block) == len(shown),
     )
     return "\n".join([header] + rendered), shown, with_block
 

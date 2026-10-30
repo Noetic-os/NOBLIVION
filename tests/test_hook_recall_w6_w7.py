@@ -177,7 +177,7 @@ def test_the_mcp_schema_is_the_default_unless_rule_rows_are_on():
     assert mcp.tool_schema({}) == mcp.TOOL_SCHEMA
     ruled = mcp.tool_schema({hook.INDEX_RULE_ROWS_ENV: "1"})
     assert ruled != mcp.TOOL_SCHEMA
-    assert "POSITION" in ruled["inputSchema"]["properties"]["fetch_id"]["description"]
+    assert "position" in ruled["inputSchema"]["properties"]["fetch_id"]["description"]
 
 
 # -- 2. the rule row ------------------------------------------------------------------

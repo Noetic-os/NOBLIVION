@@ -95,6 +95,18 @@ All notable changes to NOBLIVION. The format follows
   model call, counts only) through the hook code gives 337 would-deny calls (0.15 %, 233 different calls)
   when a grep counts only if its pattern matches a line of a typical file, and 1,259 (0.56 %) when every grep
   that can print counts. The check takes 0.2 ms at the median and 6.4 ms at p99. New: `tools/replay_credential_sources.py`.
+- Recall in one call (NOBLIVION-161). A `noblivion_recall` query answer ends with the full text of its
+  first hit when that hit clearly leads: a note file, score 0.80 or more, every other hit at least 0.05
+  lower (`hooks/recall_hook.py` `leading_hit`). `fetch_id` takes a list of up to 5 ids. The prompt row
+  header drops its fetch sentence when every shown row carries an APPLY block. The `recall-first` skill
+  says to call recall in the same message as the next independent tool call. The tool list is 1,815
+  characters, from 2,457 (descriptions cut; the three reserved fields stay in the schema because
+  this change cannot show that Claude Code passes a field the schema lacks). The measure, on the 60 recorded
+  query answers of the bench (50 with scores): the lead test fires for 12, and for 5 of them the first
+  hit is the lesson of the run. Of the 13 runs that got their lesson through the recall tool, 13 keep it:
+  the 8 whose lesson was in a hit line get a superset, and for the 5 that came through a `fetch_id`
+  the fetch sentence stays, because the lesson sat on a bare row of a mixed index in 2 of them. Of 55
+  recorded prompt headers, 2 drop the sentence.
 - Remove the transcript miner (NOBLIVION-154). The SessionEnd hook, the Codex SessionEnd mine step, the
   `noblivion mine` command, its documentation page and its settings table are gone. Error recall no longer
   asks the store for mined rows, so `fused` and `store` modes show memory files only. The measure: a
