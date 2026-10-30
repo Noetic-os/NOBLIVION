@@ -523,9 +523,10 @@ def test_a_known_error_shows_its_memory(env):
     assert rec["source"] == "local" and rec["kind"] == "exit:128"
 
 
-def test_the_shown_text_is_the_memory_line_on_this_error(env):
+def test_the_shown_text_is_rule_and_apply_without_the_body(env):
     ctx = json.loads(run(fail_event(REV), env))["hookSpecificOutput"]["additionalContext"]
-    assert "Text: ## How it presents `git rev-parse --short a b` fails with" in ctx
+    assert "  Rule: When git rev-parse fails" in ctx and "  Apply: Run `git rev-parse" in ctx
+    assert "How it presents" not in ctx and "  Text" not in ctx
 
 
 def test_a_piped_error_answers_as_post_tool_use(env):
@@ -1126,9 +1127,9 @@ def _shown(out):
     return "feedback_rev_parse_needs_one_ref" in out
 
 
-def test_one_memory_is_shown_at_most_three_times_per_agent(env):
-    shows = [_shown(run(fail_event(REV), env)) for _ in range(5)]
-    assert shows == [True, True, True, False, False]
+def test_one_memory_is_shown_once_per_agent_of_a_session(env):
+    shows = [_shown(run(fail_event(REV), env)) for _ in range(3)]
+    assert shows == [True, False, False]
     assert log_lines(env)[-1]["decision"] == "budget"
     assert _shown(run(fail_event(REV, agent_id="sub-1"), env))  # a subagent has its own budget
     assert _shown(run(fail_event(REV, sid="s2"), env))  # so does another session
@@ -1326,53 +1327,36 @@ LOADER_ERR = (
 )
 
 
-def test_a_short_memory_is_shown_whole_and_says_no_lookup_is_needed(env):
+def test_a_show_is_the_rule_and_the_apply_and_the_way_to_fetch_the_note(env):
     ctx = _ctx(run(fail_event(REV), env))
-    assert "no need to open the memory file" in ctx.splitlines()[0]
-    assert "- Memory feedback_rev_parse_needs_one_ref (full text; no need to open the file):" in ctx
+    assert "fetch the note for more" in ctx.splitlines()[0]
+    assert "- Memory feedback_rev_parse_needs_one_ref (" in ctx
+    assert "noblivion_recall with this name returns the note" in ctx  # a local hit has no id
     rule, apply, body = MEMORIES["feedback_rev_parse_needs_one_ref"]
     assert f"  Rule: {rule}" in ctx
     assert "  Apply: Run `git rev-parse --short A` and `git rev-parse --short B` separately." in ctx
-    assert "The refs exist; rev-parse takes one ref with --short." in ctx  # the body's last line
-    assert "[memory " not in ctx and not ctx.rstrip().endswith("]")  # no bare tag invites a lookup
+    assert "The refs exist; rev-parse takes one ref with --short." not in ctx  # the body stays out
 
 
-def test_a_long_memory_shows_rule_apply_and_the_fix_below_the_error(env):
+def test_a_long_memory_shows_rule_and_apply_but_not_the_body(env):
     write_memory(
         Path(env["NOBLIVION_ERROR_RECALL_MEMORY_DIR"]), LONG_ID, LONG_RULE, LONG_APPLY, LONG_BODY
     )
     ctx = _ctx(run(fail_event(LOADER_ERR, command="python3 t.py"), env))
-    assert f"- Memory {LONG_ID} (rule and fix in full; the file adds about " in ctx
+    assert f"- Memory {LONG_ID} (" in ctx
     assert f"  Rule: {LONG_RULE}" in ctx and f"  Apply: {LONG_APPLY}" in ctx
-    text = [x for x in ctx.splitlines() if x.startswith("  Text on this error: ")][0]
-    assert "AttributeError" in text
-    assert (
-        "FIXLINE_BELOW_THE_ERROR" in text
-    )  # 9 lines below the error: the old 6-line excerpt lost it
-    assert "The loader story" not in text  # the background above the error is not shown
-    # A "## Fix" section often follows "## How it presents", so the text runs on
-    # past a heading and stops at the character bound, at a sentence end.
-    assert len(text) <= len("  Text on this error: ") + er.TEXT_CHARS
+    assert "FIXLINE_BELOW_THE_ERROR" not in ctx and "The loader story" not in ctx
+    assert "  Text" not in ctx
 
 
-def test_the_long_memory_cut_ends_at_a_sentence_and_counts_what_is_left():
-    mem = {
-        "id": LONG_ID,
-        "rule": LONG_RULE,
-        "apply": LONG_APPLY,
-        "description": "",
-        "body": LONG_BODY,
-    }
-    hit = er.render_hit(mem, "AttributeError: 'NoneType' object has no attribute '__dict__'")
-    text = [x for x in hit.splitlines() if x.startswith("  Text on this error: ")][0]
-    assert text.endswith((".", ":", "`")), text[-40:]
-    left = int(hit.split("the file adds about ")[1].split()[0])
-    body = er._rh()._neutral(LONG_BODY)
-    shown = text[len("  Text on this error: ") :]
-    assert left == len(body) - len(shown) and left > 0
+def test_a_store_hit_names_its_store_id_for_fetch_id():
+    mem = {"id": "m", "rule": "r", "apply": "a", "description": "", "body": "b", "fetch_id": "4711"}
+    assert "noblivion_recall fetch_id=4711 returns the note" in er.render_hit(mem)
+    mem["fetch_id"] = "not-a-number"  # never put a free text into the fetch line
+    assert "fetch_id" not in er.render_hit(mem)
 
 
-def test_the_length_bound_holds_for_huge_fields():
+def test_a_show_is_about_four_hundred_characters_for_the_largest_fields():
     big = "word " * 3000
     mem = {
         "id": "m",
@@ -1382,10 +1366,8 @@ def test_the_length_bound_holds_for_huge_fields():
         "body": ("quux zebra fails. " + big) * 3,
     }
     hit = er.render_hit(mem, "quux zebra fails")
-    # head line + rule + apply + text on this error, each capped
-    assert len(hit) <= 250 + 2 * (er.FIELD_CHARS + 10) + er.TEXT_CHARS + 30
-    for line in hit.splitlines()[1:]:
-        assert len(line) <= max(er.FIELD_CHARS, er.TEXT_CHARS) + 30
+    assert len(hit) <= 120 + er.SHOW_RULE_CHARS + er.SHOW_APPLY_CHARS + 30
+    assert len(er.render([mem])) <= er.RENDER_MAX_CHARS
 
 
 @pytest.mark.parametrize(
@@ -1410,57 +1392,22 @@ def test_cut_at_sentence(text, n, head):
     assert got == head and left == len(text) - len(head)
 
 
-Q_LOADER = "AttributeError: 'NoneType' object has no attribute '__dict__'"
-
-
-def _two_long(env):
+def test_a_second_hit_is_dropped_when_the_show_would_flood(env, monkeypatch):
     folder = Path(env["NOBLIVION_ERROR_RECALL_MEMORY_DIR"])
-    write_memory(folder, LONG_ID, LONG_RULE, LONG_APPLY, LONG_BODY)
-    write_memory(folder, LONG_ID + "_twin", LONG_RULE, LONG_APPLY, LONG_BODY)
-    return [er.read_memory(folder / f"{LONG_ID}.md"), er.read_memory(folder / f"{LONG_ID}_twin.md")]
-
-
-def test_a_second_long_hit_gets_a_shorter_text_when_the_show_would_flood(env, monkeypatch):
-    _two_long(env)
-    monkeypatch.setattr(er, "RENDER_MAX_CHARS", 2600)
-    ctx = _ctx(run(fail_event(LOADER_ERR, command="python3 t.py"), env))
-    texts = [x for x in ctx.splitlines() if x.startswith("  Text on this error: ")]
-    assert ctx.count("- Memory ") == 2 and len(texts) == 2  # the part on THIS error stays in both
-    assert len(texts[1]) < len(texts[0]) and len(ctx) <= 2600
-    assert len(log_lines(env)[-1]["ids"]) == 2
-
-
-def test_a_second_hit_shows_rule_and_apply_only_when_little_room_is_left(env, monkeypatch):
-    mems = _two_long(env)
-    one = er.render([mems[0]], Q_LOADER)
-    compact = er.render_hit(mems[1], Q_LOADER, compact=True)
-    monkeypatch.setattr(er, "RENDER_MAX_CHARS", len(one) + 1 + len(compact) + 100)
-    ctx = _ctx(run(fail_event(LOADER_ERR, command="python3 t.py"), env))
-    assert ctx.count("- Memory ") == 2 and ctx.count("  Text on this error: ") == 1
-    assert ctx.count(f"  Apply: {LONG_APPLY}") == 2
-
-
-def test_the_text_on_this_error_does_not_repeat_the_apply_field():
-    mem = {
-        "id": "m",
-        "rule": "r",
-        "apply": "APPLYMARK do the thing.",
-        "description": "",
-        "body": "`zebra quux fails` here.\nThe fix is below.\n",
-    }
-    assert "APPLYMARK" not in er.excerpt(mem, "zebra quux fails", er.EXCERPT_LINES)
-
-
-def test_a_second_hit_is_dropped_when_even_its_rule_and_apply_flood(env, monkeypatch):
-    folder = Path(env["NOBLIVION_ERROR_RECALL_MEMORY_DIR"])
-    write_memory(folder, LONG_ID, LONG_RULE, LONG_APPLY, LONG_BODY)
-    write_memory(folder, LONG_ID + "_twin", LONG_RULE, LONG_APPLY, LONG_BODY)
-    one = er.render(
-        [er.read_memory(folder / f"{LONG_ID}.md")],
-        "AttributeError: 'NoneType' object has no attribute '__dict__'",
-    )
+    body = "`zebra_loader quux fails` on a bad load.\n"
+    write_memory(folder, "feedback_zebra_a", LONG_RULE, LONG_APPLY, body)
+    write_memory(folder, "feedback_zebra_b", LONG_RULE, LONG_APPLY, body)
+    ev = fail_event("Exit code 1\nerror: zebra_loader quux fails", command="zebra")
+    two = _ctx(run(ev, env))
+    assert two.count("- Memory ") == 2
+    one = er.render([er.read_memory(folder / "feedback_zebra_a.md")])
     monkeypatch.setattr(er, "RENDER_MAX_CHARS", len(one) + 50)
-    ctx = _ctx(run(fail_event(LOADER_ERR, command="python3 t.py"), env))
+    ctx = _ctx(
+        run(
+            fail_event("Exit code 1\nerror: zebra_loader quux fails", sid="s2", command="zebra"),
+            env,
+        )
+    )
     assert ctx.count("- Memory ") == 1
     assert len(log_lines(env)[-1]["ids"]) == 1
 
@@ -1507,7 +1454,8 @@ def test_a_secret_in_the_shown_memory_text_is_redacted(env, where):
     assert "- Memory feedback_leaky (" in ctx
     for frag in ("E5f6G7h8", "hunter2", "EFGHIJKL", "abc123def456", "MIIEowIBAAKC"):
         assert frag not in ctx, frag
-    assert "[REDACTED]" in ctx and "password=[REDACTED]" in ctx
+    if where != "body":  # the body is never shown
+        assert "[REDACTED]" in ctx and "password=[REDACTED]" in ctx
 
 
 def test_memory_prose_words_are_not_read_as_secrets():
@@ -1557,3 +1505,144 @@ def test_a_table_with_no_error_line_still_shows_nothing(env):
     )
     assert er.failure_of(ev) is None
     assert run(ev, env) == ""
+
+
+# --------------------------------------------------------------------------
+# 9. P1-11: stderr first, a rare token, one show per session (NOBLIVION-113)
+# --------------------------------------------------------------------------
+def test_stdout_is_read_only_when_stderr_is_empty(env):
+    data = "E   ModuleNotFoundError: No module named 'daemon'\n"  # log data a script printed
+    cmd = "python3 report.py"
+    assert er.failure_of(ok_event(data, cmd)) == (
+        "output",
+        ["ModuleNotFoundError: No module named 'daemon'"],
+    )
+    # stderr holds text, so the data on stdout is not an error of this call
+    assert er.failure_of(ok_event(data, cmd, stderr="warning: slow disk\n")) is None
+    assert run(ok_event(data, cmd, stderr="warning: slow disk\n"), env) == ""
+    # the error on stderr is the one that counts
+    ev = ok_event("done\n", cmd, stderr=data)
+    assert "feedback_container_probe_pythonpath" in run(ev, env)
+
+
+COLUMN_NOTE = (
+    "feedback_pin_deploy_applies_no_migration",
+    "When a deploy fails with column does not exist, apply the migration by hand.",
+    "Run the migration script on the database.",
+    "The error `ERROR: column does not exist` follows a deploy that skipped a migration.\n",
+)
+
+
+def test_a_generic_message_does_not_show_a_note_that_lacks_the_name(env):
+    folder = Path(env["NOBLIVION_ERROR_RECALL_MEMORY_DIR"])
+    write_memory(folder, *COLUMN_NOTE)
+    for column in ("tokens_in", "id", "last_run_at"):
+        ev = fail_event(f'Exit code 1\nERROR: column "{column}" does not exist', command="psql x")
+        assert run(ev, env) == ""
+        assert log_lines(env)[-1]["decision"] == "no-quote"
+
+
+def test_the_same_message_shows_a_note_that_holds_the_name(env):
+    folder = Path(env["NOBLIVION_ERROR_RECALL_MEMORY_DIR"])
+    write_memory(
+        folder,
+        COLUMN_NOTE[0] + "_tokens",
+        COLUMN_NOTE[1],
+        COLUMN_NOTE[2],
+        "The column `tokens_in` is added by migration 0042; `column does not exist` means "
+        "it is not applied.\n",
+    )
+    ev = fail_event('Exit code 1\nERROR: column "tokens_in" does not exist', command="psql x")
+    assert "feedback_pin_deploy_applies_no_migration_tokens" in run(ev, env)
+
+
+def test_a_rare_name_in_a_path_tail_is_enough(env):
+    folder = Path(env["NOBLIVION_ERROR_RECALL_MEMORY_DIR"])
+    write_memory(
+        folder,
+        "feedback_hub_stats_cache",
+        "The hub-stats.json cache is rebuilt by the first prompt.",
+        "Wait for the first prompt, then read cache/hub-stats.json.",
+        "FileNotFoundError: [Errno 2] No such file or directory: cache/hub-stats.json happens "
+        "before the first prompt.\n",
+    )
+    ev = fail_event(
+        "Exit code 1\nFileNotFoundError: [Errno 2] No such file or directory: "
+        "'cache/hub-stats.json'",
+        command="python3 x.py",
+    )
+    assert "feedback_hub_stats_cache" in run(ev, env)
+
+
+def test_an_exception_class_alone_is_not_a_rare_name(env):
+    folder = Path(env["NOBLIVION_ERROR_RECALL_MEMORY_DIR"])
+    for i in range(3):  # three notes name the class, so it points at no cause
+        write_memory(
+            folder,
+            f"feedback_attr_{i}",
+            "An AttributeError on a module means a stale import.",
+            "Reload the module.",
+            "AttributeError: module has no attribute shows a stale import.\n",
+        )
+    ev = fail_event(
+        "Exit code 1\nAttributeError: module 'zed' has no attribute 'go'", command="python3 x.py"
+    )
+    assert run(ev, env) == ""
+
+
+def test_rare_tokens_by_shape():
+    got = er.rare_tokens(
+        "FileNotFoundError: [Errno 2] No such file or directory: 'cache/hub-stats.json' | "
+        "merge_gate.py: error: 7 of 9 | bash: zzcmd: command not found | Type 'NoneType' Error 12.5"
+    )
+    for want in ("hub-stats.json", "merge_gate.py", "merge_gate", "zzcmd", "filenotfounderror"):
+        assert want in got, want
+    for no in ("nonetype", "12.5", "errno"):
+        assert no not in got, no
+    assert er.rare_tokens("fatal: Needed a single revision") == []
+
+
+def test_an_error_with_no_name_needs_a_longer_message_run():
+    query = "fatal: remote hung unexpectedly during pack negotiation phase"
+    mem = {"id": "m", "rule": "r", "apply": "a", "description": "", "body": ""}
+    mem["body"] = "It says remote hung unexpectedly during pack today."  # a 5-word run
+    assert er.passes_quote_gate(mem, query)
+    mem["body"] = "It says remote hung unexpectedly and then pack negotiation."  # a 3-word run
+    assert er.quotes_error(mem, query) and not er.passes_quote_gate(mem, query)
+
+
+def test_the_noisy_note_is_shown_once_per_session(env):
+    ev = [fail_event(REV, sid="noisy") for _ in range(6)]
+    assert [_shown(run(e, env)) for e in ev] == [True] + [False] * 5
+    assert [r["decision"] for r in log_lines(env)].count("show") == 1
+
+
+def test_a_shown_hit_is_short(env):
+    ctx = _ctx(run(fail_event(REV), env))
+    assert len(ctx) <= 500, len(ctx)
+
+
+def test_a_note_that_quotes_every_value_of_the_message_passes_without_a_rare_name():
+    query = "AttributeError: 'NoneType' object has no attribute '__dict__'"
+    body = "The loader raises `AttributeError: 'NoneType' object has no attribute '__dict__'`."
+    mem = {"id": "feedback_loader", "rule": "r", "apply": "a", "description": "", "body": body}
+    assert er.quotes_all_values(mem, query) and er.passes_quote_gate(mem, query)
+    other = dict(mem, body="An AttributeError: 'NoneType' object has no attribute 'get' shows up.")
+    assert not er.quotes_all_values(other, query)
+
+
+def test_a_name_in_the_title_of_the_note_may_be_held_by_more_notes():
+    query = "AttributeError: module 'conftest' has no attribute 'make_retry_policy'"
+    mem = {
+        "id": "feedback_bare_conftest_import_is_ambiguous",
+        "rule": "A bare conftest import is ambiguous.",
+        "apply": "Import it by its package path.",
+        "description": "",
+        "body": "AttributeError: module 'conftest' has no attribute shows up.",
+    }
+    held = {"conftest": 0.05, "make_retry_policy": 0.0, "attributeerror": 0.01}
+    assert er.passes_quote_gate(mem, query, lambda tok, limit: held.get(tok, 0.0) <= limit)
+    body_only = dict(mem, id="feedback_x", rule="r")  # held by the body only: 5% is too common
+    assert not er.passes_quote_gate(
+        body_only, query, lambda tok, limit: held.get(tok, 0.0) <= limit
+    )

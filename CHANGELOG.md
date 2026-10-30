@@ -8,6 +8,12 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Error recall shows less and shows it more exactly (NOBLIVION-113). A show is the rule and the apply
+  (about 300 characters) and the way to fetch the full note, not the body. A note shows once per agent
+  of a session. For a command that exits 0, the hook reads stderr and reads stdout only when stderr is
+  empty. A note must hold one rare name from the error (an identifier, a module name, a path tail, a
+  quoted value) besides quoting its message, so one generic message such as `column ... does not exist`
+  no longer shows one migration note every time. A true hit that holds no such name is no longer shown.
 - `noblivion explain` now runs on stores over 10,000 notes or chunks. The offline diagnostic refused
   a real store of 10,406 chunks; the time limit bounds its work.
 - Add `tools/eval_suite.py`: one command for every zero-token replay and cost check on a scratch

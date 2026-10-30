@@ -331,7 +331,18 @@ note was used.
   with no store. A note must hold enough of the words of the error: a
   share of at least 0.39, where a rare word counts more. Then the hook
   shows the note only when it quotes three words in a row from the error
-  message. It shows at most 2 notes.
+  message and holds one rare name from the error: an identifier, a module
+  name, a path tail, a missing command or a quoted value that at most 2% of
+  the notes hold (10% when the name is in the title or rule of the note). An
+  exception class counts only when at most 0.5% of the notes hold it. A note
+  that holds every value the message quotes (`'NoneType' ... '__dict__'`)
+  passes too. An error with no name at all (`fatal: not a git
+  repository`) needs a run of four words. A message such as `column "x"
+  does not exist` therefore shows a note only when the note names the
+  column. For a command that exits 0, the hook reads stderr and reads
+  stdout only when stderr is empty. A note shows once per agent of a
+  session. A show is the rule and the apply (about 300 characters) and the
+  way to fetch the full note, not the body. It shows at most 2 notes.
   - A failed `curl` call prints a line that names the tool (`curl: (22)
     The requested URL returned error: 400`) and the error body after it.
     The hook searches the body lines too. The message of a JSON body

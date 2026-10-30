@@ -18,7 +18,9 @@ transcripts under ``~/.claude/projects``)
                       ``{stdout, stderr, interrupted, isImage,
                       noOutputExpected, ...}``; a grep with no match comes here
                       too (exit 1 read as "no matches",
-                      ``returnCodeInterpretation``). A failure hidden behind a
+                      ``returnCodeInterpretation``). The hook reads ``stderr``;
+                      it reads ``stdout`` only when ``stderr`` is empty (P1-11:
+                      stdout is the data the command printed). A failure hidden behind a
                       pipe (``pytest ... 2>&1 | tail -3``) exits 0, so this
                       path fires on a STRONG error line only, and never when
                       the first command of a statement reads data (``grep``,
@@ -48,10 +50,19 @@ Query
   (``_GO_TEMPLATE``).
 
 Quote check (every mode)
-  A hit that passes its score gate is shown only when the memory quotes the
-  error's message: a run of ``QUOTE_RUN`` (3) consecutive message words, with
-  paths and quoted values removed, holding a word not in ``GENERIC_WORDS``
-  (``quotes_error``). Otherwise the log says ``no-quote``.
+  A hit that passes its score gate is shown only when (``passes_quote_gate``)
+  the memory quotes the error's message: a run of ``QUOTE_RUN`` (3)
+  consecutive message words, with paths and quoted values removed, holding a
+  word not in ``GENERIC_WORDS`` (``quotes_error``); AND the memory holds one
+  rare name of the error (P1-11, NOBLIVION-113): a snake_case, camelCase or
+  dotted name, a path tail, a missing command, a quoted value or the
+  exception class, that at most ``RARE_SHARE`` (2%) of the memory files hold
+  (``RARE_EXC_SHARE``, 0.5%, for an exception class; 10% when the name is in
+  the title or rule of the memory), or the memory holds every value the
+  message quotes (``quotes_all_values``). An error that quotes a
+  value but holds no such name for the memory (``column "id" does not
+  exist``) shows nothing. An error with no name at all needs a message run
+  of ``QUOTE_RUN_BARE`` (4) words. Otherwise the log says ``no-quote``.
 
 Search (env ``NOBLIVION_ERROR_RECALL_MODE``, see ``search``)
   local (default)  BM25 over the memory files (name, description, ``rule:``,
@@ -87,25 +98,18 @@ Memory folder
   There is no home-folder default: with no folder the hook searches nothing.
 
 Output and budget
-  At most ``MAX_HITS`` (2) hits (WI-14b). The header says the text IS the
-  memory, so no file lookup is needed. Each hit starts with
-  ``- Memory <id> (...)`` and then shows the memory's own text:
-  ``Rule:`` and ``Apply:`` whole from the front matter, and ``Text:`` the
-  whole body when it is at most ``FULL_BODY_CHARS`` (1200) characters, else
-  ``Text on this error:`` the body part on the error (``excerpt``) cut at a
-  sentence end at ``TEXT_CHARS`` (1200), with the count of characters the
-  file adds. A show stays under ``RENDER_MAX_CHARS`` (3200): a second hit
-  that breaks it gets a shorter body part (at least ``MIN_TEXT_CHARS``),
-  else Rule and Apply only, and is dropped if it still breaks it. Memory text is redacted (``redact_memory``: the
-  query patterns, with the two prose-prone ones made strict) and then made
-  inert with the recall hook's ``_neutral``. One memory is shown at most
-  ``SHOW_REPEAT`` (3) times per agent of a session (key: ``session_id`` plus
+  At most ``MAX_HITS`` (2) hits. The header says the body stays out. Each hit starts with ``- Memory <id> (...)``, then ``Rule:`` and
+  ``Apply:`` from the front matter, cut at a sentence end at
+  ``SHOW_RULE_CHARS`` and ``SHOW_APPLY_CHARS`` (140 each), so a show is about
+  400 characters. The body is never shown. The head names how to fetch the
+  note: ``noblivion_recall fetch_id=<id>`` for a store hit (the store id),
+  else the name. Memory text is redacted (``redact_memory``) and then made
+  inert with the recall hook's ``_neutral``. One memory is shown once
+  (``SHOW_REPEAT``) per agent of a session (key: ``session_id`` plus
   ``agent_id``, as in the WI-3 guard), and all shows of one agent of a
   session stay under ``SESSION_CHARS`` (6000 characters; env
-  ``NOBLIVION_ERROR_RECALL_SESSION_CHARS``). Since WI-3f the formatter and the
-  redaction live in ``memory_text.py`` (shared with the guard rows
-  and the prompt recall hook; the output is byte-identical), so install that
-  file beside this one.
+  ``NOBLIVION_ERROR_RECALL_SESSION_CHARS``). A show stays under
+  ``RENDER_MAX_CHARS``: a hit that breaks it is dropped.
 
 Log and state
   Every show, and every error, is one JSON line in the log (env
@@ -138,7 +142,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 _HERE = Path(__file__).resolve().parent
 EVENTS = ("PostToolUseFailure", "PostToolUse")
@@ -149,7 +153,7 @@ LINE_SCAN_CHARS = 4000
 COMMAND_MAX_CHARS = 8192
 MAX_ERROR_LINES = 3
 MAX_HITS = 2
-SHOW_REPEAT = 3
+SHOW_REPEAT = 1  # P1-11: one show per memory per agent of a session
 SESSION_CHARS = 6000
 STORE_TIMEOUT_S = 0.8
 STORE_TOP_K = 10
@@ -169,18 +173,15 @@ APPLY_CHARS = 220
 # WI-14b: the hit shows the memory's own text, so the model needs no file
 # lookup (paid test 5: a cut excerpt that ended in "[memory <id>]" cost 3
 # calls of find, Glob and Read before the fix).
-FULL_BODY_CHARS = 1200  # a body up to this length is shown whole
-TEXT_CHARS = 1200  # else the body part on this error, cut at a sentence end
-EXCERPT_LINES = 40  # lines of the body from the one on this error, before the cut
-FIELD_CHARS = 600  # one rule or apply field (the schema caps them at 160 and 400)
-RENDER_MAX_CHARS = (
-    3200  # one show, all hits; a second hit that breaks it is shortened, then dropped
-)
-MIN_TEXT_CHARS = 300  # a second hit's body part below this shows Rule and Apply only
-HEADER = (
-    "Memory for this error (error recall, WI-14). This is the memory's own text, "
-    "so act on it; no need to open the memory file."
-)
+# P1-11: a show is the rule and the apply, about 300 characters, and the id that
+# fetches the note. The body stays in the file: a true hit loses its body text,
+# and the model can fetch it.
+SHOW_RULE_CHARS = 140
+SHOW_APPLY_CHARS = 140
+RENDER_MAX_CHARS = 1200  # one show, all hits; a hit that breaks it is dropped
+HEADER = "Memory for this error (error recall). Rule and fix only; fetch the note for more."
+FETCH_BY_ID = "noblivion_recall fetch_id={id} returns the note"
+FETCH_BY_NAME = "noblivion_recall with this name returns the note"
 STATE_PREFIX = "er-"
 STATE_MAX_AGE_S = 7 * 24 * 3600
 
@@ -661,7 +662,10 @@ def failure_of(event: Mapping[str, object]) -> Optional[Tuple[str, List[str]]]:
         if isinstance(tr, dict):
             if tr.get("interrupted"):
                 return None
-            text = "\n".join(str(tr.get(k) or "") for k in ("stderr", "stdout"))
+            # P1-11: stderr first; stdout (the data the command printed) only when
+            # stderr is empty.
+            err = str(tr.get("stderr") or "")
+            text = err if err.strip() else str(tr.get("stdout") or "")
         elif isinstance(tr, str):
             text = tr
         else:
@@ -746,6 +750,7 @@ tokens = _MT.tokens
 # error's message (fewer when the message is shorter, never fewer than 2), and
 # the run holds a word that is not in GENERIC_WORDS.
 QUOTE_RUN = 3
+QUOTE_RUN_BARE = 4  # P1-11: the run for an error with no rare token
 GENERIC_WORDS = frozenset(
     (
         "fatal failed fail failure exit exited code status returned found such directory command permission "
@@ -777,7 +782,7 @@ def message_words(line: str) -> List[str]:
     return words
 
 
-def quotes_error(mem: Mapping[str, object], query: str) -> bool:
+def quotes_error(mem: Mapping[str, object], query: str, run: int = QUOTE_RUN) -> bool:
     """True when the memory quotes the message of one of the query's error
     lines (see ``QUOTE_RUN``). The memory text is read as it is and with its
     quoted values and paths removed, so `'NoneType' ... '__dict__'` in the
@@ -787,7 +792,7 @@ def quotes_error(mem: Mapping[str, object], query: str) -> bool:
     seqs = (_words(text), _words(_MSG_PATH.sub(" ", _MSG_QUOTED.sub(" ", text))))
     for line in query.split(" | "):
         msg = message_words(line)
-        n = min(QUOTE_RUN, len(msg))
+        n = min(run, len(msg))
         if n < 2:
             continue
         runs = {
@@ -801,6 +806,135 @@ def quotes_error(mem: Mapping[str, object], query: str) -> bool:
     return False
 
 
+# P1-11: a memory is shown only when it holds one RARE token of the error: a name
+# the message is about (an identifier, a module name, a path tail, the exception
+# class). A generic message ("column ... does not exist") shared by many notes is
+# not enough, so one migration note no longer answers every missing column.
+_CANDIDATE = re.compile(r"[A-Za-z0-9_][\w.\-/]*[A-Za-z0-9_]|[A-Za-z0-9_]")
+_QUOTED_VALUE = re.compile(r"""['"]([A-Za-z_][\w.\-]{1,60})['"]""")
+_COMMAND_MISSING = re.compile(r"(\S+): (?:command )?not found")
+_EXC_NAME = re.compile(r"^[A-Z]\w*(?:Error|Exception)$")
+_CAMEL = re.compile(r"[a-z0-9][A-Z]")
+_FILE_EXT = re.compile(r"\.[A-Za-z0-9]{1,5}$")
+# Names that every Python error mentions. Never rare.
+COMMON_NAMES = frozenset(
+    "none nonetype str int float bool dict list set tuple bytes object type self cls args kwargs "
+    "true false null stdin stdout stderr error errors message detail status".split()
+)
+RARE_SHARE = 0.02  # a name is rare when at most this share of the notes hold it
+# An exception class (`ModuleNotFoundError`) is shared by every error of its kind, so
+# it counts only when almost no note holds it.
+RARE_EXC_SHARE = 0.005
+RARE_HEAD_SHARE = 0.10  # a name in the title or rule of the note may be held by more notes
+_ANY_QUOTED = re.compile(r"'([^'\s]{1,60})'|\"([^\"\s]{1,60})\"")
+
+
+def rare_tokens(query: str) -> List[str]:
+    """The names in the error that can point at one cause, lower case, no
+    duplicates, in the order of the query: a snake_case, camelCase or dotted
+    name, a path tail, a missing command, a quoted value and the exception class.
+    The caller keeps those that few notes hold (``has_rare_token``)."""
+    found: Dict[str, None] = {}
+
+    def add(tok: str) -> None:
+        tok = tok.strip(".-/_'\"").lower()
+        if len(tok) < 3 or tok in COMMON_NAMES or tok in GENERIC_WORDS or tok in STOPWORDS:
+            return
+        if any(c.isalpha() for c in tok):
+            found.setdefault(tok)
+
+    for m in _COMMAND_MISSING.finditer(query):
+        add(m.group(1))
+    for m in _QUOTED_VALUE.finditer(query):
+        add(m.group(1))
+    for m in _CANDIDATE.finditer(query):
+        tok = m.group(0)
+        if "/" in tok:
+            tok = tok.rstrip("/").rsplit("/", 1)[-1]
+        if tok.replace(".", "").isdigit():
+            continue
+        dotted = "." in tok
+        if _EXC_NAME.match(tok):
+            add(tok)
+        elif "_" in tok or _CAMEL.search(tok) or (dotted and _FILE_EXT.search(tok) is not None):
+            add(tok)
+            if dotted:  # `merge_gate.py` also stands for `merge_gate`
+                add(_FILE_EXT.sub("", tok))
+        elif dotted:
+            for part in tok.split("."):
+                if len(part) >= 6:
+                    add(part)
+    return list(found)
+
+
+def has_quoted_value(query: str) -> bool:
+    """True when the error quotes a single-word value other than a common name."""
+    for m in _ANY_QUOTED.finditer(query):
+        word = (m.group(1) or m.group(2)).lower()
+        if word not in COMMON_NAMES and word not in GENERIC_WORDS and word not in STOPWORDS:
+            return True
+    return False
+
+
+def holds_token(text: str, tok: str) -> bool:
+    """True when the lower-case ``text`` holds ``tok`` as a whole name."""
+    return re.search(r"(?<![A-Za-z0-9_])" + re.escape(tok) + r"(?![A-Za-z0-9_])", text) is not None
+
+
+def has_rare_token(
+    mem: Mapping[str, object],
+    query: str,
+    is_rare: Optional[Callable[[str, float], bool]] = None,
+) -> bool:
+    """True when the memory holds one rare token of the query. A token is rare
+    when ``is_rare(token, limit)`` says so: at most ``RARE_SHARE`` of the notes
+    hold it (``RARE_EXC_SHARE`` for an exception class). A token in the name,
+    description or rule of the memory (the note is about it) may be held by
+    ``RARE_HEAD_SHARE`` of the notes. Without ``is_rare`` every token is rare."""
+    head = " ".join(str(mem.get(k) or "") for k in ("id", "description", "rule")).lower()
+    text = head + " " + " ".join(str(mem.get(k) or "") for k in ("apply", "body")).lower()
+    for tok in rare_tokens(query):
+        exc = tok.endswith(("error", "exception"))
+        if not holds_token(text, tok):
+            continue
+        if is_rare is None or is_rare(tok, RARE_EXC_SHARE if exc else RARE_SHARE):
+            return True
+        if not exc and holds_token(head, tok) and is_rare(tok, RARE_HEAD_SHARE):
+            return True
+    return False
+
+
+def quotes_all_values(mem: Mapping[str, object], query: str) -> bool:
+    """True when one error line quotes two values or more and the memory holds
+    every one of them: it quotes the whole message (`'NoneType' object has no
+    attribute '__dict__'`), values included."""
+    text = " ".join(str(mem.get(k) or "") for k in ("description", "rule", "apply", "body")).lower()
+    for line in query.split(" | "):
+        values = [(m.group(1) or m.group(2)).lower() for m in _ANY_QUOTED.finditer(line)]
+        if len(values) >= 2 and all(holds_token(text, v) for v in values):
+            return True
+    return False
+
+
+def passes_quote_gate(
+    mem: Mapping[str, object],
+    query: str,
+    is_rare: Optional[Callable[[str, float], bool]] = None,
+) -> bool:
+    """P1-11. The memory must quote the message (``quotes_error``) and hold one rare
+    token of the error, or hold all the values the message quotes
+    (``quotes_all_values``). An error with no name at all (``fatal: not a git
+    repository``) has no token to match, so its message run must be longer
+    (``QUOTE_RUN_BARE``). An error that quotes a value (``column "id" does not
+    exist``) is about that value: the memory must hold a rare token, or it is
+    not shown."""
+    if rare_tokens(query) or has_quoted_value(query):
+        return quotes_error(mem, query) and (
+            has_rare_token(mem, query, is_rare) or quotes_all_values(mem, query)
+        )
+    return quotes_error(mem, query, QUOTE_RUN_BARE)
+
+
 class LocalIndex:
     """BM25 over the memory files. Built per call (716 files: about 0.1 s)."""
 
@@ -809,6 +943,7 @@ class LocalIndex:
 
     def __init__(self, folder: Path):
         self.docs: List[Dict[str, str]] = []
+        self.texts: List[str] = []
         self.tf: List[Dict[str, int]] = []
         self.len: List[int] = []
         df: Dict[str, int] = {}
@@ -830,11 +965,24 @@ class LocalIndex:
             for t in tf:
                 df[t] = df.get(t, 0) + 1
             self.docs.append(d)
+            self.texts.append(
+                " ".join(
+                    str(d.get(k) or "") for k in ("id", "description", "rule", "apply", "body")
+                ).lower()
+            )
             self.tf.append(tf)
             self.len.append(len(toks))
         n = len(self.docs)
         self.avg = (sum(self.len) / n) if n else 1.0
         self.idf = {t: math.log(1 + (n - c + 0.5) / (c + 0.5)) for t, c in df.items()}
+        self.df = df
+
+    def is_rare(self, word: str, limit: float) -> bool:
+        """True when ``word`` is a name that at most ``limit`` of the notes hold as a
+        whole name (two notes are always rare, so a small folder still matches)."""
+        rx = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(word.lower()) + r"(?![A-Za-z0-9_])")
+        held = sum(1 for t in self.texts if rx.search(t))
+        return held <= max(2, int(limit * len(self.docs)))
 
     def search(
         self, query: str, k: int = MAX_HITS, context: str = ""
@@ -895,11 +1043,20 @@ def mined_memory(row: Mapping[str, object]) -> Optional[Dict[str, str]]:
     rule = rule if isinstance(rule, str) and rule.strip() else str(row.get("summary") or "")
     return {
         "id": f"{MINED_ID_PREFIX}{mid}",
+        "fetch_id": str(mid),
         "rule": rule,
         "apply": apply if isinstance(apply, str) else "",
         "description": "",
         "body": "",
     }
+
+
+def _store_id(row: Mapping[str, object]) -> str:
+    """The store id of an index row, for ``fetch_id``; ``""`` when it has none."""
+    rid = row.get("id")
+    if isinstance(rid, bool) or not isinstance(rid, (int, str)):
+        return ""
+    return str(rid) if str(rid).isdigit() else ""
 
 
 def store_search(
@@ -958,6 +1115,7 @@ def store_search(
                 "description": "",
                 "body": "",
             }
+        mem["fetch_id"] = _store_id(row)
         out.append((float(score), mem))
     model = payload.get("model")
     return out, model if isinstance(model, str) else ""
@@ -1022,7 +1180,11 @@ def fuse(
 
 
 def search(
-    query: str, env: Mapping[str, str], folder: Path, context: str = ""
+    query: str,
+    env: Mapping[str, str],
+    folder: Path,
+    context: str = "",
+    index: Optional[LocalIndex] = None,
 ) -> Tuple[str, List[Tuple[float, Dict[str, Any]]], str]:
     """``(source, hits that pass a floor, store error)``.
 
@@ -1056,7 +1218,7 @@ def search(
             store_error = f"{type(exc).__name__}: {exc}"[:120]
     if mode == "store" and store_rows is not None:
         return "store", fuse(store_rows, [], d_floor, l_floor), ""
-    local_rows = LocalIndex(folder).search(query, k=STORE_TOP_K, context=context)
+    local_rows = (index or LocalIndex(folder)).search(query, k=STORE_TOP_K, context=context)
     if mode == "fused" and store_rows is not None:
         return "fused", fuse(store_rows, local_rows, d_floor, l_floor), ""
     return "local", fuse([], local_rows, d_floor, l_floor), store_error
@@ -1146,7 +1308,6 @@ def _short(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 3].rstrip() + "..."
 
 
-excerpt = _MT.excerpt
 cut_at_sentence = _MT.cut_at_sentence
 _SENTENCE_END = _MT._SENTENCE_END
 
@@ -1160,36 +1321,33 @@ def _inert(text: str) -> str:
     return _MT.inert(text, _neutral)
 
 
-def render_hit(
-    mem: Mapping[str, object], query: str = "", compact: bool = False, text_chars: int = TEXT_CHARS
-) -> str:
-    """One hit (``memory_text.render_hit``, the WI-14b shape)."""
-    return _MT.render_hit(
-        mem,
-        query,
-        compact,
-        text_chars,
-        subject="error",
-        full_body_chars=FULL_BODY_CHARS,
-        field_chars=FIELD_CHARS,
-        excerpt_lines=EXCERPT_LINES,
-        neutral=_neutral,
-    )
+def _show_field(label: str, text: object, n: int) -> str:
+    one = _inert(text)
+    return f"  {label}: " + cut_at_sentence(one, n)[0] if one else ""
+
+
+def render_hit(mem: Mapping[str, object], query: str = "") -> str:
+    """One hit (P1-11): the memory name, the rule and the apply (``SHOW_RULE_CHARS``
+    and ``SHOW_APPLY_CHARS``), and how to fetch the full note. No body text:
+    ``query`` is kept for the callers of the earlier shape."""
+    ident = re.sub(r"[^\w.-]", "", str(mem.get("id", "")))[:120]
+    rule = mem.get("rule") or mem.get("description") or ""
+    apply = mem.get("apply") or ""
+    if _inert(apply) == _inert(rule):
+        apply = ""
+    fid = str(mem.get("fetch_id") or "")
+    fetch = FETCH_BY_ID.format(id=fid) if fid.isdigit() else FETCH_BY_NAME
+    fields = [
+        _show_field("Rule", rule, SHOW_RULE_CHARS),
+        _show_field("Apply", apply, SHOW_APPLY_CHARS),
+    ]
+    return "\n".join([f"- Memory {ident} ({fetch}):"] + [x for x in fields if x])
 
 
 def render(hits: List[Mapping[str, object]], query: str = "") -> str:
-    """The header and the hits, under ``RENDER_MAX_CHARS``
-    (``memory_text.render``). ``decide`` drops a hit that still
-    breaks the bound."""
-    return _MT.render(
-        hits,
-        query,
-        header=HEADER,
-        max_chars=RENDER_MAX_CHARS,
-        text_chars=TEXT_CHARS,
-        min_text_chars=MIN_TEXT_CHARS,
-        render_one=render_hit,
-    )
+    """The header and the hits. ``decide`` drops a hit that breaks
+    ``RENDER_MAX_CHARS``."""
+    return "\n".join([HEADER] + [render_hit(m, query) for m in hits])
 
 
 def _out(event_name: str, context: str) -> str:
@@ -1225,7 +1383,8 @@ def decide(
     ti: Dict[str, Any] = raw_ti if isinstance(raw_ti, dict) else {}
     raw_command = ti.get("command")
     context = command_terms(raw_command if isinstance(raw_command, str) else "")
-    source, hits, store_error = search(query, env, folder, context)
+    index = LocalIndex(folder)
+    source, hits, store_error = search(query, env, folder, context, index)
     # The command's words rank the hits and are never logged: a quoted value
     # in the command (a token, ``-p'<password>'``) would read as a tool name.
     rec: Dict[str, object] = {
@@ -1239,7 +1398,7 @@ def decide(
     if not hits:
         rec.update(decision="no-hit", ids=[], ms=int((time.time() - t0) * 1000))
         return "", rec
-    quoted = [(s, m) for s, m in hits if quotes_error(m, query)]
+    quoted = [(s, m) for s, m in hits if passes_quote_gate(m, query, index.is_rare)]
     if not quoted:
         rec.update(
             decision="no-quote",

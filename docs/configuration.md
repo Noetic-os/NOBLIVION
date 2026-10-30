@@ -350,7 +350,7 @@ measure it.
 | `NOBLIVION_ERROR_RECALL_LOCAL_MIN_SCORE` | none | `0.39` | The lowest score of a local hit, from 0 to 1: the share of the words of the error that the note holds, where a rare word counts more. |
 | `NOBLIVION_ERROR_RECALL_MIN_SCORE` | none | `0.70` with the embedding model `BAAI/bge-small-en-v1.5`, else no floor | The lowest score of a store hit: a cosine score. The default `0.70` was measured for the embedding model `BAAI/bge-small-en-v1.5`, and the hook uses it only when the store answer names that model. With another model every store hit passes this gate, and the quote check still applies. A value that you set applies to every model. A value that is not a number from -1 to 1 counts as unset. |
 | `NOBLIVION_ERROR_RECALL_TIMEOUT_S` | none | `0.8` | The time budget of the store call, in seconds. |
-| `NOBLIVION_ERROR_RECALL_SESSION_CHARS` | none | `6000` | The most characters the hook adds per agent in one session. |
+| `NOBLIVION_ERROR_RECALL_SESSION_CHARS` | none | `6000` | The most characters the hook adds per agent in one session. A note shows once per agent of a session. |
 | `NOBLIVION_ERROR_RECALL_MEMORY_DIR` | none | `NOBLIVION_RECALL_MEMORY_DIR`, else `NOBLIVION_MEMORY_DIR`, else the session's memory folder | The memory folder to search. |
 | `NOBLIVION_ERROR_RECALL_LOG` | none | `<data dir>/error-recall-log.jsonl` | The log file. |
 | `NOBLIVION_ERROR_RECALL_STATE_DIR` | none | `NOBLIVION_GUARD_STATE_DIR`, else `<data dir>/guard-state` | The state folder. |
