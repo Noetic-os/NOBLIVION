@@ -113,6 +113,46 @@ def load_file(env: Mapping[str, str] | None = None) -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def _missing_keys(
+    root: Mapping, have: Mapping, defaults: Mapping, prefix: str, added: list[str]
+) -> None:
+    """Add to ``have`` each key of ``defaults`` that it lacks, going into objects
+    that both hold. A key that is present stays as it is, whatever its value. A
+    flat key with dots in ``root`` (``"recall.hub_days"``) counts as present."""
+    for key, value in defaults.items():
+        dotted = f"{prefix}{key}"
+        if key in have or dotted in root:
+            if isinstance(value, Mapping) and isinstance(have.get(key), dict):
+                _missing_keys(root, have[key], value, f"{dotted}.", added)
+            continue
+        have[key] = json.loads(json.dumps(value))  # a copy, so the shipped dict stays whole
+        added.append(dotted)
+
+
+def add_default_keys(path: Path, defaults_path: Path) -> list[str]:
+    """NOBLIVION-142. Add the keys of the shipped config (``defaults_path``) that
+    ``path`` lacks, and return their dotted names. A key that is present is
+    never changed. The file stays as it is (and ``ValueError`` or ``OSError``
+    goes up) when it cannot be read as a JSON object or cannot be written."""
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(doc, dict):
+        raise ValueError("config file is not a JSON object")
+    defaults = json.loads(defaults_path.read_text(encoding="utf-8"))
+    added: list[str] = []
+    _missing_keys(doc, doc, defaults, "", added)
+    if not added:
+        return []
+    tmp = path.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+    return added
+
+
 def lookup(cfg: Mapping, dotted: str, default: object = None) -> object:
     """Find ``dotted`` as a flat key or as a nested path in ``cfg``."""
     if dotted in cfg:

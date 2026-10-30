@@ -143,6 +143,8 @@ def env(tmp_path, mem, hook_env, monkeypatch):
         "NOBLIVION_GUARD_LOG": str(tmp_path / "log.jsonl"),
         "NOBLIVION_RECALL_CACHE_DIR": str(tmp_path / "rc"),
         "NOBLIVION_GUARD_WEAK_SHARE": "0",
+        # on by default since NOBLIVION-142; the tests of the rule turn it on
+        "NOBLIVION_RECALL_RULES_ONLY": "0",
     }
     for k, v in e.items():
         monkeypatch.setenv(k, v)
@@ -631,6 +633,7 @@ def test_defaults_resolve_under_the_data_dir_and_nothing_else_is_written(mem, tm
         "HOME": str(home),
         "PATH": os.environ.get("PATH", ""),
         "NOBLIVION_RECALL_LABELS": "1",
+        "NOBLIVION_RECALL_RULES_ONLY": "0",  # on by default (NOBLIVION-142); this note has no rule
         "PYTHONDONTWRITEBYTECODE": "1",
     }
     res = subprocess.run(
@@ -833,6 +836,7 @@ def test_rules_only_applies_to_the_prompt_leg(env):
 def test_rules_only_reads_the_config_key(env, hook_env):
     hook_env["config"].write_text(json.dumps({"recall": {"rules_only": True}}))
     e = dict(env, NOBLIVION_CONFIG=str(hook_env["config"]))
+    del e["NOBLIVION_RECALL_RULES_ONLY"]  # the fixture env turns it off; here the key decides
     assert lr.rules_only(e) is True
     assert call(e, bash("cat prometheus.yml", sid="ro5")) is None
     assert lr.rules_only(dict(e, NOBLIVION_RECALL_RULES_ONLY="0")) is False

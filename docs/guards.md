@@ -449,7 +449,7 @@ With `NOBLIVION_RECALL_RULES_ONLY` on (config key `recall.rules_only`), a
 label match shows only when its note has both a `rule:` and an `apply:`
 field. A note without them stays reachable with the `noblivion_recall` tool.
 The guard log line counts the matches that the rule left out in
-`label_no_apply`. The switch is off by default.
+`label_no_apply`. The switch is on by default.
 
 A label that more than 8 notes hold never matches alone. One exception: when
 the label is exactly the target file of the call, it counts. The target is the

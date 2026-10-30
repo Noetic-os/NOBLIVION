@@ -510,8 +510,9 @@ INDEX_DROP_NO_RULE_ENV = "NOBLIVION_RECALL_INDEX_DROP_NO_RULE"
 INDEX_ROW_NO_RULE = "no rule on this memory; fetch it to read it"
 
 # ── NOBLIVION-121: a prompt path of rules only ──────────
-# Three settings, each off by default, so a release without them shows what the
-# release before showed. Each has an env var and a config key; the env var wins.
+# Three settings, each on by default since NOBLIVION-142 (the code defaults equal
+# ``config/config.default.json``). Set the env var or the config key to 0 for the
+# old behaviour. Each has an env var and a config key; the env var wins.
 #
 #   NOBLIVION_RECALL_RULES_ONLY   (recall.rules_only, switch)  only a row whose
 #       local file has BOTH a ``rule:`` and an ``apply:`` reaches the prompt. A
@@ -522,9 +523,9 @@ INDEX_ROW_NO_RULE = "no rule on this memory; fetch it to read it"
 #       RULES_ONLY_TIERS whether or not NOBLIVION_RECALL_INDEX_APPLY is set.
 #       Needs the rule rows and a memory folder; the log says when it is ignored.
 #   NOBLIVION_RECALL_PROMPT_ROWS  (recall.prompt_rows, number)  the most rows one
-#       prompt shows, 0 = no cap beyond NOBLIVION_RECALL_INDEX_K. Suggested: 5.
+#       prompt shows, 0 = no cap beyond NOBLIVION_RECALL_INDEX_K. Default: 5.
 #   NOBLIVION_RECALL_HUB_DAYS     (recall.hub_days, number)  the window for hub
-#       rows (``hub_stats``), 0 = off. Suggested: 14. A hub row (shown in more
+#       rows (``hub_stats``), 0 = off. Default: 14. A hub row (shown in more
 #       than half of the sessions of the window) goes behind the other rows, and
 #       NOBLIVION_RECALL_HUB_ROWS (recall.hub_rows, default 1) of them may stay.
 #
@@ -541,6 +542,10 @@ RULES_ONLY_KEY = "recall.rules_only"
 PROMPT_ROWS_ENV = "NOBLIVION_RECALL_PROMPT_ROWS"
 PROMPT_ROWS_KEY = "recall.prompt_rows"
 PROMPT_ROWS_MAX = 100
+# The code defaults equal ``config/config.default.json`` (NOBLIVION-142), so an
+# install whose config.json lacks the keys behaves like a new install.
+RULES_ONLY_DEFAULT = True
+PROMPT_ROWS_DEFAULT = 5
 # The apply text of a rule-only row: (last rank, characters). The tiers of
 # APPLY_TIERS were set for 30 rows under a 9,000-character cap; five rows have
 # to fit in about 1,500 characters, header included.
@@ -2562,16 +2567,26 @@ def drop_no_rule_index(lines: Sequence[IndexLine]) -> Tuple[List[IndexLine], int
 
 def rules_only(environ: Optional[Mapping[str, str]] = None) -> bool:
     """NOBLIVION-121. True when only a row with a ``rule:`` and an ``apply:``
-    may reach the prompt. Off by default; the config key is ``recall.rules_only``."""
+    may reach the prompt. On by default (NOBLIVION-142); the config key is
+    ``recall.rules_only``."""
     env = os.environ if environ is None else environ
-    return bool(_sibling_module("hook_config").switch(RULES_ONLY_ENV, False, env, RULES_ONLY_KEY))
+    return bool(
+        _sibling_module("hook_config").switch(
+            RULES_ONLY_ENV, RULES_ONLY_DEFAULT, env, RULES_ONLY_KEY
+        )
+    )
 
 
 def prompt_rows(environ: Optional[Mapping[str, str]] = None) -> int:
-    """NOBLIVION-121. The most rows one prompt shows, 0 = no cap. An unreadable
-    value is 0: this hook never fails a prompt over a malformed setting."""
+    """NOBLIVION-121. The most rows one prompt shows, 0 = no cap; 5 when the
+    setting is absent (NOBLIVION-142). An unreadable value is 0: this hook never
+    fails a prompt over a malformed setting."""
     env = os.environ if environ is None else environ
-    raw = str(_sibling_module("hook_config").setting(PROMPT_ROWS_ENV, PROMPT_ROWS_KEY, "", env))
+    raw = str(
+        _sibling_module("hook_config").setting(
+            PROMPT_ROWS_ENV, PROMPT_ROWS_KEY, PROMPT_ROWS_DEFAULT, env
+        )
+    )
     try:
         return max(0, min(int(raw.strip() or 0), PROMPT_ROWS_MAX))
     except ValueError:
@@ -3450,7 +3465,7 @@ def _serve_index(
     floor = index_min_score(environ, default=default_floor)
     drop_asked = index_drop_no_rule(environ)
     drop_on = drop_asked and rule_rows
-    # NOBLIVION-121. Three optional changes, each off by default.
+    # NOBLIVION-121. Three optional changes, each on by default (NOBLIVION-142).
     rules_asked = rules_only(environ)
     rules_on = rules_asked and rule_rows and bool(memory_dirs(environ))
     row_cap = prompt_rows(environ)

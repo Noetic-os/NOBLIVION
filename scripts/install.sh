@@ -104,6 +104,30 @@ print(f"noblivion install: {why}: set embedding.backend to none in {path}{was} (
 PY
 }
 
+# Add the keys of the shipped config.default.json that an existing config.json
+# lacks (NOBLIVION-142), so an upgraded install gets the recall defaults of the
+# release. A key that is present is never changed. It prints the keys it added.
+# A config.json that is not a valid JSON object, or that cannot be written, stays
+# as it is: one line says so, and the install goes on.
+add_default_keys() {
+    NOBLIVION_DATA_DIR="$DATA_DIR" "$VENV/bin/python" - "$ROOT/config/config.default.json" <<'PY'
+import json, sys
+from pathlib import Path
+from noblivion import config
+
+path = config.data_dir() / "config.json"
+try:
+    added = config.add_default_keys(path, Path(sys.argv[1]))
+except (OSError, ValueError) as exc:
+    print(f"noblivion install: {path} not updated with the default keys ({exc}); add them by hand.")
+    sys.exit(0)
+if added:
+    print(f"noblivion install: added the absent default keys to {path}: {', '.join(added)}")
+else:
+    print(f"noblivion install: {path} has every default key")
+PY
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --data-dir)
@@ -164,14 +188,15 @@ run rm -f "$REQS"
 run uv pip install --quiet --python "$VENV/bin/python" --no-deps --reinstall-package noblivion "$ROOT"
 
 # 3. The default config file, unless one exists. It holds the shipped recall
-#    tuning (recall.env). An existing file is not replaced. Step 4 can change
+#    tuning (recall.env). An existing file is not replaced: it gains the default
+#    keys it lacks and no present key changes (NOBLIVION-142). Step 4 can change
 #    one key in it: embedding.backend (--no-embed, or a failed download).
 if [ ! -e "$DATA_DIR/config.json" ]; then
     run install -m 600 "$ROOT/config/config.default.json" "$DATA_DIR/config.json"
-elif [ "$EMBED" = 0 ]; then
-    say "config.json exists, kept as it is except embedding.backend (--no-embed, next step)"
+elif [ "$DRY_RUN" = 1 ]; then
+    say "would add the absent default keys to config.json (present keys stay)"
 else
-    say "config.json exists, kept as it is"
+    add_default_keys || say "could not add the default keys to $DATA_DIR/config.json"
 fi
 
 # 4. The embedding model. A failure is not fatal: keyword search still works.

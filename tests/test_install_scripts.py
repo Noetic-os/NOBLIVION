@@ -184,6 +184,76 @@ def test_upgrade_starts_replacement_before_any_index_write(tmp_path):
     assert _installed_commands(data) == [["migrate-from-legacy"], ["ensure-running", "--restart"]]
 
 
+def test_install_adds_absent_default_keys_and_keeps_present_ones(tmp_path):
+    """NOBLIVION-142. An existing config.json gains the shipped keys it lacks.
+    A key it holds stays, whatever its value, and a flat dotted key counts."""
+    data = _installed_fixture(tmp_path, 1)
+    (data / "config.json").write_text(
+        json.dumps(
+            {
+                "recall": {"prompt_rows": 0, "env": {"NOBLIVION_RECALL_INDEX": "0"}},
+                "recall.hub_days": 3,
+                "port": 7,
+            }
+        )
+    )
+    proc = _run(
+        INSTALL,
+        ["--data-dir", str(data), "--no-model", "--no-start"],
+        tmp_path,
+        extra={"PYTHONPATH": str(ROOT / "src")},
+    )
+    assert proc.returncode == 0, proc.stderr
+    shipped = json.loads((ROOT / "config" / "config.default.json").read_text())
+    got = json.loads((data / "config.json").read_text())
+    assert got["recall"]["prompt_rows"] == 0
+    assert got["recall"]["env"]["NOBLIVION_RECALL_INDEX"] == "0"
+    assert got["recall.hub_days"] == 3 and "hub_days" not in got["recall"]
+    assert got["port"] == 7
+    assert got["recall"]["rules_only"] == shipped["recall"]["rules_only"]
+    assert got["recall"]["index_k"] == shipped["recall"]["index_k"]
+    assert got["recall"]["env"]["NOBLIVION_RECALL_INDEX_APPLY"] == "1"
+    assert "recall.rules_only" in proc.stdout and "recall.prompt_rows" not in proc.stdout
+    assert stat.S_IMODE((data / "config.json").stat().st_mode) == 0o600
+    # A second run finds nothing to add.
+    (tmp_path / "second").mkdir()
+    again = _run(
+        INSTALL,
+        ["--data-dir", str(data), "--no-model", "--no-start"],
+        tmp_path / "second",
+        extra={"PYTHONPATH": str(ROOT / "src")},
+    )
+    assert "has every default key" in again.stdout
+    assert json.loads((data / "config.json").read_text()) == got
+
+
+def test_install_leaves_a_broken_config_json_as_it_is(tmp_path):
+    data = _installed_fixture(tmp_path, 1)
+    (data / "config.json").write_text("{not json")
+    proc = _run(
+        INSTALL,
+        ["--data-dir", str(data), "--no-model", "--no-start"],
+        tmp_path,
+        extra={"PYTHONPATH": str(ROOT / "src")},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert (data / "config.json").read_text() == "{not json"
+    assert "not updated with the default keys" in proc.stdout
+
+
+def test_install_dry_run_does_not_touch_an_existing_config_json(tmp_path):
+    data = _installed_fixture(tmp_path, 1)
+    proc = _run(
+        INSTALL,
+        ["--data-dir", str(data), "--no-model", "--no-start", "--dry-run"],
+        tmp_path,
+        extra={"PYTHONPATH": str(ROOT / "src")},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "would add the absent default keys" in proc.stdout
+    assert (data / "config.json").read_text() == "{}"
+
+
 def test_install_does_not_swallow_other_index_failures(tmp_path):
     from noblivion import db
 

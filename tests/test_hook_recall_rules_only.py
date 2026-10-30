@@ -172,15 +172,19 @@ def _apply_lines(text: str) -> list[str]:
 # 1. off by default -----------------------------------------------------------
 
 
-def test_nothing_changes_without_the_settings(tmp_path, corpus, daemon):
+def test_nothing_changes_with_the_settings_off(tmp_path, corpus, daemon):
+    """The helper env turns the three settings off (NOBLIVION-142 made them on
+    by default); the defaults themselves are tested in
+    ``test_code_defaults_match_shipped_config.py``."""
     text = _serve(_env(tmp_path, corpus, **{hook.INDEX_APPLY_ENV: "1"}))
     status = _status(tmp_path)
     assert len(_rows(text)) == 12
     for note in (":rules_drop", ":hub", ":rowcap", ":was", "rules_only_off"):
         assert note not in status
-    assert hook.rules_only({}) is False
-    assert hook.prompt_rows({}) == 0
-    assert hub.window_days({}) == 0
+    off = {hook.RULES_ONLY_ENV: "0", hook.PROMPT_ROWS_ENV: "0", "NOBLIVION_RECALL_HUB_DAYS": "0"}
+    assert hook.rules_only(off) is False
+    assert hook.prompt_rows(off) == 0
+    assert hub.window_days(off) == 0
 
 
 # 2. admission ----------------------------------------------------------------
@@ -400,6 +404,8 @@ def test_the_config_keys_turn_the_settings_on_and_an_env_var_wins(tmp_path, corp
     cfg = tmp_path / "config.json"
     cfg.write_text(json.dumps({"recall": {"rules_only": True, "prompt_rows": 2, "hub_days": 7}}))
     env = _env(tmp_path, corpus, NOBLIVION_CONFIG=str(cfg))
+    for name in (hook.RULES_ONLY_ENV, hook.PROMPT_ROWS_ENV, "NOBLIVION_RECALL_HUB_DAYS"):
+        env.pop(name)  # the helper env sets them off; here the config key decides
     text = _serve(env)
     assert _names(text) == ["feedback_r01", "feedback_r02"]
     status = _status(tmp_path)

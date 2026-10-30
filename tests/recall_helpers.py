@@ -168,8 +168,13 @@ class FakeStore:
 
 def hook_env(tmp_path: Path, **extra: str) -> dict[str, str]:
     """An env for a REST hook: its own data dir and cache, no config file, no
-    store start, and ``PATH`` kept."""
+    store start, and ``PATH`` kept. The three recall settings that are on by
+    default (NOBLIVION-142) are off here, so a test of the index shape sees the
+    whole index; a test of the defaults removes them or sets its own."""
     env = {
+        "NOBLIVION_RECALL_RULES_ONLY": "0",
+        "NOBLIVION_RECALL_PROMPT_ROWS": "0",
+        "NOBLIVION_RECALL_HUB_DAYS": "0",
         "NOBLIVION_DATA_DIR": str(tmp_path / "data"),
         "NOBLIVION_RECALL_CACHE_DIR": str(tmp_path / "cache"),
         "NOBLIVION_CONFIG": str(tmp_path / "no-config.json"),

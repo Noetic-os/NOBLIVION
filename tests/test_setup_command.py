@@ -239,11 +239,14 @@ def test_install_no_embed_says_which_backend_it_replaced(tmp_path):
     proc = _install(_install_env(tmp_path), data, "--no-embed", "--no-start")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "kept as it is\n" not in proc.stdout
-    assert "config.json exists, kept as it is except embedding.backend" in proc.stdout
+    assert "added the absent default keys" in proc.stdout  # NOBLIVION-142
     line = f"--no-embed: set embedding.backend to none in {data / 'config.json'}; it was ollama"
     assert line in proc.stdout, proc.stdout
-    doc["embedding"]["backend"] = "none"  # only this key changes
-    assert json.loads((data / "config.json").read_text(encoding="utf-8")) == doc
+    doc["embedding"]["backend"] = "none"  # the only present key that changes
+    got = json.loads((data / "config.json").read_text(encoding="utf-8"))
+    assert got["embedding"] == doc["embedding"]
+    assert got["recall"]["index_k"] == 7  # a present key stays; absent ones are added
+    assert got["recall"]["prompt_rows"] == 5
 
 
 @pytest.mark.skipif(BASH is None, reason="bash not found")
@@ -269,7 +272,12 @@ def test_install_no_embed_goes_on_with_a_broken_config(tmp_path, text, problem):
         "changed. Fix the file and set embedding.backend to none (--no-embed).\n"
     )
     assert line in proc.stdout, proc.stdout
-    assert (data / "config.json").read_text(encoding="utf-8") == text
+    after = (data / "config.json").read_text(encoding="utf-8")
+    if text == '{"embedding": "fastembed"}':
+        # a JSON object: the default keys are added (NOBLIVION-142), the present key stays
+        assert json.loads(after)["embedding"] == "fastembed"
+    else:
+        assert after == text
     assert "done. The store starts at the next Claude Code session." in proc.stdout
 
 

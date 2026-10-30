@@ -74,6 +74,7 @@ SWITCH_ENV = "NOBLIVION_GUARD_LABELS"  # the tool-time leg: on unless 0/off/fals
 PROMPT_ENV = "NOBLIVION_RECALL_LABELS"  # the prompt leg: off unless set
 RULES_ONLY_ENV = "NOBLIVION_RECALL_RULES_ONLY"  # NOBLIVION-121: only rows with rule and apply
 RULES_ONLY_KEY = "recall.rules_only"
+RULES_ONLY_DEFAULT = True  # equals config/config.default.json (NOBLIVION-142)
 FILE_TOOLS_ENV = "NOBLIVION_GUARD_LABELS_FILE_TOOLS"  # the file-tool leg: off unless set
 READ_TOOLS = ("Read", "Grep", "Glob")  # tools the file-tool leg adds to the guard hook
 FILE_CONTENT_CHARS = 2000  # the Edit/Write/MultiEdit content the labeller reads
@@ -134,8 +135,10 @@ def file_tools_enabled(env: Mapping[str, str]) -> bool:
 def rules_only(env: Mapping[str, str]) -> bool:
     """NOBLIVION-121. True when a label match shows only if its file has both a
     ``rule:`` and an ``apply:`` (the recall hook's switch, config key
-    ``recall.rules_only``). Off by default."""
-    return bool(_load("hook_config").switch(RULES_ONLY_ENV, False, env, RULES_ONLY_KEY))
+    ``recall.rules_only``). On by default (NOBLIVION-142)."""
+    return bool(
+        _load("hook_config").switch(RULES_ONLY_ENV, RULES_ONLY_DEFAULT, env, RULES_ONLY_KEY)
+    )
 
 
 def has_rule_and_apply(m: Any, table: Mapping[str, Any]) -> bool:

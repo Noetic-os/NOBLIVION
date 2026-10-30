@@ -14,6 +14,18 @@ All notable changes to NOBLIVION. The format follows
   store, with a before-and-after report that exits 1 when delivery drops. The prompt-row replay now
   also counts the task notifications and queued prompts the hook runs for, and rows whose note name
   holds parentheses.
+- Code defaults equal the shipped config (NOBLIVION-142). `recall.rules_only` is on, `recall.prompt_rows`
+  is 5 and `recall.hub_days` is 14 when `config.json` lacks the key, so an install made before 0.1.18
+  behaves like a new one (up to 30 prompt rows before, 5 now). Set a key to 0 to turn it off.
+  `install.sh` now adds the keys of `config/config.default.json` that an existing `config.json`
+  lacks, prints them, and never changes a key that is present. This replaces the 0.1.18 note that
+  asked for the three keys by hand.
+- Stock gap, stated (NOBLIVION-142). The 0.1.18 entry compares with the previous build (calls 29.6
+  against 28.1). On the same runs, stock memory used 18.0 calls and 676k input tokens per run, so
+  NOBLIVION used 64% more calls and 94% more input tokens, and 30% more tokens per passed task
+  (2,043k against 1,578k). NOBLIVION was above stock in calls and tokens in 13 of 14 slots. The
+  outcome was better: 9 runs passed every check against 6, and the lesson note came through in 9
+  runs against 1. The 0.1.18 levers are not shown to close the cost gap.
 
 ## 0.1.18 - 2026-10-29
 

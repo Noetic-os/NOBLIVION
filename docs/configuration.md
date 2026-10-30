@@ -281,9 +281,9 @@ model is the default model, `BAAI/bge-small-en-v1.5`.
 | `NOBLIVION_RECALL_INDEX_ROW_DEDUPE` | none | off (switch) | Leaves out the rows that an earlier prompt of the same session already showed. |
 | `NOBLIVION_RECALL_INDEX_CHECK_LINE` | none | off (switch) | Adds one more header line to the rule rows. |
 | `NOBLIVION_RECALL_INDEX_DROP_NO_RULE` | none | off (switch) | Leaves out a row with no rule and no summary. |
-| `NOBLIVION_RECALL_RULES_ONLY` | `recall.rules_only` | off (switch) | Shows only rows whose file has both a `rule:` and an `apply:`. The rows carry the apply text (a short tier, so five rows stay near 1,500 characters), also without `NOBLIVION_RECALL_INDEX_APPLY`. Project and reference notes stay reachable with the `noblivion_recall` tool. The label rows follow the same rule, at the prompt and at the tool call. Needs the rule rows and a memory folder. See [how-recall-works.md](how-recall-works.md). |
-| `NOBLIVION_RECALL_PROMPT_ROWS` | `recall.prompt_rows` | `0` (no cap) | The most rows one prompt shows, 0 to 100. A suggested value is `5`. |
-| `NOBLIVION_RECALL_HUB_DAYS` | `recall.hub_days` | `0` (off) | The window, in days (up to 30), for hub rows. A note that the hook showed in more than half of the sessions of the window is a hub. A hub row goes behind the other rows. Needs at least 10 sessions in the window. The hook counts in `<cache folder>/hub-stats.json` only when this is above 0. A suggested value is `14`. |
+| `NOBLIVION_RECALL_RULES_ONLY` | `recall.rules_only` | on (switch) | Shows only rows whose file has both a `rule:` and an `apply:`. The rows carry the apply text (a short tier, so five rows stay near 1,500 characters), also without `NOBLIVION_RECALL_INDEX_APPLY`. Project and reference notes stay reachable with the `noblivion_recall` tool. The label rows follow the same rule, at the prompt and at the tool call. Needs the rule rows and a memory folder. See [how-recall-works.md](how-recall-works.md). |
+| `NOBLIVION_RECALL_PROMPT_ROWS` | `recall.prompt_rows` | `5` | The most rows one prompt shows, 0 to 100. `0` means no cap. |
+| `NOBLIVION_RECALL_HUB_DAYS` | `recall.hub_days` | `14` | The window, in days (up to 30), for hub rows. `0` turns it off. A note that the hook showed in more than half of the sessions of the window is a hub. A hub row goes behind the other rows. Needs at least 10 sessions in the window. The hook counts in `<cache folder>/hub-stats.json` only when this is above 0. |
 | `NOBLIVION_RECALL_HUB_ROWS` | `recall.hub_rows` | `1` | The most hub rows one prompt shows, 0 to 100. Used only with `NOBLIVION_RECALL_HUB_DAYS`. |
 | `NOBLIVION_RECALL_INDEX_TRUST` | none | off | Stays off by default until a time-split test shows a ranking gain. `1`, `on`, `true` or `yes` multiplies each score by the trust factor. `shadow` computes the factor and logs it, but keeps the order. See [trust.md](trust.md). |
 | `NOBLIVION_RECALL_TRUST_FILE` | none | unset | A fixed trust snapshot file to use instead of the store's trust values. For tests. |
@@ -293,11 +293,15 @@ model is the default model, `BAAI/bge-small-en-v1.5`.
 ### The shipped config file
 
 `install.sh` copies `config/config.default.json` to
-`<data dir>/config.json` when that file does not exist. The shipped file
+`<data dir>/config.json` when that file does not exist. When the file exists, `install.sh` adds
+every key of the shipped file that is absent from it, prints the keys it added, and never changes
+a key that is present (so a value you set stays). A `config.json` that is not valid JSON stays as
+it is, and one line says so. The shipped file
 sets `recall.index_k` to `30`, `recall.rules_only` to `1`, `recall.prompt_rows` to `5` and
 `recall.hub_days` to `14` (NOBLIVION-121: the prompt shows at most 5 rows, each with a rule and an
-apply text). The built-in default of each of the three stays off or 0, so a config file written
-before this release keeps its old behaviour until you add the keys. Under the key `recall.env` it also sets
+apply text). The built-in default of each of the three equals the shipped value (NOBLIVION-142), so
+a hook that runs with no such key in `config.json` behaves like a new install. Set a key to `0` to
+turn the setting off. Under the key `recall.env` it also sets
 these hook variables:
 
 | Variable | Value |

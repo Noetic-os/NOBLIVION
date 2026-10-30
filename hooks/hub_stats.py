@@ -27,8 +27,8 @@ The counts are statistics, not a safety control. A write is an atomic replace
 without a lock, so two sessions that write at the same moment can lose one
 count. A broken or missing file reads as empty. Nothing here raises.
 
-Off unless ``NOBLIVION_RECALL_HUB_DAYS`` (config key ``recall.hub_days``) is
-greater than 0. Standard library only; the hooks load this file by path.
+On with a 14-day window unless ``NOBLIVION_RECALL_HUB_DAYS`` (config key
+``recall.hub_days``) is 0 (NOBLIVION-142). Standard library only; the hooks load this file by path.
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 DAYS_ENV = "NOBLIVION_RECALL_HUB_DAYS"
 DAYS_KEY = "recall.hub_days"
 DAYS_MAX = 30
+DAYS_DEFAULT = 14  # equals config/config.default.json (NOBLIVION-142)
 ROWS_ENV = "NOBLIVION_RECALL_HUB_ROWS"
 ROWS_KEY = "recall.hub_rows"
 ROWS_DEFAULT = 1
@@ -99,8 +100,8 @@ def _int_setting(
 
 
 def window_days(env: Mapping[str, str]) -> int:
-    """The hub window in days, 0 = off (the default)."""
-    return _int_setting(env, DAYS_ENV, DAYS_KEY, 0, 0, DAYS_MAX)
+    """The hub window in days, 0 = off; 14 when the setting is absent."""
+    return _int_setting(env, DAYS_ENV, DAYS_KEY, DAYS_DEFAULT, 0, DAYS_MAX)
 
 
 def hub_rows(env: Mapping[str, str]) -> int:
