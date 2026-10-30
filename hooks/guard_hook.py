@@ -171,7 +171,14 @@ Credential guard (Bash, Read, Grep)
     and names-only ``git remote`` are allowed. No override marker; the reason
     gives the scrubbed forms and never the URL. The log line is
     ``credential-deny`` with the command (URL userinfo removed). Off with
-    ``NOBLIVION_GUARD_CREDENTIAL=0``. Needs a PreToolUse entry with the matcher
+    ``NOBLIVION_GUARD_CREDENTIAL=0``.
+  * NOBLIVION-72: the same pass denies a call that would print a secret source
+    (``.env*``, the AWS, netrc, Docker and kube files, a private key, a file in
+    /run/secrets, a bare ``env`` or ``printenv``). That class takes the
+    ``# guard-ok: <reason>`` override of a Bash command and logs
+    ``credential-override``; a git URL never does, also in a command that holds
+    both. Ids ``credential-source`` and ``credential-url``. Off with
+    ``NOBLIVION_GUARD_CREDENTIAL_SOURCES=0``. Needs a PreToolUse entry with the matcher
     ``Read|Grep`` for the Read and Grep tools.
 
 Edit, Write, MultiEdit
@@ -1780,6 +1787,8 @@ class Decision:
 CRED_TOOLS = ("Bash", "Read", "Grep")
 _CRED_BASH_HINT = re.compile(
     r"git|config|credential|\brg\b|\bfind\b|\bxargs\b"
+    r"|\.env\b|\benv\b|\bprintenv\b|\.netrc|\.aws\b|\.docker\b|\.kube\b|/run/secrets"
+    r"|\bid_(?:rsa|dsa|ecdsa|ed25519)|\.pem\b|\.key\b"  # NOBLIVION-72: the secret sources
     r"|\bgrep\b[^|;&\n]*\s(?:-[A-Za-z]*[rR]|--recursive|--dereference-recursive|-d\s*recurse)"
     r"|(?:^|[\s/=])\.[^\s/=*?\[]*[*?\[]"  # a glob on a hidden name: ``.g*/conf*``
 )
@@ -1819,14 +1828,24 @@ def _credential_check(
             return None
     elif tool == "Read":
         fp = str(ti.get("file_path") or "")
-        if os.path.basename(fp) not in (
-            "config",
-            "config.worktree",
-            ".git-credentials",
-            "credentials",
-            ".gitconfig",
-            "gitconfig",
-        ) and not os.path.islink(os.path.join(cwd, fp)):
+        base = os.path.basename(fp)
+        if (
+            base
+            not in (
+                "config",
+                "config.worktree",
+                ".git-credentials",
+                "credentials",
+                ".gitconfig",
+                "gitconfig",
+                "config.json",
+                ".netrc",
+            )
+            and not base.startswith((".env", "id_"))
+            and not base.endswith((".pem", ".key"))
+            and "/run/secrets/" not in fp
+            and not os.path.islink(os.path.join(cwd, fp))
+        ):
             return None  # a link is checked by its target
     elif str(ti.get("output_mode") or "files_with_matches") != "content":
         return None
@@ -1835,19 +1854,42 @@ def _credential_check(
         if not cg.guard_on(env):
             return None
         strip = _gt().without_heredoc_bodies if tool == "Bash" else None
-        got = cg.decide(tool, ti, cwd, strip=strip)
+        sources = cg.sources_on(env)
+        found = cg.decide_finding(tool, ti, cwd, strip=strip, sources=sources)
+        if found is None:
+            return None
+        text = (
+            ti.get("command") if tool == "Bash" else (ti.get("file_path") or ti.get("path") or "")
+        )
+        text = text if isinstance(text, str) else ""
+        text_of = lambda: cg.scrub(redact(log_head(text)))  # noqa: E731
+        why = cg.reason(found, tool)
+        if found.source and tool == "Bash":
+            # NOBLIVION-72: a secret source takes the override; a git URL never does
+            marker, seen = override_marker(text)
+            if marker:
+                url = cg.decide_finding(tool, ti, cwd, strip=strip, sources=False)
+                if url is None:
+                    return Decision(
+                        "",
+                        None,
+                        None,
+                        ("credential-override", ["credential-source"]),
+                        extra={"what": found.what, "reason": redact_reason(marker)},
+                        log_text=text_of,
+                    )
+                found, why = url, cg.reason(url, tool)
+            elif seen:
+                why += "\n" + BAD_MARKER_LINE
     except Exception:  # noqa: BLE001 - the guard fails open
         return None
-    if got is None:
-        return None
-    text = ti.get("command") if tool == "Bash" else (ti.get("file_path") or ti.get("path") or "")
     return Decision(
-        _out(deny=got[0]),
+        _out(deny=why),
         None,
         None,
-        ("credential-deny", ["credential-url"]),
-        extra={"what": got[1]},
-        log_text=lambda: cg.scrub(redact(log_head(text))),
+        ("credential-deny", ["credential-source" if found.source else "credential-url"]),
+        extra={"what": found.what},
+        log_text=text_of,
     )
 
 

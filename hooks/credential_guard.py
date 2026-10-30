@@ -68,11 +68,25 @@ f; do cat "$f"; done``). The guard reads the command text; it does not run it.
 The deny reason never holds the URL, the user name or the secret, and there is
 no override marker: a scrubbed form always exists. Every error fails open
 (allow).
+
+Secret sources (NOBLIVION-72). The guard also denies a call that would print a
+file from a closed list: ``.env*`` (not a template), ``~/.aws/credentials``,
+``~/.netrc``, ``~/.docker/config.json``, ``~/.kube/config``, a private key file,
+a file in ``/run/secrets``, and a bare ``env`` or ``printenv``. A file counts when
+it exists and holds something. A print command that names it is denied; a counting
+``grep``, ``wc`` and ``sed -i`` are not. A secret source inside ``$( )`` is denied
+only when ``echo`` or ``printf`` holds the ``$( )``: a variable or an argument keeps
+the value out of the context. The deny text is short and gives one safe form. Unlike
+a git URL, a secret source takes the ``# guard-ok: <reason>`` override of the hook
+(``guard_hook._credential_check``). Off with ``NOBLIVION_GUARD_CREDENTIAL_SOURCES=0``.
+Not covered: a copy, a variable that holds the value, a backtick substitution,
+``set``, ``export -p``, ``declare -p``, ``find -exec``.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import glob
 import itertools
 import os
 import re
@@ -82,6 +96,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Callable, List, Optional, Tuple
 
 ENV_SWITCH = "NOBLIVION_GUARD_CREDENTIAL"  # on unless off (hook_config.switch)
+ENV_SOURCES = (
+    "NOBLIVION_GUARD_CREDENTIAL_SOURCES"  # the secret sources of NOBLIVION-72 only; on unless off
+)
 PROBE_TIMEOUT_S = 0.6
 WALK_MAX_DIRS = (
     3000  # a recursive grep deeper or wider than this is a design limit (RESULT-V2-FU3 L6)
@@ -124,6 +141,11 @@ def guard_on(env: Mapping[str, str]) -> bool:
     return bool(_hook_config().switch(ENV_SWITCH, True, env))
 
 
+def sources_on(env: Mapping[str, str]) -> bool:
+    """On unless ``NOBLIVION_GUARD_CREDENTIAL_SOURCES`` is off. Turns off the secret sources only."""
+    return bool(_hook_config().switch(ENV_SOURCES, True, env))
+
+
 def credential_url(text: object) -> bool:
     """True when ``text`` holds a URL whose userinfo is a credential."""
     for m in _URL.finditer(str(text or "")):
@@ -153,6 +175,10 @@ class Probe:
         self._cfg: dict = {}
         self._files: dict = {}
         self.copies: dict = {}  # a copy made earlier in the same command -> the credential file it copies
+        self.sources = (
+            True  # look for the secret sources too (``secret_source``); False: git URLs only
+        )
+        self.named: dict = {}  # (folder, word) -> the secret sources that the word names
 
     def config_entries(
         self, cwd: str, git_dir: Optional[str], scope: Sequence[str]
@@ -481,8 +507,14 @@ def tokens(command: str) -> List[str]:
     return out
 
 
+TO_FILE = "\x00stdout-to-file"  # marker word: this stage writes stdout to a file (``> out``): it prints nothing
 TO_STDERR = "\x00stdout-to-stderr"  # marker word: this stage copies stdout to stderr (``>&2``)
 FROM_FILE = "\x00stdin-from:"  # marker word, the file name follows: this stage reads its stdin from a file (``<``)
+
+
+def _plain(words: Iterable[str]) -> List[str]:
+    """The words of a stage without the redirect markers."""
+    return [x for x in words if x != TO_STDERR and x != TO_FILE]
 
 
 def pipelines(toks: List[str]) -> List[List[List[str]]]:
@@ -507,6 +539,12 @@ def pipelines(toks: List[str]) -> List[List[List[str]]]:
                 or (t in (">", ">>", ">|") and target == "/dev/stderr")
             ):
                 stage.append(TO_STDERR)
+            elif (
+                fd in ("", "1")
+                and t in (">", ">>", ">|", "&>")
+                and target not in ("", "/dev/stdout", "/dev/tty")
+            ):
+                stage.append(TO_FILE)
             if t == "<" and target and not set(target) <= _PUNCT:
                 stage.append(FROM_FILE + target)
             skip = True
@@ -948,7 +986,7 @@ def _scrubbed_after(pipe: List[List[str]], si: int, samples: Sequence[str] = ())
     if TO_STDERR in pipe[si]:
         return False
     for words in pipe[si + 1 :]:
-        if _safe_sink([x for x in words if x != TO_STDERR], samples):
+        if _safe_sink(_plain(words), samples):
             return True
         w, _ = unwrap(words)
         if TO_STDERR in words or not w or os.path.basename(w[0]) not in _PASS_THROUGH:
@@ -1214,6 +1252,8 @@ class Finding:
     in memory to test a later scrub stage (never printed, never logged)."""
 
     open_path = False  # the file is named by a variable, ``$( )`` or backticks: it is a guess
+    source = False  # a secret source (NOBLIVION-72), not a git URL: ``# guard-ok`` can override it
+    form = ""  # the one safe form, for a secret source
 
     def __init__(
         self, what: str, repo: str, cfg: str = "", samples: Sequence[str] = (), stderr: bool = False
@@ -1712,6 +1752,254 @@ def _open_read(
     return None
 
 
+# --------------------------------------------------------------------------
+# NOBLIVION-72: more secret sources (a closed list; ``# guard-ok`` can override)
+# --------------------------------------------------------------------------
+SECRETS_DIR = "/run/secrets"  # a module value so that a test can point it at a tmp folder
+_ENV_NAME = re.compile(r"^\.env(\..+)?$")
+_ENV_TEMPLATE = (".example", ".sample", ".template", ".dist", ".defaults", ".tpl", ".tmpl")
+_KEY_NAMES = frozenset(
+    ("id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_ecdsa_sk", "id_ed25519_sk")
+)
+_KEY_SUFFIXES = (".pem", ".key")
+#: files under the home folder: (path from home, label)
+_HOME_SOURCES = (
+    (".aws/credentials", "the AWS credentials file"),
+    (".netrc", "the netrc file"),
+    (".docker/config.json", "the Docker config file"),
+    (".kube/config", "the kube config file"),
+)
+#: commands that print the files they name, besides ``_PRINT_OPTS`` and the greps
+_SRC_PRINTERS = frozenset(
+    (
+        *_PRINT_OPTS,
+        *_GREPS,
+        "cut",
+        "sort",
+        "uniq",
+        "tr",
+        "paste",
+        "column",
+        "fold",
+        "rev",
+        "xxd",
+        "od",
+        "hexdump",
+        "strings",
+        "base64",
+        "diff",
+        "comm",
+        "jq",
+        "yq",
+    )
+)
+_SRC_INTERP = re.compile(r"^(?:python[0-9.]*|perl|ruby|node|php|lua)$")
+_SRC_IN_WORD = re.compile(
+    r"(?:~|[\w./+@-])*(?:\.env(?:\.[\w-]+)*|\.netrc|\.aws/credentials|\.docker/config\.json"
+    r"|\.kube/config|id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|/run/secrets/[\w.-]+)(?![\w-])"
+)
+SRC_WORDS_MAX = 2000  # different words of one command that are tested against the list
+_SRC_NAMES = frozenset(("credentials", "config", "config.json", ".netrc"))
+
+
+def _source_label(p: str) -> str:
+    base = os.path.basename(p)
+    if _ENV_NAME.match(base) and not base.endswith(_ENV_TEMPLATE):
+        return "an .env file"
+    home = os.path.expanduser("~")
+    for rel, label in _HOME_SOURCES:
+        want = os.path.join(home, rel)
+        if p in (want, os.path.realpath(want)):
+            return label
+    if p.startswith(SECRETS_DIR.rstrip(os.sep) + os.sep):
+        return "a mounted secret"
+    if base in _KEY_NAMES or base.endswith(_KEY_SUFFIXES):
+        try:
+            with open(p, "rb") as fh:
+                if b"PRIVATE KEY-----" in fh.read(4096):
+                    return "a private key file"
+        except OSError:
+            pass
+    return ""
+
+
+def secret_source(path: str) -> str:
+    """The label of the secret source that ``path`` names, else ``""``. Only a regular file that holds
+    something counts: a path that does not exist, a folder, an empty file, a template such as
+    ``.env.example`` and a public key print no secret. A link counts by its own name or its target's."""
+    try:
+        real = os.path.realpath(path)
+        if not os.path.isfile(real) or os.path.getsize(real) == 0:
+            return ""
+        return _source_label(os.path.normpath(path)) or _source_label(real)
+    except (OSError, ValueError):
+        return ""
+
+
+def _source_finding(label: str, path: str, cwd: str) -> Finding:
+    shown = _display(cwd, path)
+    f = Finding(label, ".", shown)
+    f.source, f.form = True, f"grep -c '^NAME=' {shlex.quote(shown)}"
+    return f
+
+
+def _sources_under(root: str, hidden: bool = True) -> List[str]:
+    """The secret sources in ``root`` (a file or a tree), bounded walk. With ``hidden`` False the
+    files in a hidden folder and hidden files are left out (the search of ``rg`` without ``--hidden``)."""
+    if not os.path.isdir(root):
+        return [root] if secret_source(root) else []
+    found: List[str] = []
+    seen = 0
+    base = root.rstrip(os.sep).count(os.sep)
+    for d, dirs, files in os.walk(root):
+        seen += 1
+        if seen > WALK_MAX_DIRS:
+            break
+        for name in files:
+            cheap = name.startswith(".env") or name in _SRC_NAMES or name in _KEY_NAMES
+            cheap = cheap or name.endswith(_KEY_SUFFIXES) or d.startswith(SECRETS_DIR)
+            if (
+                cheap
+                and (hidden or not name.startswith("."))
+                and secret_source(os.path.join(d, name))
+            ):
+                found.append(os.path.join(d, name))
+        if d.count(os.sep) - base >= WALK_MAX_DEPTH:
+            dirs[:] = []
+        dirs[:] = [
+            x
+            for x in dirs
+            if x not in (".git", "node_modules", "__pycache__", ".venv", "venv", ".cache", ".npm")
+            and (hidden or not x.startswith("."))
+        ]
+    return found
+
+
+def _named_sources(cwd: str, words: Iterable[str], probe: Probe) -> List[str]:
+    """The secret sources that the words name: also through a brace list or a glob. A word is judged once
+    (a hostile command repeats one), and at most ``SRC_WORDS_MAX`` different words are judged."""
+    out: List[str] = []
+    for word in words:
+        if not word or word.startswith("-") or len(word) > EXPAND_MAX:
+            continue
+        key = (cwd, word)
+        if key not in probe.named:
+            if len(probe.named) >= SRC_WORDS_MAX:
+                continue
+            found: List[str] = []
+            for part in _braces(word):
+                p = _resolve(cwd, part)
+                for c in glob.glob(p)[:GLOB_MAX] if any(ch in part for ch in "*?[") else [p]:
+                    if secret_source(c) and c not in found:
+                        found.append(c)
+            probe.named[key] = found
+        out += [c for c in probe.named[key] if c not in out]
+    return out
+
+
+def _env_finding() -> Finding:
+    f = Finding("the whole environment", ".")
+    f.source, f.form = True, "env | grep -c '^NAME='"
+    return f
+
+
+def _only_reveals(lines: Sequence[str], grep: dict) -> bool:
+    """True when ``grep -o`` can print a value of the file. It prints only the matched parts, so a pattern
+    that ends at the ``=`` of a line (``^[A-Z_]+=``) prints names only. A line with no ``=`` counts whole."""
+    rxs = []
+    for p in grep["patterns"]:
+        src = re.escape(p) if grep["fixed"] else (_bre_to_py(p) if grep["basic"] else p)
+        try:
+            rxs.append(re.compile(src, re.I if grep["icase"] else 0))
+        except re.error:
+            return True
+    for line in lines:
+        eq = line.find("=")
+        for r in rxs:
+            for m in r.finditer(line):
+                if m.end() > m.start() and (eq < 0 or m.end() > eq + 1):
+                    return True
+    return False
+
+
+def _source_stage(
+    orig: List[str], w: List[str], cwd: str, probe: Probe, extra: Sequence[str] = ()
+) -> Optional[Finding]:
+    """A stage that prints a secret source: a bare ``env`` or ``printenv``, a print command (``cat``, ``grep``,
+    ``cut`` ...) with a secret file among its words or its stdin file, an interpreter that names one.
+    ``orig``: the stage words before ``unwrap``. A counting grep and ``wc`` print no value."""
+    if not probe.sources:
+        return None
+    while orig and orig[0] in _KEYWORDS:
+        orig = orig[1:]  # ``do cat $f``: the loop keyword is not the command
+    while w and w[0] in _KEYWORDS:
+        w = unwrap(w[1:])[0]
+    if not w:
+        return _env_finding() if any(os.path.basename(x) == "env" for x in orig) else None
+    name = os.path.basename(w[0])
+    if name == "printenv" and not [a for a in w[1:] if not a.startswith("-")]:
+        return _env_finding()
+    if _safe_sink(w):
+        return None
+    if name == "sed" and any(re.match(r"^-[A-Za-z]*i|^--in-place", a) for a in w[1:]):
+        return None  # sed -i prints nothing
+    hits: List[str] = []
+    grep = None
+    if _SRC_INTERP.match(name):
+        for word in [*w[1:], *extra]:
+            for m in _SRC_IN_WORD.finditer(word):
+                hits += _named_sources(cwd, [m.group(0)], probe)
+    elif name in _SRC_PRINTERS:
+        words = [*w[1:], *extra]
+        if name in _GREPS:
+            grep = _grep_parse(w)
+            if grep["quiet"]:
+                return None
+            words = [*grep["paths"], *extra]
+            if grep["recursive"]:
+                for r in grep["paths"] or ["."]:
+                    hits += _sources_under(_resolve(cwd, r), not grep["rg"] or grep["hidden"])
+        hits += _named_sources(cwd, words, probe)
+    for c in dict.fromkeys(hits):
+        lines = probe.file_lines(c)
+        if grep is not None and not grep["pfile"]:
+            body = [i for i, line in enumerate(lines) if line.strip()]
+            if grep["only"] and not (grep["invert"] or grep["before"] or grep["after"]):
+                if not _only_reveals(lines, grep):
+                    continue
+            elif not would_emit(
+                lines,
+                body,
+                grep["patterns"],
+                fixed=grep["fixed"],
+                basic=grep["basic"],
+                icase=grep["icase"],
+                invert=grep["invert"],
+                word=grep["word"],
+                whole=grep["whole"],
+                before=grep["before"],
+                after=grep["after"],
+            ):
+                continue
+        return _source_finding(secret_source(c), c, cwd)
+    return None
+
+
+#: commands that print what they read on stdin (a secret source that goes through them is shown)
+_SRC_FILTERS = frozenset((*_SRC_PRINTERS, "tee", "xargs", "echo", "printf"))
+
+
+def _source_consumed(pipe: List[List[str]], si: int) -> bool:
+    """True when what stage ``si`` prints does not reach the screen: a later stage writes its output to a
+    file, or is a program that is not a plain filter (``python3``, ``curl``, ``sudo ...``): it reads the value
+    and prints something else. A program that prints its own input is not followed."""
+    for words in pipe[si + 1 :]:
+        w, _ = unwrap(_plain(words))
+        if TO_FILE in words or not w or os.path.basename(w[0]) not in _SRC_FILTERS:
+            return True
+    return False
+
+
 def check_bash(
     command: str,
     cwd: str,
@@ -1732,19 +2020,32 @@ def check_bash(
     shell = _Shell()
     for m in _SUBST.finditer(command):  # $( ) and backticks, also inside double quotes
         inner = m.group(1) if m.group(1) is not None else m.group(2)
-        f = check_bash(inner or "", cwd, probe, depth + 1)
+        # a secret source inside is judged below, where the command that holds the ``$( )`` is known
+        saved, probe.sources = probe.sources, False
+        try:
+            f = check_bash(inner or "", cwd, probe, depth + 1)
+        finally:
+            probe.sources = saved
         if f is not None:
             return f
     # the folder and the two log lengths before each ``$( )`` that is open
     outer: List[Tuple[str, int, int]] = []
+    # Secret sources found inside a ``$( )``: the output goes to the command that holds it. A variable
+    # (``T=$(grep ^T= .env | cut -d= -f2)``) or an argument keeps the value out of the context, so only
+    # ``echo`` and ``printf`` make it a finding (NOBLIVION-72). ``held``: per open ``$( )``; ``carried``:
+    # what the ``$( )`` that just closed found, for the pipeline that holds it.
+    held: List[List[Finding]] = []
+    carried: List[Finding] = []
     for marked in _in_order(_MKTEMP.sub(NEW_FILE, command)):
         if marked is True:
             outer.append((here, len(shell.log), len(exported.log)))
+            held.append([])
             continue
         if marked is False:  # a ``cd`` or a variable set inside ``$( )`` ends with it
             here, n_shell, n_exported = outer.pop()
             shell.back(n_shell)
             exported.back(n_exported)
+            carried += held.pop()
             continue
         stages = [_expand(words, shell) for words in marked]
         pipe = [st[0] for st in stages]
@@ -1756,11 +2057,18 @@ def check_bash(
                     shell[x.partition("=")[0].rstrip("+")] = None
         first: Optional[Tuple[int, Finding]] = None
         for si, words in enumerate(pipe):
-            w, assigns = unwrap([x for x in words if x != TO_STDERR])
+            w, assigns = unwrap(_plain(words))
             files, opened, alts = stages[si][1:]
             if not w and files and not assigns:
                 w = ["cat"]  # ``$(< file)`` prints the file
             if not w:
+                f = None if TO_FILE in words else _source_stage(_plain(words), w, here, probe)
+                if f is not None and _source_consumed(pipe, si):
+                    f = None
+                if f is not None and outer:
+                    held[-1].append(f)
+                elif f is not None and first is None:
+                    first = (si, f)
                 continue
             name = os.path.basename(w[0])
             f = None
@@ -1777,8 +2085,23 @@ def check_bash(
                 f = _file_stage(w, here, probe, pipe[:si], [*files, *alts])
                 if f is None and opened:
                     f = _open_read(w, here, probe, files, opened)
-            if f is not None and first is None:
-                first = (si, f)
+                if f is None and TO_FILE not in words:  # ``cat .env > out`` prints nothing
+                    f = _source_stage(_plain(words), w, here, probe, [*files, *alts])
+            if f is not None and f.source and _source_consumed(pipe, si):
+                f = None
+            if f is not None and f.source and outer:
+                held[-1].append(f)
+            elif f is not None and (first is None or (first[1].source and not f.source)):
+                first = (si, f)  # a git URL comes before a secret source: it has no override
+        if carried:
+            for si, words in enumerate(pipe):
+                if os.path.basename((unwrap(words)[0] or [""])[0]) in ("echo", "printf"):
+                    if outer:
+                        held[-1].append(carried[0])
+                    elif first is None and not _source_consumed(pipe, si):
+                        first = (si, carried[0])
+                    break
+            carried = []
         if first is not None and (
             first[1].stderr or not _scrubbed_after(pipe, first[0], first[1].samples)
         ):
@@ -1811,7 +2134,8 @@ def check_read(
     p = _resolve(cwd, raw)
     if is_git_config(p) and probe.cred_lines(p):
         return _file_finding(probe, cwd, p, "Read of a git config file")
-    return None
+    label = secret_source(p) if probe.sources else ""
+    return _source_finding(label, p, cwd) if label else None
 
 
 def check_grep(
@@ -1823,7 +2147,7 @@ def check_grep(
         return None  # a git config file has no file type
     probe = probe or Probe()
     root = _resolve(cwd, str(ti.get("path") or "."))
-    glob = str(ti.get("glob") or "")
+    glob_ = str(ti.get("glob") or "")
     pat = str(ti.get("pattern") or "")
 
     def num(k: str) -> int:
@@ -1835,10 +2159,10 @@ def check_grep(
 
     ctx = num("-C") or num("context")
     for c in configs_under(root):
-        if glob and not (
-            fnmatch.fnmatch(os.path.basename(c), glob)
-            or fnmatch.fnmatch(c, glob)
-            or fnmatch.fnmatch(os.path.relpath(c, root), glob)
+        if glob_ and not (
+            fnmatch.fnmatch(os.path.basename(c), glob_)
+            or fnmatch.fnmatch(c, glob_)
+            or fnmatch.fnmatch(os.path.relpath(c, root), glob_)
         ):
             continue
         cred = probe.cred_lines(c)
@@ -1853,10 +2177,33 @@ def check_grep(
             after=max(num("-A"), ctx),
         ):
             return _file_finding(probe, cwd, c, "Grep of a git config file")
+    for c in _sources_under(root) if probe.sources else ():
+        if glob_ and not (
+            fnmatch.fnmatch(os.path.basename(c), glob_)
+            or fnmatch.fnmatch(c, glob_)
+            or fnmatch.fnmatch(os.path.relpath(c, root), glob_)
+        ):
+            continue
+        lines = probe.file_lines(c)
+        if ti.get("multiline") or would_emit(
+            lines,
+            [i for i, line in enumerate(lines) if line.strip()],
+            [pat],
+            icase=bool(ti.get("-i")),
+            before=max(num("-B"), ctx),
+            after=max(num("-A"), ctx),
+        ):
+            return _source_finding(secret_source(c), c, cwd)
     return None
 
 
 def reason(f: Finding, tool: str) -> str:
+    if f.source:  # NOBLIVION-72: about 300 characters, one safe form, the override named last
+        return (
+            f"Credential guard: this {tool} call would print {f.what}. Its values would enter the "
+            f"conversation.\nSafe form: {f.form}\nTo read the values on purpose, run the command in "
+            "Bash and end it with: # guard-ok: <reason>"
+        )
     repo = f.repo or "."
     lines = [
         f"Credential guard: this {tool} call ({f.what}) would put a git URL that holds a "
@@ -1879,13 +2226,18 @@ def reason(f: Finding, tool: str) -> str:
     return "\n".join(lines)
 
 
-def decide(
-    tool: str, ti: Mapping[str, object], cwd: str, strip: Optional[Callable[[str], str]] = None
-) -> Optional[Tuple[str, str]]:
-    """``(deny reason, what)`` when the call would print a credential URL, else None.
-    Every error is an allow."""
+def decide_finding(
+    tool: str,
+    ti: Mapping[str, object],
+    cwd: str,
+    strip: Optional[Callable[[str], str]] = None,
+    sources: bool = True,
+) -> Optional[Finding]:
+    """What the call would reveal, else None. ``sources`` False: git URLs only (the check after a
+    ``# guard-ok`` override of a secret source). Every error is an allow."""
     try:
         probe = Probe()
+        probe.sources = sources
         f: Optional[Finding] = None
         if tool == "Bash":
             cmd = ti.get("command")
@@ -1895,8 +2247,18 @@ def decide(
             f = check_read(ti, cwd, probe)
         elif tool == "Grep":
             f = check_grep(ti, cwd, probe)
-        if f is None:
-            return None
-        return reason(f, tool), f.what
+        return f
+    except Exception:  # noqa: BLE001 - the guard fails open
+        return None
+
+
+def decide(
+    tool: str, ti: Mapping[str, object], cwd: str, strip: Optional[Callable[[str], str]] = None
+) -> Optional[Tuple[str, str]]:
+    """``(deny reason, what)`` when the call would print a credential URL or a secret source, else None.
+    Every error is an allow."""
+    try:
+        f = decide_finding(tool, ti, cwd, strip)
+        return None if f is None else (reason(f, tool), f.what)
     except Exception:  # noqa: BLE001 - the guard fails open
         return None

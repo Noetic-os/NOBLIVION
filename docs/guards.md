@@ -537,7 +537,9 @@ for these names, the paths of the notes outside the project folder.
 ## The credential guard
 
 The credential guard runs first, before the rule checks. It blocks a
-command that would print a git URL with a password or a token in it.
+command that would print a git URL with a password or a token in it. It
+also blocks a call that would print a file from a closed list of secret
+sources (see "Secret sources" below).
 
 - It covers `git remote -v`, `git remote show`, `git remote get-url`,
   `git ls-remote` with no remote, `git config --list` and `--get`,
@@ -578,10 +580,54 @@ then uses this rule for `cat`, `tac`, `nl`, `head`, `tail`, `less`, `more`,
 
 `$(mktemp)` always passes, because it names a new file.
 
+### Secret sources
+
+The guard also blocks a Bash, Read or Grep call that would print one of
+these files. A file counts only when it exists and holds something.
+
+| Source | What counts |
+| --- | --- |
+| `.env` files | `.env` and `.env.<name>` in any folder. Not a template: `.env.example`, `.env.sample`, `.env.template`, `.env.dist`. |
+| Cloud and registry files | `~/.aws/credentials`, `~/.netrc`, `~/.docker/config.json`, `~/.kube/config` |
+| Private keys | `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`, any `*.pem` and `*.key` file whose first 4 KB hold `PRIVATE KEY-----`. A public key or a certificate passes. |
+| Mounted secrets | Any file in `/run/secrets` |
+| The environment | A bare `env` or `printenv`, with no command and no name. `printenv HOME` and `env FOO=1 cmd` pass. |
+
+- A print command that names such a file is blocked: `cat`, `head`, `tail`,
+  `less`, `sed`, `awk`, `cut`, `sort`, `base64`, `xxd`, `diff`, `jq`, and an
+  interpreter one-liner that names the file. The name can be a glob, a brace
+  list, standard input or a variable that the command sets.
+- A `grep` is blocked when it can print a line of the file. `grep -c`,
+  `grep -q`, `grep -l`, `wc` and a pattern that matches no line pass. So does
+  `sed -i`. A counting `grep` or `wc` later in the pipe passes too:
+  `env | grep -c '^NAME='`.
+- The output of a `$( )` that goes into a variable or an argument does not
+  reach the model, so `TOKEN=$(grep ^TOKEN= .env | cut -d= -f2)` passes. A
+  `$( )` inside `echo` or `printf` is blocked.
+- The deny text is about 300 characters. It gives one safe form,
+  `grep -c '^NAME=' FILE` (or `env | grep -c '^NAME='`), and the override.
+- Override. End a Bash command with `# guard-ok: <reason>` to read a secret
+  source on purpose. The guard logs `credential-override`. The Read and Grep
+  tools cannot carry the marker: run the read in Bash. The git URL part of the
+  guard has no override, also in a command that holds both: the marker then
+  lets the secret source pass and the git URL still blocks.
+- Measure before you rely on it: `python tools/replay_credential_sources.py
+  "<transcripts glob>"` runs the Bash, Read and Grep calls of local
+  transcripts through this check and prints counts only (no command, no path,
+  no value). On 226,107 calls from one user it gave 0.15 % would-deny calls.
+- Turn this part off with `NOBLIVION_GUARD_CREDENTIAL_SOURCES=0`. The git URL
+  part stays on.
+- Limits. The guard does not follow a copy (`cp .env x; cat x`), a variable
+  that holds the value (`x=$(cat .env); echo $x`), a path in a variable it
+  does not know, a backtick substitution, `set`, `export -p`, `declare -p`,
+  or `find -exec cat`. A command whose output goes to a file (`env > out`)
+  passes, so a later `cat out` is not seen either.
+
 The guard has these limits:
 
-- It covers git URLs only. It does not cover other secrets. `printenv`,
-  `cat .env` and `cat ~/.aws/credentials` pass.
+- The git URL part covers git URLs only. Other secrets are covered only
+  through the closed list of secret sources below. A secret in a file or
+  a command that is not on the list passes.
 - It reads the command text. It does not run the command. It cannot follow
   a path that a program builds, for example `python3 -c` with a path made
   from parts. Such a read is not blocked.
@@ -692,7 +738,7 @@ tool, the check does not fire and the log row notes `notify_skipped`.
 
 | Guard | How |
 | --- | --- |
-| Credential guard | `NOBLIVION_GUARD_CREDENTIAL=0` |
+| Credential guard | `NOBLIVION_GUARD_CREDENTIAL=0`. The secret sources only: `NOBLIVION_GUARD_CREDENTIAL_SOURCES=0` |
 | Label rows | `NOBLIVION_GUARD_LABELS=0` |
 | Rewrite, ask, shadow | They are off by default. Unset `NOBLIVION_GUARD_REWRITE`, `NOBLIVION_GUARD_ASK` and `NOBLIVION_GUARD_ACT_SHADOW`. |
 | Weak-trigger check | `NOBLIVION_GUARD_WEAK_SHARE=0` |

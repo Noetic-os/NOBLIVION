@@ -61,6 +61,18 @@ All notable changes to NOBLIVION. The format follows
   session points left 160 jobs, 9,120 rows and 7.5 MB; this change leaves 20 jobs, 0 job-source rows
   (20 range rows) and 5.6 MB, which is the source text. The decision to remove the loop is open
   until 30 days of yield data.
+- The credential guard covers more secret sources (NOBLIVION-72). Besides git URLs, it denies a Bash, Read or
+  Grep call that would print a file from a closed list: `.env*` (not a template such as `.env.example`),
+  `~/.aws/credentials`, `~/.netrc`, `~/.docker/config.json`, `~/.kube/config`, a private key file, a file in
+  `/run/secrets`, and a bare `env` or `printenv`. A counting `grep`, `wc`, `sed -i`, a write to a file, and a
+  `$( )` that goes into a variable or an argument (`T=$(grep ^T= .env | cut -d= -f2)`) pass. The new class
+  takes a `# guard-ok: <reason>` override in Bash and logs `credential-override`; a git URL still has no
+  override, also in a command that holds both. The deny text is about 300 characters with one safe form
+  (`grep -c '^NAME=' FILE`); the git URL text is unchanged. `NOBLIVION_GUARD_CREDENTIAL_SOURCES=0` turns off
+  the new class only. The measure: a replay of 226,107 Bash, Read and Grep calls (2,822 local transcripts, no
+  model call, counts only) through the hook code gives 337 would-deny calls (0.15 %, 233 different calls)
+  when a grep counts only if its pattern matches a line of a typical file, and 1,259 (0.56 %) when every grep
+  that can print counts. The check takes 0.2 ms at the median and 6.4 ms at p99. New: `tools/replay_credential_sources.py`.
 - Remove the transcript miner (NOBLIVION-154). The SessionEnd hook, the Codex SessionEnd mine step, the
   `noblivion mine` command, its documentation page and its settings table are gone. Error recall no longer
   asks the store for mined rows, so `fused` and `store` modes show memory files only. The measure: a
