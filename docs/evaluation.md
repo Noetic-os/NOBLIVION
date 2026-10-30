@@ -20,6 +20,60 @@ this fictional fixture. After a
 held-out result has influenced tuning, retire that split and freeze a new one.
 The public synthetic held-out fixture verifies the evaluation pipeline only.
 
+## Zero-token suite
+
+`tools/eval_suite.py` runs every replay and cost check on one build, on a scratch store, and makes no
+model call. Use it to measure a change before and after:
+
+```bash
+python tools/eval_suite.py run --out before --freeze-inputs
+# change the code
+python tools/eval_suite.py run --out after --inputs before/inputs
+python tools/eval_suite.py compare before/result.json after/result.json
+```
+
+`run` writes `result.json` and `summary.txt`. `--freeze-inputs` keeps a private copy of the chosen
+transcripts and of the guard log under `--out/inputs`, so the second run replays the same input. Give
+`--plugin-root DIR` to measure another tree of the plugin, for example an export of a release.
+
+| Section | What it replays | What it reports |
+|---|---|---|
+| `prompt_rows` | Every prompt event of the transcripts, through the prompt hook, with the release settings and with the three settings of the prompt path off | Characters, rows and hub share per typed prompt, characters per hook event, the numbers of the prompt path acceptance (`acceptance_121`) |
+| `guard_log` | The lines of `guard-log.jsonl`, through the guard hook | Denies kept, what each logged decision becomes |
+| `guard_calls` | Every tool call of the transcripts, through the guard hook | Share of calls with text, characters per call. A row on a call that showed nothing before is seen here and not in `guard_log` |
+| `error_recall` | Every Bash result of the transcripts | Decisions, shows, characters |
+| `subagent` | Every Agent call | Shows, rows, characters |
+| `offtopic` | `tools/eval/offtopic_prompts.json` | False delivery: the share of prompts with a row |
+| `keyword_mode` | The real prompts, the off-topic prompts and the test 4 prompts, on the store with no embedder | The same, in keyword mode |
+| `gate0`, `test4` | Frozen delivery cases, given with `--bench DIR` | Each case and slot, passed or not |
+| `mcp_listing` | Two starts of the MCP server | Whether `tools/list` and the instructions are stable, and their size |
+| `cost` | The hook text in the transcripts, and the replays above | Characters and re-sent tokens by hook, the plugin share of input tokens |
+| `hook_time` | Every hook of `hooks/hooks.json`, started cold | Milliseconds by hook, wait per event, hook wait per turn |
+
+Re-sent tokens are characters / 4 times the later API calls of the same transcript. This is an upper
+bound, because it ignores compaction. Hook wait comes from cold starts on a scratch data folder with
+learning off, so it is lower than the wait of an install that has learning on.
+
+The inputs of `gate0` and `test4` hold real notes, so they stay outside the repository. Without
+`--bench`, or when its folder is absent, the run prints a message and skips both sections. `compare`
+then gives no delivery verdict. Its exit codes are 0 for delivery not lower, 1 for a case or slot that
+passed before and does not pass now, and 2 for no verdict: a section that ran before is missing now, a
+later section failed, or the inputs differ.
+
+`run` exits 3 when a section is `degraded` or `error`. A hook fails open, so a store that is down
+prints nothing, and nothing must not read as a gain. The replays run the hooks in the suite's process,
+so they cannot drift from the hook code. Only `hook_time` starts processes, because the start of a
+process is part of the wait it measures.
+
+The scratch `HOME` keeps the suite away from the credential files that the guard reads. The default
+shared root comes from `HOME`, so the scratch config names the root of the real home folder
+(`recall.shared_roots`). If a build changes the default rule for that root, set the key with
+`--config`.
+
+The result holds counts and note names, never a prompt, a command or a note text. Note names are
+private, so `--out` is mode 0700 and its files are mode 0600. The live data folder is read for
+`guard-log.jsonl`, `models` and `venv/bin/python` only.
+
 ## Thresholds
 
 1. Use `uv run python tools/eval_thresholds.py --mode tune` for tuning curves.

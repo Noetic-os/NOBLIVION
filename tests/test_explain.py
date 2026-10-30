@@ -226,6 +226,29 @@ def test_chunk_budget_refuses_instead_of_partial_explanation(store, monkeypatch)
         explain.explain("zebra", folder=folder, root="-proj-alpha", env={})
 
 
+def test_a_store_over_10000_chunks_is_explained(tmp_path):
+    """NOBLIVION-145: the old limit refused a real store of 10,406 chunks. The time
+    limit bounds the work and the answer holds MAX_CANDIDATES rows."""
+    folder = tmp_path / "data"
+    conn = db.open_db(folder / config.DB_FILE, create=True)
+    mid = add_memory(conn, "wanted-title", "quokka rollback of the billing tables")
+    rows = [(mid, i, "", "filler text", f"filler word{i % 97}", 1) for i in range(1, 10_500)]
+    with db.write_tx(conn):
+        conn.executemany(
+            "INSERT OR IGNORE INTO memory_chunks"
+            " (parent_id, chunk_index, heading, text, search_text, rev) VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+    chunks = conn.execute("SELECT count(*) FROM memory_chunks").fetchone()[0]
+    conn.close()
+    assert chunks > 10_000
+    result = explain.explain(
+        "quokka rollback", folder=folder, root="-proj-alpha", env={}, seconds=10
+    )
+    assert result["status"] == "ok"
+    assert [r["id"] for r in result["candidates"]] == [mid]
+
+
 # NOBLIVION-132: a root is a folder slug and starts with a dash.
 def run_explain(store, monkeypatch, capsys, *argv):
     monkeypatch.setenv("NOBLIVION_DATA_DIR", str(store[0]))

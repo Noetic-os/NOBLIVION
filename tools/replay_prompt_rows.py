@@ -47,6 +47,7 @@ import re
 import statistics
 import sys
 import tempfile
+import time
 import types
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -57,6 +58,7 @@ TOOLS = Path(__file__).resolve().parent
 HOOKS = TOOLS.parent / "hooks"
 LABEL_HEADER = "Memory rows by subject (label rows)"
 ROW_RE = re.compile(r"^- \[id (\d+)\] .*\((?P<name>[^()]*)\)$")
+ANY_ROW_RE = re.compile(r"^- \[id (?P<id>\d+)\] ")
 LABEL_RE = re.compile(r"^- Memory (?P<name>\S+)")
 TOP = 8
 
@@ -69,6 +71,29 @@ def _load(path: Path, alias: str) -> types.ModuleType:
     sys.modules[alias] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+def prompt_event(rt: types.ModuleType, rec: Mapping[str, Any], signals: Any) -> tuple | None:
+    """``(text, kind)`` of a record Claude Code runs the prompt hook for, or None.
+    ``typed`` is what ``prompt_text`` accepts: the prompts a person wrote. The hook
+    also runs for a ``notification`` (a task notification sent as a user message)
+    and for a ``queued`` prompt (one delivered as an attachment while the model
+    was busy), so a cost count needs them too."""
+    text = rt.prompt_text(rec, signals)
+    if text is not None:
+        return text, "typed"
+    if rec.get("type") == "attachment":
+        att = rec.get("attachment") or {}
+        if att.get("type") == "queued_command":
+            text = signals._text_blocks(att.get("prompt"))
+            return (text, "queued") if isinstance(text, str) and text.strip() else None
+        return None
+    if rec.get("type") != "user" or rec.get("isMeta") or rec.get("isSidechain"):
+        return None
+    text = signals._text_blocks((rec.get("message") or {}).get("content"))
+    if isinstance(text, str) and text.lstrip().startswith("<task-notification"):
+        return text, "notification"
+    return None
 
 
 def parse_arm(text: str) -> tuple[str, dict[str, str]]:
@@ -86,12 +111,15 @@ def parse_arm(text: str) -> tuple[str, dict[str, str]]:
 
 
 def shown_names(output: str) -> list[str]:
-    """The note names on the rows of one hook output: index rows and label rows."""
+    """The note names on the rows of one hook output: index rows and label rows.
+    A row whose name holds parentheses still counts, under its id."""
     names: list[str] = []
     for line in output.splitlines():
         m = ROW_RE.match(line) or LABEL_RE.match(line)
         if m:
             names.append(m.group("name"))
+        elif ANY_ROW_RE.match(line):
+            names.append("id-" + ANY_ROW_RE.match(line).group("id"))
     return names
 
 
@@ -170,8 +198,11 @@ def run_arm(
     name: str,
     memory_dir: str,
     births: Mapping[str, _dt.datetime] | None,
+    every_event: bool = False,
 ) -> list[dict[str, Any]]:
-    """Every prompt of ``paths`` through a fresh copy of the prompt hook."""
+    """Every prompt of ``paths`` through a fresh copy of the prompt hook. With
+    ``every_event`` also the notifications and queued prompts (``prompt_event``);
+    one text is one event, because a notification can be recorded twice."""
     arm_dir = work / name
     arm_dir.mkdir(parents=True, exist_ok=True)
     env = dict(base_env)
@@ -199,17 +230,24 @@ def run_arm(
     out: list[dict[str, Any]] = []
     for path in paths:
         sid = Path(path).stem
+        seen: set[str] = set()
         for rec in rt.read_jsonl(path):
-            text = rt.prompt_text(rec, signals)
-            moment = rt._iso(str(rec.get("timestamp") or "")) if text is not None else None
-            if text is None or moment is None:
+            hit = prompt_event(rt, rec, signals)
+            if hit is None or (hit[1] != "typed" and not every_event):
                 continue
+            text, kind = hit
+            moment = rt._iso(str(rec.get("timestamp") or ""))
+            if moment is None or (kind != "typed" and text[:200] in seen):
+                continue
+            seen.add(text[:200])
             clock.now = moment
             if births is not None:
                 exists["fn"] = lambda n, m=moment: n not in births or births[n] <= m
             payload = {"hook_event_name": "UserPromptSubmit", "session_id": sid, "prompt": text}
             buf = io.StringIO()
+            started = time.perf_counter()
             hook.main(io.StringIO(json.dumps(payload)), buf, dict(env))
+            spent = time.perf_counter() - started
             shown = buf.getvalue().rstrip("\n")
             out.append(
                 {
@@ -220,6 +258,8 @@ def run_arm(
                     if LABEL_HEADER in shown
                     else 0,
                     "names": shown_names(shown),
+                    "ms": round(spent * 1000, 1),
+                    "kind": kind,
                     "prompt": text,
                 }
             )
