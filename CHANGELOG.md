@@ -8,6 +8,14 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Subagent rules show less and match the right task more often (NOBLIVION-159). A subagent sees at most 3
+  rows (`NOBLIVION_SUBAGENT_RULES_ROWS`), and only row 1 carries its apply text
+  (`NOBLIVION_SUBAGENT_RULES_APPLY_ROWS`); before, up to 5 rows carried it. The cut is by rank, behind the
+  relevance floor and the rank-1 rescue. The score window stays off. The measure: on the 10 subagent
+  tasks of the held-out dev split, 3 rows hold a relevant note for 9 tasks, the same as 5 rows, and 2 rows
+  hold one for 7. When 2 or more saved task texts of any type wait, the hook now waits up to 0.25 s for the
+  subagent's meta file, and the log names the way with the count (`SubagentStart:meta:wait2`). Before, only
+  texts of one type started the wait, so a second agent of another type was matched by order.
 - Landing rules are acted on at the command, not in the prompt (NOBLIVION-164). A note for landing work
   (scope `tool`, and at least half of its command triggers are `git push`, `git worktree`, `git merge`,
   `gh pr`, a merge script or a full test suite run) is no prompt row unless the prompt names a landing action

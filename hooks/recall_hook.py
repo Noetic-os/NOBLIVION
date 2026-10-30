@@ -588,6 +588,10 @@ RULES_ONLY_TIERS: Tuple[Tuple[int, int], ...] = ((1, 400), (3, 250), (5, 150))
 # promise the rule header makes ("Rows 1-K carry how to apply"), and arm D's
 # header makes no such promise. Set without F1, it is ignored and the log says so.
 INDEX_APPLY_ENV = "NOBLIVION_RECALL_INDEX_APPLY"
+# NOBLIVION-159. The most rows that carry apply text: the tiers are cut at this
+# rank. 0 or unset = the tiers as they are. The prompt hook never sets it; the
+# subagent hook sets 1.
+INDEX_APPLY_ROWS_ENV = "NOBLIVION_RECALL_INDEX_APPLY_ROWS"
 # The tiers: (last rank, characters of apply text) in rank order. A row at rank r
 # carries at most the characters of the first tier whose last rank is >= r; a row
 # below the last tier carries none. K is the last tier's rank.
@@ -1545,6 +1549,28 @@ def apply_limit(rank: int, tiers: Sequence[Tuple[int, int]]) -> int:
         if rank <= last:
             return max(0, int(chars))
     return 0
+
+
+def limit_tiers(tiers: Sequence[Tuple[int, int]], rows: int) -> Tuple[Tuple[int, int], ...]:
+    """NOBLIVION-159. ``tiers`` cut at rank ``rows``: the tier that holds ``rows``
+    ends there, later tiers go. ``rows`` of 0 or less leaves ``tiers`` as it is."""
+    if rows <= 0:
+        return tuple(tiers)
+    out: List[Tuple[int, int]] = []
+    for last, chars in tiers:
+        out.append((min(last, rows), chars))
+        if last >= rows:
+            break
+    return tuple(out)
+
+
+def index_apply_rows(environ: Optional[Mapping[str, str]] = None) -> int:
+    """The rank at which the apply tiers end, 0 = no cut. An unreadable value is 0."""
+    env = os.environ if environ is None else environ
+    try:
+        return max(0, min(int((env.get(INDEX_APPLY_ROWS_ENV) or "").strip() or 0), 100))
+    except ValueError:
+        return 0
 
 
 def apply_k(tiers: Sequence[Tuple[int, int]]) -> int:
@@ -3969,12 +3995,13 @@ def _serve_index(
             # store's summary and is counted here, not hidden.
             note += f":ruled{annotate_index(lines, by_name)}of{len(lines)}"
     tiers: Tuple[Tuple[int, int], ...] = ()
+    apply_rows = index_apply_rows(environ)
     if rules_on:
-        tiers = tuple(RULES_ONLY_TIERS)
+        tiers = limit_tiers(RULES_ONLY_TIERS, apply_rows)
     elif apply_on and not rule_rows:
         note += ":apply_off:no_rule_rows"
     elif apply_on:
-        tiers = tuple(APPLY_TIERS)
+        tiers = limit_tiers(APPLY_TIERS, apply_rows)
     # WI-17. Before DP-6, so DP-6 counts only blocks of rows that will be shown.
     row_on = False
     reduced = False

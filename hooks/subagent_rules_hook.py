@@ -34,6 +34,8 @@ So the hook has two legs, both wired to this one script:
    ``transcript``  the first user line of ``agent-<id>.jsonl``;
    ``fifo``   the oldest saved text of this session with the same agent type;
    ``fifo_any``  the oldest saved text of this session.
+   When two or more saved texts of any type wait, the hook waits up to
+   META_WAIT_S for the meta file, and the way carries ``:waitN`` (N texts).
 
 ``NOBLIVION_SUBAGENT_RULES_MODE=rewrite`` is the other path, off by default: the
 PreToolUse leg appends the rules to ``tool_input.prompt`` with ``updatedInput``
@@ -59,7 +61,10 @@ home-folder default (NOBLIVION-31).
 
 Environment:
   NOBLIVION_SUBAGENT_RULES_OFF          any value: do nothing
-  NOBLIVION_SUBAGENT_RULES_K            rows, default 8
+  NOBLIVION_SUBAGENT_RULES_K            candidate rows, default 8
+  NOBLIVION_SUBAGENT_RULES_ROWS         rows shown, default 3
+  NOBLIVION_SUBAGENT_RULES_APPLY_ROWS   rows with apply text, default 1, 0 = the
+                                      recall hook's tiers
   NOBLIVION_SUBAGENT_RULES_MAX_CHARS    characters of context, default 2500
   NOBLIVION_SUBAGENT_RULES_QUERY_CHARS  characters of task text sent, default 2000
   NOBLIVION_SUBAGENT_RULES_MODE         ``context`` (default) or ``rewrite``
@@ -107,8 +112,19 @@ K_ENV = "NOBLIVION_SUBAGENT_RULES_K"
 CAP_ENV = "NOBLIVION_SUBAGENT_RULES_MAX_CHARS"
 QUERY_CHARS_ENV = "NOBLIVION_SUBAGENT_RULES_QUERY_CHARS"
 MODE_ENV = "NOBLIVION_SUBAGENT_RULES_MODE"
+ROWS_ENV = "NOBLIVION_SUBAGENT_RULES_ROWS"
+APPLY_ROWS_ENV = "NOBLIVION_SUBAGENT_RULES_APPLY_ROWS"
 K_DEFAULT = 8
 K_MAX = 30
+# NOBLIVION-159. A subagent shows at most this many rows, and only the first
+# carries its apply text. Measured on the 10 subagent tasks of the held-out dev
+# split: the best 3 rows hold a relevant note for 9 of 10 tasks, the same as the
+# best 5, so the 4th and 5th row add characters and no delivery; 2 rows lose 2
+# tasks. The rows keep the relevance floor and the rank-1 rescue of the recall
+# hook. The score window (``recall.score_window``) is not used: it is off by
+# default because it lost delivery on the dev split.
+ROWS_DEFAULT = 3
+APPLY_ROWS_DEFAULT = 1
 CAP_DEFAULT = 2500
 CAP_MIN = 300
 QUERY_CHARS_DEFAULT = 2000
@@ -185,6 +201,8 @@ def index_environ(env: Mapping[str, str]) -> Dict[str, str]:
         out.setdefault(name, value)
     out[rh.INDEX_ENV] = "1"
     out[rh.INDEX_K_ENV] = str(_int_env(env, K_ENV, K_DEFAULT, 1, K_MAX))
+    out[rh.PROMPT_ROWS_ENV] = str(_int_env(env, ROWS_ENV, ROWS_DEFAULT, 1, K_MAX))
+    out[rh.INDEX_APPLY_ROWS_ENV] = str(_int_env(env, APPLY_ROWS_ENV, APPLY_ROWS_DEFAULT, 0, K_MAX))
     cap = _int_env(env, CAP_ENV, CAP_DEFAULT, CAP_MIN, 20000)
     out[rh.INDEX_CAP_ENV] = str(cap - len(HEADER) - 1)
     out["NOBLIVION_RECALL_CACHE_DIR"] = sub_cache(env)
@@ -375,26 +393,31 @@ def find_task_text(
     fresh_from = time.time() - PENDING_FIFO_MAX_AGE_S
     pending = [item for item in list_pending(env, session) if item[0] >= fresh_from]
     same = [item for item in pending if item[2].get("agent_type") == agent_type]
-    # Two saved texts of one type: only the meta file says which is ours. It is
-    # written at about the time this event fires, so wait a moment for it.
-    deadline = time.monotonic() + (wait_s if len(same) > 1 else 0.0)
+    # Two saved texts, of any type: only the meta file says which is ours. It is
+    # written at about the time this event fires, so wait a moment for it. A
+    # text of another type counts too, because the order-based match falls back
+    # to it (``fifo_any``) and then hands this subagent the wrong task.
+    waiting = len(pending)
+    deadline = time.monotonic() + (wait_s if waiting > 1 else 0.0)
     while True:
         tid = _meta_tool_use_id(meta)
         if tid or time.monotonic() >= deadline:
             break
         time.sleep(0.025)
+    # The log line names the way and, after a wait, how many texts waited.
+    tag = f":wait{waiting}" if waiting > 1 else ""
     if tid:
         path = os.path.join(pending_dir(env, session), tid + ".json")
         doc = _read_pending(path)
         if doc is not None and _claim(path):
-            return doc["prompt"], "meta"
+            return doc["prompt"], "meta" + tag
     text = _transcript_prompt(_subagent_file(payload, session, agent_id, ".jsonl"))
     if text and text.strip():
-        return text, "transcript"
+        return text, "transcript" + tag
     for items, via in ((same, "fifo"), (pending, "fifo_any")):
         for _ts, path, doc in items:
             if _claim(path):
-                return doc["prompt"], via
+                return doc["prompt"], via + tag
     return None, "no_task_text"
 
 

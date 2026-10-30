@@ -280,6 +280,7 @@ model is the default model, `BAAI/bge-small-en-v1.5`.
 | `NOBLIVION_RECALL_INDEX_RERANK` | none | off (switch) | Re-ranks the rows: a local keyword score over the memory files, fused with the store's vector order. |
 | `NOBLIVION_RECALL_INDEX_RULE_ROWS` | none | off (switch) | Shows each row as its id, the `rule:` line of the file and its name. |
 | `NOBLIVION_RECALL_INDEX_APPLY` | none | off (switch) | Adds the `apply:` text under the top rule rows. Needs `NOBLIVION_RECALL_INDEX_RULE_ROWS`. |
+| `NOBLIVION_RECALL_INDEX_APPLY_ROWS` | none | `0` (no cut) | Cuts the apply tiers at this rank, so only the first rows carry apply text. The subagent hook sets `1`; the prompt hook does not set it. |
 | `NOBLIVION_RECALL_SHOWN_SET` | none | off (switch) | With apply lines: a note that the session already opened, or already saw with its apply text, keeps its row but loses the apply text. |
 | `NOBLIVION_RECALL_INDEX_ROW_DEDUPE` | none | off (switch) | Leaves out the rows that an earlier prompt of the same session already showed. |
 | `NOBLIVION_RECALL_INDEX_CHECK_LINE` | none | off (switch) | Adds one more header line to the rule rows. |
@@ -363,7 +364,9 @@ measure it.
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
 | `NOBLIVION_SUBAGENT_RULES_OFF` | none | off (switch) | Turns the hook off. |
-| `NOBLIVION_SUBAGENT_RULES_K` | none | `8` | The most rows for one subagent, up to 30. |
+| `NOBLIVION_SUBAGENT_RULES_K` | none | `8` | The candidate rows the subagent index asks for, up to 30. Rows that fail the floor or have no rule or apply text give their place to the next candidate. |
+| `NOBLIVION_SUBAGENT_RULES_ROWS` | none | `3` | The most rows one subagent sees, up to 30. On the 10 subagent tasks of the held-out dev split the best 3 rows hold a relevant note for 9 tasks, the same as the best 5. The prompt setting `recall.prompt_rows` does not apply to a subagent. |
+| `NOBLIVION_SUBAGENT_RULES_APPLY_ROWS` | none | `1` | The most rows that carry apply text. `0` gives the apply tiers of the prompt hook. |
 | `NOBLIVION_SUBAGENT_RULES_MAX_CHARS` | none | `2500` | The most characters for one subagent. |
 | `NOBLIVION_SUBAGENT_RULES_QUERY_CHARS` | none | `2000` | The most characters of the task text sent as the query. |
 | `NOBLIVION_SUBAGENT_RULES_MODE` | none | `context` | `context` adds the rows to the subagent's context. `rewrite` changes the task prompt instead. |

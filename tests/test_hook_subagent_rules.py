@@ -327,23 +327,69 @@ def test_the_subagent_gets_the_ranked_rules_for_its_task_text(tmp_path, env, sto
     assert _pending(tmp_path) == [], "the saved text is used once"
 
 
-def test_the_default_is_eight_rows(tmp_path, env):
+def test_the_default_is_three_rows(tmp_path, env):
+    # NOBLIVION-159. Eight candidates are asked for, three are shown.
     _run(_pre(), env)
     rows = _rows(_context(_run(_start(), env)[1]))
-    assert [_row_id(r) for r in rows] == [str(19000 + i) for i in range(1, 9)]
+    assert [_row_id(r) for r in rows] == [str(19000 + i) for i in range(1, 4)]
+    assert sub.ROWS_DEFAULT == 3 and sub.K_DEFAULT == 8
+
+
+def test_the_candidate_count_is_settable(tmp_path, env):
+    _run(_pre(), env)
+    out = _run(_start(), dict(env, **{sub.K_ENV: "2"}))[1]
+    assert len(_rows(_context(out))) == 2
 
 
 def test_the_row_count_is_settable(tmp_path, env):
     _run(_pre(), env)
-    out = _run(_start(), dict(env, **{sub.K_ENV: "3"}))[1]
-    assert len(_rows(_context(out))) == 3
+    out = _run(_start(), dict(env, **{sub.ROWS_ENV: "6"}))[1]
+    assert len(_rows(_context(out))) == 6
 
 
 @pytest.mark.parametrize("bad", ["", "0", "-2", "many"])
 def test_an_unreadable_row_count_is_the_default(tmp_path, env, bad):
     _run(_pre(), env)
-    out = _run(_start(), dict(env, **{sub.K_ENV: bad}))[1]
-    assert len(_rows(_context(out))) == 8
+    out = _run(_start(), dict(env, **{sub.ROWS_ENV: bad}))[1]
+    assert len(_rows(_context(out))) == 3
+
+
+def test_the_row_count_of_the_prompt_hook_does_not_change_the_subagent_rows(tmp_path, env):
+    _run(_pre(), env)
+    out = _run(_start(), dict(env, **{rh.PROMPT_ROWS_ENV: "0"}))[1]
+    assert len(_rows(_context(out))) == 3
+
+
+def test_only_the_first_row_carries_apply_text(tmp_path, env):
+    # NOBLIVION-159.
+    _run(_pre(), env)
+    text = _context(_run(_start(), env)[1])
+    assert text.count("  APPLY: ") == 1
+    assert text.index("  APPLY: run the tool number 1 ") < text.index("[id 19002]")
+    assert _log(tmp_path)[-1].count(":apply1of1") == 1
+
+
+def test_the_apply_row_count_is_settable(tmp_path, env):
+    _run(_pre(), env)
+    out = _run(_start(), dict(env, **{sub.APPLY_ROWS_ENV: "3"}))[1]
+    assert _context(out).count("  APPLY: ") == 3
+
+
+def test_an_apply_row_count_of_zero_leaves_the_tiers_of_the_recall_hook(tmp_path, env):
+    _run(_pre(), env)
+    out = _run(_start(), dict(env, **{sub.APPLY_ROWS_ENV: "0"}))[1]
+    assert _context(out).count("  APPLY: ") == 3, "the tiers of the recall hook cover 10 rows"
+
+
+def test_the_apply_rows_cut_the_tiers_of_the_recall_hook():
+    tiers = ((1, 900), (5, 300), (10, 200))
+    assert rh.limit_tiers(tiers, 1) == ((1, 900),)
+    assert rh.limit_tiers(tiers, 3) == ((1, 900), (3, 300))
+    assert rh.limit_tiers(tiers, 10) == tiers
+    assert rh.limit_tiers(tiers, 50) == tiers
+    assert rh.limit_tiers(tiers, 0) == tiers
+    assert rh.index_apply_rows({rh.INDEX_APPLY_ROWS_ENV: "x"}) == 0
+    assert rh.index_apply_rows({}) == 0
 
 
 def test_the_default_cap_is_2500_characters_header_included(tmp_path, env, corpus):
@@ -361,7 +407,8 @@ def test_the_default_cap_is_2500_characters_header_included(tmp_path, env, corpu
             )
         )
     _run(_pre(), env)
-    text = _context(_run(_start(), env)[1])
+    wide = dict(env, **{sub.ROWS_ENV: "8", sub.APPLY_ROWS_ENV: "0"})
+    text = _context(_run(_start(), wide)[1])
     assert 1500 < len(text) <= 2500
     # NOBLIVION-109: the rows keep a share of the cap, so the long apply text
     # gives way (a block that does not fit is left out, the rest is cut) before
@@ -449,7 +496,7 @@ def test_an_index_option_in_the_command_wins_over_the_default(tmp_path, env):
     off = _context(
         _run(_start(agent_id="a000000000000002"), dict(env, **{rh.INDEX_APPLY_ENV: ""}))[1]
     )
-    assert "APPLY:" not in off and len(_rows(off)) == 8
+    assert "APPLY:" not in off and len(_rows(off)) == 3
 
 
 # ── the parent session's state is not touched ─────────────────────────────
@@ -476,7 +523,7 @@ def test_the_parent_session_s_set_and_index_are_not_read_or_written(tmp_path, en
     before = _tree(tmp_path / "cache")
     _run(_pre(), env)
     text = _context(_run(_start(), env)[1])
-    assert len(_rows(text)) == 8, "rows the PARENT saw are new to the subagent"
+    assert len(_rows(text)) == 3, "rows the PARENT saw are new to the subagent"
     assert "  APPLY: run the tool number 1 with --flag" in text
     assert _tree(tmp_path / "cache") == before, "nothing outside <cache>/subagent changed"
 
@@ -488,7 +535,7 @@ def test_the_subagent_has_its_own_set_keyed_by_session_and_agent(tmp_path, env):
         tmp_path / "cache" / sub.SUBDIR / rh.SESSION_DIR_NAME / f"{SESSION}.{AGENT}.shown_set.json"
     )
     doc = json.loads(own.read_text())
-    assert doc["session"] == f"{SESSION}.{AGENT}" and len(doc[rh.SHOWN_ROW_KIND]) == 8
+    assert doc["session"] == f"{SESSION}.{AGENT}" and len(doc[rh.SHOWN_ROW_KIND]) == 3
     assert rh.load_shown_set(str(tmp_path / "cache"), SESSION).get(rh.SHOWN_ROW_KIND, []) == []
 
 
@@ -497,16 +544,23 @@ def test_two_subagents_of_one_session_each_get_the_whole_list(tmp_path, env):
     first = _context(_run(_start(agent_id="a000000000000001"), env)[1])
     _run(_pre(tool_use_id="toolu_b"), env)
     second = _context(_run(_start(agent_id="a000000000000002"), env)[1])
-    assert _rows(first) == _rows(second) and len(_rows(first)) == 8
+    assert _rows(first) == _rows(second) and len(_rows(first)) == 3
 
 
 # ── how the task text is found ────────────────────────────────────────────
 
 
 def _via(tmp_path) -> str:
-    m = re.search(r"event=SubagentStart:(\S+)", _log(tmp_path)[-1])
+    """The way the task text was found, without the ``:waitN`` tag."""
+    m = re.search(r"event=SubagentStart:([a-z_]+)", _log(tmp_path)[-1])
     assert m is not None
     return m.group(1)
+
+
+def _wait_tag(tmp_path) -> str:
+    m = re.search(r"event=SubagentStart:[a-z_]+(:wait\d+)?\s", _log(tmp_path)[-1])
+    assert m is not None
+    return m.group(1) or ""
 
 
 def _meta(tmp_path, agent_id: str, tool_use_id: str) -> None:
@@ -537,7 +591,7 @@ def test_two_parallel_agents_of_one_type_are_told_apart_by_the_meta_file(tmp_pat
     _run(_pre("the second task text, about postgres roles", "toolu_second"), env)
     _meta(tmp_path, AGENT, "toolu_second")
     _run(_start(tmp_path), env)
-    assert _via(tmp_path) == "meta"
+    assert _via(tmp_path) == "meta" and _wait_tag(tmp_path) == ":wait2"
     assert _index_requests(store)[-1]["qs"]["q"] == "the second task text, about postgres roles"
     assert _pending(tmp_path) == ["toolu_first.json"], "the other agent's text stays"
     _meta(tmp_path, "a000000000000002", "toolu_first")
@@ -560,6 +614,46 @@ def test_with_no_text_of_that_type_the_oldest_of_the_session_is_used(tmp_path, e
     _run(_start(tmp_path, agent_type="reviewer"), env)
     assert _via(tmp_path) == "fifo_any"
     assert _index_requests(store)[-1]["qs"]["q"] == "task for some custom agent"
+
+
+def _find(tmp_path, env, wait_s: float, agent_type: str = "general-purpose"):
+    payload = {
+        "agent_type": agent_type,
+        "agent_id": AGENT,
+        "session_id": SESSION,
+        "transcript_path": str(tmp_path / "projects" / f"{SESSION}.jsonl"),
+    }
+    t0 = time.monotonic()
+    got = sub.find_task_text(payload, env, SESSION, AGENT, wait_s)
+    return got, time.monotonic() - t0
+
+
+def test_texts_of_two_agent_types_wait_for_the_meta_file(tmp_path, env):
+    # NOBLIVION-159. One text per type used to start no wait, so the second
+    # subagent got the other task by order.
+    _run(_pre("task for the explorer", "toolu_explore", agent_type="Explore"), env)
+    _run(_pre("task for the general agent", "toolu_general"), env)
+    (text, via), spent = _find(tmp_path, env, 0.3)
+    assert via == "fifo:wait2" and spent >= 0.25
+    assert text == "task for the general agent"
+
+
+def test_the_meta_file_that_comes_during_the_wait_names_the_text(tmp_path, env):
+    _run(_pre("task for the explorer", "toolu_explore", agent_type="Explore"), env)
+    _run(_pre("task for the general agent", "toolu_general"), env)
+    timer = threading.Timer(0.1, _meta, args=(tmp_path, AGENT, "toolu_explore"))
+    timer.start()
+    try:
+        (text, via), spent = _find(tmp_path, env, 2.0)
+    finally:
+        timer.join()
+    assert (text, via) == ("task for the explorer", "meta:wait2") and spent < 1.5
+
+
+def test_one_waiting_text_starts_no_wait_and_no_tag(tmp_path, env):
+    _run(_pre("task for the explorer", "toolu_explore", agent_type="Explore"), env)
+    (text, via), spent = _find(tmp_path, env, 2.0, agent_type="reviewer")
+    assert (text, via) == ("task for the explorer", "fifo_any") and spent < 1.0
 
 
 def _backdate(tmp_path, tool_use_id: str, seconds: float) -> None:
@@ -703,7 +797,7 @@ def test_one_log_line_per_call_with_no_task_text_and_no_memory_text(tmp_path, en
     lines = _log(tmp_path)
     assert len(lines) == 2 and all(LOG_RE.match(ln) for ln in lines), lines
     assert "event=AgentSave " in lines[0] and f"session={SESSION} " in lines[0]
-    assert f"event=SubagentStart:fifo session={SESSION}.{AGENT} hits=8 " in lines[1]
+    assert f"event=SubagentStart:fifo session={SESSION}.{AGENT} hits=3 " in lines[1]
     m = re.search(r"chars=(\d+)", lines[1])
     assert m is not None
     chars = int(m.group(1))
@@ -762,7 +856,7 @@ def test_the_script_serves_a_start_end_to_end(tmp_path, env):
         env=base,
     )
     assert proc.returncode == 0 and proc.stderr == ""
-    assert len(_rows(_context(proc.stdout))) == 8
+    assert len(_rows(_context(proc.stdout))) == 3
 
 
 # ── the rewrite mode (off by default) ─────────────────────────────────────
@@ -775,7 +869,7 @@ def test_rewrite_mode_appends_the_rules_to_the_prompt(tmp_path, env, store):
     assert hso["hookEventName"] == "PreToolUse" and hso["permissionDecision"] == "allow"
     new = hso["updatedInput"]
     assert new["prompt"].startswith(TASK + "\n\n" + sub.HEADER + "\n")
-    assert len(_rows(new["prompt"])) == 8
+    assert len(_rows(new["prompt"])) == 3
     assert new["description"] == "Fix the merge gate" and new["subagent_type"] == "general-purpose"
     assert _pending(tmp_path) == [], "no text is saved in this mode"
     assert _run(_start(), rw) == (0, ""), "the start leg adds nothing a second time"
