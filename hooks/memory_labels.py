@@ -49,6 +49,16 @@ counts although more than ``cutoff`` memories hold it. At most ``EXACT_MAX``
 (3) of those memories match, best first, and each is marked ``exact``. A partial
 or substring match, a weak label and a label that is not the target keep the
 rule above.
+
+A file name is not a subject by itself (NOBLIVION-152). Many projects have a
+``pyproject.toml``, a ``store.py`` or a ``db.py``, so a bare name of the stop list
+(``STOP_FILES``), or of a name that more than ``ROOTS_MAX`` (3) memory folders
+hold, counts for a memory only when the call names the file with a relative path
+that the memory names too (``store/db.py`` on both sides), or when the memory is
+in the own project folder of the table (root 0), unless that folder is itself a
+shared root (a hub folder holds the notes of many projects: no "own project").
+The exact-name exception of NOBLIVION-131 needs the same: the full relative
+path, or the own project.
 """
 
 from __future__ import annotations
@@ -64,6 +74,8 @@ LABELLER_VERSION = 1  # provenance in the index ("labeller"): which rules built 
 INDEX_VERSION = 1  # the index shape; a reader refuses another (fail open)
 DF_CUTOFF = 8  # a label of more memories never matches alone
 EXACT_MAX = 3  # NOBLIVION-131: notes shown for an exact file label above the cutoff
+ROOTS_MAX = 3  # NOBLIVION-152: a file name that more memory folders hold needs a path
+PATHS_PER_LABEL = 4  # relative paths kept per memory and file label in the index
 SOURCE_PREFIX = "rule"  # memory_labels.source = "rule:<kind>" (the deterministic leg)
 TEXT_CHARS = 120  # the short render text of an index row
 
@@ -186,6 +198,15 @@ file.txt example.py script.py script.sh sample.json out.json tmp.json test.json 
 x.txt x.json x.sh
 """.split()
 )
+# NOBLIVION-152: names that most projects have. They stay labels, but a label of
+# this list counts only with a path or in the own project (``qualified``).
+STOP_FILES = frozenset(
+    """
+pyproject.toml pytest.ini db.py store.py tox.ini models.py server.py cli.py probe.py
+executor.py docker-compose.yml compose.yml config.json config.js config.yml config.yaml
+settings.json
+""".split()
+)
 # A memory file name is the memory itself, not a subject.
 _MEMORY_FILE_RX = re.compile(
     r"^(?:(?:feedback|project|reference|user|topic)_[a-z0-9_.-]*|memory(?:_archive)?)\.md$"
@@ -271,6 +292,49 @@ def memory_labels(text: str, stem: str = "", rules: Optional[Rules] = None) -> D
     return out
 
 
+def norm_path(raw: str) -> str:
+    """A path as the index keeps it: lower case, ``/`` only, no ``./`` and no
+    trailing punctuation. "" when it has fewer than two parts or holds a space,
+    so a bare file name is never a path (``a/b.py`` and ``/x/a/b.py`` are, ``b.py`` and
+    ``/b.py`` are not)."""
+    p = str(raw or "").strip().strip("'\"").replace("\\", "/").rstrip(".,:;-/").lower()
+    while p.startswith("./"):
+        p = p[2:]
+    p = re.sub(r"/{2,}", "/", p)
+    return p if "/" in p.strip("/") and not any(c.isspace() for c in p) else ""
+
+
+def paths_match(a: str, b: str) -> bool:
+    """True when two normalised paths (``norm_path``) are the same file: equal,
+    or one ends with the other at a folder border. Both have two parts or more."""
+    if not a or not b:
+        return False
+    return a == b or a.endswith("/" + b.lstrip("/")) or b.endswith("/" + a.lstrip("/"))
+
+
+def file_paths(text: str, rules: Optional[Rules] = None) -> Dict[str, List[str]]:
+    """``{file label: [path, ...]}`` for the file labels of ``text`` that it
+    names with a path of two parts or more (``norm_path``), at most
+    ``PATHS_PER_LABEL`` each. The index keeps these for the labels that need a
+    path to match (``qualified``). Never raises on text."""
+    out: Dict[str, List[str]] = {}
+    if not isinstance(text, str) or "/" not in text:
+        return out
+    found = labels(text, rules)
+    for m in _PATH_TOKEN_RX.finditer(text):
+        tok = m.group(0)
+        if "/" not in tok:
+            continue
+        low = tok.rstrip(".,:;-/").rsplit("/", 1)[-1].lower()
+        if found.get(low) != KIND_FILE:
+            continue
+        p = norm_path(tok)
+        got = out.setdefault(low, [])
+        if p and p not in got and len(got) < PATHS_PER_LABEL:
+            got.append(p)
+    return {k: v for k, v in out.items() if v}
+
+
 def source_of(kind: str) -> str:
     """The ``memory_labels.source`` value for a label kind."""
     return f"{SOURCE_PREFIX}:{kind}"
@@ -329,33 +393,74 @@ def short_text(description: str, body: str, n: int = TEXT_CHARS) -> str:
     return text if len(text) <= n else text[: n - 3].rstrip() + "..."
 
 
-def build_index(docs: Iterable[Mapping[str, Any]], cutoff: int = DF_CUTOFF) -> Dict[str, Any]:
+def needs_path(label: str, kind: str, roots_holding: int) -> bool:
+    """NOBLIVION-152. A file label that names no subject by itself: a name of
+    ``STOP_FILES``, or a name that more than ``ROOTS_MAX`` memory folders hold.
+    It counts for a memory only through ``qualified``. A ``.md`` file is weak
+    already (``weak_label``), a tool or a ticket key is no file."""
+    return (
+        kind == KIND_FILE
+        and not label.endswith(".md")
+        and (label in STOP_FILES or roots_holding > ROOTS_MAX)
+    )
+
+
+def build_index(
+    docs: Iterable[Mapping[str, Any]], cutoff: int = DF_CUTOFF, own_root: bool = True
+) -> Dict[str, Any]:
     """The label index over ``docs``: each a mapping with ``id`` (the file
     stem), ``name`` (front matter name), ``labels`` (a ``labels`` dict),
-    ``mtime`` (int) and ``text`` (the short render text).
+    ``mtime`` (int), ``text`` (the short render text), ``root`` (the number of
+    the memory folder in the table's list; 0, the project folder, when absent)
+    and ``paths`` (``file_paths`` of the memory). ``own_root`` False when the
+    project folder is itself a shared root (a hub folder that holds the notes of
+    many projects, so no memory in it is "in the own project").
 
     Shape (compact, because every guard hook call parses it):
     ``{"version", "labeller", "cutoff", "n", "labels": [label], "kinds": [kind],
-    "df": [n], "post": [[doc number]], "docs": [{"id", "m", "t", "name"?}]}``.
-    ``name`` is stored only when it differs from the stem; a memory with no
-    label keeps only its ``id`` (it counts in ``n``, it never matches)."""
+    "df": [n], "post": [[doc number]], "docs": [{"id", "m", "t", "name"?, "r"?}],
+    "roots": folders, "own": bool, "rdf": [folders that hold the label],
+    "paths": {label: [[doc number, path]]}}``.
+    ``name`` is stored only when it differs from the stem; ``r`` only when the
+    memory is not in the project folder; a memory with no label keeps only its
+    ``id`` (it counts in ``n``, it never matches). ``paths`` holds, for a file
+    label that needs a path or that more than ``cutoff`` memories hold, the
+    paths of the memories outside the project folder (``qualified``)."""
     rows: List[Dict[str, Any]] = []
     post: Dict[str, List[int]] = {}
     kinds: Dict[str, str] = {}
+    held: Dict[str, set] = {}
+    paths_of: Dict[int, Mapping[str, Sequence[str]]] = {}
+    top = 0
     for d in docs:
         i = len(rows)
         row: Dict[str, Any] = {"id": str(d.get("id") or "")}
         labs = d.get("labels") or {}
+        root = int(d.get("root") or 0)
+        top = max(top, root)
         if labs:  # a memory with no label never matches: its id is enough
             row["m"], row["t"] = int(d.get("mtime") or 0), str(d.get("text") or "")
             name = str(d.get("name") or "")
             if name and name != row["id"]:
                 row["name"] = name
+            if root:
+                row["r"] = root
+            if d.get("paths") and root:
+                paths_of[i] = d["paths"]
         rows.append(row)
         for label, kind in labs.items():
             post.setdefault(label, []).append(i)
             kinds.setdefault(label, kind)
+            held.setdefault(label, set()).add(root)
     order = sorted(post)
+    paths: Dict[str, List[Any]] = {}
+    for label in order:
+        if needs_path(label, kinds[label], len(held[label])) or (
+            kinds[label] == KIND_FILE and len(post[label]) > cutoff
+        ):
+            got = [[i, p] for i in post[label] for p in (paths_of.get(i) or {}).get(label, ())]
+            if got:
+                paths[label] = got
     return {
         "version": INDEX_VERSION,
         "labeller": LABELLER_VERSION,
@@ -366,6 +471,10 @@ def build_index(docs: Iterable[Mapping[str, Any]], cutoff: int = DF_CUTOFF) -> D
         "df": [len(post[x]) for x in order],
         "post": [post[x] for x in order],
         "docs": rows,
+        "roots": top + 1,
+        "own": bool(own_root),
+        "rdf": [len(held[x]) for x in order],
+        "paths": paths,
     }
 
 
@@ -447,6 +556,7 @@ def match(
     index: Mapping[str, Any],
     cutoff: Optional[int] = None,
     exact: Iterable[str] = (),
+    paths: Iterable[str] = (),
 ) -> List[Match]:
     """The memories that share a specific label set with the query, best
     first. A memory matches when it shares one SPECIFIC label: held by at most
@@ -462,13 +572,20 @@ def match(
     with the query matches although the label is held by more than ``cutoff``
     memories. Of the memories that match only through this rule, the best
     ``EXACT_MAX`` stay (the sort order above), marked ``exact``. A weak label
-    (``weak_label``) is never exact."""
+    (``weak_label``) is never exact.
+
+    ``paths`` (NOBLIVION-152): the paths the call names (``norm_path``). A file
+    label that needs a path (``needs_path``), and an exact label, count for a
+    memory only when the memory is in the project folder of the table, or names
+    the file with a path that is one of these (``qualified``)."""
     if not index_ok(index):
         return []
     cut = int(index.get("cutoff", DF_CUTOFF) if cutoff is None else cutoff)
     look = _lookup(index)
     n = max(1, int(index.get("n") or 0))
     dfs, posts, docs = index["df"], index["post"], index["docs"]
+    rdf = index.get("rdf") or []
+    kept = index.get("paths") or {}
     shared: Dict[int, List[int]] = {}
     for label in dict.fromkeys(query_labels):
         li = look.get(label)
@@ -480,12 +597,35 @@ def match(
     kinds, labels_ = index.get("kinds") or [], index["labels"]
     sets: Dict[int, set] = {}
     exact_set = {x for x in exact if isinstance(x, str) and x}
+    asked = [p for p in (norm_path(x) for x in paths) if p]
+    has_own = "roots" in index and index.get("own", True)
+
+    def kind_of(li: int) -> str:
+        return kinds[li] if li < len(kinds) else ""
+
+    def qualified(li: int, d: int) -> bool:
+        """The memory is in the project folder, or names the file with a path
+        of the call. An index without roots (an old table), and a project folder
+        that is a shared root, have no own project: only a path counts."""
+        if has_own and not docs[d].get("r"):
+            return True
+        return any(
+            row[0] == d and paths_match(want, row[1])
+            for row in kept.get(labels_[li]) or ()
+            for want in asked
+        )
+
     for d, lis in shared.items():
-        via_exact = False
-        if not any(
-            dfs[li] <= cut and not weak_label(labels_[li], kinds[li] if li < len(kinds) else "")
+        lis = [
+            li
             for li in lis
-        ):
+            if not needs_path(labels_[li], kind_of(li), int(rdf[li]) if li < len(rdf) else 0)
+            or qualified(li, d)
+        ]
+        if not lis:
+            continue
+        via_exact = False
+        if not any(dfs[li] <= cut and not weak_label(labels_[li], kind_of(li)) for li in lis):
             # No specific label: a second shared label is needed, and the
             # memories that hold ALL the shared labels must be few.
             passes = False
@@ -497,7 +637,8 @@ def match(
             if not passes:
                 if not any(
                     labels_[li] in exact_set
-                    and not weak_label(labels_[li], kinds[li] if li < len(kinds) else "")
+                    and not weak_label(labels_[li], kind_of(li))
+                    and qualified(li, d)
                     for li in lis
                 ):
                     continue

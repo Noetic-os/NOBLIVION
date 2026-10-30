@@ -64,6 +64,7 @@ def env(tmp_path):
     table.write_text(json.dumps({"version": 1, "entries": [WORKTREE, COMPOSE, GREP_NOTE]}))
     return {
         "NOBLIVION_GUARD_TABLE": str(table),
+        "NOBLIVION_GUARD_WEAK_SHARE": "0",  # this file tests which trigger fires, not the grading
         "NOBLIVION_GUARD_STATE_DIR": str(tmp_path / "state"),
         "NOBLIVION_GUARD_LOG": str(tmp_path / "log.jsonl"),
     }

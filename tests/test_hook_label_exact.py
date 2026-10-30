@@ -104,7 +104,7 @@ def ids(out) -> list[str]:
     if HEADER not in text:
         return []
     block = text[text.index(HEADER) :]
-    return [ln.split()[2] for ln in block.splitlines() if ln.startswith("- Memory ")]
+    return [ln.split()[2].rstrip(":") for ln in block.splitlines() if ln.startswith("- Memory ")]
 
 
 def last_log(env) -> dict:

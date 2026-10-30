@@ -125,20 +125,22 @@ MultiEdit call.
 When a trigger fires, the hook adds the rule to the context of the call.
 It does not block the call.
 
-- It adds at most 3 rules per call.
-- It shows one rule at most 3 times per agent in a session, and at most
-  once for each tool (for example once for Bash and once for Edit). A deny
+- It adds at most 3 rules per call, under a header of one short line.
+- A row is `- Memory <id>: <rule line>` (at most 250 characters). A strong
+  match adds an `Apply:` line. A row never holds the text of the note: the
+  model opens the file when the rule fits.
+- It shows one rule once per agent in a session, whatever the tool. A deny
   is not a row: it repeats at every call.
 - One show of rows is at most 1800 characters.
-- It shows the full rule until 12,000 characters per session. After that
-  it shows only the rule and apply lines.
 - All rows of a session are capped at 6000 characters.
 
 A weak trigger needs evidence. A trigger is weak when it is one word, when
 it has no specific argument, when it is a `glob:` with no fixed path part,
 or when 4 or more notes share it. Evidence means words of the call that
-also appear in the rule or apply text. With no evidence, the row is not
-shown. With little evidence, only the rule line is shown.
+also appear in the rule or apply text. With little evidence or none, the
+row is not shown: only a deny shows for a weak trigger. One exception: when
+the rule line names the trigger ("use X instead of `gh run rerun`"), the
+row shows as the rule line only.
 
 An everyday command as a trigger (`pytest`, `kill`, `git worktree`, `git
 status`) is graded in the same way, and it is not dropped. The hook shows the
@@ -156,8 +158,8 @@ row of such a trigger only when the note fits the call:
 A note that does not fit the call shows no row. These rows are the weakest
 rows of a call:
 
-- They show the rule line only, after every other row, and only in a free
-  place. At most 3 rows come from everyday triggers in one call.
+- They show the rule line only (no `Apply:` line), after every other row,
+  and only in a free place. At most 3 rows come from everyday triggers in one call.
 - They have their own budget of 1500 characters per agent in a session, so
   they never use up the budget of the other rows. The limit of 3 times per
   note and agent holds for them too.
@@ -441,7 +443,8 @@ Undo: unset the switches. The fields stay in the notes and do nothing.
 
 Label rows show notes that name the file, the tool, the ticket or the
 service in the call. They never block. They fill only the free row places
-and have their own budget of 4000 characters per session. Ticket and
+and have their own budget of 700 characters per session. A label row is the
+rule line of the note and nothing else (at most 250 characters). Ticket and
 service labels need `labels.ticket_prefixes` and
 `labels.service_prefixes` in the config.
 
@@ -460,6 +463,22 @@ no target). The label must equal the full file name or the full relative path:
 content of an edit is no target. At most 3 such notes show, the best by label
 score first, and the guard log line lists them in `label_exact`. A tool name
 and a `.md` file name never match alone, at any count.
+
+A file name is not a subject by itself. Many projects have a `pyproject.toml`,
+a `store.py` or a `db.py`. A name on the stop list (`pyproject.toml`,
+`pytest.ini`, `db.py`, `store.py`, `config.json` and a few more), or a name
+that more than 3 memory folders hold, counts for a note only in two cases:
+
+- the call names the file with a relative path (`src/app/store.py`) and the
+  note names the same path, or
+- the note is in the project folder of the session. When the project folder
+  is itself a shared root, it holds the notes of many projects, so none of
+  its notes is "in the project" for this rule.
+
+The exact-name exception above needs one of the two as well. A name with no
+folder, and a note that names only the bare name in another folder, no longer
+match. The index in the guard table keeps the folder count of each label and,
+for these names, the paths of the notes outside the project folder.
 
 ## The credential guard
 

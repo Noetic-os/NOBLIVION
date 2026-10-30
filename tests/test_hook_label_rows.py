@@ -188,7 +188,9 @@ def label_ids(text: str):
     if HEADER not in text:
         return []
     block = text[text.index(HEADER) :]
-    return [line.split()[2] for line in block.splitlines() if line.startswith("- Memory ")]
+    return [
+        line.split()[2].rstrip(":") for line in block.splitlines() if line.startswith("- Memory ")
+    ]
 
 
 def shown_set(env, sid, **kinds):
@@ -204,8 +206,9 @@ def test_specific_label_adds_the_memory_and_logs_its_labels(env):
     out = call(env, bash("cat /etc/prometheus/prometheus.yml"))
     assert out.get("permissionDecision") is None
     assert label_ids(ctx(out)) == ["project_host_alpha"]
-    assert "Labels: prometheus.yml" in ctx(out)
-    assert "Summary:" in ctx(out)  # no rule fields: the description, not "Rule:"
+    # NOBLIVION-152: the rule line only (here the description, the note has no rule)
+    assert ctx(out).splitlines()[1:] == ["- Memory project_host_alpha: a memory"]
+    assert "Labels:" not in ctx(out) and "Apply:" not in ctx(out)
     line = log(env)[-1]
     assert line["decision"] == "labels" and line["ids"] == ["project_host_alpha"]
     assert line["label_rows"] == {"project_host_alpha": ["prometheus.yml"]}
@@ -499,7 +502,7 @@ def test_recall_hook_label_rows_stop_on_the_config_files_disable_switch(env, hoo
 # 8. the guard table -------------------------------------------------------------
 def test_table_version_2_index_covers_every_memory_file(env, mem):
     table = json.loads(Path(env["NOBLIVION_GUARD_TABLE"]).read_text())
-    assert table["version"] == 2 and "label_error" not in table
+    assert table["version"] == 3 and "label_error" not in table
     ids = {d["id"] for d in table["label_index"]["docs"]}
     files = {p.stem for p in mem.glob("*.md") if p.stem != "MEMORY"}
     assert ids == files
@@ -565,9 +568,9 @@ def test_pick_skips_a_row_that_cannot_fit_and_takes_a_later_one(env, mem):
     L = lr._lab()
     m_big = L.Match(0, {"id": "project_long_desc", "t": "x"}, ["big.py"], 9.0)
     m_small = L.Match(1, {"id": "no_such_file_here", "t": "short"}, ["a.py"], 1.0)
-    big = lr.render_row(m_big, table, "q", "command", compact=True)
-    small = lr.render_row(m_small, table, "q", "command", compact=True)
-    header = lr.HEADER.format(what="call")
+    big = lr.render_row(m_big, table)
+    small = lr.render_row(m_small, table)
+    header = lr.HEADER
     room = lr.MIN_ROOM
     assert len(header) + 1 + len(big) > room >= len(header) + 1 + len(small)
     st = gh.SessionState(env, "pk", "main")
@@ -688,7 +691,6 @@ def test_file_tool_leg_matches_read_grep_glob_inputs(env, tool, ti):
     out = call(dict(env, **{FT: "1"}), tool_ev(tool, ti))
     assert out.get("permissionDecision") is None
     assert label_ids(ctx(out)) == ["project_host_alpha"]
-    assert "file read or search" in ctx(out)
     line = log(env)[-1]
     assert line["tool"] == tool and line["decision"] == "labels"
     assert line["label_rows"] == {"project_host_alpha": ["prometheus.yml"]}

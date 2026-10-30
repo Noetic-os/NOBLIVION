@@ -349,12 +349,12 @@ def test_everyday_rows_fill_free_places_and_never_displace_another_row(tmp_path)
     out = call(env, bash("docker exec app-db psql; pytest -v"))
     text = out["additionalContext"]
     assert all(f"db_{i}" in text for i in range(3)) and QUIET["id"] not in text
-    # with a free place, the same note shows, as a Rule line only
+    # with a free place, the same note shows, as a rule line only (NOBLIVION-152: no note)
     (tmp_path / "b").mkdir()
     env2 = make_env(tmp_path / "b", [strong[0], QUIET] + FILLER)
     text2 = call(env2, bash("docker exec app-db psql; pytest -v"))["additionalContext"]
     assert "db_0" in text2 and QUIET["id"] in text2
-    assert "weak match on `pytest`" in text2 and "Apply:" not in text2.split(QUIET["id"])[1]
+    assert "weak match" not in text2 and "Apply:" not in text2.split(QUIET["id"])[1]
 
 
 def test_everyday_rows_have_a_session_budget_of_their_own(env, monkeypatch):
@@ -364,10 +364,14 @@ def test_everyday_rows_have_a_session_budget_of_their_own(env, monkeypatch):
     assert shown(call(env, bash("pytest -v", sid="s2"))) == [QUIET["id"]]
 
 
-def test_everyday_rows_rank_after_the_weak_rows_of_other_triggers(tmp_path):
+def test_a_weak_match_without_evidence_takes_no_place_from_an_everyday_row(tmp_path):
     weak = [
-        entry(f"z_lsblk_{i}", f"Run lsblk with -f only, case {i}.", "", ["lsblk"]) for i in range(3)
+        entry(
+            f"z_lsblk_{i}", f"List the devices with the tree option only, case {i}.", "", ["lsblk"]
+        )
+        for i in range(3)
     ]
     env = make_env(tmp_path, weak + [QUIET] + FILLER)
     text = call(env, bash("lsblk; pytest -v"))["additionalContext"]
-    assert all(f"z_lsblk_{i}" in text for i in range(3)) and QUIET["id"] not in text
+    # NOBLIVION-152: the weak lsblk rows (no evidence in the call) show nothing
+    assert "z_lsblk" not in text and QUIET["id"] in text

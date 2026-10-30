@@ -25,6 +25,15 @@ The rules:
     file label that is exactly the target file of the call (full file name or
     full relative path) counts above the cutoff; at most 3 such memories show,
     best first, and the log line has them under ``label_exact``.
+  * NOBLIVION-152: a file name is no subject by itself. A name of the stop list
+    (``pyproject.toml``, ``pytest.ini``, ``db.py``, ``store.py`` ...), or a name
+    that more than 3 memory folders hold, counts for a memory only when the
+    call names the file with a relative path that the memory names too, or
+    when the memory is in the project folder. The exact-name exception above
+    needs the same (``memory_labels.match``, ``query_paths``).
+  * A label row is the rule line of the memory (250 characters at most) and
+    nothing else: no apply text, no body, no label list. The log line has the
+    labels.
   * Trigger rows come first. Label rows fill only the free places of
     ``MAX_ROWS`` (3) rows per call. At prompt time there are no trigger rows.
   * A memory already given in full in this agent of the session is skipped:
@@ -34,7 +43,9 @@ The rules:
     memory NAMES and the guard state holds file STEMS; the index maps both.
     An index menu row is not a delivery and does not count.
   * Own budget: label rows of one agent of a session stay under
-    ``NOBLIVION_GUARD_LABEL_SESSION_CHARS`` (``SESSION_CHARS``, 4000). The trigger
+    ``NOBLIVION_GUARD_LABEL_SESSION_CHARS`` (``SESSION_CHARS``, 700; it was 4000
+    when a row was four times as long as the rule line of NOBLIVION-152, and
+    the same budget would show about 5 times the rows). The trigger
     rows' budget (``ROWS_SESSION_CHARS``) is not charged.
   * One show of label rows stays under ``SHOW_CHARS`` and, with the trigger
     rows of the same call, under the guard's ``ROWS_MAX_CHARS``.
@@ -68,7 +79,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 _TOOLS = Path(__file__).resolve().parent
 MAX_ROWS = 3  # rows per call, trigger rows included
-SESSION_CHARS = 4000  # label row text per agent of a session
+SESSION_CHARS = 700  # label row text per agent of a session (NOBLIVION-152: rule lines are short)
 SESSION_CHARS_ENV = "NOBLIVION_GUARD_LABEL_SESSION_CHARS"
 SWITCH_ENV = "NOBLIVION_GUARD_LABELS"  # the tool-time leg: on unless 0/off/false/no
 PROMPT_ENV = "NOBLIVION_RECALL_LABELS"  # the prompt leg: off unless set
@@ -79,17 +90,14 @@ FILE_TOOLS_ENV = "NOBLIVION_GUARD_LABELS_FILE_TOOLS"  # the file-tool leg: off u
 READ_TOOLS = ("Read", "Grep", "Glob")  # tools the file-tool leg adds to the guard hook
 FILE_CONTENT_CHARS = 2000  # the Edit/Write/MultiEdit content the labeller reads
 SHOW_CHARS = 2400  # one show of label rows
-ROW_TEXT_CHARS = 600  # the body part of one label row
+ROW_RULE_CHARS = 250  # the rule line of one label row (NOBLIVION-152)
 MIN_ROOM = 300  # less room than this: no label row
 PROMPT_CHARS = 8000  # the prompt text the labeller reads
 DEFAULT_CACHE_DIR = ""  # "": <data dir>/cache (hook_config)
 SHOWN_SET_NAME = "shown_set.json"
 SESSION_DIR_NAME = "by-session"
 DELIVERED_KINDS = ("apply", "fetched", "trigger")
-HEADER = (
-    "Memory rows by subject (label rows): each memory names a host, ticket, service, file "
-    "or tool of this {what}. This is the memory's own text; use a row only if it applies."
-)
+HEADER = "Memory rows by subject (label rows):"
 _SAFE_ID = re.compile(r"^[\w.-]{1,200}$")
 _SID_RX = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
@@ -285,6 +293,29 @@ def exact_file_labels(
     return [x for x in files if any(_same_file(p, x) for p in paths)]
 
 
+def query_paths(
+    query: str, subject: str, strip: Optional[Callable[[str], str]] = None
+) -> List[str]:
+    """NOBLIVION-152. The paths of two parts or more that the call names
+    (``memory_labels.norm_path``): the target of a file tool call (its first
+    line), the shell words of a command (quoted text with spaces is one word),
+    the path tokens of a prompt. A file name with no folder is no path."""
+    lab = _lab()
+    if subject in ("file", "read"):
+        raw = [query.split("\n", 1)[0]]
+    elif subject == "command":
+        try:
+            lex = shlex.shlex(strip(query) if strip is not None else query, posix=True)
+            lex.whitespace_split = True
+            lex.commenters = "#"
+            raw = [w for word in lex for w in re.split(r"[=<>;|&()]", word) if w]
+        except Exception:  # noqa: BLE001 - an unreadable command names no path
+            return []
+    else:
+        raw = re.findall(r"[A-Za-z0-9_.@~+/-]+", query[:PROMPT_CHARS])
+    return list(dict.fromkeys(p for p in (lab.norm_path(w) for w in raw) if p))
+
+
 def candidates(
     query: str,
     subject: str,
@@ -303,7 +334,12 @@ def candidates(
         if idx is None:
             return []
         found = query_labels(query, subject, strip)
-        return _lab().match(found, idx, exact=exact_file_labels(query, subject, found, strip))
+        return _lab().match(
+            found,
+            idx,
+            exact=exact_file_labels(query, subject, found, strip),
+            paths=query_paths(query, subject, strip),
+        )
     except Exception:  # noqa: BLE001 - fail open
         return []
 
@@ -351,11 +387,11 @@ def delivered_names(env: Mapping[str, str], session_id: Any) -> Set[str]:
 
 
 def delivered(state: Any, env: Mapping[str, str], session_id: Any, agent: str) -> Set[str]:
-    """Stems and names of the memories this agent of the session already got
-    in full: guard full rows, earlier label rows, and (main agent only) the
-    recall shown-set kinds apply, fetched and trigger."""
+    """Stems and names of the memories this agent of the session already got:
+    guard rows, earlier label rows, and (main agent only) the recall shown-set
+    kinds apply, fetched and trigger."""
     out: Set[str] = set()
-    for attr in ("full", "labels"):
+    for attr in ("full", "labels", "rows"):
         got = getattr(state, attr, None)
         if isinstance(got, dict):
             out.update(str(k) for k, v in got.items() if v)
@@ -385,30 +421,16 @@ def _memory(m: Any, table: Mapping[str, Any]) -> Tuple[Dict[str, Any], bool]:
     return mem, True
 
 
-def render_row(
-    m: Any, table: Mapping[str, Any], query: str, subject: str, compact: bool = False
-) -> str:
-    """One label row in the shared shape (``memory_text.render_hit``)
-    plus the matched labels. A memory without a rule shows its description as
-    ``Summary``, not as a rule."""
+def render_row(m: Any, table: Mapping[str, Any]) -> str:
+    """One label row: ``- Memory <id>: <rule line>`` (NOBLIVION-152). The rule
+    line is the memory's ``rule``, or its description when it has none, cut at
+    ``ROW_RULE_CHARS``. No apply text and no body: a label match is context,
+    and the model opens the file when the row fits."""
     mt = _load("memory_text")
-    mem, known = _memory(m, table)
-    subject = "file" if subject == "read" else subject
-    text = mt.render_hit(
-        mem,
-        query,
-        compact,
-        ROW_TEXT_CHARS,
-        subject=subject,
-        compact_needs_apply=False,
-        body_known=known,
-        head_fallback=True,
-        compact_note="label match; open the file if it applies" if compact else None,
-    )
-    if not mem.get("rule"):
-        text = text.replace("\n  Rule: ", "\n  Summary: ", 1)
-    labels = ", ".join(mt.inert(x).replace("`", "") for x in m.labels)
-    return f"{text}\n  Labels: {labels}"
+    mem, _known = _memory(m, table)
+    ident = re.sub(r"[^\w.-]", "", str(mem.get("id", "")))[:120]
+    line = mt.inert(mem.get("rule") or mem.get("description") or m.text)
+    return f"- Memory {ident}: {mt.cut_at_sentence(line, ROW_RULE_CHARS)[0]}"
 
 
 class Pick:
@@ -468,15 +490,8 @@ def pick(
         if not matches or free <= 0 or min(room, left) < MIN_ROOM:
             return None
         have = delivered(state, env, session_id, agent) | {str(t) for t in taken}
-        what = {
-            "command": "call",
-            "file": "file edit",
-            "prompt": "prompt",
-            "read": "file read or search",
-        }.get(subject, "call")
-        header = HEADER.format(what=what)
         rows: List[Any] = []
-        parts: List[str] = [header]
+        parts: List[str] = [HEADER]
         bound = min(room, left)
         only = rules_only(env)
         skipped = 0
@@ -488,14 +503,12 @@ def pick(
             if only and not has_rule_and_apply(m, table):
                 skipped += 1
                 continue
-            for compact in (False, True):
-                row = render_row(m, table, query, subject, compact)
-                if len("\n".join(parts + [row])) <= bound:
-                    parts.append(row)
-                    rows.append(m)
-                    break
-            # A row that fits neither full nor compact is left out; a later,
-            # shorter row may still fit the room.
+            row = render_row(m, table)
+            if len("\n".join(parts + [row])) <= bound:
+                parts.append(row)
+                rows.append(m)
+            # A row that does not fit is left out; a later, shorter row may
+            # still fit the room.
         if not rows:
             return None
         return Pick(rows, "\n".join(parts), skipped)

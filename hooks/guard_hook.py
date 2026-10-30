@@ -91,31 +91,29 @@ Bash
     leaves no evidence, so the override stays refused and the rule applies.
     Any other hook event (``PostToolUse`` ...) is ignored.
   * A ``triggers:`` hit with no violation (the rows-only leg): allow, and show
-    at most ``MAX_ROWS`` (3) memories as ``additionalContext``, in the shape of
-    ``memory_text.render_hit`` (WI-3f, from WI-14b): the id first,
-    ``Rule:`` and ``Apply:`` whole, and the memory's own text (the body read
-    from ``<table source>/<id>.md``: whole up to 1200 characters, else the part
-    on this command, cut at a sentence end at 1200). No ``[memory <id>]`` tag,
-    and the header says no file lookup is needed. Memory text is redacted
-    (``redact_memory``) and made inert. A memory shown before in this agent of
-    the session shows Rule and Apply only. One show stays under
-    ``ROWS_MAX_CHARS`` (1800): a later row gets a shorter text, then Rule and
-    Apply only; a row is dropped only when Rule and Apply alone break it (fields
-    over the schema caps). The rows text of one agent of a session is full
-    while under ``ROWS_FULL_SESSION_CHARS`` (12000; env
-    ``NOBLIVION_GUARD_ROWS_FULL_SESSION_CHARS``), then Rule and Apply only. A plain trigger item fires when a shell segment of
+    at most ``MAX_ROWS`` (3) memories as ``additionalContext`` (NOBLIVION-152):
+    one header under 50 characters, then one row per memory,
+    ``- Memory <id>: <rule line>`` (250 characters at most), and for a strong
+    match a second line ``Apply: <apply>`` (``ROW_APPLY_CHARS``, then shorter
+    when three rows break ``ROWS_MAX_CHARS``). No body text and no excerpt of
+    the note: the model opens the file when the row fits. A strong match is a
+    trigger that names the situation (below), or a weak trigger with evidence
+    (``WEAK_FULL_SCORE``). A weak match without that evidence shows no row;
+    only a deny shows for a weak trigger. Memory text is redacted
+    (``redact_memory``) and made inert. One memory's row is shown at most once
+    per agent of a session (``ROW_REPEAT``); a deny repeats at every call. All
+    rows of one agent of a session together stay under ``ROWS_SESSION_CHARS``
+    (6000 characters; env ``NOBLIVION_GUARD_ROWS_SESSION_CHARS``), counted at
+    the size of the row before WI-3f (``legacy_text``), so the same rows show
+    in the same calls. A plain trigger item fires when a shell segment of
     the command (the WI-2 split, also tried with its wrappers and git global
-    options removed) equals it or starts with it plus a space. One memory's row
-    is shown at most ``ROW_REPEAT`` (3) times per agent of a session, and at most
-    ``ROW_REPEAT_TOOL`` (1) time for each tool (NOBLIVION-137; a deny repeats at every call), and all rows
-    of one agent of a session together stay under ``ROWS_SESSION_CHARS`` (6000 characters, about
-    1.5K tokens; env ``NOBLIVION_GUARD_ROWS_SESSION_CHARS``), counted at the size of the
-    row before WI-3f (``legacy_text``), so the same rows show in the same calls. A trigger that fires on one of the everyday
-    commands of ``memory_fields.BENIGN_COMMANDS`` (``tail``,
-    ``git log``, ``sed -n`` ...) is not used for rows. Measured on the Bash
-    commands of the 30 newest sessions (3288 calls): with neither bound, rows
-    reached 59% of calls and about 71K characters per session; the two bounds
-    bring it to about 5% of calls and under 6K characters per session.
+    options removed) equals it or starts with it plus a space. A trigger that
+    fires on one of the everyday commands of ``memory_fields.BENIGN_COMMANDS``
+    (``tail``, ``git log``, ``sed -n`` ...) is not used for rows, except as
+    below. Measured on the Bash commands of the 30 newest sessions (3288
+    calls): with neither bound, rows reached 59% of calls and about 71K
+    characters per session; the bounds bring it to about 5% of calls and under
+    6K characters per session.
   * WI-3g, weak triggers (``grade_rows``). A one-word command trigger
     (``sha256sum``, ``tar``), a command trigger with no specific argument
     (``gh api``, ``git push origin main``, ``git rev-parse --short``) unless the
@@ -126,8 +124,9 @@ Bash
     needs evidence: words of the call (the command, or the file path) that
     are also in the memory's rule or apply, less the trigger's words and
     ``EVIDENCE_STOP``, scored by their rarity in the table. No evidence: no
-    row. Evidence under ``WEAK_FULL_SCORE`` (4.0): the Rule line only
-    (``weak_row``; the log line adds ``rule_only``). Else the row as above.
+    row. Evidence under ``WEAK_FULL_SCORE`` (4.0): no row (NOBLIVION-152; before,
+    a Rule line with a "weak match" note), unless the rule line names the
+    trigger: then the rule line only, with no note. Else the row as above.
     Strong rows come first. A deny never passes here. Env
     ``NOBLIVION_GUARD_WEAK_SHARE=0`` turns the grading off (the rows before WI-3g).
   * Everyday triggers (NOBLIVION-129). A trigger that is an everyday command
@@ -138,7 +137,8 @@ Bash
     call description, last prompt of the transcript), each with a minimum of evidence
     (``EVERYDAY_COMMAND_MIN``, ``EVERYDAY_CONTEXT_MIN``, ``EVERYDAY_CONTEXT_WORDS``)
     unless the rule names the trigger. At most ``EVERYDAY_MAX`` (3) rows, ranked after
-    every other row, shown as Rule lines, with a session budget of their own
+    every other row, shown as Rule lines without apply (the log line adds
+    ``rule_only``), with a session budget of their own
     (``EVERYDAY_SESSION_CHARS``); the ``ROW_REPEAT`` limit holds. ``python -m X`` also
     fires ``X`` (``guard_rewrite.program``). Rows only, never a deny.
     ``NOBLIVION_GUARD_EVERYDAY_TRIGGERS=0`` (config key ``guard.everyday_triggers``)
@@ -295,8 +295,7 @@ BASH_TOOLS = ("Bash",)
 FILE_TOOLS = ("Edit", "Write", "MultiEdit")
 READ_TOOLS = ("Read", "Grep", "Glob")  # label rows only, behind the file-tool switch
 ESCALATE_AFTER = 2
-ROW_REPEAT = 3
-ROW_REPEAT_TOOL = 1  # NOBLIVION-137: one show of a memory's row per tool and agent of a session
+ROW_REPEAT = 1  # NOBLIVION-152: one show of a memory's row per agent of a session
 MAX_ROWS = 3
 # NOBLIVION-129: a trigger that is an everyday command (``pytest``, ``kill``,
 # ``git worktree``) is graded by relevance, not dropped. Switch, on by default.
@@ -318,13 +317,13 @@ EVERYDAY_PLUMBING = frozenset(
 )
 CONTEXT_TAIL_BYTES = 512 * 1024  # the part of the transcript read for the last prompt
 CONTEXT_CHARS = 1500  # the most characters of the last prompt that count as context
-ROW_APPLY_CHARS = 220  # the legacy row (``legacy_row``) only
-ROWS_MAX_CHARS = (
-    1800  # one show of rows (WI-3f, NOBLIVION-137): one full row and two compact rows fit
-)
-ROWS_FULL_SESSION_CHARS = (
-    12000  # row text per agent of a session before rows show Rule and Apply only
-)
+ROW_APPLY_CHARS = 220  # the legacy row (``legacy_row``), the budget count
+ROW_RULE_CHARS = 250  # the rule line of a row (NOBLIVION-152)
+ROW_APPLY_LONG, ROW_APPLY_SHORT = (
+    300,
+    140,
+)  # the apply line of a strong row, then when 3 rows break the bound
+ROWS_MAX_CHARS = 1800  # one show of rows (WI-3f, NOBLIVION-137, NOBLIVION-152): three rows fit
 LOG_TEXT_CHARS = 300
 STATE_MAX_AGE_S = 7 * 24 * 3600
 TIME_LIMIT_S = 1.5
@@ -347,11 +346,7 @@ REBUILD_NONE_LINE = (
 )
 LATE_SUFFIX = ".late"
 ROWS_SESSION_CHARS = 6000
-ROWS_HEADER = (
-    "Memory rules for this action (guard rows). This is the memory's own text, "
-    "so act on it; no need to open the memory file."
-)
-SEEN_NOTE = "the full text was shown earlier in this session"
+ROWS_HEADER = "Memory rules for this action (guard rows):"  # under 50 characters
 
 
 class _TimeUp(
@@ -717,8 +712,7 @@ class SessionState:
     for one agent of one session (the top-level agent or one subagent), read
     and written under an exclusive lock so parallel tool calls do not lose
     counts. ``rows`` counts every show of a memory (the ``ROW_REPEAT`` cap);
-    ``full`` counts the shows that were not a Rule-line-only weak row, so only
-    those make a later row say ``SEEN_NOTE``."""
+    ``full`` counts the shows with an apply line."""
 
     def __init__(self, env: Mapping[str, str], session_id: object, agent: str = "main"):
         folder = state_dir(env)
@@ -739,7 +733,6 @@ class SessionState:
             data = {}
         self.denies: Dict[str, int] = dict(data.get("denies") or {})
         self.rows: Dict[str, int] = dict(data.get("rows") or {})
-        self.tool_rows: Dict[str, int] = dict(data.get("tool_rows") or {})
         self.full: Dict[str, int] = dict(data.get("full") or {})
         self.row_chars = int(data.get("row_chars") or 0)
         self.notes: Dict[str, int] = dict(data.get("notes") or {})
@@ -758,7 +751,6 @@ class SessionState:
                         {
                             "denies": self.denies,
                             "rows": self.rows,
-                            "tool_rows": self.tool_rows,
                             "full": self.full,
                             "row_chars": self.row_chars,
                             "notes": self.notes,
@@ -1027,7 +1019,6 @@ def path_rows(path: str, table: Mapping[str, Any]) -> List[Tuple[int, str, Dict[
 # only make a trigger weak, never strong.
 WEAK_SHARE = 4  # a trigger of this many memories or more is weak (0: no grading)
 WEAK_FULL_SCORE = 4.0  # evidence for a weak row to show in full
-WEAK_NOTE = "weak match on `{}`: the rule only; open the file if it applies to this call"
 # Words that are evidence of nothing: shell words, common paths, and words
 # that most rules use. Added to the STOPWORDS of the shared tokenizer. The
 # word list is ``hook_config.EVIDENCE_STOP_DEFAULT`` plus the config key
@@ -1268,32 +1259,6 @@ def legacy_row(e: Mapping[str, object]) -> str:
     return row + f" [memory {e.get('id', '')}]"
 
 
-_SAFE_ID = re.compile(r"^[\w.-]{1,200}$")
-
-
-def row_memory(e: Mapping[str, object], table: Mapping[str, Any]) -> Tuple[Dict[str, object], bool]:
-    """``(memory, body_known)`` for a row: rule and apply from the table
-    entry, the description and the body from ``<table source>/<id>.md``
-    (the folder the table was built from, never a guess). An id that is not a
-    plain file name, or a file that cannot be read, gives no body."""
-    mem: Dict[str, Any] = {
-        "id": str(e.get("id", "")),
-        "rule": str(e.get("rule") or ""),
-        "apply": str(e.get("apply") or ""),
-        "description": "",
-        "body": "",
-    }
-    src = str(table.get("source") or "")
-    if not src or not _SAFE_ID.match(mem["id"]) or mem["id"].startswith("."):
-        return mem, False
-    try:
-        m = _mt().read_memory(Path(src) / f"{mem['id']}.md", _mf)
-    except Exception:  # noqa: BLE001 - no body, rule and apply still show
-        return mem, False
-    mem["description"], mem["body"] = m.get("description", ""), m.get("body", "")
-    return mem, True
-
-
 def legacy_text(rows: Sequence[Mapping[str, object]]) -> str:
     """The rows text before WI-3f. Its length is what the session budget
     ``ROWS_SESSION_CHARS`` is charged, so the full text shows the same rows
@@ -1301,66 +1266,38 @@ def legacy_text(rows: Sequence[Mapping[str, object]]) -> str:
     return "\n".join(["Memory rules for this action (guard rows):"] + [legacy_row(e) for e in rows])
 
 
-def weak_row(mem: Mapping[str, object], trigger: str) -> str:
-    """The row of a weak match with little evidence (WI-3g): the id head with
-    ``WEAK_NOTE``, then the Rule line only."""
-    mt = _mt()
-    ident = re.sub(r"[^\w.-]", "", str(mem.get("id", "")))[:120]
-    rule = mt.inert(mem.get("rule") or mem.get("description") or "")
-    trig = mt.inert(trigger).replace("`", "")[:80]
-    return (
-        f"- Memory {ident} ({WEAK_NOTE.format(trig)}):\n"
-        f"  Rule: {mt.cut_at_sentence(rule, mt.FIELD_CHARS)[0]}"
-    )
-
-
 def render_rows(
     rows: Sequence[Mapping[str, object]],
-    table: Mapping[str, Any],
-    query: str,
-    subject: str,
-    state: SessionState,
     max_chars: int = ROWS_MAX_CHARS,
-    all_compact: bool = False,
     rule_only: Optional[Mapping[str, str]] = None,
 ) -> str:
-    """The header and the rows (WI-3f): each row in the shared shape
-    (``memory_text.render_hit``), under ``ROWS_MAX_CHARS``. A
-    memory already shown in this agent of the session shows Rule and Apply
-    only. A row in ``rule_only`` (WI-3g: id to its weak trigger) shows its
-    Rule line only (``weak_row``). The caller drops a row that still breaks
-    the bound. When the shared formatter cannot be loaded, the legacy rows."""
+    """The header and the rows (NOBLIVION-152): ``- Memory <id>: <rule line>``
+    (``ROW_RULE_CHARS``), and for a strong match a line ``Apply: <apply>``
+    (``ROW_APPLY_LONG``; ``ROW_APPLY_SHORT`` when that breaks ``max_chars``;
+    none when that still breaks it). A row in ``rule_only`` (an everyday
+    trigger: id to its trigger) is the rule line only. The text comes from the
+    table entry; the file is not read. When the shared formatter (redaction)
+    cannot be loaded, the legacy rows."""
     try:
         mt = _mt()
     except Exception:  # noqa: BLE001
         return "\n".join([ROWS_HEADER] + [legacy_row(e) for e in rows])
-    mems, known = [], {}
-    for e in rows:
-        m, k = row_memory(e, table)
-        mems.append(m)
-        known[m["id"]] = k
-
-    weak = dict(rule_only or {})
-
-    def one(
-        mem: Mapping[str, object], q: str, compact: bool = False, text_chars: int = mt.TEXT_CHARS
-    ) -> str:
-        if str(mem["id"]) in weak:
-            return weak_row(mem, weak[str(mem["id"])])
-        seen = state.full.get(str(mem["id"]), 0) > 0
-        return mt.render_hit(
-            mem,
-            q,
-            compact or seen or all_compact,
-            text_chars,
-            subject=subject,
-            compact_needs_apply=False,
-            body_known=known[str(mem["id"])],
-            head_fallback=True,
-            compact_note=SEEN_NOTE if seen else None,
-        )
-
-    return mt.render(mems, query, header=ROWS_HEADER, max_chars=max_chars, render_one=one)
+    weak = set(rule_only or ())
+    text = ROWS_HEADER
+    for apply_chars in (ROW_APPLY_LONG, ROW_APPLY_SHORT, 0):
+        parts = [ROWS_HEADER]
+        for e in rows:
+            ident = re.sub(r"[^\w.-]", "", str(e.get("id", "")))[:120]
+            rule = mt.cut_at_sentence(mt.inert(e.get("rule") or ""), ROW_RULE_CHARS)[0]
+            row = f"- Memory {ident}: {rule}"
+            apply = mt.inert(e.get("apply") or "")
+            if apply and apply != rule and apply_chars and ident not in weak:
+                row += "\n  Apply: " + mt.cut_at_sentence(apply, apply_chars)[0]
+            parts.append(row)
+        text = "\n".join(parts)
+        if len(text) <= max_chars:
+            break
+    return text
 
 
 def _text_of(content: object) -> str:
@@ -1470,23 +1407,17 @@ def grade_everyday(
     return rows, {i: t for i, t in rule_only.items() if i in ids}
 
 
-def tool_row_key(tool: str, mid: str) -> str:
-    return f"{tool}|{mid}"
-
-
 def pick_rows(
-    cands: Sequence[Tuple[float, str, Dict[str, object]]], state: SessionState, tool: str = ""
+    cands: Sequence[Tuple[float, str, Dict[str, object]]], state: SessionState
 ) -> List[Dict[str, object]]:
     """At most ``MAX_ROWS`` entries, most specific first, each shown fewer than
-    ``ROW_REPEAT`` times this session and fewer than ``ROW_REPEAT_TOOL`` times
-    for this ``tool``. Entries without a rule are not shown."""
+    ``ROW_REPEAT`` times this agent of the session. Entries without a rule are
+    not shown."""
     cands = sorted(cands, key=lambda c: (-c[0], str(c[2].get("id", ""))))
     out = []
     for _w, _t, e in cands:
         mid = str(e.get("id", ""))
         if not e.get("rule") or state.rows.get(mid, 0) >= ROW_REPEAT:
-            continue
-        if state.tool_rows.get(tool_row_key(tool, mid), 0) >= ROW_REPEAT_TOOL:
             continue
         out.append(e)
         if len(out) >= MAX_ROWS:
@@ -2140,6 +2071,23 @@ def decide(
         weak_share = _int_env(env, "NOBLIVION_GUARD_WEAK_SHARE", WEAK_SHARE)
         try:
             cands, rule_only = grade_rows(cands, query, table, weak_share)
+            # NOBLIVION-152: a weak match with little evidence shows no row (only
+            # a deny shows for a weak trigger), unless the rule line names the
+            # trigger ("instead of using gh run rerun"): that row is the rule line
+            # only. Everyday rows below keep their own relevance grade.
+            named = {
+                i
+                for i, t in rule_only.items()
+                if any(
+                    str(e.get("id", "")) == i and rule_names_trigger(t, e) for _w, _t, e in cands
+                )
+            }
+            cands = [
+                c
+                for c in cands
+                if str(c[2].get("id", "")) not in rule_only or str(c[2].get("id", "")) in named
+            ]
+            rule_only = {i: t for i, t in rule_only.items() if i in named}
         except Exception:  # noqa: BLE001
             rule_only = {}
         if everyday:
@@ -2225,8 +2173,7 @@ def decide(
             )
             denied.also = plan.also
             return denied
-        tool = str(event.get("tool_name") or "")
-        rows = pick_rows(cands, state, tool)
+        rows = pick_rows(cands, state)
         budget = _int_env(env, "NOBLIVION_GUARD_ROWS_SESSION_CHARS", ROWS_SESSION_CHARS)
         # NOBLIVION-129: rows from everyday triggers have a budget of their own
         # (``EVERYDAY_SESSION_CHARS``), so they never use up the budget below.
@@ -2254,37 +2201,13 @@ def decide(
                 ("labels", lab.ids),
                 log_text=(lambda: redact(log_head(query))) if subject == "read" else None,
             )
-        # What a row says (WI-3f): the full text while this agent of the
-        # session has shown under ROWS_FULL_SESSION_CHARS of row text, then
-        # Rule and Apply only. One show stays under ROWS_MAX_CHARS.
-        full_left = _int_env(
-            env, "NOBLIVION_GUARD_ROWS_FULL_SESSION_CHARS", ROWS_FULL_SESSION_CHARS
-        ) - int(state.notes.get("full_chars", 0))
-        bound = max(0, min(ROWS_MAX_CHARS, full_left))
-        text_out = render_rows(rows, table, query, subject, state, bound, rule_only=rule_only)
-        if len(text_out) > bound:
-            text_out = render_rows(
-                rows,
-                table,
-                query,
-                subject,
-                state,
-                ROWS_MAX_CHARS,
-                all_compact=True,
-                rule_only=rule_only,
-            )
-        while len(rows) > 1 and len(text_out) > ROWS_MAX_CHARS:  # only fields over the schema caps
+        # What a row says (NOBLIVION-152): the rule line, and the apply line of a
+        # strong match. Three rows stay under ROWS_MAX_CHARS (``render_rows``);
+        # a row is dropped only when its fields are over the schema caps.
+        text_out = render_rows(rows, ROWS_MAX_CHARS, rule_only)
+        while len(rows) > 1 and len(text_out) > ROWS_MAX_CHARS:
             rows = rows[:-1]
-            text_out = render_rows(
-                rows,
-                table,
-                query,
-                subject,
-                state,
-                ROWS_MAX_CHARS,
-                all_compact=True,
-                rule_only=rule_only,
-            )
+            text_out = render_rows(rows, ROWS_MAX_CHARS, rule_only)
         final_ev = [e for e in rows if str(e.get("id", "")) in everyday_ids]
         final_normal = [e for e in rows if str(e.get("id", "")) not in everyday_ids]
         normal_chars = len(legacy_text(final_normal)) if final_normal else 0
@@ -2308,13 +2231,10 @@ def decide(
             st.row_chars += normal_chars
             if everyday_chars:
                 st.notes["everyday_chars"] = int(st.notes.get("everyday_chars", 0)) + everyday_chars
-            st.notes["full_chars"] = int(st.notes.get("full_chars", 0)) + len(text_out)
             for e in rows:
                 mid = str(e.get("id", ""))
                 st.rows[mid] = st.rows.get(mid, 0) + 1
-                tk = tool_row_key(tool, mid)
-                st.tool_rows[tk] = st.tool_rows.get(tk, 0) + 1
-                if mid not in shown_weak:  # a weak row showed the Rule line only
+                if mid not in shown_weak:  # an everyday row showed the rule line only
                     st.full[mid] = st.full.get(mid, 0) + 1
             extra: Dict[str, object] = {"rule_only": shown_weak} if shown_weak else {}
             shown_everyday = [

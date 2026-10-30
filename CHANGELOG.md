@@ -80,6 +80,14 @@ All notable changes to NOBLIVION. The format follows
   compaction. The continuity briefing stays off unless `NOBLIVION_CONTINUITY` is set. Count in the
   recorded session starts of one host: 45,000 characters of notices and 11,000 characters of resume
   briefings and summaries (about 14k tokens in all, before re-send) no longer reach the model.
+- Guard rows and label rows are shorter (NOBLIVION-152). A non-deny row is the rule line only (at most
+  250 characters), with the apply line for a strong match. The "Text on this command" excerpt, the
+  "weak match" rows and the long header are gone, and a note shows once per session and agent. A
+  weak trigger with little evidence shows no row; only a deny shows for it. A label row is the rule
+  line only. A file name from the stop list (`pyproject.toml`, `pytest.ini`, `db.py`, `store.py`
+  and a few more) or held by more than 3 memory folders now matches a note only with a relative path
+  that both name, or when the note is in the project folder (not a shared root). The guard table is
+  version 3 and rebuilds itself on the first call.
 
 ## 0.1.18 - 2026-10-29
 

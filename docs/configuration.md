@@ -404,12 +404,11 @@ See [guards.md](guards.md) for what each guard does.
 | `NOBLIVION_GUARD_LOG` | none | `<data dir>/guard-log.jsonl` | The guard log. |
 | `NOBLIVION_GUARD_STATE_DIR` | none | `<data dir>/guard-state` | State per agent and session. |
 | `NOBLIVION_GUARD_ROWS_SESSION_CHARS` | none | `6000` | The most characters of guard rows per agent in one session. |
-| `NOBLIVION_GUARD_ROWS_FULL_SESSION_CHARS` | none | `12000` | After this many characters, a row shows only its rule and apply text. |
 | `NOBLIVION_GUARD_WEAK_SHARE` | none | `4` | A trigger that this many notes share is weak. `0` turns the weak-trigger check off. |
 | `NOBLIVION_GUARD_EVERYDAY_TRIGGERS` | `guard.everyday_triggers` | on (switch) | A note whose trigger is an everyday command (`pytest`, `kill`, `git worktree`) shows its row when the note fits the command or the context of the call, at most 3 such rows per call. `python3 -m X` also fires a trigger `X`. Off: these triggers give no row, as before. Needs `NOBLIVION_GUARD_WEAK_SHARE` not `0`. See [guards.md](guards.md). |
 | `NOBLIVION_GUARD_CREDENTIAL` | none | on (switch) | The credential guard. |
 | `NOBLIVION_GUARD_LABELS` | none | on (switch) | Label rows at tool time. |
-| `NOBLIVION_GUARD_LABEL_SESSION_CHARS` | none | `4000` | The most characters of label rows in one session. |
+| `NOBLIVION_GUARD_LABEL_SESSION_CHARS` | none | `700` | The most characters of label rows in one session. |
 | `NOBLIVION_GUARD_LABELS_FILE_TOOLS` | none | off (switch) | Label rows for Read, Grep and Glob, and for the text of an edit. |
 | `NOBLIVION_GUARD_REWRITE` | `guard.rewrite` | off (switch) | When a note's `violates` rule hits and the note carries a valid `rewrite:` field, the guard runs the command in the shape of the rule instead of denying it (see [guards.md](guards.md)). One hit only; any doubt keeps the deny. Off: the `rewrite:` field is ignored. |
 | `NOBLIVION_GUARD_ASK` | `guard.ask` | off (switch) | A note marked `on_violation: ask` makes the guard ask the user, with the rule as the reason, instead of denying. Off: the field is ignored and the guard denies. |

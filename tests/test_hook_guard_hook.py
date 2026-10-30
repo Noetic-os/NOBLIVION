@@ -274,8 +274,7 @@ def test_budget_is_per_agent_within_a_session(env):
 
 
 def test_row_repeat_cap_is_per_agent(env):
-    for _ in range(3):
-        call(env, bash("python -m pytest -q", "s1", "agent-a"))
+    call(env, bash("python -m pytest -q", "s1", "agent-a"))
     assert call(env, bash("python -m pytest -q", "s1", "agent-a")) is None
     assert (
         "feedback_pytest"
@@ -302,15 +301,14 @@ def test_rows_on_trigger_without_violation(env):
     assert lines[0] == gh.ROWS_HEADER
     # most specific trigger first: "git push github main" > "git push github";
     # "git push" and "git" are broad (they fire on an everyday command): no row
-    # WI-3f: each row is the id head, then Rule and Apply whole (no table
-    # source here, so no body), never a "[memory <id>]" tag.
-    assert lines[1] == "- Memory feedback_push_main (rule and fix in full):"
-    assert lines[2:4] == [
-        "  Rule: rule of feedback_push_main.",
+    # NOBLIVION-152: each row is the id and the rule line, then the apply line,
+    # never a "[memory <id>]" tag.
+    assert lines[1:3] == [
+        "- Memory feedback_push_main: rule of feedback_push_main.",
         "  Apply: apply of feedback_push_main",
     ]
-    assert lines[4] == "- Memory feedback_push_notes (rule and fix in full):"
-    assert len(lines) == 7 and "[memory " not in ctx
+    assert lines[3] == "- Memory feedback_push_notes: rule of feedback_push_notes."
+    assert len(lines) == 5 and "[memory " not in ctx
     assert log(env)[-1]["decision"] == "rows"
     assert log(env)[-1]["ids"] == ["feedback_push_main", "feedback_push_notes"]
 
@@ -362,23 +360,23 @@ def test_rows_prefix_needs_a_word_boundary_and_skip_typed_triggers(env):
 def test_rows_see_through_git_c_and_wrappers(env):
     env = ungraded(env)
     out = call(env, bash("sudo env A=1 git -C /repo push github main"))
-    assert "- Memory feedback_push_notes (" in out["additionalContext"]
+    assert "- Memory feedback_push_notes:" in out["additionalContext"]
 
 
 def test_row_repeat_cap(env):
     shown = []
     for _ in range(5):
         out = call(env, bash("python -m pytest -q"))
-        shown.append(out["additionalContext"].count("- Memory feedback_pytest (") if out else 0)
-    assert shown == [1, 0, 0, 0, 0]  # NOBLIVION-137: one show per memory and tool
+        shown.append(out["additionalContext"].count("- Memory feedback_pytest:") if out else 0)
+    assert shown == [1, 0, 0, 0, 0]  # NOBLIVION-152: one show per memory, session and agent
 
 
 def test_guard_row_bounds_are_three_rows_and_1800_chars():
-    assert gh.MAX_ROWS == 3 and gh.ROWS_MAX_CHARS == 1800 and gh.ROW_REPEAT_TOOL == 1
+    assert gh.MAX_ROWS == 3 and gh.ROWS_MAX_CHARS == 1800 and gh.ROW_REPEAT == 1
 
 
-def test_row_repeat_is_per_memory_and_tool(env):
-    """A trigger row shows once per memory and tool; another tool shows it once more."""
+def test_row_repeat_is_per_memory_not_per_tool(env):
+    """NOBLIVION-152: a trigger row shows once per memory; another tool does not show it again."""
     env = ungraded(env)
     both = entry(
         "feedback_both",
@@ -394,7 +392,6 @@ def test_row_repeat_is_per_memory_and_tool(env):
     }
     assert "feedback_both" in call(env, bash("make deploy-all now"))["additionalContext"]
     assert call(env, bash("make deploy-all again")) is None
-    assert "feedback_both" in call(env, edit)["additionalContext"]
     assert call(env, edit) is None
 
 
@@ -421,8 +418,9 @@ def test_rows_capped_at_three_and_short(env, tmp_path):
     assert len(ctx) <= gh.ROWS_MAX_CHARS
 
 
-def test_rows_over_the_show_bound_drop_the_last_row(env, tmp_path):
-    # fields far over the schema caps: the show bound holds, the first row stays
+def test_fields_far_over_the_schema_caps_are_cut_and_three_rows_still_fit(env, tmp_path):
+    # NOBLIVION-152: the rule line (250) and the apply line (300) are cut, so the
+    # third row (reserve case 3d of NOBLIVION-137) is not dropped for length
     many = [
         entry(
             f"feedback_m{i}",
@@ -435,9 +433,8 @@ def test_rows_over_the_show_bound_drop_the_last_row(env, tmp_path):
     Path(env["NOBLIVION_GUARD_TABLE"]).write_text(json.dumps({"entries": many}))
     env = ungraded(env)
     ctx = call(env, bash("make deploy-all now"))["additionalContext"]
-    assert 1 <= ctx.count("- Memory ") < 3
-    assert len(ctx) <= gh.ROWS_MAX_CHARS
-    assert log(env)[-1]["ids"] == [f"feedback_m{i}" for i in range(ctx.count("- Memory "))]
+    assert ctx.count("- Memory ") == 3 and len(ctx) <= gh.ROWS_MAX_CHARS
+    assert log(env)[-1]["ids"] == [f"feedback_m{i}" for i in range(3)]
 
 
 def test_session_row_budget(env):
@@ -652,8 +649,8 @@ def test_exception_fails_open_and_logs(env, monkeypatch):
 
 
 def test_a_timeout_inside_a_fail_open_handler_still_ends_the_call(env, tmp_path, monkeypatch):
-    """Review item 11 (2026-09-30): ``_TimeUp`` is a BaseException, so the
-    ``except Exception`` of ``row_memory`` (a slow disk read) cannot swallow
+    """Review item 11 (2026-09-30): ``_TimeUp`` is a BaseException, so an
+    ``except Exception`` on the way to the rows (a slow text step) cannot swallow
     the one-shot alarm and let the rest of the call run with no time limit."""
     env = ungraded(env)
     mem = tmp_path / "mem"
@@ -665,9 +662,9 @@ def test_a_timeout_inside_a_fail_open_handler_still_ends_the_call(env, tmp_path,
         def __getattr__(self, name):
             return getattr(real, name)
 
-        def read_memory(self, *_a, **_k):
+        def inert(self, *_a, **_k):
             time.sleep(2)
-            return {}
+            return ""
 
     out = io.StringIO()
     # a scoped patch: monkeypatch.undo() would also undo the autouse
@@ -688,7 +685,7 @@ def test_a_timeout_inside_a_fail_open_handler_still_ends_the_call(env, tmp_path,
     assert out.getvalue() == ""  # the deny check was done: only the rows are lost
     assert log(env)[-1]["error"] == "timeout"
     # nothing was charged, and the state lock is free for the next call
-    assert "Text: A body." in call(env, bash("make deploy-all now"))["additionalContext"]
+    assert "feedback_deploy:" in call(env, bash("make deploy-all now"))["additionalContext"]
     assert issubclass(gh._TimeUp, BaseException) and not issubclass(gh._TimeUp, Exception)
 
 
@@ -1405,67 +1402,67 @@ def _table_with_source(env, folder, ids):
     )
 
 
-def test_row_shows_a_short_body_whole_with_no_tag(env, tmp_path):
+def test_row_is_the_rule_line_and_the_apply_line_only(env, tmp_path):
+    """NOBLIVION-152: a header under 50 characters, the rule line, and the apply
+    line of a strong match. The body of the note is not read and not shown."""
     env = ungraded(env)
     mem = tmp_path / "mem"
     _memfile(mem, "feedback_deploy", "Measured 2026-09-30: the bare target raced a second deploy.")
     _table_with_source(env, mem, ["feedback_deploy"])
     ctx = call(env, bash("make deploy-all now"))["additionalContext"]
     lines = ctx.splitlines()
-    assert lines[0] == gh.ROWS_HEADER and "no need to open the memory file" in lines[0]
-    assert lines[1] == "- Memory feedback_deploy (full text; no need to open the file):"
-    assert lines[2] == "  Rule: Run the deploy script with the lock."
-    assert lines[3] == "  Apply: Use `make deploy-all LOCK=1`, never the bare target."
-    assert lines[4] == "  Text: Measured 2026-09-30: the bare target raced a second deploy."
-    assert "[memory " not in ctx and "..." not in ctx
+    assert lines[0] == gh.ROWS_HEADER and len(lines[0]) < 50
+    assert lines[1] == "- Memory feedback_deploy: Run the deploy script with the lock."
+    assert lines[2] == "  Apply: Use `make deploy-all LOCK=1`, never the bare target."
+    assert len(lines) == 3 and "[memory " not in ctx
+    assert "raced a second deploy" not in ctx and "Text" not in ctx
 
 
-def test_row_long_body_shows_the_part_on_this_command(env, tmp_path):
+def test_row_never_shows_the_body_or_an_excerpt_of_a_long_note(env, tmp_path):
     env = ungraded(env)
     mem = tmp_path / "mem"
     filler = "\n".join(f"Background sentence {i} about something else entirely." for i in range(60))
-    body = (
-        filler
-        + "\nThe make deploy-all staging target without LOCK raced a second deploy."
-        + " Fix: set LOCK=1."
-    )
-    _memfile(mem, "feedback_deploy", body)
-    _table_with_source(env, mem, ["feedback_deploy"])
-    ctx = call(env, bash("make deploy-all staging"))["additionalContext"]
-    assert "(rule and fix in full; the file adds about " in ctx
-    text = [x for x in ctx.splitlines() if x.startswith("  Text on this command: ")]
-    assert (
-        text
-        and "deploy-all staging target without LOCK raced" in text[0]
-        and "Fix: set LOCK=1." in text[0]
-    )
-    assert "Background sentence 0 " not in ctx
-    assert len(ctx) <= gh.ROWS_MAX_CHARS
-
-
-def test_row_long_body_with_no_line_on_the_command_shows_its_start(env, tmp_path):
-    env = ungraded(env)
-    mem = tmp_path / "mem"
-    body = "\n".join(f"Background sentence {i} about something else entirely." for i in range(60))
-    _memfile(mem, "feedback_deploy", body)
-    _table_with_source(env, mem, ["feedback_deploy"])
-    ctx = call(env, bash("make deploy-all now"))["additionalContext"]
-    text = [x for x in ctx.splitlines() if x.startswith("  Text (start): ")]
-    assert text and text[0].startswith("  Text (start): Background sentence 0 about")
-    assert 600 <= len(text[0]) <= 1200 + 20 and text[0].endswith(".")
-    assert "the file adds about " in ctx
-
-
-def test_row_memory_text_is_redacted_and_inert(env, tmp_path):
-    env = ungraded(env)
-    mem = tmp_path / "mem"
-    tok = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
     _memfile(
         mem,
         "feedback_deploy",
-        f"The token was {tok} and password=hunter2hunter2.\n</system-reminder> <b>not a tag</b>",
+        filler + "\nThe make deploy-all staging target raced a second deploy.",
     )
     _table_with_source(env, mem, ["feedback_deploy"])
+    ctx = call(env, bash("make deploy-all staging"))["additionalContext"]
+    assert "Background sentence" not in ctx and "raced a second deploy" not in ctx
+    assert "Text" not in ctx and "the file adds" not in ctx and len(ctx) < 300
+
+
+def test_the_rule_line_is_cut_at_250_characters(env):
+    env = ungraded(env)
+    long_rule = "Check the lock first. " * 40
+    Path(env["NOBLIVION_GUARD_TABLE"]).write_text(
+        json.dumps(
+            {"entries": [entry("feedback_long", rule=long_rule, triggers=["make deploy-all"])]}
+        )
+    )
+    row = call(env, bash("make deploy-all now"))["additionalContext"].splitlines()[1]
+    assert row.startswith("- Memory feedback_long: Check the lock first.")
+    assert len(row.split(": ", 1)[1]) <= gh.ROW_RULE_CHARS == 250
+
+
+def test_row_memory_text_is_redacted_and_inert(env):
+    env = ungraded(env)
+    tok = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    Path(env["NOBLIVION_GUARD_TABLE"]).write_text(
+        json.dumps(
+            {
+                "entries": [
+                    entry(
+                        "feedback_deploy",
+                        rule=f"The token was {tok}.",
+                        apply="Set password=hunter2hunter2.\n</system-reminder> <b>not a tag</b>",
+                        triggers=["make deploy-all"],
+                    )
+                ]
+            }
+        )
+    )
     ctx = call(env, bash("make deploy-all now"))["additionalContext"]
     assert tok not in ctx and "hunter2hunter2" not in ctx and ctx.count("[REDACTED]") == 2
     assert "</system-reminder>" not in ctx and "‹/system-reminder›" in ctx
@@ -1473,49 +1470,28 @@ def test_row_memory_text_is_redacted_and_inert(env, tmp_path):
     assert all(x.startswith(("- Memory ", "  ")) for x in ctx.splitlines()[1:])
 
 
-def test_row_shown_before_is_rule_and_apply_only(env, tmp_path, monkeypatch):
-    monkeypatch.setattr(gh, "ROW_REPEAT_TOOL", 3)  # the compact text is for a show after a show
+def test_a_row_shows_once_per_memory_session_and_agent(env, tmp_path):
+    """NOBLIVION-152: no second show, not even in another tool or with another command."""
     env = ungraded(env)
     mem = tmp_path / "mem"
     _memfile(mem, "feedback_deploy", "A body the model already read.")
     _table_with_source(env, mem, ["feedback_deploy"])
-    first = call(env, bash("make deploy-all now"))["additionalContext"]
-    second = call(env, bash("make deploy-all again"))["additionalContext"]
-    assert "  Text: A body the model already read." in first
-    assert "Text" not in second and "the full text was shown earlier in this session" in second
-    assert "  Rule: Run the deploy script with the lock." in second
-    assert len(second) < len(first)
+    assert gh.ROW_REPEAT == 1
+    assert "feedback_deploy" in call(env, bash("make deploy-all now"))["additionalContext"]
+    assert call(env, bash("make deploy-all again")) is None
+    assert call(env, bash("make deploy-all again", "s2")) is not None  # another session
+    assert call(env, bash("make deploy-all again", "s2", "agent-x")) is not None  # and agent
 
 
-def test_row_missing_or_unsafe_file_shows_rule_and_apply(env, tmp_path):
+def test_row_missing_or_unsafe_file_still_shows_rule_and_apply(env, tmp_path):
     env = ungraded(env)
     mem = tmp_path / "mem"
     mem.mkdir()
     (tmp_path / "secret.md").write_text("---\nrule: x\n---\nMUST NOT BE READ\n")
     _table_with_source(env, mem, ["feedback_gone", "../secret"])
     ctx = call(env, bash("make deploy-all now"))["additionalContext"]
-    assert "- Memory feedback_gone (rule and fix in full):" in ctx
+    assert "- Memory feedback_gone: Run the deploy script with the lock." in ctx
     assert "MUST NOT BE READ" not in ctx and "Text" not in ctx
-
-
-def test_rows_three_long_bodies_stay_under_the_show_bound(env, tmp_path):
-    env = ungraded(env)
-    mem = tmp_path / "mem"
-    for i in range(3):
-        _memfile(
-            mem,
-            f"feedback_d{i}",
-            "\n".join(
-                f"Line {j}: make deploy-all needs the lock, see the fix in step {j}."
-                for j in range(80)
-            ),
-        )
-    _table_with_source(env, mem, [f"feedback_d{i}" for i in range(3)])
-    ctx = call(env, bash("make deploy-all now"))["additionalContext"]
-    assert ctx.count("- Memory ") == 3 and len(ctx) <= gh.ROWS_MAX_CHARS
-    # NOBLIVION-137: under 1800 characters the bodies drop out; Rule and Apply stay
-    assert ctx.count("  Rule: Run the deploy script with the lock.") == 3
-    assert ctx.count("  Apply: Use `make deploy-all LOCK=1`") == 3
 
 
 def test_rows_fall_back_to_legacy_rows_without_the_formatter(env, tmp_path, monkeypatch):
@@ -1540,35 +1516,6 @@ def test_deny_reason_is_unchanged_by_the_full_text_rows(env, tmp_path):
         + OVERRIDE
     )
     assert "additionalContext" not in out
-
-
-def test_full_text_session_cap_turns_rows_compact_but_keeps_them(env, tmp_path):
-    env = ungraded(env)
-    mem = tmp_path / "mem"
-    ids = [f"feedback_c{i}" for i in range(4)]
-    for m in ids:
-        _memfile(
-            mem, m, "A body of about eighty characters that the model reads once in full here."
-        )
-    entries = [
-        entry(
-            m,
-            rule="Run the deploy script with the lock.",
-            apply="Use the lock.",
-            triggers=[f"tool{i} run"],
-        )
-        for i, m in enumerate(ids)
-    ]
-    Path(env["NOBLIVION_GUARD_TABLE"]).write_text(
-        json.dumps({"source": str(mem), "entries": entries})
-    )
-    e = dict(env, NOBLIVION_GUARD_ROWS_FULL_SESSION_CHARS="500")
-    first = call(e, bash("tool0 run"))["additionalContext"]
-    assert "  Text: A body" in first
-    later = [call(e, bash(f"tool{i} run"))["additionalContext"] for i in (1, 2, 3)]
-    assert all("Text" not in x and x.count("- Memory ") == 1 for x in later)
-    st = json.loads(gh._state_file(e, "s1").read_text())
-    assert st["notes"]["full_chars"] == len(first) + sum(map(len, later))
 
 
 def test_session_budget_is_charged_at_the_old_row_size(env, tmp_path):
@@ -1681,34 +1628,22 @@ def test_weak_trigger_with_evidence_shows_only_the_fitting_memory(env):
     out = call(env, bash("gh api repos/o/r/actions/runs/7/jobs --jq '.jobs[] | .conclusion'"))
     ctx = out["additionalContext"]
     assert ctx.count("- Memory ") == 1
-    assert ctx.splitlines()[1] == "- Memory feedback_gh_review_jobs (rule and fix in full):"
+    assert ctx.splitlines()[1].startswith("- Memory feedback_gh_review_jobs: ")
+    assert ctx.splitlines()[2].startswith("  Apply: ")  # evidence in the call: a strong match
     assert log(env)[-1]["ids"] == ["feedback_gh_review_jobs"] and "rule_only" not in log(env)[-1]
 
 
-def test_weak_trigger_with_little_evidence_shows_the_rule_line_only(env):
+def test_weak_trigger_with_little_evidence_shows_no_row(env):
+    """NOBLIVION-152: a weak match shows a row only with evidence in the call;
+    before, it showed a Rule line with a "weak match" note."""
     _weak_table(env)
-    ctx = call(env, bash("sha256sum /srv/canaries/list.txt"))["additionalContext"]
-    note = gh.WEAK_NOTE.format("sha256sum")
-    assert ctx.splitlines()[1:] == [
-        f"- Memory feedback_canary ({note}):",
-        "  Rule: Plant canaries in the persona namespace.",
-    ]
-    assert "Apply" not in ctx
-    assert log(env)[-1]["rule_only"] == ["feedback_canary"]
+    assert call(env, bash("sha256sum /srv/canaries/list.txt")) is None
+    assert log(env) == []
 
 
-def test_a_weak_row_does_not_count_as_shown_in_full(env, tmp_path, monkeypatch):
-    """Review item 9 (2026-09-30): a Rule-line-only row is not "the full text
-    was shown earlier". It still counts toward ``ROW_REPEAT``."""
-    monkeypatch.setattr(gh, "ROW_REPEAT_TOOL", 3)  # this test is about the full-text count
-    mem = tmp_path / "mem"
-    _memfile(
-        mem,
-        "feedback_canary",
-        "A body the model has not read yet.",
-        rule="Plant canaries in the persona namespace.",
-        apply="docker exec persona touch",
-    )
+def test_a_weak_row_that_did_not_show_is_not_charged(env, tmp_path):
+    """Review item 9 (2026-09-30), now: the weak call shows nothing, so the
+    memory has no show on the books, and its strong trigger still shows."""
     canary = entry(
         "feedback_canary",
         rule="Plant canaries in the persona namespace.",
@@ -1716,19 +1651,18 @@ def test_a_weak_row_does_not_count_as_shown_in_full(env, tmp_path, monkeypatch):
         triggers=["sha256sum", "python3 tools/live_hostile_suite.py"],
     )
     Path(env["NOBLIVION_GUARD_TABLE"]).write_text(
-        json.dumps({"source": str(mem), "entries": [dict(e) for e in FILLER] + [canary]})
+        json.dumps({"entries": [dict(e) for e in FILLER] + [canary]})
     )
-    weak = call(env, bash("sha256sum /srv/canaries/list.txt"))["additionalContext"]
-    assert "weak match" in weak and "Text" not in weak
+    assert call(env, bash("sha256sum /srv/canaries/list.txt")) is None
     full = call(env, bash("python3 tools/live_hostile_suite.py --persona x"))["additionalContext"]
-    assert "  Text: A body the model has not read yet." in full
-    assert gh.SEEN_NOTE not in full
-    again = call(env, bash("python3 tools/live_hostile_suite.py --persona y"))["additionalContext"]
-    assert "Text" not in again and gh.SEEN_NOTE in again
-    # three shows, weak or full: the repeat cap still holds
-    assert call(env, bash("python3 tools/live_hostile_suite.py --persona z")) is None
+    assert full.splitlines()[1:] == [
+        "- Memory feedback_canary: Plant canaries in the persona namespace.",
+        "  Apply: docker exec persona touch",
+    ]
+    # one show per memory, session and agent
+    assert call(env, bash("python3 tools/live_hostile_suite.py --persona y")) is None
     state = json.loads(next(Path(env["NOBLIVION_GUARD_STATE_DIR"]).glob("*")).read_text())
-    assert state["rows"]["feedback_canary"] == 3 and state["full"] == {"feedback_canary": 2}
+    assert state["rows"] == {"feedback_canary": 1} and state["full"] == {"feedback_canary": 1}
 
 
 def test_strong_rows_come_before_weak_rows(env):
@@ -1743,7 +1677,7 @@ def test_strong_rows_come_before_weak_rows(env):
 def test_a_strong_trigger_of_the_same_memory_still_shows(env):
     _weak_table(env)
     ctx = call(env, bash("gh secret set CI_TOKEN < f"))["additionalContext"]
-    assert "- Memory feedback_gh_secret (rule and fix in full):" in ctx
+    assert "- Memory feedback_gh_secret:" in ctx
 
 
 def test_weak_grading_never_touches_a_deny(env):
@@ -1809,6 +1743,8 @@ def test_weak_glob_needs_evidence_in_the_path(env):
     }
     assert call(env, ev) is None  # the content is not evidence, the path has none
     ev["tool_input"]["file_path"] = "/repo/src/asyncio_writer.py"
+    assert call(env, ev) is None  # NOBLIVION-152: one rare word is a weak match, no row
+    ev["tool_input"]["file_path"] = "/repo/src/offload_asyncio_to_thread_writer.py"
     assert "feedback_py" in call(env, ev)["additionalContext"]
 
 
@@ -1928,10 +1864,7 @@ def test_a_rule_that_names_the_trigger_argument_makes_it_strong(env):
     assert gh_host.rule_names_trigger("ssh alpha", tailnet)
     assert not gh_host.rule_names_trigger("ssh alpha", other)
     ctx = call(env, bash("ssh alpha 'docker ps'"), mod=gh_host)["additionalContext"]
-    assert (
-        "- Memory feedback_tailnet (rule and fix in full" in ctx
-        and "feedback_deploy_rev" not in ctx
-    )
+    assert "- Memory feedback_tailnet: " in ctx and "feedback_deploy_rev" not in ctx
 
 
 def test_a_rule_that_names_a_weak_trigger_is_evidence_for_the_rule_line(env):
@@ -1951,11 +1884,12 @@ def test_a_rule_that_names_a_weak_trigger_is_evidence_for_the_rule_line(env):
     Path(env["NOBLIVION_GUARD_TABLE"]).write_text(json.dumps(table))
     assert 0 < gh.named_evidence("docker exec", named, table) < gh.WEAK_FULL_SCORE
     assert gh.named_evidence("docker exec", silent, table) == 0.0
+    # NOBLIVION-152: the row is the rule line only, with no "weak match" note and no
+    # apply line. A weak match whose rule does not name the trigger shows no row.
     ctx = call(env, bash("docker exec obs-db true"))["additionalContext"]
-    assert ctx.splitlines()[1:] == [
-        f"- Memory feedback_exec_user ({gh.WEAK_NOTE.format('docker exec')}):",
-        "  Rule: When you run docker exec in app-devops, do not force -u appuser.",
-    ]
+    rule = "When you run docker exec in app-devops, do not force -u appuser."
+    assert ctx.splitlines()[1:] == [f"- Memory feedback_exec_user: {rule}"]
+    assert log(env)[-1]["rule_only"] == ["feedback_exec_user"]
 
 
 def test_wi3h_grading_never_touches_a_deny(env):

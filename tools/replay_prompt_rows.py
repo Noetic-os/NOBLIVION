@@ -59,7 +59,7 @@ HOOKS = TOOLS.parent / "hooks"
 LABEL_HEADER = "Memory rows by subject (label rows)"
 ROW_RE = re.compile(r"^- \[id (\d+)\] .*\((?P<name>[^()]*)\)$")
 ANY_ROW_RE = re.compile(r"^- \[id (?P<id>\d+)\] ")
-LABEL_RE = re.compile(r"^- Memory (?P<name>\S+)")
+LABEL_RE = re.compile(r"^- Memory (?P<name>[\w.-]+)")
 TOP = 8
 
 

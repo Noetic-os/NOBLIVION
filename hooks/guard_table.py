@@ -102,7 +102,7 @@ _CFG = _hook_config()
 # The table of a session with no project folder (no cwd and no override).
 DEFAULT_TABLE = _CFG.data_dir() / "guard-table.json"
 TABLES_SUBDIR = "guard-tables"
-TABLE_VERSION = 2  # 2: the label index key
+TABLE_VERSION = 3  # 2: the label index key; 3: its roots, root counts and paths (NOBLIVION-152)
 # Index and topic files are not memories.
 _NOT_MEMORY = re.compile(r"^(MEMORY|MEMORY_ARCHIVE|topic_.*)\.md$")
 
@@ -135,8 +135,21 @@ def _ml():
     return _ML
 
 
-def _label_doc(path: Path, text: str) -> Dict[str, object]:
-    """The label index row of one memory file."""
+def _is_hub(folders: List[Path]) -> bool:
+    """True when the project folder (the first) is itself a shared root: it holds
+    the notes of many projects, so no note in it is in "the own project"
+    (``memory_labels.build_index``)."""
+    try:
+        return bool(folders) and any(
+            _CFG._same_dir(folders[0], s) for s in _CFG.shared_memory_dirs()
+        )
+    except Exception:  # noqa: BLE001 - labels never stop the guard build
+        return False
+
+
+def _label_doc(path: Path, text: str, root: int = 0) -> Dict[str, object]:
+    """The label index row of one memory file. ``root``: the number of its
+    folder in the list the table is built from (0: the project folder)."""
     ml = _ml()
     name, desc, body = ml.name_and_description(text, path.stem)
     try:
@@ -149,6 +162,8 @@ def _label_doc(path: Path, text: str) -> Dict[str, object]:
         "labels": ml.memory_labels(text, path.stem),
         "mtime": mtime,
         "text": ml.short_text(desc, body),
+        "root": root,
+        "paths": ml.file_paths(text) if root else {},
     }
 
 
@@ -207,7 +222,7 @@ def folder_stamp(folder: Any) -> str:
     ctime. A write, a delete, a rename or a ``cp -p`` of a memory file changes
     it; an index or topic file does not. One ``scandir`` and one ``stat`` per
     file; no file is read."""
-    h = hashlib.sha256()
+    h = hashlib.sha256(f"table-{TABLE_VERSION}".encode())  # a new table shape is stale
     for f in _folders(folder):
         rows: Optional[List[Tuple[str, int, int, int]]] = []
         try:
@@ -253,6 +268,7 @@ def build(folder: Any) -> Dict[str, Any]:
     skipped: List[Dict[str, object]] = []
     warnings: List[Dict[str, object]] = []
     label_docs: List[Dict[str, object]] = []
+    root_of = {str(f): i for i, f in reversed(list(enumerate(folders)))}
     label_error = ""
     for path in _CFG.memory_files(present):
         if _NOT_MEMORY.match(path.name):
@@ -265,7 +281,7 @@ def build(folder: Any) -> Dict[str, Any]:
             continue
         if not label_error:
             try:  # every memory file, rule fields or not
-                label_docs.append(_label_doc(path, text))
+                label_docs.append(_label_doc(path, text, root_of.get(str(path.parent), 0)))
             except Exception as exc:  # noqa: BLE001 - labels never stop the guard build
                 label_error = f"{type(exc).__name__}: {exc}"[:300]
         fields = mf.read_fields(text)
@@ -370,7 +386,7 @@ def build(folder: Any) -> Dict[str, Any]:
         table["warnings"] = warnings
     if not label_error:
         try:
-            table["label_index"] = _ml().build_index(label_docs)
+            table["label_index"] = _ml().build_index(label_docs, own_root=not _is_hub(folders))
         except Exception as exc:  # noqa: BLE001 - labels never stop the guard build
             label_error = f"{type(exc).__name__}: {exc}"[:300]
     if label_error:
