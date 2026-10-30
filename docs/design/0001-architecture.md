@@ -1813,6 +1813,10 @@ gold set ships with this plugin, so a human reads every plan.
 
 ## 11. Transcript miner
 
+> Removed in 0.1.19 (NOBLIVION-154). The SessionEnd hook, the `noblivion mine`
+> command and the Codex hook are gone. A replay of 621 logged errors gave no
+> mined row that holds a fix. This section stays as the record of the design.
+
 The miner turns past Claude Code sessions into low-trust memory rows. It
 runs only on the local machine.
 

@@ -106,7 +106,6 @@ def test_every_moved_module_is_present() -> None:
     }
     expected.add("learning_summary")
     expected.add("learning_context")
-    expected.add("mine_session_end")  # SessionEnd trigger of the transcript miner (E10)
     assert set(MODULES) == expected
 
 

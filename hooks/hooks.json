@@ -1,5 +1,5 @@
 {
-  "description": "NOBLIVION hooks: recall, guards, stop checks, continuity, memory sync, trust flush, the store start and the transcript miner.",
+  "description": "NOBLIVION hooks: recall, guards, stop checks, continuity, memory sync, trust flush, and the store start.",
   "hooks": {
     "SessionStart": [
       {
@@ -306,15 +306,6 @@
       }
     ],
     "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/mine_session_end.py\"",
-            "timeout": 10
-          }
-        ]
-      },
       {
         "hooks": [
           {

@@ -7,7 +7,7 @@ recall diagnostics), and ``index`` (see ``noblivion.indexer``),
 opt-in duplicate sweep, see ``noblivion.dedup``), ``serve`` (the store
 in the foreground, see ``noblivion.store``), ``ensure-running`` (start
 the store in the background unless it runs, see ``noblivion.launcher``),
-``mine`` (the transcript miner, see ``noblivion.miner``), ``import``
+``import``
 (import memories from a JSONL file, or ``--remove`` them again, see
 ``noblivion.importer``), ``trust
 report`` (print the trust report), ``trust recompute`` (the trust repair),
@@ -35,7 +35,6 @@ USAGE = (
     "       noblivion stop report [--days N] [--json]\n"
     "       noblivion serve [--port PORT] [--lock-wait SECONDS]\n"
     "       noblivion ensure-running [--json] [--wait SECONDS] [--restart]\n"
-    "       noblivion mine [--since YYYY-MM-DD] [--max-seconds S] [--json]\n"
     "       noblivion import FILE.jsonl [--dry-run | --apply] [--label L ...] [--archived] "
     "[--json]\n"
     "       noblivion import --remove FILE.jsonl [--dry-run | --apply] [--json]\n"
@@ -69,10 +68,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         from noblivion import launcher
 
         return launcher.main(rest)
-    if command == "mine":
-        from noblivion import miner
-
-        return miner.main(rest)
     if command == "learning":
         from noblivion import learning_cli
 

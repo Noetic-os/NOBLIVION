@@ -112,7 +112,7 @@ Claude Code and Codex start the same one-shot scripts. Only the recall paths cal
 | PreCompact | continuity_hook | Saves the shown set and prints the rules again, so they survive compaction | No |
 | SubagentStart | subagent_rules_hook | Injects the rules that match the subagent's task | Yes |
 | Stop | stop_checks, trust_flush | Runs the stop checks in shadow; flushes the session's feedback events in batches | Yes: flush |
-| SessionEnd | mine_session_end, learning_capture | Mines the transcript when the miner is enabled, with a throttle | No: direct SQLite |
+| SessionEnd | learning_capture | Writes the learning capture record (the transcript miner hook was removed in 0.1.19, NOBLIVION-154) | No: direct SQLite |
 
 ## Design choices
 
@@ -148,7 +148,7 @@ NOBLIVION adds 21 capabilities on top of the memory files, and changes none of w
 | Subagent rules | Up to 8 rules, 2,500 characters, injected at SubagentStart | A subagent gets no auto memory, except a fork | `hooks/subagent_rules_hook.py` |
 | `noblivion_recall` MCP tool | Query, `fetch_id`, `chunk`, `section`, `include_mined`; k 1 to 20; a note over 6,000 characters opens as summary plus section list; bound to the session since 0.1.15 | The Read tool on memory files | 0.1.0; `mcp/recall_mcp.py` |
 | `noblivion_remember` MCP tool | Writes a redacted `reference_<client>_<hash>.md` into the session's memory folder; never touches `MEMORY.md` | Claude writes memory files itself | 0.1.3; `mcp/recall_mcp.py` |
-| Transcript miner | At session end, mines correction, `tool_error` and review notes into the database only, with prior trust 0.3; off by default since 0.1.6 | None | 0.1.0; `hooks/mine_session_end.py`, `src/noblivion/miner.py` |
+| Transcript miner | At session end, mines correction, `tool_error` and review notes into the database only, with prior trust 0.3; off by default since 0.1.6; its hook and command were removed in 0.1.19 (NOBLIVION-154) | None | 0.1.0; `src/noblivion/miner.py` remains as a library |
 | Learning and consolidation | Opt-in; accepts only a zero-cost local model; writes `learned-<uuid>.md` files, evidence-linked claims and inert procedure drafts; jobs under a daily budget | None | 0.1.11, consolidation 0.1.14; `docs/learning.md` |
 | Dedup with consent | Pairs above cosine 0.75 go to a hosted judge after typed consent; apply and undo byte for byte; `sweep` with a 0.5 USD daily cap | None; the docs ask Claude to merge index lines by hand | 0.1.0, sweep 0.1.15; `src/noblivion/dedup.py` |
 | Trust ranking | A trust score per note from recall, use and contradiction events; report with retire, promote and demote; ranking off or shadow until n is at least 30 and the Wilson lower bound is at least 0.70 | None; a `modified` timestamp only | 0.1.0; `src/noblivion/trust.py`, `docs/trust.md` |

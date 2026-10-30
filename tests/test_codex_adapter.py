@@ -8,7 +8,6 @@ import importlib.util
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -470,67 +469,6 @@ def test_mcp_fs_read_maps_to_shared_file_guard(cfg: dict) -> None:
     assert len(translated) == 1
     assert translated[0]["tool_name"] == "Read"
     assert translated[0]["tool_input"]["file_path"] == ".git/config"
-
-
-def test_codex_session_end_mines_codex_journals_with_separate_stamp(
-    cfg: dict, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cfg["recall_root"] = "shared-override-root"
-    calls: list[tuple[str, dict, dict]] = []
-
-    def invoke(_cfg: dict, env: dict, script: str, payload: dict, *args: str) -> dict:
-        calls.append((script, env, payload))
-        return {}
-
-    monkeypatch.setattr(adapter, "_invoke", invoke)
-    adapter.handle_hook(
-        cfg,
-        event(cfg, "UserPromptSubmit", prompt="A fixture prompt."),
-    )
-    adapter.handle_hook(cfg, event(cfg, "SessionEnd", reason="other"))
-    script, env, payload = calls[-1]
-    assert script == "mine_session_end"
-    assert env["NOBLIVION_MINER_STAMP_DIR"] == cfg["state_dir"]
-    assert shlex.split(env["NOBLIVION_MINE_CMD"]) == [
-        str(Path(cfg["data_dir"]) / "venv/bin/noblivion"),
-        "mine",
-        "--transcripts",
-        str(Path(cfg["state_dir"]) / "transcripts" / cfg["recall_root"] / "codex-*.jsonl"),
-        "--lock-timeout",
-        "30",
-    ]
-    assert Path(payload["transcript_path"]).is_file()
-    assert Path(payload["transcript_path"]).parent.name == cfg["recall_root"]
-
-
-def test_codex_miner_stamp_does_not_throttle_claude(cfg: dict, tmp_path: Path) -> None:
-    path = ROOT / "hooks/mine_session_end.py"
-    spec = importlib.util.spec_from_file_location("_noblivion_miner_stamp_test", path)
-    assert spec is not None and spec.loader is not None
-    hook = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(hook)
-    started: list[list[str]] = []
-
-    def starter(argv: list[str], _env: dict) -> bool:
-        started.append(argv)
-        return True
-
-    env = {
-        "NOBLIVION_DATA_DIR": cfg["data_dir"],
-        "NOBLIVION_MINE_CMD": "true",
-        "NOBLIVION_MINER": "1",
-    }
-    codex_env = {
-        **env,
-        "NOBLIVION_MINER_STAMP_DIR": str(tmp_path / "codex-stamps"),
-    }
-    assert hook.run_hook(env, starter, now=lambda: 1000.0) == "started"
-    assert hook.run_hook(codex_env, starter, now=lambda: 1000.0) == "started"
-    assert hook.run_hook(env, starter, now=lambda: 1300.0) == "throttled"
-    assert hook.run_hook(codex_env, starter, now=lambda: 1300.0) == "throttled"
-    assert len(started) == 2
-    assert (Path(cfg["data_dir"]) / "cache/mine.stamp").is_file()
-    assert (tmp_path / "codex-stamps/mine.stamp").is_file()
 
 
 def test_spawn_agent_saves_its_task_for_subagent_start(

@@ -75,8 +75,7 @@ HOOK_COMMAND = re.compile(
 
 # The bindings of the reference install (event, matcher, hook, args): the
 # hand-installed hooks under their new names. The reference install bound no
-# trust report hook (the flush refreshes the report); store_client.py (E4) and
-# mine_session_end.py (E10) are new.
+# trust report hook (the flush refreshes the report); store_client.py (E4) is new.
 EXPECTED = {
     ("SessionStart", "", "learning_summary.py", ""),
     ("SessionStart", "", "learning_capture.py", ""),
@@ -113,7 +112,6 @@ EXPECTED = {
     ("SubagentStart", "", "subagent_rules_hook.py", ""),
     ("Stop", "", "stop_checks.py", ""),
     ("Stop", "", "trust_flush.py", ""),  # the trust flush (E5)
-    ("SessionEnd", "", "mine_session_end.py", ""),  # the transcript miner (E10)
 }
 
 

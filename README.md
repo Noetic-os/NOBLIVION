@@ -35,11 +35,6 @@ release.
 - **Duplicate sweep.** An optional command finds notes that say the same
   thing. A hosted model judges each pair. This is off until you turn it
   on.
-- **Transcript miner.** This is off until you turn it on, because its
-  precision is not measured yet. When it is on, a hook turns the session
-  transcript into notes with a low starting trust value at the end of a
-  session. The prompt hook never adds these notes. Claude Code sees them
-  only when it asks the MCP tool for them.
 
 ## What it does not do
 
@@ -139,7 +134,6 @@ for the full steps and limits.
 - [Recall as a reflex](docs/recall-reflex.md): the named moments, the skill and the nudge
 - [Trust](docs/trust.md)
 - [Duplicate sweep and privacy](docs/dedup-and-privacy.md)
-- [Transcript miner](docs/transcript-miner.md)
 - [Import memories from a JSONL file](docs/import.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Architecture (design document)](docs/design/0001-architecture.md)

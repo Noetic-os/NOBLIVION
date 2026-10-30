@@ -8,6 +8,16 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Remove the transcript miner (NOBLIVION-154). The SessionEnd hook, the Codex SessionEnd mine step, the
+  `noblivion mine` command, its documentation page and its settings table are gone. Error recall no longer
+  asks the store for mined rows, so `fused` and `store` modes show memory files only. The measure: a
+  replay of 621 logged error queries (422 distinct) against the 502 mined `tool_error` rows, behind the
+  error-recall quote gate and the 0.39 coverage floor, gave a gate-passing hit for 25 queries (8 distinct
+  errors, 13 query and row pairs). None of the 13 holds a cause or a fix; 8 of 13 only repeat the same
+  error the model just saw (0.62, Wilson 95% interval 0.36 to 0.82), so precision on a hit that helps is
+  0 of 13. In 21 days of live use one mined row was shown. `src/noblivion/miner.py` stays as a library
+  (the importer and the Codex journal share it). Rows already in a store stay and still answer
+  `noblivion_recall` with `include_mined`.
 - Error recall shows less and shows it more exactly (NOBLIVION-113). A show is the rule and the apply
   (about 300 characters) and the way to fetch the full note, not the body. A note shows once per agent
   of a session. For a command that exits 0, the hook reads stderr and reads stdout only when stderr is

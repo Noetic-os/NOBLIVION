@@ -346,7 +346,7 @@ measure it.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_ERROR_RECALL_MODE` | none | `local` | `local` searches the memory files with a keyword score and needs no store. `store` asks the store. `fused` uses both. The store answer also holds mined `tool_error` notes (see `docs/transcript-miner.md`). |
+| `NOBLIVION_ERROR_RECALL_MODE` | none | `local` | `local` searches the memory files with a keyword score and needs no store. `store` asks the store. `fused` uses both. |
 | `NOBLIVION_ERROR_RECALL_LOCAL_MIN_SCORE` | none | `0.39` | The lowest score of a local hit, from 0 to 1: the share of the words of the error that the note holds, where a rare word counts more. |
 | `NOBLIVION_ERROR_RECALL_MIN_SCORE` | none | `0.70` with the embedding model `BAAI/bge-small-en-v1.5`, else no floor | The lowest score of a store hit: a cosine score. The default `0.70` was measured for the embedding model `BAAI/bge-small-en-v1.5`, and the hook uses it only when the store answer names that model. With another model every store hit passes this gate, and the quote check still applies. A value that you set applies to every model. A value that is not a number from -1 to 1 counts as unset. |
 | `NOBLIVION_ERROR_RECALL_TIMEOUT_S` | none | `0.8` | The time budget of the store call, in seconds. |
@@ -488,17 +488,6 @@ mode) and logged only (the check is not in the blocking list).
 `OPENROUTER_API_KEY` holds the API key. It is read only from the
 environment, never from the config file.
 
-## Transcript miner
-
-| Env var | Config key | Default | Meaning |
-| --- | --- | --- | --- |
-| `NOBLIVION_MINER` | `miner.enabled` | off (switch) | The miner, at session end and from the command line. Off by default: its precision is not measured yet. See [transcript-miner.md](transcript-miner.md). |
-| `NOBLIVION_MINE_CMD` | none | `<data dir>/venv/bin/noblivion mine` | The command the session end hook runs. |
-| `NOBLIVION_MINER_STAMP_DIR` | none | `<data dir>/cache` | Folder for the miner start throttle stamp. The Codex adapter uses its own state folder so a Claude Code session does not suppress a Codex miner start. |
-| none | `miner.transcript_glob` | `~/.claude/projects/*/*.jsonl` | The transcripts to read. |
-| none | `miner.max_run_s` | `300` | The time budget of one run, in seconds. The next run goes on from where this one stopped. |
-
-
 ## Controlled learning consolidation
 
 `learning.json` is separate from the legacy settings parser. Background learning
@@ -510,3 +499,9 @@ loopback provider; unknown or external provider prices never permit a request.
 Worker settings and model/budget fingerprints are frozen for each durable job.
 See [Background learning](learning.md#evidence-linked-consolidation) for the full
 context API, hard bounds, extraction coverage and inert-draft policy.
+
+## Removed settings
+
+The transcript miner was removed in 0.1.19. `NOBLIVION_MINER` and the
+`miner.*` config keys have no effect. A config file that still holds them is
+read without an error.

@@ -1024,33 +1024,6 @@ class LocalIndex:
 # --------------------------------------------------------------------------
 # store search
 # --------------------------------------------------------------------------
-MINED_SOURCE_TYPE = "transcript_mined"
-MINED_CATEGORY = "tool_error"
-MINED_ID_PREFIX = "mined-"
-
-
-def mined_memory(row: Mapping[str, object]) -> Optional[Dict[str, str]]:
-    """The memory of one mined tool-error row of the store's index answer, or None for any
-    other row. The id is ``mined-<row id>``, so it never equals a memory file id."""
-    if row.get("source_type") != MINED_SOURCE_TYPE or row.get("category") != MINED_CATEGORY:
-        return None
-    try:
-        mid = int(str(row.get("id")).strip())
-    except (TypeError, ValueError):
-        return None
-    rule = row.get("rule")
-    apply = row.get("apply")
-    rule = rule if isinstance(rule, str) and rule.strip() else str(row.get("summary") or "")
-    return {
-        "id": f"{MINED_ID_PREFIX}{mid}",
-        "fetch_id": str(mid),
-        "rule": rule,
-        "apply": apply if isinstance(apply, str) else "",
-        "description": "",
-        "body": "",
-    }
-
-
 def _store_id(row: Mapping[str, object]) -> str:
     """The store id of an index row, for ``fetch_id``; ``""`` when it has none."""
     rid = row.get("id")
@@ -1063,18 +1036,17 @@ def store_search(
     query: str, env: Mapping[str, str], folder: Path, k: int = STORE_TOP_K
 ) -> Tuple[List[Tuple[float, Dict[str, str]]], str]:
     """``([(score, memory)], model)`` from the store's ranked index:
-    memory-file rows and mined tool-error rows (NOBLIVION-105), in the store's
-    order, and the embedding model that the answer names (``""`` when it
-    names none). Raises on any failure, and
-    on a keyword-mode answer (no cosine: design doc section 8.4), so the
-    caller falls back to the local search. GET only; the store is read-only
-    for this hook."""
+    memory-file rows only (NOBLIVION-154: the query never asks for mined rows),
+    in the store's order, and the embedding model that the answer names
+    (``""`` when it names none). Raises on any failure, and on a keyword-mode
+    answer (no cosine: design doc section 8.4), so the caller falls back to
+    the local search. GET only; the store is read-only for this hook."""
     rh = _rh()
     project = rh.recall_project(env)
     root = os.path.basename(os.path.dirname(os.path.normpath(str(folder)))) or None
     timeout_s = _float_env(env, "NOBLIVION_ERROR_RECALL_TIMEOUT_S", STORE_TIMEOUT_S)
     payload = rh.store_get(
-        lambda base: rh.index_url(base, query, int(k), project, root, True), env, timeout_s
+        lambda base: rh.index_url(base, query, int(k), project, root), env, timeout_s
     )
     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
         raise RuntimeError("bad_shape")
@@ -1088,15 +1060,6 @@ def store_search(
         src = row.get("source")
         score = row.get("score")
         if not isinstance(score, (int, float)) or isinstance(score, bool):
-            continue
-        mined = mined_memory(row)
-        if mined is not None:
-            # NOBLIVION-105. A mined tool-error row has no memory file, so it has no source.
-            # The store sends its rule line (the first sentence of the error) and its apply
-            # line. The quote check in ``decide`` still decides whether it is shown.
-            if mined["id"] not in seen:
-                seen.add(mined["id"])
-                out.append((float(score), mined))
             continue
         if not isinstance(src, str):
             continue

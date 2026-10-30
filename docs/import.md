@@ -124,7 +124,7 @@ Example:
 
 The command removes secrets from the text first. Then it masks text that
 tries to give the model new instructions. These are the same two steps as
-for the transcript miner. When the text cannot be redacted, the command
+for every note the store keeps. When the text cannot be redacted, the command
 skips the line and counts it as `redaction_skipped`.
 
 ### Duplicates

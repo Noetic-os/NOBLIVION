@@ -225,13 +225,12 @@ def no_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     data = tmp_path / "data"
     monkeypatch.setenv("NOBLIVION_DATA_DIR", str(data))
-    monkeypatch.setenv("NOBLIVION_MINER", "1")  # off by default; ``mine`` must get to the database
     return data
 
 
 @pytest.mark.parametrize(
     "argv",
-    [["index"], ["mine"], ["trust", "report"], ["dedup", "pairs"], ["consent"]],
+    [["index"], ["trust", "report"], ["dedup", "pairs"], ["consent"]],
 )
 def test_cli_tools_never_make_the_data_dir(no_data_dir, argv, capsys):
     assert cli_main(argv) != 0
@@ -327,6 +326,6 @@ def test_no_hook_makes_a_deleted_data_dir(tmp_path, event, matcher, command):
         text=True,
         timeout=60,
     )
-    time.sleep(0.2)  # a detached child (the miner) would have run by now
+    time.sleep(0.2)  # a detached child would have run by now
     assert not data.exists(), (event, cmd, sorted(str(p) for p in data.rglob("*")))
     assert proc.returncode in (0, 2), proc.stderr[-400:]

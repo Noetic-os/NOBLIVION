@@ -31,7 +31,6 @@ ch = load_hook("continuity_hook", "switchtest_continuity_hook")
 cg = load_hook("credential_guard", "switchtest_credential_guard")
 ms = load_hook("memory_sync_hook", "switchtest_memory_sync_hook")
 te = load_hook("trust_events", "switchtest_trust_events")
-me = load_hook("mine_session_end", "switchtest_mine_session_end")
 ts = load_hook("trust_signals", "switchtest_trust_signals")
 gh = load_hook("guard_hook", "switchtest_guard_hook")
 rn = load_hook("recall_nudge", "switchtest_recall_nudge")
@@ -76,7 +75,6 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_TRUST_CITATION_USE": ts.citation_on,
     "NOBLIVION_TRUST_CORRECTION_CONTRADICT": ts.correction_on,
     "NOBLIVION_TRUST_BEHAVIOUR_USE": ts.behaviour_on,
-    "NOBLIVION_MINER": me.is_enabled,
 }
 
 ON = ("1", "true", "yes", "on", " ON ", "True")
@@ -122,7 +120,7 @@ def test_json_values_in_the_config_file(value, on):
     assert config.parse_switch(value, not on) is on
 
 
-def test_the_miner_command_reads_the_switch_like_the_hook(base):
+def test_the_miner_command_reads_the_switch(base):
     for value in ON:
         assert miner.load_miner_settings(dict(base, NOBLIVION_MINER=value)).enabled is True
     for value in OFF:
@@ -130,4 +128,3 @@ def test_the_miner_command_reads_the_switch_like_the_hook(base):
     # Not set, or a value that is no switch word: both keep the default, off.
     for env in (base, dict(base, NOBLIVION_MINER="maybe")):
         assert miner.load_miner_settings(env).enabled is False
-        assert me.is_enabled(env) is False

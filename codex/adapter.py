@@ -13,7 +13,6 @@ import importlib.util
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -488,32 +487,6 @@ def handle_hook(cfg: dict, event: dict) -> dict:
         stop = {**event, "transcript_path": str(transcript)}
         out.append(_invoke(cfg, env, "stop_checks", stop))
         _invoke(cfg, env, "trust_flush", stop)
-    elif name == "SessionEnd" and "learning" not in cfg:
-        mine_env = {
-            **env,
-            "NOBLIVION_MINE_CMD": shlex.join(
-                [
-                    str(Path(cfg["data_dir"]) / "venv/bin/noblivion"),
-                    "mine",
-                    "--transcripts",
-                    str(
-                        Path(cfg["state_dir"])
-                        / "transcripts"
-                        / str(cfg.get("recall_root") or Path(cfg["memory_dir"]).parent.name)
-                        / "codex-*.jsonl"
-                    ),
-                    "--lock-timeout",
-                    "30",
-                ]
-            ),
-            "NOBLIVION_MINER_STAMP_DIR": str(cfg["state_dir"]),
-        }
-        _invoke(
-            cfg,
-            mine_env,
-            "mine_session_end",
-            {**event, "transcript_path": str(transcript)},
-        )
     return _merge(name, out)
 
 
