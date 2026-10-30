@@ -500,7 +500,11 @@ def noblivion_recall(
     t0 = time.monotonic()
     try:
         # md_only is passed only when set, so the default call is unchanged.
-        hits = hook.recall(q, k, environ, md_only=True) if md_only else hook.recall(q, k, environ)
+        hits = (
+            hook.recall(q, k, environ, md_only=True, weak_match=True)
+            if md_only
+            else hook.recall(q, k, environ, weak_match=True)
+        )
     except hook.RecallError as exc:
         if exc.reason == "bad_project":
             return _tool_error(

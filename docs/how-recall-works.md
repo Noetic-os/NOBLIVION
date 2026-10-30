@@ -199,48 +199,34 @@ names no model. The hook then uses no default floor (`floor_off:no_model`)
 until the store runs the new version. A floor that you set applies to
 every model.
 
-#### Floor exemption
+#### Score window and rank-1 rescue
 
-The vector score alone can cut a note that the fused order ranks high. The
-fused order mixes the vector order with a local keyword score. With
-`NOBLIVION_RECALL_FLOOR_EXEMPT=1` (`recall.floor_exempt`, off by default) a row
-stays although its score is under the floor, when all of this is true:
+The floor alone gives the same answer to a prompt with one clear match and to
+a prompt with a dozen loose ones. Two more rules make the row count follow the
+scores of the prompt:
 
-- it stands in the top 30 of the fused order;
-- its score is at most `NOBLIVION_RECALL_FLOOR_EXEMPT_MARGIN`
-  (`recall.floor_exempt_margin`, default 0.08) under the floor;
-- its file has a `rule:` or an `apply:` line;
-- its local keyword score is above 0, so it shares a word with the prompt.
-  A word that is in more than half of the notes (such as "the") does not
-  count, because it is in nearly every note and every prompt.
+- The window. A row stays only when its score is at most
+  `NOBLIVION_RECALL_SCORE_WINDOW` (`recall.score_window`) under the top score of
+  the rows that passed the floor. The default is `0`, no window: windows of 0.04,
+  0.05 and 0.06 cut the rows on the dev set of the held-out set from 181 to 96,
+  116 and 140, but the prompts with a relevant row shown fell from 29 of 39 to
+  18, 21 and 26, and 0.06 lost two delivery checks. A relevant row is as often
+  far under the top score as an irrelevant one. The labels of that set are
+  model judgment, not human. The row count (`recall.prompt_rows`, 5) is a
+  ceiling, not a target.
+- The rescue. The store's rank 1 stays although it is under the floor, when its
+  score is at most 0.02 under the floor and its file shares an informative word
+  with the prompt. A word that is in more than half of the notes (such as
+  "the") does not count. It needs the re-rank (`NOBLIVION_RECALL_INDEX_RERANK`)
+  and a memory folder. The window then applies to it too.
 
-A row with no rule line, a row that only the vector order likes (no shared
-word), a row past place 30 and a row far under the floor are still cut. The
-exemption only chooses which rows pass the floor. The cut to the row count
-(`NOBLIVION_RECALL_INDEX_K`) and the character cap run after it, so the
-prompt keeps its size. The cost is noise: a kept row can take the place of a
-row with a higher score but a lower place in the fused order, when the row
-count binds. It needs the re-rank (`NOBLIVION_RECALL_INDEX_RERANK`) and a
-memory folder. The line in `recall.log` has the note `floor_exemptN` when N
-rows were kept this way.
+When no row passes the floor and the rescue does not apply, the prompt gets no
+rows. The line in `recall.log` has the notes `windowNofM` (N rows kept of M) and
+`rescue1`.
 
-Measured with `tools/eval_thresholds.py` on its made-up set (36 notes, 57
-prompts, 20 of them with no matching note), the notes given `rule:` and
-`apply:` lines, the shipped config file and the default floor. The expected
-notes number 40.
-
-| Setting | Rows per prompt | Recall | Precision | Prompts with no matching note that get rows |
-| --- | --- | --- | --- | --- |
-| Off (the floor alone) | 0.6 | 0.750 | 0.857 | 1 of 20 |
-| On, margin 0.05 | 1.1 | 0.925 | 0.578 | 6 of 20 |
-| On, margin 0.08 (default) | 1.9 | 0.975 | 0.364 | 7 of 20 |
-| On, margin 0.15 | 4.9 | 1.000 | 0.142 | 10 of 20 |
-| On, no margin bound | 13.7 | 1.000 | 0.051 | 19 of 20 |
-
-The set is small, and each note is in the top 30 of every prompt, so the
-numbers show the direction and not a size for a large store. The exemption
-trades precision for recall: a wider margin finds more of the expected notes
-and shows more rows that no prompt needs.
+The pull path (the `noblivion_recall` tool with a query) is the other side of
+the same rule. It always returns the store's top hit when its score is 0.60 or
+more, even under the floor, and marks it `weak match` in its line.
 
 ### Rules only prompt path
 

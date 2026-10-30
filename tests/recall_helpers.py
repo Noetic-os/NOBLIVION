@@ -179,6 +179,10 @@ def hook_env(tmp_path: Path, **extra: str) -> dict[str, str]:
         "NOBLIVION_RECALL_CACHE_DIR": str(tmp_path / "cache"),
         "NOBLIVION_CONFIG": str(tmp_path / "no-config.json"),
         "NOBLIVION_STORE_AUTOSTART": "0",
+        # NOBLIVION-151. The score window cuts rows by their scores. The fake
+        # stores spread scores at will, so a test of another rule turns it off;
+        # a test of the window itself sets the variable.
+        "NOBLIVION_RECALL_SCORE_WINDOW": "0",
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     }
     env.update(extra)

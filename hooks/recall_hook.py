@@ -446,29 +446,34 @@ SESSION_KEEP_MAX_DEFAULT = 200
 # mode. The log note ``:floorNofM`` counts the N rows at or above the floor of
 # the M ranked, and ``:unscoredU`` the rows kept without a score.
 #
-# NOBLIVION-130, THE FLOOR EXEMPTION. Measured on v0.1.17: two ruling notes were at
-# fused rank 15 and 25 and the floor cut both (61 and 60 rows kept), so the model
-# never saw them. The cosine alone is a weak judge of a note that the fused order
-# (BM25 + cosine) already ranks high. A row that stands at a position under
-# FLOOR_EXEMPT_TOP of the fused order stays although its cosine is under the
-# floor, when (a) its file has a ``rule:`` or ``apply:`` line, and (b) its local
-# BM25 value is above zero (it shares a word with the query: a pure vector
-# near-miss does not get in). The exemption only decides which rows survive the
-# floor. The no-rule drop, the cut to k and the character cap run after it and are
-# unchanged, so the prompt does not grow. Needs the re-rank (it makes the BM25
-# value and the fused order); without it nothing is exempt. A third bound (c): the
-# row's cosine is within ``FLOOR_EXEMPT_MARGIN_DEFAULT`` (0.08) of the floor
-# (``NOBLIVION_RECALL_FLOOR_EXEMPT_MARGIN``), so a row that the vector order finds
-# far from the prompt is not kept by a shared word. Measured on the eval set the
-# exemption without that bound kept 13.7 rows per prompt (see
-# docs/how-recall-works.md), so it is OFF by default; set
-# ``NOBLIVION_RECALL_FLOOR_EXEMPT=1`` to turn it on. The log note ``:floor_exemptN`` counts the rows kept this way.
-FLOOR_EXEMPT_ENV = "NOBLIVION_RECALL_FLOOR_EXEMPT"
-FLOOR_EXEMPT_KEY = "recall.floor_exempt"
-FLOOR_EXEMPT_TOP = 30  # the positions of the fused order that the exemption covers
-FLOOR_EXEMPT_MARGIN_ENV = "NOBLIVION_RECALL_FLOOR_EXEMPT_MARGIN"
-FLOOR_EXEMPT_MARGIN_KEY = "recall.floor_exempt_margin"
-FLOOR_EXEMPT_MARGIN_DEFAULT = 0.08  # how far under the floor a cosine may be and stay
+# NOBLIVION-151, SCORE-ADAPTIVE ROWS. A fixed floor treats every prompt alike. Three
+# rules make the row count follow the scores of the prompt, in this order:
+# (1) the floor above: when no row reaches it, nothing is shown, except for the
+# rescue of rule 2; (2) THE RESCUE: the store's rank 1 stays although its cosine is
+# under the floor, when it is at most SCORE_RESCUE_MARGIN (0.02) under it and its
+# file shares an informative word with the prompt (its local BM25 value over the
+# query words that are in at most half of the notes is above zero; needs the
+# re-rank); (3) THE WINDOW: a row stays only when its cosine is within
+# ``NOBLIVION_RECALL_SCORE_WINDOW`` (``recall.score_window``, default
+# SCORE_WINDOW_DEFAULT = 0 = no window) of the top cosine of the rows that passed
+# 1 and 2. A row with no score is kept. The cut to k (a ceiling, never a target)
+# and the character cap run after it. The log notes are ``:windowNofM`` (N rows
+# kept of M) and ``:rescue1``.
+SCORE_WINDOW_ENV = "NOBLIVION_RECALL_SCORE_WINDOW"
+SCORE_WINDOW_KEY = "recall.score_window"
+# Off by default. Measured on the dev split of the held-out set (50 prompts, 39 with a
+# relevant note, labels by a model) and on gate 0 and test 4: windows of 0.04, 0.05
+# and 0.06 cut 181 rows to 96, 116 and 140 but lost delivery (29 of 39 prompts down
+# to 18, 21 and 26), and 0.06 lost gate 0 case 1c and test 4 slot s6a. A relevant row
+# is as often far under the top cosine as an irrelevant one, so the window did not
+# raise precision. The setting stays so that a store with a flatter score spread can
+# turn it on.
+SCORE_WINDOW_DEFAULT = 0.0
+SCORE_WINDOW_MAX = 2.0
+SCORE_RESCUE_MARGIN = 0.02  # how far under the floor the store's rank 1 may be and stay
+# The pull path (NOBLIVION-151): the store's top hit is returned although it is
+# under the floor, from this cosine up, and marked ``weak match``.
+WEAK_MATCH_MIN_SCORE = 0.60
 INDEX_MIN_SCORE_ENV = "NOBLIVION_RECALL_INDEX_MIN_SCORE"
 INDEX_MIN_SCORE_OFF = "off"  # this value of the variable: no floor
 INDEX_MIN_SCORE_OFF_WORDS = (INDEX_MIN_SCORE_OFF, "none", "false", "no")  # read as "off"
@@ -1156,6 +1161,7 @@ class Hit:
         "description",
         "text",
         "path",
+        "weak",
     )
 
     def __init__(
@@ -1187,6 +1193,8 @@ class Hit:
         # key the hit path joins a hit to its local file with. "" for a hit
         # with no marker.
         self.path = path
+        # NOBLIVION-151. True for the pull path's top hit under the floor.
+        self.weak = False
 
     def render(self, query: str = "") -> str:
         """The one-line hit. ``query`` (the MCP tool passes it) shows the part
@@ -1197,7 +1205,8 @@ class Hit:
         entity = _neutral(self.entity, ENTITY_MAX_CHARS).translate(_BRACKET) or "memory"
         title = _neutral(self.title, TITLE_MAX_CHARS) or "memory"
         body = _neutral(query_excerpt(self.text, query) if query else self.body, BODY_MAX_CHARS)
-        return f"- [{entity}] {title}: {body} (score {score})"
+        mark = ", weak match" if self.weak else ""
+        return f"- [{entity}] {title}: {body} (score {score}{mark})"
 
 
 class IndexLine:
@@ -1274,9 +1283,9 @@ class IndexLine:
         # ``source``), the key ``file_of`` joins the row to its local file with.
         # "" when the answer names none.
         self.source = source
-        # NOBLIVION-130. The row's local BM25 value (``rerank_index``): None when
-        # the re-rank did not run, 0.0 for a row with no query word in its file or
-        # with no local file. Read by ``floor_index`` for the floor exemption.
+        # NOBLIVION-151. The row's local BM25 value over the informative query words
+        # (``rerank_index``): None when the re-rank did not run, 0.0 for a row with
+        # no such word in its file or with no local file. Read by ``rescue_ids``.
         self.lexical: Optional[float] = None
         # W6 (F1) and W7 (F2). The two W5 fields of the LOCAL file this row
         # names, filled by ``annotate_index`` before rendering. Both are "" for
@@ -2385,6 +2394,7 @@ def recall(
     md_only: bool = False,
     root: Optional[str] = None,
     keep: Optional[Callable[[Hit], bool]] = None,
+    weak_match: bool = False,
 ) -> List[Hit]:
     """Search the store: at most ``k`` hits, with any hit whose score is below
     the floor of ``min_score`` dropped (a scoreless hit passes). The hook and
@@ -2393,6 +2403,10 @@ def recall(
     ``keep`` (NOBLIVION-109) is the hygiene test of the hit path: a hit it
     refuses is dropped BEFORE the ``k`` cut, like a mined row, so it never takes
     a place from a hit that can be shown.
+
+    ``weak_match`` (NOBLIVION-151, the pull path) adds the store's top hit when
+    its score is under the floor but at least WEAK_MATCH_MIN_SCORE. The hit is
+    first, and its line ends ``weak match``.
 
     ``md_only`` (the hook) keeps only mirrored markdown memory files
     (``Hit.md``) and drops every other row BEFORE the ``k`` cut, so a dropped
@@ -2412,13 +2426,15 @@ def recall(
         raise RecallError("namespace_mismatch")
     model = payload.get("model") if isinstance(payload, dict) else None
     floor = min_score(env, model if isinstance(model, str) else "")
-    hits = [
-        h
-        for h in parse_hits(payload)
-        if (floor is None or h.score is None or h.score >= floor)
-        and (h.md or not md_only)
-        and (keep is None or keep(h))
-    ]
+    ranked = [h for h in parse_hits(payload) if (h.md or not md_only) and (keep is None or keep(h))]
+    hits = [h for h in ranked if floor is None or h.score is None or h.score >= floor]
+    if weak_match and ranked and floor is not None:
+        # NOBLIVION-151. The pull path always returns the store's top hit from
+        # WEAK_MATCH_MIN_SCORE up, under the floor too, marked as a weak match.
+        top = ranked[0]
+        if top.score is not None and WEAK_MATCH_MIN_SCORE <= top.score < floor:
+            top.weak = True
+            hits.insert(0, top)
     return hits[:k]
 
 
@@ -2593,31 +2609,19 @@ def prompt_rows(environ: Optional[Mapping[str, str]] = None) -> int:
         return 0
 
 
-def floor_exempt_on(environ: Optional[Mapping[str, str]] = None) -> bool:
-    """NOBLIVION-130. True when a row in the top FLOOR_EXEMPT_TOP of the fused
-    order may stay under the cosine floor. Off by default; the config key is
-    ``recall.floor_exempt``."""
+def score_window(environ: Optional[Mapping[str, str]] = None) -> float:
+    """NOBLIVION-151. How far under the top cosine a row may be and stay:
+    ``NOBLIVION_RECALL_SCORE_WINDOW``, else ``recall.score_window``, else
+    SCORE_WINDOW_DEFAULT. 0 is no window. A value that is not a finite number
+    from 0 to SCORE_WINDOW_MAX is the default: a malformed setting must not
+    widen or close the window."""
     env = os.environ if environ is None else environ
-    return bool(
-        _sibling_module("hook_config").switch(FLOOR_EXEMPT_ENV, False, env, FLOOR_EXEMPT_KEY)
-    )
-
-
-def floor_exempt_margin(environ: Optional[Mapping[str, str]] = None) -> float:
-    """NOBLIVION-130. How far under the floor a cosine may be for the exemption:
-    ``NOBLIVION_RECALL_FLOOR_EXEMPT_MARGIN``, else ``recall.floor_exempt_margin``,
-    else FLOOR_EXEMPT_MARGIN_DEFAULT. A value that is not a number from 0 to 2
-    (or not finite) is the default: a malformed setting must not widen the
-    exemption."""
-    env = os.environ if environ is None else environ
-    raw = _sibling_module("hook_config").setting(
-        FLOOR_EXEMPT_MARGIN_ENV, FLOOR_EXEMPT_MARGIN_KEY, "", env
-    )
+    raw = _sibling_module("hook_config").setting(SCORE_WINDOW_ENV, SCORE_WINDOW_KEY, "", env)
     try:
         value = float(raw)
     except (TypeError, ValueError):
-        return FLOOR_EXEMPT_MARGIN_DEFAULT
-    return value if 0.0 <= value <= 2.0 else FLOOR_EXEMPT_MARGIN_DEFAULT
+        return SCORE_WINDOW_DEFAULT
+    return value if 0.0 <= value <= SCORE_WINDOW_MAX else SCORE_WINDOW_DEFAULT
 
 
 def drop_unruled_index(lines: Sequence[IndexLine]) -> Tuple[List[IndexLine], int]:
@@ -2644,30 +2648,34 @@ def demote_hubs(
     return plain + hub[: max(0, cap)], in_window, max(0, len(hub) - max(0, cap))
 
 
-def floor_exempt_ids(
-    lines: Sequence[IndexLine],
-    floor: float,
-    top: int,
-    margin: float = FLOOR_EXEMPT_MARGIN_DEFAULT,
-) -> Set[int]:
-    """NOBLIVION-130. The ids of the rows the floor would cut that the exemption
-    keeps: a position under ``top`` in the order given, a score under the floor
-    but not more than ``margin`` under it, a ``rule:`` or ``apply:`` line
-    (``annotate_index`` first), and a local BM25 value above zero
-    (``rerank_index`` first). A row with no score is not here: the floor keeps
-    it already."""
-    out: Set[int] = set()
-    for ln in list(lines)[: max(0, top)]:
-        if ln.score is None or ln.score >= floor:
-            continue
-        if ln.score + margin + 1e-9 < floor:
-            continue
-        if not ((ln.rule or "").strip() or (ln.apply_block or "").strip()):
-            continue
-        if (ln.lexical or 0.0) <= 0.0:
-            continue
-        out.add(int(ln.mid))
-    return out
+def rescue_ids(candidates: Sequence[IndexLine], floor: float) -> Set[int]:
+    """NOBLIVION-151. The id of the store's rank 1 when the floor would cut it
+    but it is at most SCORE_RESCUE_MARGIN under the floor and shares an
+    informative word with the prompt (``rerank_index`` first: ``lexical`` above
+    zero). ``candidates`` are in the store's order. A row with no score is not
+    here: the floor keeps it already."""
+    if not candidates:
+        return set()
+    top = candidates[0]
+    if top.score is None or top.score >= floor:
+        return set()
+    if top.score + SCORE_RESCUE_MARGIN + 1e-9 < floor:
+        return set()
+    if (top.lexical or 0.0) <= 0.0:
+        return set()
+    return {int(top.mid)}
+
+
+def window_index(lines: Sequence[IndexLine], window: float) -> Tuple[List[IndexLine], int]:
+    """NOBLIVION-151. The rows within ``window`` of the top cosine, in the order
+    given, and how many were cut. A row with no score is kept. With no scored
+    row, or a window of 0, nothing is cut."""
+    scores = [ln.score for ln in lines if ln.score is not None]
+    if window <= 0.0 or not scores:
+        return list(lines), 0
+    low = max(scores) - window - 1e-9
+    kept = [ln for ln in lines if ln.score is None or ln.score >= low]
+    return kept, len(lines) - len(kept)
 
 
 def floor_index(
@@ -2675,7 +2683,7 @@ def floor_index(
 ) -> Tuple[List[IndexLine], int]:
     """WI-6. The rows at or above the floor, in the order given, and how many of
     them carry no score. A row with no score is kept (see INDEX_MIN_SCORE_ENV).
-    ``keep`` (NOBLIVION-130, ``floor_exempt_ids``) are the ids of rows that stay
+    ``keep`` (NOBLIVION-151, ``rescue_ids``) are the ids of rows that stay
     although they are under the floor.
     """
     held = keep or set()
@@ -2846,7 +2854,7 @@ class BM25:
         self.idf = idf
         # NOBLIVION-130. The words of more than half the documents: they have the
         # floor weight above and tell nothing about a document. ``rerank_index``
-        # leaves them out of the value that the floor exemption reads.
+        # leaves them out of the value that the rescue (NOBLIVION-151) reads.
         self.common = frozenset(negative)
 
     def scores(
@@ -2948,7 +2956,7 @@ def rerank_index(
         wanted.append((i, index_of[md.rel_path]))
     lexical = bm25.scores(tokens_sub(query), [j for _, j in wanted])
     row_score = {i: lexical.get(j, 0.0) for i, j in wanted}
-    # NOBLIVION-130. The value that the floor exemption reads: the same BM25 over
+    # NOBLIVION-130. The value that the rescue (NOBLIVION-151) reads: the same BM25 over
     # the query words that are NOT in more than half the documents. A word such as
     # "the" is in nearly every note, so a score that counts it is above 0 for any
     # prompt and any note, and "shares a word" would mean nothing.
@@ -3550,20 +3558,23 @@ def _serve_index(
         # WI-6. On the ranked list and before the cut to k, so k is a cap and a
         # row under the floor gives its place to the next one that passes.
         ranked = len(lines)
-        exempt: Set[int] = set()
-        if floor_exempt_on(environ):
-            # NOBLIVION-130. The rule or apply line is read from the local file,
-            # so the rows are annotated before the floor (the same call as
-            # below, idempotent).
-            annotate_index(lines, by_name)
-            exempt = floor_exempt_ids(lines, floor, FLOOR_EXEMPT_TOP, floor_exempt_margin(environ))
-        lines, unscored = floor_index(lines, floor, exempt)
+        # NOBLIVION-151. The rescue reads the BM25 value of the re-rank, so it
+        # needs the re-rank; without it nothing is rescued.
+        in_lines = {int(ln.mid) for ln in lines}
+        rescued = rescue_ids(candidates, floor) & in_lines
+        lines, unscored = floor_index(lines, floor, rescued)
         trace("relevance_floor", lines)
         note += f":floor{len(lines)}of{ranked}"
         if unscored:
             note += f":unscored{unscored}"
-        if exempt:
-            note += f":floor_exempt{len(exempt)}"
+        if rescued:
+            note += f":rescue{len(rescued)}"
+        window = score_window(environ)
+        if window > 0.0:
+            before_window = len(lines)
+            lines, _cut = window_index(lines, window)
+            trace("score_window", lines)
+            note += f":window{len(lines)}of{before_window}"
     if drop_on:
         # WI-18. After the floor and before the cut to k, so a row with no rule
         # text gives its place to the next row that has some. Annotated here,

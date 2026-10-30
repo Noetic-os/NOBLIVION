@@ -24,6 +24,18 @@ All notable changes to NOBLIVION. The format follows
   empty. A note must hold one rare name from the error (an identifier, a module name, a path tail, a
   quoted value) besides quoting its message, so one generic message such as `column ... does not exist`
   no longer shows one migration note every time. A true hit that holds no such name is no longer shown.
+- Prompt recall follows the scores of the prompt (NOBLIVION-151). The store's rank 1 now stays in the
+  prompt index when its cosine is at most 0.02 under the relevance floor (0.68) and its note shares
+  an informative word with the prompt (a word in more than half of the notes does not count; needs
+  the local re-rank). The `noblivion_recall` tool always returns the store's top hit from cosine
+  0.60 up, marked `weak match`. New setting `NOBLIVION_RECALL_SCORE_WINDOW` (config key
+  `recall.score_window`): keep a row only within that distance of the top cosine. It is off (`0`) by
+  default: on the held-out dev set (50 prompts; the labels are model judgment) windows of 0.04, 0.05
+  and 0.06 cut the rows from 181 to 96, 116 and 140 but lowered the prompts with a relevant row shown
+  from 29 of 39 to 18, 21 and 26, and 0.06 lost two delivery checks. Removed: the floor exemption of
+  NOBLIVION-130 (`NOBLIVION_RECALL_FLOOR_EXEMPT`, `NOBLIVION_RECALL_FLOOR_EXEMPT_MARGIN`, config keys
+  `recall.floor_exempt` and `recall.floor_exempt_margin`); it was off by default and added up to 4
+  rows. The rank-1 rescue gives the same delivery of gate 0 cases 6b and 2a without those rows.
 - `noblivion explain` now runs on stores over 10,000 notes or chunks. The offline diagnostic refused
   a real store of 10,406 chunks; the time limit bounds its work.
 - Add `tools/eval_suite.py`: one command for every zero-token replay and cost check on a scratch
