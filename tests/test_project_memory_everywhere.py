@@ -119,6 +119,7 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         "NOBLIVION_STOP_CHECK_LOG": str(tmp_path / "stop-log.jsonl"),
         "NOBLIVION_STOP_CHECK_STATE": str(tmp_path / "stop-state"),
         "NOBLIVION_STOP_CHECK_MODE": "enforce",  # the lesson message is read from the block
+        "NOBLIVION_STOP_REMINDERS": "none",  # a reminder is not a block (NOBLIVION-112)
         # The in-process hooks bound their cache folder at import time.
         "NOBLIVION_RECALL_CACHE_DIR": str(data / "cache"),
         "PYTHONDONTWRITEBYTECODE": "1",
@@ -418,6 +419,7 @@ def test_a_stranger_install_resolves_one_folder_in_every_hook(tmp_path, monkeypa
         "NOBLIVION_STOP_CHECK_LOG": str(tmp_path / "stop-log.jsonl"),
         "NOBLIVION_STOP_CHECK_STATE": str(tmp_path / "stop-state"),
         "NOBLIVION_STOP_CHECK_MODE": "enforce",  # the lesson message is read from the block
+        "NOBLIVION_STOP_REMINDERS": "none",  # a reminder is not a block (NOBLIVION-112)
         "PYTHONDONTWRITEBYTECODE": "1",
     }
     tables = set()
@@ -483,6 +485,7 @@ def test_every_hook_keeps_the_start_project_after_cd(tmp_path, monkeypatch):
         "NOBLIVION_STOP_CHECK_LOG": str(tmp_path / "stop-log.jsonl"),
         "NOBLIVION_STOP_CHECK_STATE": str(tmp_path / "stop-state"),
         "NOBLIVION_STOP_CHECK_MODE": "enforce",
+        "NOBLIVION_STOP_REMINDERS": "none",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
     cwd = str(repo_b)
