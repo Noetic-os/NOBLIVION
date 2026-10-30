@@ -8,6 +8,13 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- `noblivion explain` now runs on stores over 10,000 notes or chunks. The offline diagnostic refused
+  a real store of 10,406 chunks; the time limit bounds its work.
+- Add `tools/eval_suite.py`: one command for every zero-token replay and cost check on a scratch
+  store, with a before-and-after report that exits 1 when delivery drops. The prompt-row replay now
+  also counts the task notifications and queued prompts the hook runs for, and rows whose note name
+  holds parentheses.
+
 ## 0.1.18 - 2026-10-29
 
 - Token cost: measured on 16 model runs against the previous build (one run per slot). Prompt rows

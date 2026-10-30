@@ -1,0 +1,25 @@
+{
+  "about": "Prompts on no software or project subject. A memory row on any of them is false delivery (target T4 of Plan 1). Generic text, no real prompt.",
+  "prompts": [
+    "Write a haiku about autumn leaves falling in the park.",
+    "What is the capital of France and how many people live there?",
+    "Explain the difference between a list and a tuple in Python.",
+    "Give me a simple recipe for tomato soup.",
+    "Why is the sky blue during the day and red at sunset?",
+    "Suggest three names for a small black cat.",
+    "How many planets are in the solar system?",
+    "Translate 'good morning' into Spanish and Italian.",
+    "What is a good stretch for a stiff lower back?",
+    "Summarize the plot of Romeo and Juliet in two sentences.",
+    "How long should I boil an egg for a soft yolk?",
+    "What is the tallest mountain in Africa?",
+    "Write a short birthday greeting for my aunt.",
+    "Which vegetables grow well in a shady garden?",
+    "What is the difference between weather and climate?",
+    "Recommend a board game for four adults.",
+    "How do bees make honey?",
+    "What year did the first person walk on the moon?",
+    "Give me a packing list for a weekend at the beach.",
+    "How do I remove a coffee stain from a cotton shirt?"
+  ]
+}
