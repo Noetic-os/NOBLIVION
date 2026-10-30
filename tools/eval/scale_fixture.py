@@ -1544,8 +1544,9 @@ def _verify_lesson(row: dict, home: dict, memory_of: dict, problems: list[str]) 
         if not number or number > LINE_CAP:
             problems.append(f"{lid}: linked, but the index does not load the link")
         return
-    if target in head:
-        problems.append(f"{lid}: {placement}, but the loaded index names the note")
+    for name in (target, row["duplicate_note"]):  # a loaded copy would give stock the fact
+        if name in head:
+            problems.append(f"{lid}: {placement}, but the loaded index names {name}")
     if placement == "past_line_200":
         if number <= LINE_CAP:
             problems.append(f"{lid}: past_line_200, but the link is on line {number}")
@@ -1666,7 +1667,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verify", type=Path, help="check a fixture folder and exit")
     args = parser.parse_args(argv)
     if args.verify:
-        problems = verify_output(args.verify)
+        problems = verify_output(args.verify.expanduser())
         for line in problems[:40]:
             print(line)
         print(f"verify: {len(problems)} problems")
@@ -1678,7 +1679,7 @@ def main(argv: list[str] | None = None) -> int:
     if unknown:
         parser.error(f"unknown scales {unknown}; the scales are {sorted(SCALES)}")
     started = time.monotonic()
-    manifest = generate(args.out, args.seed, sizes)
+    manifest = generate(args.out.expanduser(), args.seed, sizes)
     seconds = time.monotonic() - started
     for size, row in manifest["scales"].items():
         print(
