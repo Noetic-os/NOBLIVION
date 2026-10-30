@@ -26,6 +26,19 @@ All notable changes to NOBLIVION. The format follows
   (2,043k against 1,578k). NOBLIVION was above stock in calls and tokens in 13 of 14 slots. The
   outcome was better: 9 runs passed every check against 6, and the lesson note came through in 9
   runs against 1. The 0.1.18 levers are not shown to close the cost gap.
+- Trust (NOBLIVION-111): the trust report has a fourth list, `fix`: a rule that at least one session
+  contradicted, at any age and also when `MEMORY.md` links it, with no 30-day wait. The session-start
+  line adds "N to fix" when the list has notes. An older store sends no list; the hook reads it as
+  empty.
+- Trust: shadow mode no longer writes `cache/trust-rank.jsonl`. Set `NOBLIVION_RECALL_TRUST_LOG=1` to
+  write it (the replay tool does); mode `on` writes it as before. On one install the shadow log held
+  2,417 lines (2.4 MB) in 11 days and led to no decision.
+- Trust: `noblivion trust timesplit` requires a 95% bootstrap interval (resampled over sessions) of
+  the MRR gain above zero for a `gain` verdict, and prints how many labels sit on notes with a factor
+  other than 1. Run on 25,264 events of one install (cut 0.7: MRR 0.265 off, 0.479 on, interval +0.095
+  to +0.329), the verdict is `gain` at three of four cuts, but the labels are the use events that trust
+  is fitted on (NOBLIVION-65), 38 of 107 labels sit on 8 notes, and trust ranking stays off. Details in
+  `docs/trust.md`.
 
 ## 0.1.18 - 2026-10-29
 

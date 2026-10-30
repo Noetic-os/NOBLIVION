@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The memory trust report: which memories to retire, promote or demote.
+"""The memory trust report: which memories to retire, promote, demote or fix.
 Part H of the adaptive memory trust work (design doc 0001, section 4.6).
 
 It reads ``GET /api/memory/trust/report?persona=claude_code`` from the local
-store (the store computes the three lists on read) and writes the answer to
+store (the store computes the lists on read) and writes the answer to
 the local cache file ``<data dir>/cache/trust-report.json``
 (``NOBLIVION_TRUST_REPORT_FILE`` names another file). The SessionStart line
 (``trust_session_line.py``) reads only that file. The Stop flush
@@ -18,7 +18,9 @@ The lists:
   the MEMORY.md of its folder, first indexed >= 30 days ago;
 - promote: trust >= 0.7, >= 5 trials, used in >= 20% of sessions over >= 14
   days, not in MEMORY.md (a candidate for the always-on index);
-- demote: a MEMORY.md line whose file was not used in 30 days.
+- demote: a MEMORY.md line whose file was not used in 30 days;
+- fix: a rule that was contradicted (a guard override) in at least one
+  session, at any age and also when MEMORY.md lists it.
 
 Trust here is usage evidence for these three lists. "Used" means a fetch by
 ``noblivion_recall`` or a guard deny on the rule. A guard row only shows a
@@ -58,7 +60,8 @@ PERSONA = "claude_code"
 ROUTE = "/api/memory/trust/report"
 CACHE_FILE_ENV = "NOBLIVION_TRUST_REPORT_FILE"
 CACHE_FILE_NAME = "trust-report.json"  # in <data dir>/cache
-LISTS = ("retire", "promote", "demote")
+LISTS = ("retire", "promote", "demote", "fix")
+OPTIONAL_LISTS = frozenset({"fix"})  # a store older than this report has no fix list
 TIMEOUT_S = 10.0  # design doc section 3.5
 FORMAT = "noblivion-trust-report-cache/1"
 USAGE_NOTE = (
@@ -125,7 +128,7 @@ def _row(raw: Any) -> Optional[Dict[str, Any]]:
 
 
 def validate(doc: Any) -> Dict[str, Any]:
-    """The section 4.6 answer, checked: the persona and the three lists.
+    """The section 4.6 answer, checked: the persona and the lists.
     Raises ValueError on a wrong shape; drops a row that is not a row."""
     if not isinstance(doc, dict):
         raise ValueError("report is not an object")
@@ -139,6 +142,8 @@ def validate(doc: Any) -> Dict[str, Any]:
     }
     for name in LISTS:
         rows = doc.get(name)
+        if rows is None and name in OPTIONAL_LISTS:
+            rows = []
         if not isinstance(rows, list):
             raise ValueError(f"report has no {name} list")
         out[name] = [r for r in (_row(x) for x in rows) if r is not None]
@@ -189,6 +194,7 @@ HEADINGS = {
     "retire": "Retire candidates (shown in 20 or more sessions, never used)",
     "promote": "Promote candidates (high trust, used broadly; not in MEMORY.md)",
     "demote": "Demote candidates (a MEMORY.md line whose file was not used in 30 days)",
+    "fix": "Fix candidates (a rule that a guard override contradicted at least once)",
 }
 
 

@@ -28,8 +28,17 @@ This command measures that on the user's own store (NOBLIVION-38):
    arms, and how many units got better or worse.
 
 The verdict is ``gain`` only when there are at least MIN_UNITS test units,
-MRR is higher with trust on and more units got better than worse. The
-command reads the database and the log only. It changes no setting.
+MRR is higher with trust on, more units got better than worse, and the 95%
+interval of the MRR gain is above zero. The interval is a bootstrap over
+sessions (NOBLIVION-111): the units of one session are not independent, and
+one long session holds many prompts.
+
+The labels are not independent of trust (NOBLIVION-65): "used" comes from
+the same use events that trust is fitted on. A gain therefore shows that
+older use predicts newer use, not that the used notes were the right ones.
+The result names how many labels sit on notes with a factor other than 1,
+because few such notes can carry the whole gain. The command reads the
+database and the log only. It changes no setting.
 """
 
 from __future__ import annotations
@@ -55,6 +64,7 @@ DEFAULT_K = 5
 DEFAULT_TRAIN_SHARE = 0.7
 MIN_UNITS = 30
 SHUFFLES = 50
+BOOTSTRAPS = 1000
 RANK_LOG = "trust-rank.jsonl"
 
 USE_KINDS = frozenset({"use", "load_bearing"})
@@ -257,8 +267,12 @@ class UnitResult:
     better: int = 0
     worse: int = 0
     changed: int = 0  # units where trust changed the order
+    groups: list[str] = field(default_factory=list)  # the session of each unit
 
-    def add(self, off: tuple[float, float], on: tuple[float, float], moved: bool) -> None:
+    def add(
+        self, off: tuple[float, float], on: tuple[float, float], moved: bool, group: str = ""
+    ) -> None:
+        self.groups.append(group)
         self.off.rr.append(off[0])
         self.off.hit.append(off[1])
         self.on.rr.append(on[0])
@@ -270,12 +284,33 @@ class UnitResult:
         if moved:
             self.changed += 1
 
+    def gain_interval(self, draws: int = BOOTSTRAPS) -> tuple[float, float] | None:
+        """The 95% interval of ``mrr_on - mrr_off``, resampling whole sessions
+        (seeded, so the same store gives the same interval). None below two
+        sessions."""
+        by_group: dict[str, list[float]] = {}
+        for g, a, b in zip(self.groups, self.off.rr, self.on.rr, strict=True):
+            by_group.setdefault(g, []).append(b - a)
+        if len(by_group) < 2:
+            return None
+        sums = [(sum(v), len(v)) for _, v in sorted(by_group.items())]
+        rng = random.Random("timesplit-bootstrap")
+        means = []
+        for _ in range(draws):
+            picked = [sums[rng.randrange(len(sums))] for _ in sums]
+            means.append(sum(t for t, _ in picked) / sum(n for _, n in picked))
+        means.sort()
+        return means[int(0.025 * draws)], means[int(0.975 * draws) - 1]
+
     def summary(self, k: int) -> dict:
+        ci = self.gain_interval()
         return {
             "units": len(self.off.rr),
+            "sessions": len(set(self.groups)),
             "changed": self.changed,
             "mrr_off": round(self.off.mrr(), 4),
             "mrr_on": round(self.on.mrr(), 4),
+            "mrr_gain_ci95": [round(ci[0], 4), round(ci[1], 4)] if ci else None,
             f"hit_at_{k}_off": round(self.off.hit_rate(), 4),
             f"hit_at_{k}_on": round(self.on.hit_rate(), 4),
             "better": self.better,
@@ -305,7 +340,10 @@ def by_session(
             c, d = _first_hit(on, relevant, k)
             off_rr, off_hit, on_rr, on_hit = off_rr + a, off_hit + b, on_rr + c, on_hit + d
         result.add(
-            (off_rr / shuffles, off_hit / shuffles), (on_rr / shuffles, on_hit / shuffles), moved
+            (off_rr / shuffles, off_hit / shuffles),
+            (on_rr / shuffles, on_hit / shuffles),
+            moved,
+            sid,
         )
     return result
 
@@ -325,16 +363,38 @@ def by_prompt(
         if not relevant:
             continue
         on = trust_order(base, fits)
-        result.add(_first_hit(base, relevant, k), _first_hit(on, relevant, k), on != base)
+        result.add(
+            _first_hit(base, relevant, k),
+            _first_hit(on, relevant, k),
+            on != base,
+            rec["session"],
+        )
     return result
 
 
 def verdict(unit: Mapping) -> str:
     if unit["units"] < MIN_UNITS:
         return "too little data"
-    if unit["mrr_on"] > unit["mrr_off"] and unit["better"] > unit["worse"]:
+    ci = unit.get("mrr_gain_ci95")
+    if (
+        unit["mrr_on"] > unit["mrr_off"]
+        and unit["better"] > unit["worse"]
+        and ci is not None
+        and ci[0] > 0.0
+    ):
         return "gain"
     return "no gain"
+
+
+def _labels(sessions: Mapping[str, SessionFacts], fits: Mapping[int, Fit]) -> dict:
+    """How concentrated the labels are: the (session, note) pairs that count
+    as relevant, and how many sit on a note whose factor is not 1."""
+    pairs = [m for s in sessions.values() for m in s.relevant]
+    return {
+        "relevant": len(pairs),
+        "distinct_notes": len(set(pairs)),
+        "on_factored_notes": sum(1 for m in pairs if m in fits and fits[m].factor != 1.0),
+    }
 
 
 def run(
@@ -368,6 +428,7 @@ def run(
         train_events=sum(1 for e in events if e.ts < cut),
         test_sessions=len(sessions),
         trusted_notes=sum(1 for f in fits.values() if f.factor != 1.0),
+        labels=_labels(sessions, fits),
         session=session_unit,
         prompt=prompt_unit,
     )
@@ -387,17 +448,34 @@ def render(result: Mapping) -> str:
         f"{result.get('train_events', 0)} events before it, "
         f"{result.get('test_sessions', 0)} test sessions after it.",
     ]
+    labels = result.get("labels")
+    if labels:
+        lines.append(
+            f"Labels: {labels['relevant']} used notes over {labels['distinct_notes']} distinct "
+            f"notes, {labels['on_factored_notes']} on the {result.get('trusted_notes', 0)} notes "
+            "with a factor other than 1."
+        )
     for name, title in (("prompt", "Per prompt (hook trust log)"), ("session", "Per session")):
         unit = result.get(name)
         if not unit:
             continue
+        ci = unit.get("mrr_gain_ci95")
+        interval = f" (95% interval {ci[0]:+.3f} to {ci[1]:+.3f})" if ci else ""
         lines.append(
-            f"{title}: {unit['units']} units, {unit['changed']} reordered. "
-            f"MRR {unit['mrr_off']:.3f} off, {unit['mrr_on']:.3f} on. "
+            f"{title}: {unit['units']} units in {unit.get('sessions', 0)} sessions, "
+            f"{unit['changed']} reordered. "
+            f"MRR {unit['mrr_off']:.3f} off, {unit['mrr_on']:.3f} on{interval}. "
             f"hit@{k} {unit[f'hit_at_{k}_off']:.3f} off, {unit[f'hit_at_{k}_on']:.3f} on. "
             f"{unit['better']} better, {unit['worse']} worse."
         )
-    lines.append(f"Verdict: {result['verdict']} (needs at least {result['min_units']} units).")
+    lines.append(
+        f"Verdict: {result['verdict']} (needs at least {result['min_units']} units and a "
+        "95% interval above zero)."
+    )
+    lines.append(
+        "The used notes are the same use events that trust is fitted on, so a gain shows that "
+        "older use predicts newer use, not that the used notes were right."
+    )
     lines.append(
         "This command changes no setting. Trust ranking stays off until you turn it on "
         "(docs/trust.md)."

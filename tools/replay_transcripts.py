@@ -25,8 +25,9 @@ plugin's own code:
 
 Then ``noblivion trust timesplit`` and ``noblivion trust report`` read the
 store as usual. With ``--shadow`` (the default) the hook also writes its
-trust log (``NOBLIVION_RECALL_INDEX_TRUST=shadow``), so the time-split test
-has per-prompt units. Shadow mode serves the order unchanged.
+trust log (``NOBLIVION_RECALL_INDEX_TRUST=shadow`` with
+``NOBLIVION_RECALL_TRUST_LOG=1``), so the time-split test has per-prompt units.
+Shadow mode serves the order unchanged.
 
 A prompt here is a user record that ``trust_signals.user_prompt`` accepts,
 less a compaction summary and the "[Request interrupted" marker: Claude Code
@@ -287,6 +288,7 @@ def replay_env(base: Mapping[str, str], memory_dir: str, shadow: bool) -> dict[s
     env.pop("CLAUDE_PROJECT_DIR", None)
     if shadow:
         env["NOBLIVION_RECALL_INDEX_TRUST"] = "shadow"
+        env["NOBLIVION_RECALL_TRUST_LOG"] = "1"
     return env
 
 

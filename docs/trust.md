@@ -278,15 +278,19 @@ Two settings change the order for you:
   the store adds the trust score, the number of trials and the prior to
   each row of the ranked index. The store itself does not reorder rows.
   - `shadow`: the trust values are computed and reported, but never
-    applied. The prompt hook computes the factor and logs it to
-    `<data dir>/cache/trust-rank.jsonl`, but keeps the order, even when
-    `NOBLIVION_RECALL_INDEX_TRUST` is on.
+    applied. The prompt hook computes the factor but keeps the order,
+    even when `NOBLIVION_RECALL_INDEX_TRUST` is on. It writes no log
+    unless `NOBLIVION_RECALL_TRUST_LOG` is on (see below).
   - `on`: the prompt hook applies the factor when
     `NOBLIVION_RECALL_INDEX_TRUST` is on.
 - `NOBLIVION_RECALL_INDEX_TRUST`: with `1`, `on`, `true` or `yes`, the
   prompt hook multiplies each row's score by a trust factor. With
-  `shadow`, the hook computes the factor and logs it to
-  `<data dir>/cache/trust-rank.jsonl`, but keeps the order.
+  `shadow`, the hook computes the factor but keeps the order.
+- `NOBLIVION_RECALL_TRUST_LOG`: with `1`, `on`, `true` or `yes`, the hook
+  also writes one line per prompt to `<data dir>/cache/trust-rank.jsonl` in
+  `shadow` mode. In mode `on` it always writes it. Off by default: the
+  shadow log of one install held 2,417 lines and 2.4 MB in three weeks and
+  no decision came from it (NOBLIVION-111). The replay tool turns it on.
 
 The trust factor is `trust / prior`, kept between `0.8` and `1.25`. A note
 with fewer than 5 trials, or with no trust values, gets a factor of 1. The
@@ -294,7 +298,7 @@ hook factor needs the trust values, so set `trust.ranking` to `on` as well.
 
 ## The trust report
 
-The report has three lists. It covers memory-file notes only, never mined
+The report has four lists. It covers memory-file notes only, never mined
 notes.
 
 | List | A note is listed when |
@@ -302,6 +306,7 @@ notes.
 | retire | It was shown in at least 20 sessions, never used, first indexed at least 30 days ago, and `MEMORY.md` does not link it. |
 | promote | Its trust is at least 0.7, it has at least 5 trials, it was used in at least 20% of its sessions over at least 14 days, and `MEMORY.md` does not link it. |
 | demote | `MEMORY.md` links it, and it was not used in 30 days. |
+| fix | At least one session contradicted it (a guard override). There is no age limit and no 30-day wait. It also appears in its other list, and `MEMORY.md` may link it. |
 
 Each row shows the trust value, the trials, the shown and used sessions,
 and the contradicted sessions when there are any. A contradiction lowers
@@ -309,7 +314,9 @@ the trust value, so a contradicted note is less likely to be promoted.
 
 "Promote" means: consider a link from `MEMORY.md`, so that Claude Code
 loads it in every session. "Demote" means: consider removing that link.
-"Retire" means: consider deleting or merging the note. NOBLIVION never
+"Retire" means: consider deleting or merging the note. "Fix" means: read
+the note again, because a session overrode it, and edit or remove it if it
+is wrong. NOBLIVION never
 changes your files based on the report. You decide.
 
 To print the report, run:
@@ -337,7 +344,7 @@ entries:
 Memory trust: 2 to retire, 1 to promote, 0 to demote. Run noblivion trust report
 ```
 
-The line does not appear when all counts are 0, or after a context
+The line adds `, N to fix` when the fix list has notes. It does not appear when all counts are 0, or after a context
 compaction.
 
 ## The time-split test
@@ -361,7 +368,8 @@ What it does:
    contradicted are the relevant ones. It compares two orders, trust off
    and trust on:
    - per prompt, when the hook's trust log
-     `<data dir>/cache/trust-rank.jsonl` exists. Off is the logged order of
+     `<data dir>/cache/trust-rank.jsonl` exists (written in mode `on`, or
+     in `shadow` mode with `NOBLIVION_RECALL_TRUST_LOG` on). Off is the logged order of
      the index. On sorts it again with the trust factor, as the hook does.
      `--rank-log PATH` names another log, and `--no-rank-log` skips it;
    - per session, from the store alone. The store keeps no rank, so the
@@ -373,14 +381,23 @@ What it does:
    orders, and how many units got better or worse. Add `--json` for JSON.
 
 The verdict is `gain` only with at least 30 test units, a higher MRR with
-trust on, and more units better than worse. It uses the per-prompt result
+trust on, more units better than worse, and a 95% interval of the MRR gain
+above zero. The interval is a bootstrap over sessions, because the units of
+one session are not independent. It uses the per-prompt result
 when that has 30 units, else the per-session result.
 
 The command reads the database and the log. It changes no setting. To
 collect the per-prompt log first, set `trust.ranking` and
-`NOBLIVION_RECALL_INDEX_TRUST` to `shadow` for some weeks: the hook then
-logs the order it would have used and keeps the order it shows. Turn trust
+`NOBLIVION_RECALL_INDEX_TRUST` to `shadow` and `NOBLIVION_RECALL_TRUST_LOG`
+to `1` for some weeks: the hook then logs the order it would have used and
+keeps the order it shows. Turn trust
 ranking on only when your own run says `gain`.
+
+The test prints how many "used" labels sit on notes with a factor other
+than 1. The labels are not independent of trust: a "used" note is a `use`
+event, and trust is fitted on the same events. So a `gain` shows that older
+use predicts newer use. It does not show that the used notes were the right
+ones (NOBLIVION-65). Treat a `gain` as necessary, not sufficient.
 
 It exits with the same codes as `noblivion trust report`.
 
@@ -446,6 +463,36 @@ serves the order unchanged.
 
 Verdict: `no gain` for both cuts. No note had the 5 trials that the
 factor needs before the cut (the most was 2), so trust moved no note.
+
+### Time-split test on a live store (2026-10-30)
+
+One operator install, 25,264 stored events on 767 notes over 324 sessions
+(the 2026-10-30 run read the live database read-only). The hook trust log
+held 2,417 lines from 11 days with `trust.ranking` `shadow`.
+
+| Cut (train share) | Notes with a factor | Prompt units | MRR off | MRR on | 95% interval | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.5 | 5 | 218 | 0.259 | 0.259 | -0.001 to +0.000 | no gain |
+| 0.6 | 7 | 214 | 0.262 | 0.456 | +0.078 to +0.313 | gain |
+| 0.7 (default) | 8 | 211 | 0.265 | 0.479 | +0.095 to +0.329 | gain |
+| 0.8 | 10 | 138 | 0.221 | 0.530 | +0.166 to +0.427 | gain |
+
+Decision: trust ranking stays `off`. The test says `gain` at three of four
+cuts, but it cannot carry the decision:
+
+- The labels are the `use` events that trust is fitted on (NOBLIVION-65).
+  A note cited often before is cited often later. The test shows that and
+  nothing more.
+- Only 5 to 10 of 767 notes have a factor other than 1. At the default
+  cut 38 of 107 labels sit on 8 notes. A few often-cited notes carry the
+  gain.
+- The gain is absent at the earliest cut, and the per-session result at
+  the default cut has more units worse (14) than better (12).
+- The `use` signal has a measured precision of 0.517 (lower bound 0.344)
+  against the 0.70 rule.
+
+Turn trust ranking on only after a test with labels that do not come from
+the use events, for example a hand-labelled sample.
 
 ### Precision
 

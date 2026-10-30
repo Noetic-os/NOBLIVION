@@ -52,6 +52,17 @@ REPORT = {
 }
 
 
+def test_fix_list_is_optional_and_checked_when_present():
+    """NOBLIVION-111: a store older than the fix list sends none."""
+    assert rep.validate(REPORT)["fix"] == []
+    doc = rep.validate(dict(REPORT, fix=[row(4, "feedback_d.md", contradict_sessions=2), "nope"]))
+    assert [r["mv_id"] for r in doc["fix"]] == [4]
+    with pytest.raises(ValueError):
+        rep.validate(dict(REPORT, fix="x"))
+    text = rep.render(doc)
+    assert "Fix candidates" in text and "feedback_d.md (id 4)" in text
+
+
 def test_validate_accepts_the_answer_and_drops_a_malformed_row():
     doc = dict(
         REPORT,
@@ -106,7 +117,7 @@ def test_refresh_writes_the_cache_with_counts(env, monkeypatch):
     }
     path = Path(env["NOBLIVION_TRUST_REPORT_FILE"])
     doc = json.loads(path.read_text())
-    assert doc["counts"] == {"retire": 2, "promote": 1, "demote": 0}
+    assert doc["counts"] == {"retire": 2, "promote": 1, "demote": 0, "fix": 0}
     assert doc["format"] == rep.FORMAT and doc["fetched_at"] and doc["persona"] == "claude_code"
     assert path.stat().st_mode & 0o777 == 0o600
     assert not list(path.parent.glob("*.tmp"))

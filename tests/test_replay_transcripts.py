@@ -199,6 +199,15 @@ def test_replay_env_turns_the_behaviour_source_on() -> None:
     assert env["NOBLIVION_TRUST_BEHAVIOUR_USE"] == "1"
 
 
+def test_replay_env_asks_for_the_shadow_log_only_in_shadow() -> None:
+    """NOBLIVION-111: shadow mode writes no log unless asked."""
+    on = rt.replay_env({}, "/tmp/memory", True)
+    assert (
+        on["NOBLIVION_RECALL_INDEX_TRUST"] == "shadow" and on["NOBLIVION_RECALL_TRUST_LOG"] == "1"
+    )
+    assert "NOBLIVION_RECALL_TRUST_LOG" not in rt.replay_env({}, "/tmp/memory", False)
+
+
 def test_replay_session_counts_a_behaviour_use_and_traces_the_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_modules
 ) -> None:

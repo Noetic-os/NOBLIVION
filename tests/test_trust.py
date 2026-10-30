@@ -537,6 +537,35 @@ def _paths(report, name):
     return [r["path"] for r in report[name]]
 
 
+def test_fix_lists_a_contradicted_rule_at_any_age_and_in_any_other_list():
+    """NOBLIVION-111: no 30-day wait. A new note, a note that MEMORY.md links
+    and a note that is also a retire candidate all appear when a session
+    contradicted them."""
+    files = [
+        _file(1, "new.md", age_days=1),
+        _file(2, "linked.md"),
+        _file(3, "stale.md"),
+        _file(4, "clean.md"),
+        _file(5, "twice.md", age_days=2),
+        _file(6, "MEMORY.md", category="index"),
+    ]
+    aggs = {
+        1: _agg(shown=2, used=1, first_days=1, last_use_days=1, contra=1),
+        2: _agg(shown=5, used=3, last_use_days=1, contra=1),
+        3: _agg(shown=25, used=0, contra=1),
+        4: _agg(shown=25, used=4, last_use_days=1),
+        5: _agg(shown=3, used=0, first_days=2, contra=2),
+        6: _agg(shown=3, contra=4),
+    }
+    links = {ROOT: frozenset({"linked.md"})}
+    report = trust.build_report(_inputs(files, aggs, links=links), now=NOW)
+    assert _paths(report, "fix") == ["twice.md", "linked.md", "new.md", "stale.md"]
+    row = report["fix"][0]
+    assert row["contradict_sessions"] == 2 and "contradicted in 2 sessions" in row["reason"]
+    assert _paths(report, "retire") == ["stale.md"]  # fix does not take a note off the others
+    assert not any(r["path"] == "clean.md" for r in report["fix"])
+
+
 def test_report_shape():
     report = trust.build_report(_inputs([_file(1, "a.md")], {1: _agg(shown=20)}), now=NOW)
     assert set(report) == {
@@ -546,6 +575,7 @@ def test_report_shape():
         "retire",
         "promote",
         "demote",
+        "fix",
         "truncated",
     }
     assert report["persona"] == "claude_code" and report["trust_prior"] == 0.5

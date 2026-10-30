@@ -286,6 +286,7 @@ model is the default model, `BAAI/bge-small-en-v1.5`.
 | `NOBLIVION_RECALL_HUB_DAYS` | `recall.hub_days` | `14` | The window, in days (up to 30), for hub rows. `0` turns it off. A note that the hook showed in more than half of the sessions of the window is a hub. A hub row goes behind the other rows. Needs at least 10 sessions in the window. The hook counts in `<cache folder>/hub-stats.json` only when this is above 0. |
 | `NOBLIVION_RECALL_HUB_ROWS` | `recall.hub_rows` | `1` | The most hub rows one prompt shows, 0 to 100. Used only with `NOBLIVION_RECALL_HUB_DAYS`. |
 | `NOBLIVION_RECALL_INDEX_TRUST` | none | off | Stays off by default until a time-split test shows a ranking gain. `1`, `on`, `true` or `yes` multiplies each score by the trust factor. `shadow` computes the factor and logs it, but keeps the order. See [trust.md](trust.md). |
+| `NOBLIVION_RECALL_TRUST_LOG` | none | off | `1`, `on`, `true` or `yes` makes the prompt hook write `<data dir>/cache/trust-rank.jsonl` in `shadow` mode too. In mode `on` it is always written. For the time-split test. See [trust.md](trust.md). |
 | `NOBLIVION_RECALL_TRUST_FILE` | none | unset | A fixed trust snapshot file to use instead of the store's trust values. For tests. |
 | `NOBLIVION_RECALL_TRUST_MODE` | none | unset | `b` or `c`: other ways to compute the trust factor, for evaluation. `a` has no effect now: guard rows are never a use. Unset uses the normal factor. |
 | `NOBLIVION_RECALL_TRUST_MIN_SCORE` | none | `0.58` | The score a row needs in trust mode `c`. |

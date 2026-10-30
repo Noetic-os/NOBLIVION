@@ -199,11 +199,29 @@ def test_a_snapshot_that_cannot_be_read_turns_the_step_off(tmp_path, content):
 # 5. shadow --------------------------------------------------------------
 def test_shadow_serves_the_old_order_and_logs_the_would_be_order(tmp_path):
     rows = [Row(1, 0.0328), Row(2, 0.0320, trust=0.9, trials=9, prior=0.5)]
-    env = {"NOBLIVION_RECALL_INDEX_TRUST": "shadow"}
+    env = {"NOBLIVION_RECALL_INDEX_TRUST": "shadow", "NOBLIVION_RECALL_TRUST_LOG": "1"}
     out, note = tr.apply_index_trust(rows, env, {}, str(tmp_path))
     assert out == rows and note == ":trust_shadow1of2"
     line = json.loads((tmp_path / "trust-rank.jsonl").read_text())
     assert line["base"] == [1, 2] and line["trust"] == [2, 1] and line["mode"] == "shadow"
+
+
+def test_shadow_writes_no_log_unless_asked(tmp_path):
+    """NOBLIVION-111: the shadow log held no decision and grew to 2.4 MB."""
+    rows = [Row(1, 0.0328), Row(2, 0.0320, trust=0.9, trials=9, prior=0.5)]
+    for env in (
+        {"NOBLIVION_RECALL_INDEX_TRUST": "shadow"},
+        {"NOBLIVION_RECALL_INDEX_TRUST": "shadow", "NOBLIVION_RECALL_TRUST_LOG": "0"},
+    ):
+        out, note = tr.apply_index_trust(rows, env, {}, str(tmp_path))
+        assert out == rows and note == ":trust_shadow1of2"
+    assert not (tmp_path / "trust-rank.jsonl").exists()
+    # The store's shadow mode, with the hook switch on, writes none either.
+    for r in rows:
+        r.trust_ranking = "shadow"
+    out, note = tr.apply_index_trust(rows, TRUST_ON, {}, str(tmp_path))
+    assert out == rows and note == ":trust_shadow1of2"
+    assert not (tmp_path / "trust-rank.jsonl").exists()
 
 
 @pytest.mark.parametrize(("store_mode", "applied"), [("shadow", False), ("on", True), ("", True)])
@@ -215,7 +233,8 @@ def test_the_store_shadow_mode_is_computed_and_logged_but_never_applied(
     rows = [Row(1, 0.0328), Row(2, 0.0320, trust=0.9, trials=9, prior=0.5)]
     for r in rows:
         r.trust_ranking = store_mode
-    out, note = tr.apply_index_trust(rows, TRUST_ON, {}, str(tmp_path))
+    env = dict(TRUST_ON, NOBLIVION_RECALL_TRUST_LOG="1")
+    out, note = tr.apply_index_trust(rows, env, {}, str(tmp_path))
     line = json.loads((tmp_path / "trust-rank.jsonl").read_text())
     assert line["trust"] == [2, 1]
     if applied:

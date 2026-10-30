@@ -26,8 +26,12 @@ correctness. Turn the factor on by default only after a time-split test
 Switches:
 
 - ``NOBLIVION_RECALL_INDEX_TRUST``: ``1`` (or ``on``) applies the factor;
-  ``shadow`` computes it and logs the would-be order but serves the order
-  unchanged; anything else is off.
+  ``shadow`` computes it and serves the order unchanged; anything else is
+  off. Shadow mode writes no debug line unless ``NOBLIVION_RECALL_TRUST_LOG``
+  is set (NOBLIVION-111: the measured shadow log held no decision and grew
+  to 2.4 MB). Mode ``on`` writes it as before.
+- ``NOBLIVION_RECALL_TRUST_LOG``: ``1`` (or ``on``) also writes the debug
+  line in shadow mode. The replay tool sets it, for the time-split test.
 - ``NOBLIVION_RECALL_TRUST_FILE``: a pinned snapshot (the replay tool writes
   one) that REPLACES the daemon fields. A row is looked up by its memory file
   stem first (the row title joined to the local memory folder), then by its
@@ -65,6 +69,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Dict, List, Optional, Tuple
 
 TRUST_ENV = "NOBLIVION_RECALL_INDEX_TRUST"
+LOG_ENV = "NOBLIVION_RECALL_TRUST_LOG"
 TRUST_FILE_ENV = "NOBLIVION_RECALL_TRUST_FILE"
 F_MIN = 0.8
 F_MAX = 1.25
@@ -104,6 +109,14 @@ def mode(environ: Optional[Mapping[str, str]] = None) -> str:
     if raw == MODE_SHADOW:
         return MODE_SHADOW
     return MODE_OFF
+
+
+def log_wanted(md: str, environ: Optional[Mapping[str, str]] = None) -> bool:
+    """The debug line is written in mode ``on``, and in ``shadow`` only on request."""
+    env = os.environ if environ is None else environ
+    if md == MODE_ON:
+        return True
+    return (env.get(LOG_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
 
 
 def trust_mode(environ: Optional[Mapping[str, str]] = None) -> str:
@@ -380,7 +393,7 @@ def apply_index_trust(
     changed = [(ln, f, trust, trials) for ln, (f, trust, trials) in _zip_same(rows, fs) if f != 1.0]
     tag = "trust" if md == MODE_ON else "trust_shadow"
     note = f":{tag}{len(changed)}of{len(rows)}"
-    if cache:
+    if cache and log_wanted(md, environ):
         pos_after = {id(ln): i + 1 for i, ln in enumerate(trusted)}
         pos_before = {id(ln): i + 1 for i, ln in enumerate(rows)}
         _debug(

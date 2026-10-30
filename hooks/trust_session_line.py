@@ -84,10 +84,15 @@ def trust_line(doc: Any) -> str:
         if c is None:
             return ""
         n.append(c)
-    if not any(n):
+    n_fix = _count(counts.get("fix"))
+    if n_fix is None:
+        rows = doc.get("fix")
+        n_fix = len(rows) if isinstance(rows, list) else 0  # a cache from an older store
+    if not any(n) and not n_fix:
         return ""
+    fix = f", {n_fix} to fix" if n_fix else ""
     return (
-        f"Memory trust: {n[0]} to retire, {n[1]} to promote, {n[2]} to demote. "
+        f"Memory trust: {n[0]} to retire, {n[1]} to promote, {n[2]} to demote{fix}. "
         "Run noblivion trust report"
     )
 

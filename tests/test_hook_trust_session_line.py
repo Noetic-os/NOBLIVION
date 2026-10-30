@@ -130,6 +130,21 @@ def test_counts_come_from_the_lists_when_the_counts_are_absent_and_zero_is_silen
     assert sl.dedup_line(zero, NOW) == ""
 
 
+def test_fix_count_shows_only_when_there_is_one(files):
+    """NOBLIVION-111: the fix list adds a clause; a cache without it reads as before."""
+    assert (
+        sl.trust_line(dict(REPORT, counts={"retire": 2, "promote": 1, "demote": 0})) == TRUST_LINE
+    )
+    line = sl.trust_line(dict(REPORT, counts={"retire": 2, "promote": 1, "demote": 0, "fix": 3}))
+    assert line == (
+        "Memory trust: 2 to retire, 1 to promote, 0 to demote, 3 to fix. Run noblivion trust report"
+    )
+    only_fix = dict(REPORT, retire=[], promote=[], demote=[], fix=[{"mv_id": 1}])
+    assert sl.trust_line(only_fix).startswith(
+        "Memory trust: 0 to retire, 0 to promote, 0 to demote, 1 to fix"
+    )
+
+
 def test_a_dry_run_and_a_plan_say_so_and_every_line_names_its_date():
     old = {"mode": "apply", "merged": 3, "proposals": 0, "finished_at": "2026-09-28T03:00:00Z"}
     assert sl.dedup_line(old, NOW) == "Memory dedup: 3 merged on 2026-09-28, 0 proposals"

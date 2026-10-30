@@ -91,6 +91,44 @@ def test_gain_when_older_use_predicts_newer_use() -> None:
     assert result["verdict_from"] == "session"
 
 
+def _unit(better_sessions: int, sessions: int) -> dict:
+    """One unit per session; ``better_sessions`` of them gain 0.5 in reciprocal rank."""
+    result = ts.UnitResult()
+    for i in range(sessions):
+        up = i < better_sessions
+        result.add((0.5, 1.0), (1.0 if up else 0.5, 1.0), up, f"s{i}")
+    return result.summary(5)
+
+
+def test_a_gain_from_one_session_is_not_a_gain() -> None:
+    """NOBLIVION-111: the units of one session are not independent. A mean
+    gain that one session carries has an interval that reaches zero."""
+    lone = _unit(1, 40)
+    assert lone["mrr_on"] > lone["mrr_off"] and lone["better"] > lone["worse"]
+    assert lone["mrr_gain_ci95"][0] <= 0.0
+    assert ts.verdict(lone) == "no gain"
+    broad = _unit(30, 40)
+    assert broad["mrr_gain_ci95"][0] > 0.0 and ts.verdict(broad) == "gain"
+    assert broad["sessions"] == 40
+
+
+def test_the_interval_is_the_same_on_every_run_and_needs_two_sessions() -> None:
+    assert _unit(5, 40)["mrr_gain_ci95"] == _unit(5, 40)["mrr_gain_ci95"]
+    single = ts.UnitResult()
+    single.add((0.5, 1.0), (1.0, 1.0), True, "only")
+    assert single.summary(5)["mrr_gain_ci95"] is None
+    assert ts.verdict({**_unit(30, 40), "mrr_gain_ci95": None}) == "no gain"
+
+
+def test_the_result_names_how_many_labels_sit_on_factored_notes() -> None:
+    result = ts.run(_events(70, 30), PRIORS, shuffles=5)
+    assert result["labels"] == {"relevant": 30, "distinct_notes": 1, "on_factored_notes": 30}
+    text = ts.render(result)
+    assert "Labels: 30 used notes over 1 distinct notes, 30 on the 1 notes" in text
+    assert "same use events that trust is fitted on" in text
+    assert "95% interval" in text
+
+
 def test_no_gain_when_it_does_not() -> None:
     result = ts.run(_events(70, 30, test_used=2), PRIORS, shuffles=20)
     unit = result["session"]

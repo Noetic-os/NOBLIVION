@@ -64,6 +64,7 @@ PROMOTE_MIN_TRIALS = 5
 PROMOTE_MIN_USE_SHARE = 0.20
 PROMOTE_MIN_SPAN_DAYS = 14
 DEMOTE_NO_USE_DAYS = 30
+FIX_MIN_CONTRADICTIONS = 1  # a rule overridden in one session is listed, no age wait
 REPORT_LIST_CAP = 500
 MEMORY_INDEX_PATH = "MEMORY.md"
 INDEX_CATEGORIES = frozenset({"index", "topic"})
@@ -647,6 +648,7 @@ def build_report(inputs: ReportInputs, *, now: datetime | None = None) -> dict:
     retire: list[dict] = []
     promote: list[dict] = []
     demote: list[dict] = []
+    fix: list[dict] = []
     for f in inputs.files:
         if is_index_file(f.path, f.category):
             continue
@@ -666,6 +668,18 @@ def build_report(inputs: ReportInputs, *, now: datetime | None = None) -> dict:
             "use_sessions": used,
             "contradict_sessions": agg.contradictions if agg else 0,
         }
+        if agg and agg.contradictions >= FIX_MIN_CONTRADICTIONS:
+            # Independent of the other lists and of the note's age: a rule the
+            # user overrode is worth a look the first time, not after 30 days.
+            fix.append(
+                {
+                    **row,
+                    "reason": (
+                        f"contradicted in {agg.contradictions} sessions, used in {used}; "
+                        "check that the rule is still right"
+                    ),
+                }
+            )
         if f.path in inputs.index_links.get(f.root, frozenset()):
             last_use = agg.last_use if agg else None
             if history_days >= DEMOTE_NO_USE_DAYS and (last_use is None or last_use < no_use_since):
@@ -699,7 +713,8 @@ def build_report(inputs: ReportInputs, *, now: datetime | None = None) -> dict:
     retire.sort(key=lambda r: (-r["shown_sessions"], r["path"], r["root"]))
     promote.sort(key=lambda r: (-r["trust"], -r["use_sessions"], r["path"], r["root"]))
     demote.sort(key=lambda r: (r["path"], r["root"]))
-    truncated = any(len(rows) > REPORT_LIST_CAP for rows in (retire, promote, demote))
+    fix.sort(key=lambda r: (-r["contradict_sessions"], r["path"], r["root"]))
+    truncated = any(len(rows) > REPORT_LIST_CAP for rows in (retire, promote, demote, fix))
     return {
         "persona": PERSONA,
         "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -707,6 +722,7 @@ def build_report(inputs: ReportInputs, *, now: datetime | None = None) -> dict:
         "retire": retire[:REPORT_LIST_CAP],
         "promote": promote[:REPORT_LIST_CAP],
         "demote": demote[:REPORT_LIST_CAP],
+        "fix": fix[:REPORT_LIST_CAP],
         "truncated": truncated,
     }
 
