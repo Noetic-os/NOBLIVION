@@ -124,6 +124,17 @@ All notable changes to NOBLIVION. The format follows
   the 8 whose lesson was in a hit line get a superset, and for the 5 that came through a `fetch_id`
   the fetch sentence stays, because the lesson sat on a bare row of a mixed index in 2 of them. Of 55
   recorded prompt headers, 2 drop the sentence.
+- Stop checks remind and do not block for the soft rules (NOBLIVION-112). A block makes Claude Code
+  run one more model call. In `enforce` mode the `notify` and `lesson` checks (`stop.reminders`,
+  `NOBLIVION_STOP_REMINDERS`) now keep their text, and the next prompt hook of the session sends it once
+  as `additionalContext`. The `commit`, `tests` and `deploy` checks still block, and a block carries
+  the reminders in the same message. On the measured install, 19 of 21 blocks in 502 stops were
+  `notify`. The default mode stays `shadow`. The phrases of one report format ("I stop here", a
+  "Not done:" label line) are no longer built in to `notify`: add them with `stop.notify_phrases`
+  (a list of regular expressions). The correction detector for the `lesson` check has three more
+  phrases ("I asked for", "you derailed", "the message above is unreadable"). On 50 labelled prompts
+  (16 true corrections, dev split) it marks 13 of 16 with no false mark, was 10 of 16. `noblivion stop
+  report` counts reminders.
 - Remove the transcript miner (NOBLIVION-154). The SessionEnd hook, the Codex SessionEnd mine step, the
   `noblivion mine` command, its documentation page and its settings table are gone. Error recall no longer
   asks the store for mined rows, so `fused` and `store` modes show memory files only. The measure: a

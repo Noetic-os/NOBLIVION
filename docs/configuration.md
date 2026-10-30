@@ -445,9 +445,11 @@ See [guards.md](guards.md) for what each guard does.
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
 | `NOBLIVION_STOP_CHECK_MODE` | `stop.mode` | `shadow` | `shadow` runs the checks, logs what would have blocked and never blocks. `enforce` lets the checks block. Any other value means `shadow`. |
-| `NOBLIVION_STOP_CHECKS` | `stop.checks` | `commit,tests,notify,deploy,lesson` | The checks that block in `enforce` mode: a comma list, or `all`, or `none`. A set but empty value means none. The config key takes a list or a comma text. |
+| `NOBLIVION_STOP_CHECKS` | `stop.checks` | `commit,tests,notify,deploy,lesson` | The checks that act in `enforce` mode (block, or remind, see `stop.reminders`): a comma list, or `all`, or `none`. A set but empty value means none. The config key takes a list or a comma text. |
 | `NOBLIVION_STOP_CHECK_LOG` | none | `<data dir>/stop-check-log.jsonl` | The decision log. |
 | `NOBLIVION_STOP_CHECK_STATE` | none | `<data dir>/stop-check-state` | Marker files per session. |
+| `NOBLIVION_STOP_REMINDERS` | `stop.reminders` | `notify,lesson` | The checks that only remind in `enforce` mode. A reminder does not block: the next prompt of the session gets it once as extra context. A check that is not in this list blocks. `none` makes every check block. |
+| none | `stop.notify_phrases` | `[]` | More regular expressions for the `notify` check, added to the built-in first-person phrases ("I deferred", "I could not finish", "I am blocked"). Example: `["\\bi\\s+stop\\s+here\\b", "^\\s*-?\\s*not\\s+done\\s*:"]`. A phrase that does not compile is skipped. |
 | none | `stop.shared_checkouts` | `[]` | Checkouts where an edit is reported instead of asked to be committed. |
 | none | `stop.worktree_prefixes` | `[]` | Path prefixes of your git worktrees. Each starts with `/` or `~`. |
 | none | `stop.test_command` | `python3 -m pytest -q <absolute test path>` | The test command that the tests check names in its message. |
@@ -462,7 +464,7 @@ checks block, set this in `<data dir>/config.json`:
 
 `noblivion stop report [--days N] [--json]` counts the log rows of the last
 N days (default 7) per check: would block (shadow mode), blocked (enforce
-mode) and logged only (the check is not in the blocking list).
+mode), reminded (enforce mode, a check in `stop.reminders`) and logged only (the check is not in the blocking list).
 
 ## Trust
 

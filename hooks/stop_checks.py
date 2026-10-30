@@ -13,6 +13,8 @@ Two modes, one file:
   --mark-correction    UserPromptSubmit hook. Reads ``prompt`` and ``session_id``. When the
                        prompt is a correction ("no, ...", "wrong", "I told you", ...) it
                        writes a per-session marker file; any other prompt removes the marker.
+                       It also prints a kept Stop reminder (see below) once, as
+                       ``additionalContext``.
 
 The check table (``CHECKS``). Each row has a checker that returns a reason or None:
 
@@ -34,8 +36,15 @@ The check table (``CHECKS``). Each row has a checker that returns a reason or No
 Every check runs on every stop. The mode (``NOBLIVION_STOP_CHECK_MODE`` or the config
 key ``stop.mode``) is ``shadow`` by default: the hook logs what would have blocked
 (``would_block``) and never blocks. With ``enforce``, the checks in
-``NOBLIVION_STOP_CHECKS`` (or ``stop.checks``; default ``DEFAULT_ON``) block; the
+``NOBLIVION_STOP_CHECKS`` (or ``stop.checks``; default ``DEFAULT_ON``) act; the
 others are logged as ``shadow``. ``noblivion stop report`` counts the log rows.
+
+A block forces one more model call (NOBLIVION-112), so only the hazard checks block. A
+check in ``NOBLIVION_STOP_REMINDERS`` (or ``stop.reminders``; default ``notify`` and
+``lesson``) is a reminder: the Stop hook does not block, it keeps the text in the state
+folder, and the next ``--mark-correction`` run of the session prints it once as
+``additionalContext``. It is dropped after ``REMINDER_TTL`` seconds. When a hazard check
+blocks in the same stop, the reminders ride in the block text and nothing is kept.
 
 Bounds: when ``stop_hook_active`` is true it never blocks. Fail open: any exception or the
 time limit (``TIME_LIMIT`` seconds) means exit 0 and no block. Standard library only.
@@ -60,9 +69,14 @@ Config file keys (hook_config; all optional):
   stop.deploy_hosts       list of host names or addresses a deploy check reads.
                           Default: none, and then the ``deploy`` check never fires.
   stop.mode               ``shadow`` (default) or ``enforce``. The env var wins.
+  stop.reminders          list (or comma text) of the checks that only remind in enforce
+                          mode. Default: ``notify``, ``lesson``. The env var wins.
+  stop.notify_phrases     list of regular expressions: more phrases for the ``notify``
+                          check, added to the built-in first-person ones. Default: none.
   stop.checks             list (or comma text) of the checks that block in enforce
                           mode. The env var wins.
-  NOBLIVION_STOP_CHECKS        comma list of blocking checks, "all", or "none"
+  NOBLIVION_STOP_CHECKS        comma list of acting checks, "all", or "none"
+  NOBLIVION_STOP_REMINDERS     comma list of reminder-only checks, "all", or "none"
   NOBLIVION_STOP_CHECK_MODE    shadow (default) or enforce
 """
 
@@ -131,6 +145,12 @@ DEFAULT_ON = ("commit", "tests", "notify", "deploy", "lesson")
 # NOBLIVION-32: the checks were tuned on one user's sessions, so by default they only log.
 MODES = ("shadow", "enforce")
 DEFAULT_MODE = "shadow"
+# NOBLIVION-112: a block forces one more model call. A check in this list only reminds:
+# in enforce mode the Stop hook keeps the text and the next prompt hook sends it as
+# ``additionalContext``. The other checks (commit, tests, deploy) keep the block, because
+# they guard work that is lost or unverified when the turn ends.
+DEFAULT_REMINDERS = ("notify", "lesson")
+REMINDER_TTL = 4 * 3600  # seconds a kept reminder stays valid
 NOTIFY_TOOL = "PushNotification"
 TIME_LIMIT = 1.8  # seconds for the whole hook
 TAIL_MAX = 24_000_000  # bytes of transcript read back at most
@@ -738,16 +758,32 @@ def prose_of(text: str) -> str:
 
 # First person only: the agent itself did not do an asked-for thing. A passive "the lane is
 # skipped" or "the ticket stays blocked" describes other work and is not matched (replay v1 had
-# 8 false of 10 with passive forms in).
-NOT_DONE_RE = re.compile(
-    r"\b(?:i|we)\s+(?:have\s+|had\s+)?(?:deferred|skipped|parked|postponed|dropped)\b|"
-    r"\b(?:i|we)\s+(?:did\s+not|didn't|could\s+not|couldn't|cannot|can\s?not|can't|was\s+unable\s+to|"
-    r"am\s+unable\s+to|will\s+not\s+be\s+able\s+to)\s+(?:finish|complete|continue|proceed)\b|"
-    r"\b(?:i\s+am|i'm|we\s+are)\s+(?:blocked|stuck)\b|"
-    r"\bi\s+(?:stopped|am\s+stopping|stop)\s+(?:here|short|before)\b|"
-    r"^\s*(?:[-*]\s*)?\**(?:deferred|skipped|not\s+done|not\s+finished|left\s+undone)\**\s*:",
-    re.I | re.M,
+# 8 false of 10 with passive forms in). These built-in phrases are the generic ones. The report
+# format of one user ("I stop here", a "Not done:" label line) is not built in: the config key
+# ``stop.notify_phrases`` adds such phrases (NOBLIVION-112).
+NOT_DONE_PHRASES: Tuple[str, ...] = (
+    r"\b(?:i|we)\s+(?:have\s+|had\s+)?(?:deferred|skipped|parked|postponed|dropped)\b",
+    r"\b(?:i|we)\s+(?:did\s+not|didn't|could\s+not|couldn't|cannot|can\s?not|can't|"
+    r"was\s+unable\s+to|am\s+unable\s+to|will\s+not\s+be\s+able\s+to)\s+"
+    r"(?:finish|complete|continue|proceed)\b",
+    r"\b(?:i\s+am|i'm|we\s+are)\s+(?:blocked|stuck)\b",
 )
+
+
+def notify_regex(extra: Tuple[str, ...] = ()) -> re.Pattern[str]:
+    """The not-done matcher: the built-in phrases plus the ``extra`` ones (regex text).
+    An extra phrase that does not compile is skipped, never a fault."""
+    parts = list(NOT_DONE_PHRASES)
+    for phrase in extra:
+        try:
+            re.compile(phrase)
+        except re.error:
+            continue
+        parts.append("(?:" + phrase + ")")
+    return re.compile("|".join(parts), re.I | re.M)
+
+
+NOT_DONE_RE = notify_regex(_CFG.string_list("stop.notify_phrases"))
 
 
 def session_tools(path: str, deadline: float = 0.0, max_bytes: int = TAIL_MAX) -> Set[str]:
@@ -921,6 +957,17 @@ CORR_ANY_RE = re.compile(
     r"\b(?:don'?t|do\s+not|never)\s+do\s+(?:that|this)\s+again\b",
     re.I,
 )
+# NOBLIVION-112: wider phrases, added after a labelled replay (50 prompts, 16 true
+# corrections: the old detector marked 10, the wider one marks 13, no false mark). A bare
+# "never" or "do not" matches 3 of 3 and 2 of 4 non-corrections, so they are not here.
+CORR_WIDE_RE = re.compile(
+    r"\bi\s+(?:have\s+|'ve\s+)?(?:already\s+)?(?:asked|said|told)\s+"
+    r"(?:for|these|those|this|that|it|them|to)\b|"
+    r"\byou\s+(?:\w+\s+)?(?:derailed|drifted|misread|misunderstood|lost\s+track)\b|"
+    r"\b(?:message|reply|answer|report|text|output)(?:\s+above)?\s+(?:is|was)\s+"
+    r"(?:unreadable|unclear|confusing|hard\s+to\s+(?:read|follow))\b",
+    re.I,
+)
 CORR_CAPS_RE = re.compile(r"\bWRONG\b")
 CORR_SCAN = 400
 
@@ -935,7 +982,7 @@ def is_correction(prompt: str) -> Optional[str]:
         if m:
             return m.group(0).strip()
     head = prose_of(p[:CORR_SCAN])
-    m = CORR_ANY_RE.search(head) or CORR_CAPS_RE.search(head)
+    m = CORR_ANY_RE.search(head) or CORR_WIDE_RE.search(head) or CORR_CAPS_RE.search(head)
     return m.group(0) if m else None
 
 
@@ -1089,24 +1136,37 @@ def check_mode() -> str:
     return mode if mode in MODES else DEFAULT_MODE
 
 
-def enabled_checks() -> Set[str]:
-    """The checks that block in enforce mode: ``NOBLIVION_STOP_CHECKS``, else the
-    config key ``stop.checks`` (a list or comma text), else ``DEFAULT_ON``."""
-    raw = os.environ.get("NOBLIVION_STOP_CHECKS")
+def _check_names(env_name: str, key: str, default: Tuple[str, ...]) -> Set[str]:
+    """A set of check names: the env var, else the config key (a list or comma text),
+    else ``default``. ``all`` is every check; ``none`` or an empty value is no check."""
+    raw = os.environ.get(env_name)
     if raw is None:
-        value = _CFG.get("stop.checks")
+        value = _CFG.get(key)
         if isinstance(value, list):
             raw = ",".join(v for v in value if isinstance(v, str))
         elif isinstance(value, str):
             raw = value
         else:
-            return set(DEFAULT_ON)
+            return set(default)
     raw = raw.strip().lower()
     if raw in ("all", "*"):
         return {c.name for c in CHECKS}
     if raw in ("", "none", "off"):
         return set()
     return {x.strip() for x in raw.split(",") if x.strip()}
+
+
+def enabled_checks() -> Set[str]:
+    """The checks that block in enforce mode: ``NOBLIVION_STOP_CHECKS``, else the
+    config key ``stop.checks`` (a list or comma text), else ``DEFAULT_ON``."""
+    return _check_names("NOBLIVION_STOP_CHECKS", "stop.checks", DEFAULT_ON)
+
+
+def reminder_checks() -> Set[str]:
+    """The checks that only remind in enforce mode: ``NOBLIVION_STOP_REMINDERS``, else
+    the config key ``stop.reminders``, else ``DEFAULT_REMINDERS``. A check that is not
+    in this set blocks."""
+    return _check_names("NOBLIVION_STOP_REMINDERS", "stop.reminders", DEFAULT_REMINDERS)
 
 
 def run_checks(turn: Turn, ctx: Ctx) -> Dict[str, str]:
@@ -1182,6 +1242,46 @@ def clear_marker(session: str) -> None:
         pass
 
 
+def reminder_path(session: str) -> Path:
+    return state_dir() / f"{_safe_id(session)}.reminder.json"
+
+
+def keep_reminder(session: str, lines: List[str]) -> None:
+    """Keep the reminder text for the next prompt of the session. Raises OSError."""
+    d = state_dir()
+    _make_dirs(d)
+    tmp = d / f".{_safe_id(session)}.reminder.tmp"
+    tmp.write_text(json.dumps({"ts": time.time(), "lines": lines}), encoding="utf-8")
+    os.replace(tmp, reminder_path(session))
+
+
+def take_reminder(session: str) -> Optional[str]:
+    """The kept reminder text of the session, once: the file is removed. None when
+    there is none, or it is older than ``REMINDER_TTL``."""
+    path = reminder_path(session)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    lines = doc.get("lines") if isinstance(doc, dict) else None
+    ts = doc.get("ts") if isinstance(doc, dict) else None
+    if not isinstance(lines, list) or not isinstance(ts, (int, float)):
+        return None
+    if time.time() - ts > REMINDER_TTL:
+        return None
+    body = [x for x in lines if isinstance(x, str) and x.strip()]
+    if not body:
+        return None
+    return (
+        "Stop checks reminder. The last reply left these open. This is a reminder, not a "
+        "block: act on it when it still applies.\n" + "\n".join(body)
+    )
+
+
 def log(row: dict) -> None:
     try:
         path = log_path()
@@ -1235,17 +1335,27 @@ def stop_hook(event: dict, t0: float) -> Optional[str]:
     on = enabled_checks()
     mode = check_mode()
     would_block = [n for n in fired if n in on]
-    blocking = would_block if mode == "enforce" else []
-    shadow = [n for n in fired if n not in blocking]
+    soft = reminder_checks()
+    enforcing = mode == "enforce"
+    blocking = [n for n in would_block if n not in soft] if enforcing else []
+    reminding = [n for n in would_block if n in soft] if enforcing else []
+    shadow = [n for n in fired if n not in blocking and n not in reminding]
     if marker and ("lesson" in would_block or "lesson" not in fired):
         clear_marker(session)  # cleared after the (shadow) block or after the capture
     ms = round((time.monotonic() - t0) * 1000)
     log(
         {
             **base,
-            "verdict": "block" if blocking else ("would-block" if would_block else "pass"),
+            "verdict": (
+                "block"
+                if blocking
+                else "remind"
+                if reminding
+                else ("would-block" if would_block else "pass")
+            ),
             "mode": mode,
             "blocking": blocking,
+            "reminding": reminding,
             "would_block": would_block if mode != "enforce" else [],
             "shadow": shadow,
             "ms": ms,
@@ -1254,18 +1364,28 @@ def stop_hook(event: dict, t0: float) -> Optional[str]:
             "notes": ctx.notes,
         }
     )
-    if not blocking:
-        return None
     by_name = {c.name: c for c in CHECKS}
-    lines = [f"- {by_name[n].rule}: {fired[n]}" for n in blocking]
+    lines = [f"- {by_name[n].rule}: {fired[n]}" for n in blocking + reminding]
+    if not blocking:
+        if reminding:
+            keep_reminder(session, lines)  # a fault here fails open: no block, no reminder
+        return None
     return (
         "Stop checks: meet these rules before you stop, then send the "
         "corrected reply. This block happens once.\n" + "\n".join(lines)
     )
 
 
-def mark_hook(event: dict) -> None:
+def mark_hook(event: dict) -> Optional[str]:
+    """Mark or clear the correction marker. Returns the kept Stop reminder of the
+    session, once, for the caller to print as ``additionalContext``."""
     session = str(event.get("session_id") or "")
+    reminder = take_reminder(session)
+    _mark_correction(event, session)
+    return reminder
+
+
+def _mark_correction(event: dict, session: str) -> None:
     phrase = is_correction(str(event.get("prompt") or ""))
     if not phrase:
         if marker_path(session).exists():
@@ -1297,7 +1417,11 @@ def main(argv: List[str]) -> int:
         if not isinstance(event, dict):
             return 0
         if "--mark-correction" in argv:
-            mark_hook(event)
+            context = mark_hook(event)
+            if context:
+                out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit"}}
+                out["hookSpecificOutput"]["additionalContext"] = context
+                sys.stdout.write(json.dumps(out) + "\n")
             return 0
         reason = stop_hook(event, t0)
         if reason:

@@ -5,7 +5,8 @@ The stop hook (``hooks/stop_checks.py``) writes one row per stop to
 ``<data dir>/stop-check-log.jsonl`` (``NOBLIVION_STOP_CHECK_LOG`` overrides
 it; the rotated ``.1`` file is read too). In shadow mode, the default, a check
 that fired and is on lists in ``would_block``; in enforce mode it lists in
-``blocking``. A check that fired and is not on lists in ``shadow`` only. The
+``blocking`` when it blocks and in ``reminding`` when it only reminds
+(NOBLIVION-112). A check that fired and is not on lists in ``shadow`` only. The
 report counts each, per check, so a user can see what enforce mode would do
 before turning it on. It reads the log only and changes nothing.
 """
@@ -75,7 +76,9 @@ def build_report(
     notify_skipped = 0
 
     def bump(name: str, key: str) -> None:
-        row = checks.setdefault(name, {"would_block": 0, "blocked": 0, "logged_only": 0})
+        row = checks.setdefault(
+            name, {"would_block": 0, "blocked": 0, "reminded": 0, "logged_only": 0}
+        )
         row[key] += 1
 
     for row in rows:
@@ -92,6 +95,8 @@ def build_report(
             bump(name, "would_block")
         for name in _names(row, "blocking"):
             bump(name, "blocked")
+        for name in _names(row, "reminding"):
+            bump(name, "reminded")
         for name in _names(row, "shadow"):
             if name not in would:
                 bump(name, "logged_only")
@@ -125,7 +130,7 @@ def render_report(answer: Mapping[str, Any], path: Path) -> str:
     for name, c in checks.items():
         lines.append(
             f"- {name}: would block {c['would_block']}, blocked {c['blocked']}, "
-            f"logged only (check not on) {c['logged_only']}"
+            f"reminded {c['reminded']}, logged only (check not on) {c['logged_only']}"
         )
     if answer.get("notify_skipped"):
         lines.append(

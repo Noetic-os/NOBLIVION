@@ -62,20 +62,27 @@ def test_counts_per_check_inside_the_window():
         _row(2, would=["commit"]),
         _row(3, mode="enforce", blocking=["lesson"], shadow=[]),
         _row(4, would=[], shadow=["deploy"]),  # fired, not on: logged only
+        _row(6, mode="enforce", blocking=[], shadow=[], reminding=["notify"]),
         _row(5, notes={"notify_skipped": "no PushNotification tool"}),
         _row(30, would=["commit"]),  # outside the window
         {"ts": _ts(1), "event": "prompt", "verdict": "marked"},
         {"ts": "bad", "event": "stop", "would_block": ["commit"]},
     ]
     answer = stop_report.build_report(rows, 7, now=NOW)
-    assert answer["stops"] == 5
-    assert answer["modes"] == {"shadow": 4, "enforce": 1}
-    assert answer["checks"]["commit"] == {"would_block": 2, "blocked": 0, "logged_only": 0}
+    assert answer["stops"] == 6
+    assert answer["modes"] == {"shadow": 4, "enforce": 2}
+    assert answer["checks"]["notify"]["reminded"] == 1
+    assert answer["checks"]["commit"] == {
+        "would_block": 2,
+        "blocked": 0,
+        "reminded": 0,
+        "logged_only": 0,
+    }
     assert answer["checks"]["tests"]["would_block"] == 1
     assert answer["checks"]["lesson"]["blocked"] == 1
     assert answer["checks"]["deploy"]["logged_only"] == 1
     assert answer["notify_skipped"] == 1
-    assert list(answer["checks"]) == ["commit", "tests", "deploy", "lesson"]
+    assert list(answer["checks"]) == ["commit", "tests", "notify", "deploy", "lesson"]
 
 
 def test_rows_before_the_mode_field_count_as_enforce():

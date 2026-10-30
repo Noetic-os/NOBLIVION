@@ -16,6 +16,10 @@ a fictional host only in the tests that need it (it is off by default).
 The default mode is ``shadow`` (NOBLIVION-32). The fixture sets
 ``NOBLIVION_STOP_CHECK_MODE=enforce`` so the block tests see blocks; the
 fresh-install tests remove it again.
+
+By default the ``notify`` and ``lesson`` checks only remind (NOBLIVION-112). The
+fixture sets ``NOBLIVION_STOP_REMINDERS=none`` so that every check blocks and the
+older block tests keep their shape; the reminder tests set the variable back.
 """
 
 from __future__ import annotations
@@ -77,6 +81,7 @@ def hook_env(tmp_path, monkeypatch):
     mem.mkdir()
     monkeypatch.setenv("NOBLIVION_MEMORY_DIR", str(mem))
     monkeypatch.setenv("NOBLIVION_STOP_CHECK_MODE", "enforce")
+    monkeypatch.setenv("NOBLIVION_STOP_REMINDERS", "none")
     return data
 
 
@@ -598,14 +603,50 @@ def test_tests_ignores_docs_and_scratch(sc):
     "reply",
     [
         "I deferred the documentation fix to the next session.",
-        "I stopped before the rebuild because context is high.",
-        "I am stopping here. Run /clear.",
         "The choice changes the setup, so I cannot proceed on a guess.",
-        "- Deferred: the ticket closeout.",
+        "I am blocked on the missing key.",
     ],
 )
 def test_notify_fires_without_push(sc, reply):
     assert sc.check_notify(T().prompt("x").say(reply).turn(sc), _ctx(sc))
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "I stopped before the rebuild because context is high.",
+        "I am stopping here. Run /clear.",
+        "- Deferred: the ticket closeout.",
+    ],
+)
+def test_notify_phrases_of_one_report_format_are_not_built_in(sc, reply):
+    """NOBLIVION-112: "I stop here" and a "Deferred:" label line gave 30 of 33 blocks on
+    one install. They are config phrases now, not built in."""
+    assert sc.check_notify(T().prompt("x").say(reply).turn(sc), _ctx(sc)) is None
+
+
+def test_notify_phrases_come_from_the_config(hook_env, monkeypatch):
+    extra = [
+        r"\bi\s+(?:stopped|am\s+stopping|stop)\s+(?:here|short|before)\b",
+        r"^\s*(?:[-*]\s*)?(?:deferred|not\s+done)\s*:",
+        "(unclosed",  # a phrase that does not compile is skipped
+    ]
+    cfg = {"stop": dict(BASE_CONFIG["stop"], notify_phrases=extra)}
+    mod = load_sc(hook_env, monkeypatch, cfg)
+    for reply in (
+        "I stopped before the rebuild because context is high.",
+        "I am stopping here. Run /clear.",
+        "- Deferred: the ticket closeout.",
+        "I deferred the docs fix.",  # the built-in phrases stay
+    ):
+        assert mod.check_notify(T().prompt("x").say(reply).turn(mod), _ctx(mod)), reply
+    quiet = T().prompt("x").say("All done.").turn(mod)
+    assert mod.check_notify(quiet, _ctx(mod)) is None
+
+
+def test_notify_regex_skips_a_bad_phrase(sc):
+    rx = sc.notify_regex(("(unclosed", r"\bgave\s+up\b"))
+    assert rx.search("we gave up") and rx.search("I deferred it")
 
 
 def test_notify_passes_with_push(sc):
@@ -942,7 +983,11 @@ def test_fresh_install_never_blocks_and_logs_would_block(tmp_path):
 def test_enforce_env_blocks(tmp_path):
     t = T().prompt("x").say("I deferred the docs fix.")
     event = {"session_id": "s", "transcript_path": str(t.write(tmp_path / "t.jsonl"))}
-    env = {**_fresh_env(tmp_path), "NOBLIVION_STOP_CHECK_MODE": "enforce"}
+    env = {
+        **_fresh_env(tmp_path),
+        "NOBLIVION_STOP_CHECK_MODE": "enforce",
+        "NOBLIVION_STOP_REMINDERS": "none",
+    }
     out = json.loads(_run_bare(event, env).stdout)
     assert out["decision"] == "block" and "push notification" in out["reason"]
     log = Path(env["HOME"]) / ".local" / "share" / "noblivion" / "stop-check-log.jsonl"
@@ -953,7 +998,9 @@ def test_enforce_env_blocks(tmp_path):
 def test_enforce_config_key_blocks(tmp_path):
     env = _fresh_env(tmp_path)
     data = Path(env["HOME"]) / ".local" / "share" / "noblivion"
-    (data / "config.json").write_text(json.dumps({"stop": {"mode": "enforce"}}))
+    (data / "config.json").write_text(
+        json.dumps({"stop": {"mode": "enforce", "reminders": ["lesson"]}})
+    )
     t = T().prompt("x").say("I deferred the docs fix.")
     event = {"session_id": "s", "transcript_path": str(t.write(tmp_path / "t.jsonl"))}
     assert json.loads(_run_bare(event, env).stdout)["decision"] == "block"
@@ -1041,3 +1088,161 @@ def test_enabled_checks_parse(sc, monkeypatch):
 def test_has_rule_apply_uses_the_fields_reader(sc):
     assert sc._fields_mod() is not None  # the fields module sits next to this hook
     assert sc.has_rule_apply(RULED) and not sc.has_rule_apply(NO_APPLY)
+
+
+# ---------------------------------------------------------------- reminders (NOBLIVION-112)
+
+REMIND = {"NOBLIVION_STOP_REMINDERS": "notify,lesson"}
+
+
+def _log_rows(tmp_path):
+    return [json.loads(ln) for ln in (tmp_path / "log.jsonl").read_text().splitlines()]
+
+
+def test_reminder_checks_parse(sc, monkeypatch):
+    monkeypatch.delenv("NOBLIVION_STOP_REMINDERS")
+    assert sc.reminder_checks() == {"notify", "lesson"}
+    monkeypatch.setenv("NOBLIVION_STOP_REMINDERS", "none")
+    assert sc.reminder_checks() == set()
+    monkeypatch.setenv("NOBLIVION_STOP_REMINDERS", "tests, notify")
+    assert sc.reminder_checks() == {"tests", "notify"}
+
+
+def test_reminder_checks_from_the_config(hook_env, monkeypatch):
+    mod = load_sc(hook_env, monkeypatch, {"stop": {"reminders": ["tests"]}})
+    monkeypatch.delenv("NOBLIVION_STOP_REMINDERS")
+    assert mod.reminder_checks() == {"tests"}
+
+
+def test_notify_reminds_instead_of_blocking_in_enforce(tmp_path):
+    t = T().prompt("x").say("I deferred the docs fix.")
+    res = _run_hook(
+        {"session_id": "s1", "transcript_path": str(t.write(tmp_path / "t.jsonl"))}, env=REMIND
+    )
+    assert res.returncode == 0 and res.stdout.strip() == ""  # no block, no output at Stop
+    row = _log_rows(tmp_path)[-1]
+    assert row["verdict"] == "remind" and row["blocking"] == [] and row["reminding"] == ["notify"]
+    kept = json.loads((tmp_path / "state" / "s1.reminder.json").read_text())
+    assert "push notification" in kept["lines"][0]
+
+
+def test_the_next_prompt_gets_the_reminder_once(tmp_path):
+    t = T().prompt("x").say("I deferred the docs fix.")
+    _run_hook(
+        {"session_id": "s1", "transcript_path": str(t.write(tmp_path / "t.jsonl"))}, env=REMIND
+    )
+    res = _run_hook({"session_id": "s1", "prompt": "continue"}, args=["--mark-correction"])
+    out = json.loads(res.stdout)["hookSpecificOutput"]
+    assert out["hookEventName"] == "UserPromptSubmit"
+    assert (
+        "not a block" in out["additionalContext"] and "PushNotification" in out["additionalContext"]
+    )
+    assert not (tmp_path / "state" / "s1.reminder.json").exists()
+    again = _run_hook({"session_id": "s1", "prompt": "continue"}, args=["--mark-correction"])
+    assert again.stdout == ""
+
+
+def test_a_reminder_belongs_to_its_session(tmp_path):
+    t = T().prompt("x").say("I deferred the docs fix.")
+    _run_hook(
+        {"session_id": "s1", "transcript_path": str(t.write(tmp_path / "t.jsonl"))}, env=REMIND
+    )
+    other = _run_hook({"session_id": "s2", "prompt": "continue"}, args=["--mark-correction"])
+    assert other.stdout == ""
+    assert (tmp_path / "state" / "s1.reminder.json").exists()
+
+
+def test_an_old_reminder_is_dropped(tmp_path, sc):
+    sc.keep_reminder("s1", ["- x: y"])
+    path = sc.reminder_path("s1")
+    doc = json.loads(path.read_text())
+    doc["ts"] -= sc.REMINDER_TTL + 5
+    path.write_text(json.dumps(doc))
+    assert sc.take_reminder("s1") is None and not path.exists()
+
+
+def test_a_bad_reminder_file_is_ignored(tmp_path, sc):
+    d = sc.state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    sc.reminder_path("s1").write_text("{bad")
+    assert sc.take_reminder("s1") is None
+    sc.reminder_path("s1").write_text(json.dumps({"ts": time.time(), "lines": [5, " "]}))
+    assert sc.take_reminder("s1") is None
+
+
+def test_a_hazard_check_still_blocks_and_carries_the_reminder(tmp_path, sc, monkeypatch):
+    monkeypatch.setenv("NOBLIVION_STOP_REMINDERS", "notify,lesson")
+    repo = _git_repo(tmp_path / "wt-demo")
+    (repo / "a.py").write_text("x = 1\n")
+    t = (
+        T(cwd=str(repo))
+        .prompt("x")
+        .tool("Write", file_path=str(repo / "a.py"), content="x = 1\n")
+        .bash("python3 -m pytest -q tests")
+        .say("I deferred the docs fix.")
+    )
+    event = {"session_id": "s1", "transcript_path": str(t.write(tmp_path / "t.jsonl"))}
+    reason = sc.stop_hook(event, time.monotonic())
+    assert reason and "commit locally" in reason and "push notification" in reason
+    row = _log_rows(tmp_path)[-1]
+    assert row["verdict"] == "block"
+    assert row["blocking"] == ["commit"] and row["reminding"] == ["notify"]
+    assert not (tmp_path / "state" / "s1.reminder.json").exists()  # it rode in the block
+
+
+def test_the_lesson_reminder_replaces_the_lesson_block(tmp_path):
+    _mark()
+    res = _run_hook(
+        {
+            "session_id": "sess-2",
+            "transcript_path": str(
+                T()
+                .prompt("no, that is wrong")
+                .bash("echo fixed")
+                .say("Fixed it.")
+                .write(tmp_path / "t.jsonl")
+            ),
+        },
+        env=REMIND,
+    )
+    assert res.stdout.strip() == ""
+    assert not (tmp_path / "state" / "sess-2.correction.json").exists()
+    nxt = _run_hook({"session_id": "sess-2", "prompt": "ok"}, args=["--mark-correction"])
+    assert "corrected you" in json.loads(nxt.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_shadow_mode_keeps_no_reminder(tmp_path):
+    t = T().prompt("x").say("I deferred the docs fix.")
+    res = _run_hook(
+        {"session_id": "s1", "transcript_path": str(t.write(tmp_path / "t.jsonl"))},
+        env={**REMIND, "NOBLIVION_STOP_CHECK_MODE": "shadow"},
+    )
+    assert res.stdout.strip() == ""
+    assert _log_rows(tmp_path)[-1]["verdict"] == "would-block"
+    assert not (tmp_path / "state" / "s1.reminder.json").exists()
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "I asked these to be fixed with the highest priority, can you do that now?",
+        "I already said that twice.",
+        "You have derailed again, fix this first.",
+        "give me status. The message above is unreadable",
+    ],
+)
+def test_wider_correction_phrases(sc, prompt):
+    assert sc.is_correction(prompt)
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "never push to main, and do not merge",
+        "what did I say last week?",
+        "The report is ready. Please read it.",
+        "the file is unreadable on my side, can you open it",
+    ],
+)
+def test_wider_correction_phrases_keep_the_negatives(sc, prompt):
+    assert sc.is_correction(prompt) is None
