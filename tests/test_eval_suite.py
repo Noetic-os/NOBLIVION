@@ -157,6 +157,10 @@ def write_transcripts(root: Path, slug: str = SLUG) -> None:
     (folder / f"{session}.jsonl").write_text(
         "".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8"
     )
+    agents = folder / session / "subagents"
+    agents.mkdir(parents=True)
+    (agents / "agent-a1.jsonl").write_text(json.dumps(lines[0]) + "\n", encoding="utf-8")
+    (agents / "agent-a1.meta.json").write_text(json.dumps({"toolUseId": "t4"}), encoding="utf-8")
 
 
 def write_bench(root: Path, home: str = "/frozen/home") -> None:
@@ -484,6 +488,7 @@ def test_gate0_runs_through_the_hooks(bench_run) -> None:
     assert cases["9a"]["pass"] is True
     assert cases["10a"]["pass"] is True
     assert gate["passed"] == 4 and gate["total"] == 5
+    assert gate["hook_states"], "the W10 merge must keep the hook states"
     assert CANARY not in json.dumps(doc)
 
 
@@ -520,6 +525,8 @@ def test_freeze_then_replay_the_same_input(world) -> None:
     assert stat.S_IMODE(inputs.stat().st_mode) == 0o700
     files = [p for p in inputs.rglob("*") if p.is_file()]
     assert files and all(stat.S_IMODE(p.stat().st_mode) == 0o600 for p in files)
+    folders = [p for p in inputs.rglob("*") if p.is_dir()]
+    assert folders and all(stat.S_IMODE(p.stat().st_mode) == 0o700 for p in folders)
     second = world / "refrozen"
     args = [a for a in run_args(world, second)]
     args = args[: args.index("--transcripts")] + args[args.index("--transcripts") + 2 :]

@@ -1082,12 +1082,14 @@ class Suite:
         copies = []
         for main in self.mains:
             source = Path(main)
+            private_dir(frozen / "transcripts")
             folder = private_dir(frozen / "transcripts" / source.parent.name)
             target = folder / source.name
             shutil.copyfile(source, target)
             os.chmod(target, 0o600)
             copies.append(str(target))
             for sub in sorted(source.with_suffix("").glob("subagents/*")):
+                private_dir(folder / source.stem)
                 dest = private_dir(folder / source.stem / "subagents") / sub.name
                 shutil.copyfile(sub, dest)
                 os.chmod(dest, 0o600)
@@ -1825,9 +1827,7 @@ class Suite:
                 }
         finally:
             self.env = saved
-        status = self.sections["gate0"].get("status", "ok")
-        seconds = self.sections["gate0"].get("seconds", 0.0)
-        self.sections["gate0"] = {**self.gate_report(results), "status": status, "seconds": seconds}
+        self.sections["gate0"].update(self.gate_report(results))
 
     # -- cost ------------------------------------------------------------------
 
