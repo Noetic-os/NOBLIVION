@@ -121,6 +121,7 @@ PLUGIN_MARKS = ("CLAUDE_PLUGIN_ROOT}/hooks/", "/plugins/cache/noblivion/")
 SCRIPT_RE = re.compile(r"hooks/([a-z_]+\.py)(\s+--[a-z-]+)?")
 LOG_STATE_RE = re.compile(r" ms=\d+ (\S+)")
 TEXT_MAX = 200_000  # the longest tool result a replay keeps
+BUSY_LOAD = 0.75  # load per CPU over which the timing of a run is not comparable
 
 
 USER_PATH_ARGS = (
@@ -191,6 +192,26 @@ def private_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     os.chmod(path, 0o700)
     return path
+
+
+def host_load() -> dict[str, Any]:
+    """The load of the host. The milliseconds of a run on a busy host are not
+    comparable with those of a quiet one: at a load of 40 on 32 CPUs the prompt
+    hook took 515 ms at p50 against 176 ms on the quiet host."""
+    try:
+        one, five, _ = os.getloadavg()
+    except (OSError, AttributeError):
+        return {}
+    return {"cpus": os.cpu_count() or 1, "load_1m": round(one, 1), "load_5m": round(five, 1)}
+
+
+def busy(doc: Mapping[str, Any]) -> bool:
+    """A host whose load was over 0.75 per CPU at the start or the end, or unknown."""
+    host = doc.get("host") or {}
+    marks = [host.get("start") or {}, host.get("end") or {}]
+    if not all(marks):
+        return True
+    return any(m["load_1m"] > BUSY_LOAD * m["cpus"] for m in marks)
 
 
 def slugify(folder: str) -> str:
@@ -2094,6 +2115,7 @@ class Suite:
 
     def run(self) -> dict[str, Any]:
         started = time.time()
+        load_start = host_load()
         self.select_inputs()
         self.prepare_home()
         self.start_store()
@@ -2121,6 +2143,7 @@ class Suite:
             "command": sys.argv[1:],
             "started_at": _dt.datetime.fromtimestamp(started, _dt.timezone.utc).isoformat(),
             "seconds": round(time.time() - started, 1),
+            "host": {"start": load_start, "end": host_load()},
             "build": self.build_info(),
             "settings": self.settings,
             "store": {
@@ -2236,6 +2259,8 @@ def summary(doc: Mapping[str, Any]) -> str:
             f"{'met' if accept['hub_met'] else 'not met'}. Hub share of shown notes "
             f"{accept['hub_share']}. Labelled precision not measured."
         )
+    if busy(doc):
+        lines.append("timing: the host was busy, so the milliseconds and the hook wait are high")
     for name in SECTIONS:
         section = sections.get(name)
         if section is None:
@@ -2269,6 +2294,11 @@ def compare(before: Mapping[str, Any], after: Mapping[str, Any], allow: bool) ->
         lines.append("inputs differ: " + ", ".join(changed))
         if not allow:
             code = 2
+    if busy(before) or busy(after):
+        lines.append(
+            "timing: a host was busy (load over 0.75 per CPU) or its load is unknown, so the "
+            "milliseconds and the hook wait are not comparable"
+        )
     width = 36
     lines.append(f"{'':<{width}} {'before':>14} {'after':>14}  change")
     for label, path, better in METRICS:

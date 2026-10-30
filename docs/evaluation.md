@@ -52,7 +52,9 @@ transcripts and of the guard log under `--out/inputs`, so the second run replays
 
 Re-sent tokens are characters / 4 times the later API calls of the same transcript. This is an upper
 bound, because it ignores compaction. Hook wait comes from cold starts on a scratch data folder with
-learning off, so it is lower than the wait of an install that has learning on.
+learning off, so it is lower than the wait of an install that has learning on. The result holds the
+load of the host. When it is over 0.75 per CPU, `compare` says that the timing is not comparable: at a
+load of 40 on 32 CPUs the prompt hook took three times as long.
 
 The inputs of `gate0` and `test4` hold real notes, so they stay outside the repository. Without
 `--bench`, or when its folder is absent, the run prints a message and skips both sections. `compare`

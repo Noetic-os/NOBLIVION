@@ -636,6 +636,20 @@ def test_compare_lists_a_lost_check_without_failing() -> None:
     assert "a/guard_bash[0]" in text
 
 
+def test_compare_says_when_the_timing_is_not_comparable() -> None:
+    tool = load_tool()
+    quiet = {"cpus": 8, "load_1m": 1.0, "load_5m": 1.0}
+    loaded = {"cpus": 8, "load_1m": 12.0, "load_5m": 9.0}
+    before, after = result(gate0=gate(a=True)), result(gate0=gate(a=True))
+    before["host"] = after["host"] = {"start": quiet, "end": quiet}
+    assert "timing:" not in tool.compare(before, after, False)[0]
+    after["host"] = {"start": quiet, "end": loaded}
+    text, code = tool.compare(before, after, False)
+    assert "timing: a host was busy" in text and code == 0
+    del before["host"]
+    assert "timing:" in tool.compare(before, after, False)[0]
+
+
 def test_compare_marks_a_gain_and_a_loss() -> None:
     tool = load_tool()
     assert tool.delta_text(100, 80, "down").endswith("better")
