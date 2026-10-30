@@ -66,6 +66,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -926,7 +927,6 @@ class Suite:
 
     def __init__(self, args: argparse.Namespace):
         self.args = args
-        sys.dont_write_bytecode = True  # the build under test may be a read-only tree
         self.user_home = str(Path.home())
         self.user_config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
         for name in USER_PATH_ARGS:
@@ -955,6 +955,10 @@ class Suite:
         # and a hook that resolves a folder may read this process's env.
         os.environ.clear()
         os.environ.update(self.env)
+        # The bytecode goes to the scratch folder: the build under test may be a
+        # read-only tree, and a hook that recompiles its siblings on every call
+        # would make the replay 8 times slower and the cold timing wrong.
+        sys.pycache_prefix = str(self.root / "pycache")
         self.hooks = Hooks(self.plugin / "hooks")
         self.rows = load_module(TOOLS / "replay_prompt_rows.py", "suite_rows")
         self.rt = load_module(TOOLS / "replay_transcripts.py", "suite_transcripts")
@@ -993,7 +997,7 @@ class Suite:
                 "CLAUDE_PLUGIN_ROOT": str(self.plugin),
                 "NOBLIVION_DATA_DIR": str(self.data),
                 "NOBLIVION_IDLE_EXIT_S": "0",
-                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONPYCACHEPREFIX": str(self.root / "pycache"),
             }
         )
         return env
@@ -1204,9 +1208,11 @@ class Suite:
         self.sections[name] = result
         print(f"{name}: {result['status']} ({result['seconds']} s)", file=sys.stderr, flush=True)
 
-    def replay_prompts(self, arms: Mapping[str, Mapping[str, str]], label: str) -> dict[str, Any]:
-        """Every prompt of the sample through the prompt hook, per arm, per
-        project folder."""
+    def replay_prompts(
+        self, arms: Mapping[str, Mapping[str, str]], label: str, typed_only: Sequence[str] = ()
+    ) -> dict[str, Any]:
+        """Every prompt event of the sample through the prompt hook, per arm, per
+        project folder. An arm in ``typed_only`` skips the other events."""
         groups: dict[str, list[str]] = defaultdict(list)
         for main in self.mains:
             groups[Path(main).parent.name].append(main)
@@ -1223,8 +1229,9 @@ class Suite:
             work = private_dir(self.work / label / slug)
             shutil.copyfile(self.table_of(slug), work / "guard-table.json")
             for arm, settings in arms.items():
+                every = arm not in typed_only
                 prompts[arm] += self.rows.run_arm(
-                    self.rt, paths, self.env, settings, work, arm, str(memory), births, True
+                    self.rt, paths, self.env, settings, work, arm, str(memory), births, every
                 )
                 states[arm].update(fail_states(read_lines(work / arm / "cache" / "recall.log")))
         return {"prompts": prompts, "states": states, "left_out": left_out}
@@ -1256,7 +1263,7 @@ class Suite:
         if not self.mains:
             return skipped("no transcripts in the window")
         arms = {"off": OFF_ARM, "shipped": {}}
-        run = self.replay_prompts(arms, "prompts")
+        run = self.replay_prompts(arms, "prompts", typed_only=("off",))
         hubs = self.rows.hub_notes(run["prompts"]["off"])
         report = {
             "arms": {
@@ -2367,6 +2374,8 @@ def run_command(args: argparse.Namespace) -> int:
         raise SystemExit("--bench brings its corpus: give --bench or --corpus, not both")
     if args.inputs and args.freeze_inputs:
         raise SystemExit("--inputs reads a frozen input: --freeze-inputs has nothing to do")
+    # A stopped run must still stop its store: the store has no idle exit here.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     suite = Suite(args)
     try:
         doc = suite.run()

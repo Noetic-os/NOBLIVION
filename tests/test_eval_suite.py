@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -409,6 +410,51 @@ def test_the_live_data_folder_is_not_changed(world, plain_run, bench_run) -> Non
     live = world / "live"
     assert sorted(p.name for p in live.iterdir()) == ["guard-log.jsonl", "token"]
     assert (live / "token").read_text(encoding="utf-8") == "sentinel-token"
+
+
+def test_a_stopped_run_stops_its_store(world) -> None:
+    work = world / "stopped-work"
+    args = run_args(world, world / "stopped", "--corpus", str(world / "corpus"))
+    proc = subprocess.Popen(
+        [sys.executable, str(TOOL), *args, "--work-dir", str(work)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    store_file = work / "home" / ".claude" / "plugins" / "data" / "noblivion-noblivion"
+    store_file = store_file / "store.json"
+    end = time.monotonic() + 60
+    while time.monotonic() < end and not store_file.is_file():
+        time.sleep(0.1)
+    assert store_file.is_file()
+    pid = json.loads(store_file.read_text(encoding="utf-8"))["pid"]
+    proc.terminate()
+    assert proc.wait(30) == 143
+    end = time.monotonic() + 20
+    while time.monotonic() < end:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return
+        time.sleep(0.1)
+    os.kill(pid, 9)
+    pytest.fail("the store outlived the run")
+
+
+def test_bytecode_stays_out_of_the_build_under_test(world, broken_build) -> None:
+    out = world / "no-bytecode"
+    args = run_args(
+        world,
+        out,
+        "--corpus",
+        str(world / "corpus"),
+        "--plugin-root",
+        str(broken_build),
+        "--sections",
+        "mcp_listing,guard_calls",
+    )
+    done = suite(*args)
+    assert done.returncode == 0, done.stderr[-2000:]
+    assert not list(broken_build.rglob("__pycache__"))
 
 
 def test_a_work_dir_inside_the_live_folder_is_refused(world) -> None:
