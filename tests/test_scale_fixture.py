@@ -383,6 +383,18 @@ def test_verify_finds_a_link_moved_into_the_loaded_index(small):
     assert any(p.startswith(f"{lid}: past_line_200") for p in sf.verify_output(small))
 
 
+def test_verify_finds_a_duplicate_moved_into_the_loaded_index(small):
+    """The duplicate holds the same answer, so a loaded link to it is a stock win."""
+    detail = read_json(small / "scale-00200" / "scale.json")
+    lid, row = next(
+        (k, v) for k, v in detail["lessons"].items() if v["placement"] == "past_line_200"
+    )
+    index = memory_of(small, 200, row["shard"])[0] / "MEMORY.md"
+    text = index.read_text(encoding="utf-8")
+    index.write_text(f"- [moved]({row['duplicate']})\n" + text, encoding="utf-8")
+    assert any(row["duplicate"] in p and p.startswith(lid) for p in sf.verify_output(small))
+
+
 def test_verify_finds_a_linked_unlinked_note(small):
     detail = read_json(small / "scale-00200" / "scale.json")
     lid, row = next((k, v) for k, v in detail["lessons"].items() if v["placement"] == "unlinked")
