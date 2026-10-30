@@ -135,6 +135,27 @@ records limits, hashes, each arm, actual task files and usage. The frozen
 private runner and sanitized event traces support independent review. The
 supplied public deterministic runner verifies mechanics separately.
 
+## Scale fixture
+
+`tools/eval/scale_fixture.py` builds synthetic memory folders at 30, 200, 1,000,
+5,000 and 20,000 notes, so the behaviour at scale can be measured without paid
+calls. It reads a seed and two frozen files: a word list of generic developer
+terms and 60 hand-written lessons with their queries. No real note text goes in,
+and the same seed gives the same bytes.
+
+```bash
+python3 tools/eval/scale_fixture.py --out /a/folder/outside/the/repo
+python3 tools/eval/scale_fixture.py --verify /a/folder/outside/the/repo
+```
+
+Field mix and note sizes copy a survey of real notes. Each lesson has one unique
+answer string, 3 near-miss notes and 1 duplicate, and sits where the stock load of
+`MEMORY.md` misses it: behind a topic file, unlinked, past line 200, past 25 KB or
+in another project. At 30 notes the lessons are linked, as a negative control.
+`--verify` proves each placement from the files, and `manifest.json` holds the
+hashes. Synthetic text is easier than real text, so this measures size and
+latency. It does not measure quality on real notes.
+
 ## CI scope
 
 The existing CI threshold job still runs the tuning fixture and its tuning
