@@ -8,6 +8,7 @@ The shapes follow the Claude Code plugin reference (plugin manifest,
 
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
 import json
 import re
@@ -69,6 +70,7 @@ HOOK_EVENTS = {
 SESSION_START_SOURCES = {"startup", "resume", "clear", "compact", "fork"}
 PRE_COMPACT_TRIGGERS = {"manual", "auto"}
 TOOL_NAMES = {"Bash", "Read", "Grep", "Glob", "Edit", "Write", "MultiEdit", "Agent", "Task"}
+NUDGE_MCP_MATCHER = "mcp__.+__([Cc]reate|[Aa]dd).*([Ii]ssue|[Tt]icket|[Cc]omment).*"
 HOOK_COMMAND = re.compile(
     r'python3 "\$\{CLAUDE_PLUGIN_ROOT\}/hooks/([a-z_]+\.py)"((?: --[a-z-]+)*)'
 )
@@ -78,12 +80,8 @@ HOOK_COMMAND = re.compile(
 # trust report hook (the flush refreshes the report); store_client.py (E4) is new.
 EXPECTED = {
     ("SessionStart", "", "learning_summary.py", ""),
-    ("SessionStart", "", "learning_capture.py", ""),
-    ("UserPromptSubmit", "", "learning_capture.py", ""),
+    ("SessionStart", "", "learning_capture.py", ""),  # records the fresh start (NOBLIVION-149)
     ("UserPromptSubmit", "", "learning_context.py", ""),
-    ("PostToolUse", "", "learning_capture.py", ""),
-    ("PostToolUseFailure", "", "learning_capture.py", ""),
-    ("Stop", "", "learning_capture.py", ""),
     ("PreCompact", "", "learning_capture.py", ""),
     ("SessionEnd", "", "learning_capture.py", ""),
     ("SessionStart", "", "store_client.py", ""),
@@ -94,13 +92,14 @@ EXPECTED = {
     ("SessionStart", "startup|resume|clear", "version_check.py", ""),
     ("UserPromptSubmit", "", "stop_checks.py", " --mark-correction"),
     ("UserPromptSubmit", "", "recall_hook.py", ""),
-    ("UserPromptSubmit", "", "version_check.py", ""),
     ("PreToolUse", "Bash", "guard_hook.py", ""),
-    ("PreToolUse", "Bash", "recall_nudge.py", ""),  # NOBLIVION-123, off by default
+    # NOBLIVION-123, off by default. NOBLIVION-149: started only by `if` on a merge command.
+    ("PreToolUse", "Bash if Bash(gh pr merge*)", "recall_nudge.py", ""),
+    ("PreToolUse", "Bash if Bash(glab mr merge*)", "recall_nudge.py", ""),
     ("PreToolUse", "Read|Grep", "guard_hook.py", ""),
     ("PreToolUse", "Edit|Write|MultiEdit", "guard_hook.py", ""),
     ("PreToolUse", "mcp__.*noblivion_recall", "mcp_session_hook.py", ""),  # NOBLIVION-110
-    ("PreToolUse", "mcp__.*", "recall_nudge.py", ""),  # NOBLIVION-123, off by default
+    ("PreToolUse", NUDGE_MCP_MATCHER, "recall_nudge.py", ""),  # create or comment on a ticket
     ("PreToolUse", "Agent|Task", "subagent_rules_hook.py", ""),
     ("PostToolUse", "Write|Edit|MultiEdit", "memory_fields_hook.py", ""),
     ("PostToolUse", "Write|Edit|MultiEdit", "memory_sync_hook.py", ""),
@@ -128,7 +127,10 @@ def _bindings() -> list[tuple[str, str, str, str]]:
             for handler in group["hooks"]:
                 m = HOOK_COMMAND.fullmatch(handler["command"])
                 assert m, handler["command"]
-                out.append((event, group.get("matcher", ""), m.group(1), m.group(2)))
+                matcher = group.get("matcher", "")
+                if "if" in handler:
+                    matcher += " if " + handler["if"]
+                out.append((event, matcher, m.group(1), m.group(2)))
     return out
 
 
@@ -181,8 +183,9 @@ def test_hooks_json_shape():
                     assert parts <= TOOL_NAMES or matcher.startswith("mcp__"), matcher
             assert isinstance(group["hooks"], list) and group["hooks"]
             for handler in group["hooks"]:
-                assert set(handler) <= {"type", "command", "timeout"}
+                assert set(handler) <= {"type", "command", "timeout", "async", "if"}
                 assert handler["type"] == "command"
+                assert handler.get("async", True) is True
                 assert isinstance(handler["timeout"], int) and 0 < handler["timeout"] <= 60
 
 
@@ -418,3 +421,91 @@ def test_hook_commands_parse_as_shell_words():
             for handler in group["hooks"]:
                 words = shlex.split(handler["command"])
                 assert words[0] == "python3", (event, words)
+
+
+# ── hook process count (NOBLIVION-149) ──────────────────────────────────────
+
+
+def _handlers(event, tool="", command=""):
+    """The handlers Claude Code would start for one event: the matcher is a full-string
+    regex on the tool name; an ``if`` is a ``Tool(pattern*)`` rule on the command."""
+    out = []
+    for group in _load(HOOKS_JSON)["hooks"].get(event, []):
+        matcher = group.get("matcher")
+        if matcher and not re.fullmatch(matcher, tool):
+            continue
+        for handler in group["hooks"]:
+            rule = handler.get("if")
+            if rule:
+                name, _, pattern = rule.partition("(")
+                if name != tool or not fnmatch.fnmatchcase(command, pattern[:-1]):
+                    continue
+            out.append(handler)
+    return out
+
+
+def _scripts(handlers):
+    return [HOOK_COMMAND.fullmatch(h["command"]).group(1) for h in handlers]
+
+
+def _sync(handlers):
+    return [h for h in handlers if not h.get("async")]
+
+
+def test_learning_capture_runs_once_for_each_session_not_for_each_event():
+    where = {e for e, _, script, _ in _bindings() if script == "learning_capture.py"}
+    assert where == {"SessionStart", "PreCompact", "SessionEnd"}
+
+
+def test_version_check_runs_at_session_start_only_and_in_the_background():
+    (binding,) = [b for b in _bindings() if b[2] == "version_check.py"]
+    assert binding[0] == "SessionStart"
+    group = _load(HOOKS_JSON)["hooks"]["SessionStart"]
+    (handler,) = [h for g in group for h in g["hooks"] if "version_check.py" in h["command"]]
+    assert handler["async"] is True
+
+
+def test_the_silent_hooks_run_in_the_background():
+    silent = {"trust_flush.py", "memory_sync_hook.py", "version_check.py"}
+    for event, groups in _load(HOOKS_JSON)["hooks"].items():
+        for group in groups:
+            for h in group["hooks"]:
+                script = _scripts([h])[0]
+                assert h.get("async", False) is (script in silent), (event, script)
+
+
+def test_the_nudge_starts_only_for_a_merge_or_a_ticket_tool():
+    for tool, command in (
+        ("Bash", "ls -la"),
+        ("Bash", "git status"),
+        ("Read", ""),
+        ("Edit", ""),
+        ("mcp__srv__search_issues", ""),
+        ("mcp__srv__get_issue", ""),
+        ("mcp__plugin_noblivion_noblivion__noblivion_recall", ""),
+    ):
+        assert "recall_nudge.py" not in _scripts(_handlers("PreToolUse", tool, command)), tool
+    for tool, command in (
+        ("Bash", "gh pr merge 12 --squash"),
+        ("Bash", "glab mr merge 3"),
+        ("mcp__srv__create_issue", ""),
+        ("mcp__srv__createJiraIssue", ""),
+        ("mcp__srv__addCommentToJiraIssue", ""),
+        ("mcp__srv__add_issue_comment", ""),
+    ):
+        assert "recall_nudge.py" in _scripts(_handlers("PreToolUse", tool, command)), tool
+
+
+def test_hook_processes_waited_for_on_the_common_events():
+    """Count of foreground command starts. The review R2-F05/F13 counted 5 on a Bash call and 5
+    on a prompt before this change."""
+    assert len(_sync(_handlers("UserPromptSubmit"))) == 3
+    assert len(_sync(_handlers("PreToolUse", "Bash", "ls -la"))) == 1
+    assert len(_sync(_handlers("PostToolUse", "Bash", "ls -la"))) == 1
+    assert len(_sync(_handlers("PostToolUse", "Read"))) == 0
+    assert len(_sync(_handlers("PostToolUse", "Write"))) == 1
+    assert len(_sync(_handlers("PostToolUseFailure", "Bash", "false"))) == 2
+    assert len(_sync(_handlers("Stop"))) == 1
+    # Every tool call: starts of any kind, background ones included.
+    assert len(_handlers("PostToolUse", "Bash", "ls -la")) == 2
+    assert len(_handlers("PostToolUse", "Grep")) == 0

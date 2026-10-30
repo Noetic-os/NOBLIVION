@@ -169,8 +169,14 @@ def test_main_in_this_checkout_is_silent():
     assert out.getvalue() == ""
 
 
-def test_hook_is_registered_for_both_events():
+def test_hook_is_registered_for_session_start_only():
+    """NOBLIVION-149: one process at session start, none on each prompt."""
     doc = json.loads((REPO / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
-    for event in ("SessionStart", "UserPromptSubmit"):
-        commands = [h["command"] for g in doc[event] for h in g["hooks"]]
-        assert any("hooks/version_check.py" in c for c in commands), event
+    where = {
+        event
+        for event, groups in doc.items()
+        for g in groups
+        for h in g["hooks"]
+        if "hooks/version_check.py" in h["command"]
+    }
+    assert where == {"SessionStart"}

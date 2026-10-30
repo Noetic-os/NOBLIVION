@@ -104,14 +104,14 @@ Claude Code and Codex start the same one-shot scripts. Only the recall paths cal
 
 | Claude Code event | NOBLIVION hooks | What happens | Calls the store |
 | --- | --- | --- | --- |
-| SessionStart | store_client, guard_table, continuity_hook, trust_session_line, version_check, learning capture and summary | Starts the store if it is not running; rebuilds the guard tables; prints the briefing and the trust line; checks the plugin version | Yes: start, guard tables |
-| UserPromptSubmit | recall_hook (with label rows), stop_checks mark, learning_context, learning_capture | Ranks notes for the prompt within its time budget; adds label rows for files, tools and tickets named in the prompt; marks a correction | Yes: recall |
-| PreToolUse | guard_hook on Bash, Read, Grep, Edit and Write; mcp_session_hook; subagent_rules_hook | Shows rule rows; denies a command that matches a rule; blocks a credential print; binds a recall call to the session | Guards no; subagent rules yes |
-| PostToolUse | memory_fields_hook, memory_sync_hook, error_recall_hook, learning_capture | Checks frontmatter of a written memory file; re-indexes after a memory write; shows notes that quote a failed command | No: sync runs the CLI; error recall is local by default |
+| SessionStart | store_client, guard_table, continuity_hook, trust_session_line, version_check (background), learning capture and summary | Starts the store if it is not running; rebuilds the guard tables; prints the briefing and the trust line; checks the plugin version | Yes: start, guard tables |
+| UserPromptSubmit | recall_hook (with label rows), stop_checks mark, learning_context | Ranks notes for the prompt within its time budget; adds label rows for files, tools and tickets named in the prompt; marks a correction | Yes: recall |
+| PreToolUse | guard_hook on Bash, Read, Grep, Edit and Write; mcp_session_hook; subagent_rules_hook; recall_nudge on a merge command or a ticket tool (off by default) | Shows rule rows; denies a command that matches a rule; blocks a credential print; binds a recall call to the session | Guards no; subagent rules yes |
+| PostToolUse | memory_fields_hook, memory_sync_hook (background), error_recall_hook | Checks frontmatter of a written memory file; re-indexes after a memory write; shows notes that quote a failed command | No: sync runs the CLI; error recall is local by default |
 | PostToolUseFailure | error_recall_hook, guard_hook | Error recall; records evidence for a guard override | No |
-| PreCompact | continuity_hook | Saves the shown set and prints the rules again, so they survive compaction | No |
+| PreCompact | continuity_hook, learning_capture | Saves the shown set and prints the rules again, so they survive compaction | No |
 | SubagentStart | subagent_rules_hook | Injects the rules that match the subagent's task | Yes |
-| Stop | stop_checks, trust_flush | Runs the stop checks in shadow; flushes the session's feedback events in batches | Yes: flush |
+| Stop | stop_checks, trust_flush (background) | Runs the stop checks in shadow; flushes the session's feedback events in batches | Yes: flush |
 | SessionEnd | learning_capture | Writes the learning capture record (the transcript miner hook was removed in 0.1.19, NOBLIVION-154) | No: direct SQLite |
 
 ## Design choices

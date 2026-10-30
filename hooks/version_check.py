@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""SessionStart and UserPromptSubmit hook: tell the user when this session
+"""SessionStart hook (background): tell the user when this session
 runs an older NOBLIVION than the one installed.
 
 Claude Code fixes ``${CLAUDE_PLUGIN_ROOT}`` to a version folder when the

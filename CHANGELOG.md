@@ -55,6 +55,22 @@ All notable changes to NOBLIVION. The format follows
   to +0.329), the verdict is `gain` at three of four cuts, but the labels are the use events that trust
   is fitted on (NOBLIVION-65), 38 of 107 labels sit on 8 notes, and trust ranking stays off. Details in
   `docs/trust.md`.
+- Fewer hook processes (NOBLIVION-149). Counted from `hooks/hooks.json` for one event: a prompt
+  starts 3 hooks, was 5; a Bash call starts 1 hook before it and 2 after it (1 waited for), was 2
+  and 3; a Read starts 1 in all, was 2; a call to an MCP tool starts none, was 1; a Stop waits for
+  1, was 3. Measured with 100 replayed events: one start of `learning_capture.py` or
+  `recall_nudge.py` costs about 18 to 20 ms of wall time and 17 to 20 ms of CPU.
+  - `learning_capture` no longer runs on every prompt, tool call, tool failure and Stop. It runs at
+    SessionStart (it records the fresh start that makes a session eligible), PreCompact and
+    SessionEnd. The capture reads the transcript from its saved offset, so the later run catches up.
+  - `trust_flush`, `memory_sync_hook` and `version_check` run with `async: true`. They print
+    nothing the model needs. A `version_check` notice, when there is one, arrives on the next turn.
+  - `version_check` runs at SessionStart only, not on each prompt. A session that was open
+    before a plugin update no longer gets the "run /reload-plugins" notice until it restarts.
+  - `recall_nudge` (off by default) starts only for `gh pr merge`, `glab mr merge` and MCP tools
+    whose name holds create or add with issue, ticket or comment. It started on every Bash and MCP
+    call before. If you set `recall.nudge_commands` to other commands, the `if` rules in
+    `hooks/hooks.json` still limit it to those merge commands.
 
 ## 0.1.18 - 2026-10-29
 
