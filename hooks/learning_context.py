@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
 import sys
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -21,6 +23,26 @@ def load(path: Path, name: str):
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+FLAG_MAX_AGE = 86400
+
+
+def no_context_items(root: Path, env: dict, session: str) -> bool:
+    """True when the session-start hook found nothing a prompt context could draw on.
+
+    The store call then costs a round trip for an empty answer (NOBLIVION-143). A missing,
+    old or unreadable file means unknown, so the call goes ahead.
+    """
+    try:
+        config = load(root / "hooks/hook_config.py", "_context_flag_config")
+        name = hashlib.sha256(session.encode("utf-8")).hexdigest()[:32]
+        path = config.data_dir(env) / "cache" / "learning-context" / name
+        if time.time() - path.stat().st_mtime > FLAG_MAX_AGE:
+            return False
+        return path.read_text(encoding="utf-8").strip() == "0"
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def run(event: dict, environ: dict, *, codex: bool = False) -> dict:
@@ -47,6 +69,8 @@ def run(event: dict, environ: dict, *, codex: bool = False) -> dict:
             NOBLIVION_RECALL_PROJECT=cfg["namespace"],
         )
     elif not env.get("NOBLIVION_RECALL_ROOT"):
+        return {}
+    if no_context_items(root, env, event["session_id"]):
         return {}
     recall = load(root / "hooks/recall_hook.py", "_context_recall")
     env = recall.session_env(env, event)

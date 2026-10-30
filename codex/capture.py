@@ -775,6 +775,12 @@ def wake(cfg: dict) -> None:
     )
 
 
+# A Claude Code session is captured at these events only. The transcript holds every
+# turn, so one read at a compaction or at the end sees all of it (NOBLIVION-143). A
+# settings file from an older release can still call the hook on every tool event.
+CLAUDE_CAPTURE_EVENTS = frozenset({"SessionStart", "PreCompact", "SessionEnd"})
+
+
 def capture_hook(cfg: dict, event: dict, client: str = "codex") -> dict:
     contributes = cfg.get("learning", {}).get("contribute") is True or any(
         isinstance(m, dict) and m.get("learning", {}).get("contribute") is True
@@ -783,6 +789,8 @@ def capture_hook(cfg: dict, event: dict, client: str = "codex") -> dict:
     if contributes:
         with contextlib.suppress(OSError, sqlite3.Error):
             note_fresh_start(cfg, event)
+    if client == "claude" and event.get("hook_event_name") not in CLAUDE_CAPTURE_EVENTS:
+        return {"status": "ignored"}
     scoped = scoped_config(cfg, event)
     if scoped is None:
         return {"status": "disabled"}

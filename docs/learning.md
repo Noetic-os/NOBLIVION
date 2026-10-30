@@ -139,6 +139,36 @@ that has not claimed it yet. A job held by a pause for more than 7 days has
 `"stale": true` and counts in `pending.stale`. Status never drops or cancels
 a job. Resume the session or scope, or retry it, to continue.
 
+### Capture, jobs and growth
+
+Capture is cheap to start and bounded in size (NOBLIVION-143):
+
+- Claude Code sessions are captured at session start, at each compaction and at session end.
+  The hook ignores every other event, so a settings file from an older release cannot start a
+  capture per tool call.
+- A session has at most one pending extraction job. A later batch of the same session joins that
+  job until it holds about 200,000 characters or a worker has started it. Then a new job starts,
+  with the newest earlier sources of the session as context.
+- A job names its sources as a range of per-session sequence numbers (`learning_sources.seq`, the
+  `learning_job_ranges` table), not as one row per source. A source stored by an older release
+  keeps its `learning_job_sources` rows.
+- The session-start hook stores how many notes and active claims a prompt context can use. When it
+  is 0, the prompt hook of that session makes no store call. A note accepted later in the same
+  session shows from the next session on.
+
+Pruning deletes data, so it is off until you ask. Run `noblivion learning prune` to count what it
+would drop (nothing is changed), and add `--apply` to drop it. It cancels pending extraction jobs
+older than `--pending-days` (14), drops the source links, budget rows and extraction pages of
+cancelled or exhausted jobs older than `--retention-days` (14), and drops old eligible sources
+that no note, claim, draft or live job uses. Excluded and forgotten sources stay, because their
+hash blocks the same text. To run it hourly in the store worker, add
+`"prune": {"enabled": true, "pending_days": 14, "retention_days": 14}` to `learning.json`.
+A job pruned this way cannot be retried.
+
+To measure the rows and bytes a release leaves for a number of simulated sessions, run
+`python tools/replay_learning_growth.py --events session-points`. It makes made-up transcripts
+in a temporary folder and never opens a live store.
+
 `noblivion learning status --project <namespace> --root <root>` lists up to
 20 open conflicts and their total count. Run `noblivion learning inspect
 conflict:<id> --project <namespace> --root <root>` with an ID from that list to

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from noblivion import db
+from noblivion import db, learning_ranges
 
 CATEGORIES = frozenset({"preference", "workflow", "fact", "decision", "proven_fix"})
 MAX_RECORDS = 256
@@ -264,6 +264,7 @@ class LearningLedger:
             )
             source_ids = []
             new_sources = 0
+            seq = None
             if not skipped:
                 _safe(serialized)
                 for record in records:
@@ -327,10 +328,16 @@ class LearningLedger:
                             raise LearningError("source identity collision")
                     else:
                         new_sources += 1
+                        if seq is None:
+                            seq = learning_ranges.next_seq(
+                                self.conn, project, root, session, client
+                            )
+                        seq += 1
                         self.conn.execute(
                             "INSERT INTO learning_sources "
                             "(id,project,root,session_id,source_client,role,content,sha256,"
-                            "observed_at,metadata,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            "observed_at,metadata,created_at,seq) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                             (
                                 source_id,
                                 project,
@@ -343,38 +350,28 @@ class LearningLedger:
                                 observed_at,
                                 metadata_json,
                                 now,
+                                seq,
                             ),
                         )
                     source_ids.append(source_id)
             job_id = None
             if source_ids and new_sources:
-                # Conversation evidence often crosses hook batches. Attach earlier
-                # sources to the same immutable job, without dropping any new record.
-                prior = self.conn.execute(
-                    "SELECT id,length(content) size FROM learning_sources WHERE project=? "
-                    "AND root=? "
-                    "AND session_id=? AND source_client=? AND status='eligible' "
-                    "ORDER BY created_at DESC,rowid DESC LIMIT 64",
-                    (project, root, session, client),
-                ).fetchall()
-                total = sum(len(record["content"]) for record in records)
-                context = []
-                for previous in prior:
-                    if previous["id"] not in source_ids and total + previous["size"] <= 120 * 1024:
-                        context.append(previous["id"])
-                        total += previous["size"]
-                source_ids = list(reversed(context)) + source_ids
                 job_id = _id()
-                self.conn.execute(
-                    "INSERT INTO learning_jobs "
-                    "(id,batch_id,project,root,session_id,created_at,updated_at) VALUES "
-                    "(?,?,?,?,?,?,?)",
-                    (job_id, batch_id, project, root, session, now, now),
-                )
-                for ordinal, source_id in enumerate(dict.fromkeys(source_ids)):
-                    self.conn.execute(
-                        "INSERT INTO learning_job_sources VALUES (?,?,?)",
-                        (job_id, source_id, ordinal),
+                seqs = learning_ranges.source_seqs(self.conn, source_ids)
+                if min(seqs) > 0:
+                    # One pending job per session reads a range of its sources.
+                    job_id = learning_ranges.attach_job(
+                        self.conn,
+                        (project, root, session, client, batch_id),
+                        min(seqs),
+                        max(seqs),
+                        now,
+                        job_id,
+                        sum(len(record["content"]) for record in records),
+                    )
+                else:
+                    self._explicit_job(
+                        job_id, batch_id, (project, root, session, client), now, records, source_ids
                     )
             self.conn.execute(
                 "INSERT INTO learning_cursors VALUES (?,?,?,?,?,?,?) "
@@ -389,6 +386,36 @@ class LearningLedger:
                 "skipped": skipped,
                 "job_id": job_id,
             }
+
+    def _explicit_job(self, job_id, batch_id, scope, now, records, source_ids) -> None:
+        """A source stored before schema 7 has no sequence number: link each one by a row."""
+        project, root, session, client = scope
+        # Conversation evidence often crosses hook batches. Attach earlier
+        # sources to the same immutable job, without dropping any new record.
+        prior = self.conn.execute(
+            "SELECT id,length(content) size FROM learning_sources WHERE project=? "
+            "AND root=? "
+            "AND session_id=? AND source_client=? AND status='eligible' "
+            "ORDER BY created_at DESC,rowid DESC LIMIT 64",
+            (project, root, session, client),
+        ).fetchall()
+        total = sum(len(record["content"]) for record in records)
+        context = []
+        for previous in prior:
+            if previous["id"] not in source_ids and total + previous["size"] <= 120 * 1024:
+                context.append(previous["id"])
+                total += previous["size"]
+        source_ids = list(reversed(context)) + source_ids
+        self.conn.execute(
+            "INSERT INTO learning_jobs "
+            "(id,batch_id,project,root,session_id,created_at,updated_at) VALUES "
+            "(?,?,?,?,?,?,?)",
+            (job_id, batch_id, project, root, session, now, now),
+        )
+        for ordinal, source_id in enumerate(dict.fromkeys(source_ids)):
+            self.conn.execute(
+                "INSERT INTO learning_job_sources VALUES (?,?,?)", (job_id, source_id, ordinal)
+            )
 
     def enqueue_derivation(
         self, project: str, root: str, session_id: str = "", *, kind: str = "consolidate"
@@ -553,7 +580,7 @@ class LearningLedger:
             "SELECT s.* FROM learning_sources s JOIN learning_job_sources j ON j.source_id=s.id "
             "WHERE j.job_id=? AND s.status='eligible' ORDER BY j.ordinal",
             (job_id,),
-        ).fetchall()
+        ).fetchall() + learning_ranges.ranged_sources(self.conn, job_id)
         result = []
         for row in rows:
             source = dict(row)
@@ -1138,6 +1165,7 @@ class LearningLedger:
                     "UNION SELECT 1 FROM learning_evidence WHERE source_id=? LIMIT 1",
                     (job_id, source["id"], source["id"]),
                 ).fetchone()
+                and not learning_ranges.in_job_range(self.conn, job_id, source["id"])
             ):
                 raise LearningError("evidence is not part of this job or existing memory")
             validated.append(
@@ -1638,6 +1666,7 @@ class LearningLedger:
                     "SELECT job_id FROM learning_job_sources WHERE source_id=?", (source_id,)
                 )
             )
+            jobs.update(learning_ranges.jobs_with_source(self.conn, source_id))
         from .learning_pages import erase_jobs
 
         if forget:
@@ -1888,6 +1917,22 @@ class LearningLedger:
                 lines.append(line)
         return "\n".join(lines)
 
+    def context_items(self, project: str, root: str, session_id: str = "") -> int:
+        """Count the accepted notes and active claims that a prompt context can draw on."""
+        if not self.read_allowed(project, root, session_id):
+            return 0
+        notes = sum(
+            1
+            for note in self.semantic_notes(project, root, session_id=session_id)
+            if self.read_allowed(project, note["root"], session_id)
+        )
+        claims = self.conn.execute(
+            "SELECT count(*) FROM learning_claims WHERE project=? AND status='active' "
+            "AND (root=? OR scope='general')",
+            (project, root),
+        ).fetchone()[0]
+        return notes + claims
+
     def _hold_reason(self, row: sqlite3.Row, now: float) -> tuple[str, float, bool]:
         """Say why a pending job waits, and since when. Text here is never provider output."""
         held = self.conn.execute(
@@ -1910,6 +1955,28 @@ class LearningLedger:
         if row["next_attempt"] > now:
             return "waiting for retry time", row["updated_at"], False
         return "waiting for a worker", row["created_at"], False
+
+    def prune(
+        self,
+        *,
+        pending_days: float = learning_ranges.DEFAULT_PENDING_DAYS,
+        retention_days: float = learning_ranges.DEFAULT_RETENTION_DAYS,
+        dry_run: bool = False,
+    ) -> dict[str, int]:
+        """Cancel stale pending jobs and drop dead links and unused old sources."""
+        for value in (pending_days, retention_days):
+            if type(value) not in (int, float) or not 0 < value <= 3650:
+                raise LearningError("invalid retention days")
+        with db.write_tx(self.conn):
+            self.conn.execute("SAVEPOINT prune")
+            counts = learning_ranges.prune(
+                self.conn, pending_days=pending_days, retention_days=retention_days
+            )
+            if dry_run:
+                # The counts are read; undo the changes.
+                self.conn.execute("ROLLBACK TO prune")
+            self.conn.execute("RELEASE prune")
+        return counts
 
     def pending_jobs(
         self,

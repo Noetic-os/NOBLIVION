@@ -27,6 +27,7 @@ TABLES = {
     "learning_cursors",
     "learning_sources",
     "learning_jobs",
+    "learning_job_ranges",
     "learning_job_sources",
     "learning_budget",
     "learning_notes",

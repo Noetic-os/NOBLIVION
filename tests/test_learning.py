@@ -254,7 +254,7 @@ def test_budget_fails_closed(ledger, settings):
 
 def test_persistent_concurrency_and_measured_overrun(ledger):
     ledger.capture_batch(batch())
-    ledger.capture_batch(batch(2))
+    ledger.capture_batch(batch(2, session="session-b"))
     first, second = ledger.claim("one"), ledger.claim("two")
     reservation = reserve(ledger, first)
     with pytest.raises(BudgetExceeded):

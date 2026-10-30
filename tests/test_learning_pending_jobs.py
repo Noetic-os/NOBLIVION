@@ -51,13 +51,14 @@ def age(ledger, days):
 
 def test_paused_sessions_are_listed_with_reason_and_age(database):
     _, ledger = database
+    # A second batch of one session joins its pending job (NOBLIVION-143).
     for number, session in enumerate(("one", "one", "two", "three"), start=1):
         ledger.capture_batch(batch(number, session))
     for session in ("one", "two"):
         ledger.set_controls("test", "demo", session, paused=True)
     age(ledger, 2)
     result = ledger.status("test", "demo")["pending"]
-    assert result["total"] == 4 and result["stale"] == 0
+    assert result["total"] == 3 and result["stale"] == 0
     by_session = {}
     for job in result["jobs"]:
         by_session.setdefault(job["session_id"], []).append(job)

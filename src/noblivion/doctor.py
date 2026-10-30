@@ -144,7 +144,7 @@ ENV_KEYS = {
 
 
 # Expected metadata from the packaged schema. A regression test detects drift.
-_SCHEMA_MANIFEST_VERSION = 6
+_SCHEMA_MANIFEST_VERSION = 7
 _REQUIRED_COLUMNS = {
     "chunk_vectors": frozenset("chunk_id model dim content_hash blob rev".split()),
     "dedup_actions": frozenset(
@@ -208,6 +208,9 @@ _REQUIRED_COLUMNS = {
             "job_id unit_index continuation fingerprint spans candidates status reason created_at"
         ).split()
     ),
+    "learning_job_ranges": frozenset(
+        "job_id project root session_id source_client first_seq last_seq".split()
+    ),
     "learning_job_sources": frozenset("job_id source_id ordinal".split()),
     "learning_jobs": frozenset(
         (
@@ -228,7 +231,7 @@ _REQUIRED_COLUMNS = {
     "learning_sources": frozenset(
         (
             "id project root session_id source_client role content sha256 observed_at "
-            "metadata status created_at"
+            "metadata status created_at seq"
         ).split()
     ),
     "memories": frozenset(
@@ -253,10 +256,12 @@ _REQUIRED_INDEXES = {
     "learning_draft_support_note": "learning_draft_supports",
     "learning_evidence_source": "learning_evidence",
     "learning_extraction_pages_status": "learning_extraction_pages",
+    "learning_job_ranges_scope": "learning_job_ranges",
     "learning_jobs_due": "learning_jobs",
     "learning_notes_current": "learning_notes",
     "learning_sources_revoked_hash": "learning_sources",
     "learning_sources_scope": "learning_sources",
+    "learning_sources_seq": "learning_sources",
     "memories_hash": "memories",
     "memories_live": "memories",
     "memories_rev": "memories",

@@ -21,6 +21,19 @@ All notable changes to NOBLIVION. The format follows
   found. Measure on a copy of one install store (4,346 units): 20 generic off-topic prompts showed rows
   on 20 of 20 before and 5 of 20 after; 50 dev-split real prompts kept the relevant row in the top 5 on
   22 of 24 where it was there before. The target of at most 2 of 20 is not reached.
+- Learning loop writes far less (NOBLIVION-143). Off by default as before. A Claude Code session is
+  captured at start, at each compaction and at the end only; the capture hook ignores other events. A
+  session has at most one pending extraction job, which later batches join up to about 200,000
+  characters. A job names its sources as a range (`learning_job_ranges`, `learning_sources.seq`,
+  schema version 7) and not as one row per source. The session-start hook records whether a prompt
+  context has any note or claim to use, and the prompt hook makes no store call for a session that
+  started with none. New `noblivion learning prune` (counts without `--apply`) and an opt-in hourly
+  `"prune"` block in `learning.json` drop stale pending jobs, dead links and unused old sources. The
+  measure, with `tools/replay_learning_growth.py` (20 made-up sessions of 80 tool calls, new
+  database): per-event capture left 1,600 jobs, 84,660 job-source rows and 25.5 MB; capture at
+  session points left 160 jobs, 9,120 rows and 7.5 MB; this change leaves 20 jobs, 0 job-source rows
+  (20 range rows) and 5.6 MB, which is the source text. The decision to remove the loop is open
+  until 30 days of yield data.
 - Remove the transcript miner (NOBLIVION-154). The SessionEnd hook, the Codex SessionEnd mine step, the
   `noblivion mine` command, its documentation page and its settings table are gone. Error recall no longer
   asks the store for mined rows, so `fused` and `store` modes show memory files only. The measure: a

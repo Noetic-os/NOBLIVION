@@ -35,6 +35,7 @@ def _parser() -> argparse.ArgumentParser:
         "forget",
         "exclude-source",
         "retry",
+        "prune",
     ):
         command = commands.add_parser(name)
         command.add_argument(
@@ -65,6 +66,12 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("source_id")
         if name == "retry":
             command.add_argument("job_id")
+        if name == "prune":
+            command.add_argument("--pending-days", type=float, default=14.0)
+            command.add_argument("--retention-days", type=float, default=14.0)
+            command.add_argument(
+                "--apply", action="store_true", help="delete; without it only count"
+            )
     return parser
 
 
@@ -154,6 +161,12 @@ def _run(ledger: LearningLedger, args: argparse.Namespace):
     if args.command == "retry":
         ledger.retry(args.job_id)
         return {"job_id": args.job_id, "status": "pending"}
+    if args.command == "prune":
+        return ledger.prune(
+            pending_days=args.pending_days,
+            retention_days=args.retention_days,
+            dry_run=not args.apply,
+        )
     raise LearningError("unknown operation")
 
 

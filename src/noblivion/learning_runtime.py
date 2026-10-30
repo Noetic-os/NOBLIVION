@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 
 from noblivion.learning import LearningLedger
@@ -41,6 +42,7 @@ def load_settings(data_dir: Path) -> dict:
             raise ValueError("duplicate learning scope")
         seen.add((project, root))
     value["scopes"] = scopes
+    prune_options(value)
     return value
 
 
@@ -80,9 +82,12 @@ def summary(store, project: str, root: str, session_id: str = "") -> dict:
     with store.connection() as conn:
         if not use_allowed(conn, project, root, session_id):
             return {"summary": "", "reason": "memory use disabled"}
+        ledger = LearningLedger(conn)
         return {
-            "summary": LearningLedger(conn).summary(project, root, session_id=session_id),
+            "summary": ledger.summary(project, root, session_id=session_id),
             "reason": None,
+            # What a prompt context could draw on. 0 lets the prompt hook skip its call.
+            "context_items": ledger.context_items(project, root, session_id),
         }
 
 
@@ -115,8 +120,32 @@ def project_and_index(store, ledger: LearningLedger, settings: dict) -> None:
             ledger.acknowledge_index(scope["project"], scope["root"])
 
 
+PRUNE_INTERVAL = 3600.0
+
+
+def prune_options(settings: dict) -> dict | None:
+    """The ``prune`` block of learning.json, or None when automatic pruning is off.
+
+    Pruning deletes data, so it is opt in: ``"prune": {"enabled": true}``, with optional
+    ``pending_days`` and ``retention_days`` (14 each). ``noblivion learning prune`` runs it by hand.
+    """
+    block = settings.get("prune")
+    if block is None:
+        return None
+    if (
+        not isinstance(block, dict)
+        or set(block) - {"enabled", "pending_days", "retention_days"}
+        or type(block.get("enabled", False)) is not bool
+    ):
+        raise ValueError("invalid learning prune settings")
+    if block.get("enabled", False) is not True:
+        return None
+    return {key: value for key, value in block.items() if key != "enabled"}
+
+
 def run(store) -> None:
     """Dedicated bounded worker. A bad pass never kills the retry loop."""
+    last_prune = float("-inf")
     while not store._jobs_stop.is_set():
         try:
             settings = load_settings(store.data_dir)
@@ -125,6 +154,12 @@ def run(store) -> None:
                 continue
             with store.connection() as conn:
                 ledger = LearningLedger(conn)
+                options = prune_options(settings)
+                if options is not None and time.monotonic() - last_prune >= PRUNE_INTERVAL:
+                    last_prune = time.monotonic()
+                    counts = ledger.prune(**options)
+                    if any(counts.values()):
+                        log.info("learning prune: %s", json.dumps(counts, sort_keys=True))
                 if settings.get("enabled") is True:
                     run_once(ledger, settings)
                 project_and_index(store, ledger, settings)
