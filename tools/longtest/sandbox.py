@@ -217,7 +217,9 @@ class OpenGuard:
         except OSError:
             return
         writing = bool(_WRITE_MODES & set(mode))
-        if CREDENTIAL_NAMES.search(str(path)):
+        # A credential name is refused anywhere except in the run folder: the token of
+        # a harness store (its own, made by the harness) must stay readable.
+        if CREDENTIAL_NAMES.search(str(path)) and not self._under(path, self.allow):
             self.refused_reads += 1
             self.events.append(f"credential:{path.name}")
             raise PermissionError(f"long-run test: {path.name} is a credential file")

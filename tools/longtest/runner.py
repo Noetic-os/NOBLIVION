@@ -63,6 +63,18 @@ class Run:
         with _lock:
             append_jsonl(self.out / f"{name}.jsonl", row)
 
+    def append_many(self, name: str, rows: Iterable[dict[str, Any]]) -> None:
+        with _lock:
+            for row in rows:
+                append_jsonl(self.out / f"{name}.jsonl", row)
+
+    def done(self, day: int) -> set[tuple[str, int, int]]:
+        return {
+            (r["build"], r["size"], r["shard"])
+            for r in read_jsonl(self.out / "replay-done.jsonl")
+            if r["day"] == day
+        }
+
 
 def init_run(
     run_dir: Path,
@@ -122,13 +134,20 @@ def host_settings(config_dir: Path) -> dict[str, str]:
 
 
 def installed_version(data_dir: Path) -> str:
-    """The version of the installed plugin: read from the plugin cache beside the
-    data folder, as text only."""
-    for p in sorted(Path(data_dir).parent.parent.glob("cache/*/noblivion/*/pyproject.toml")):
-        for line in p.read_text(encoding="utf-8").splitlines():
-            if line.startswith("version"):
-                return line.split("=", 1)[1].strip().strip('"')
-    return ""
+    """The version of the installed plugin, from ``installed_plugins.json`` (read
+    only). Falls back to the highest version folder of the plugin cache."""
+    plugins = Path(data_dir).parent.parent
+    try:
+        doc = json.loads((plugins / "installed_plugins.json").read_text(encoding="utf-8"))
+        for name, entries in (doc.get("plugins") or {}).items():
+            if name.split("@")[0] == "noblivion" and entries:
+                return str(entries[0].get("version", ""))
+    except (OSError, ValueError, AttributeError):
+        pass
+    found = [p.name for p in plugins.glob("cache/*/noblivion/*") if p.is_dir()]
+    return max(
+        found, key=lambda v: [int(x) if x.isdigit() else 0 for x in v.split(".")], default=""
+    )
 
 
 def freeze(run: Run) -> dict[str, Any]:
@@ -195,12 +214,13 @@ def replay_task(
         "ready_s": h.timing["ready_s"],
     }
     try:
-
-        def sink(row: dict[str, Any]) -> None:
+        rows = replay.run_shard(fx, size, shard, h, build, variants, limit)
+        # The rows of a task go in together, with a marker, so a restart never meets
+        # half a task: a task without a marker is run again.
+        for row in rows:
             row["day"] = day
-            run.append("replay", row)
-
-        rows = replay.run_shard(fx, size, shard, h, build, variants, limit, sink)
+        run.append_many("replay", rows)
+        run.append("replay-done", {"day": day, "build": build, "size": size, "shard": shard})
         info["rows"] = len(rows)
         info["seconds"] = round(time.monotonic() - started, 1)
     finally:
@@ -232,16 +252,21 @@ def replay_all(
     python = python or store_python(live_data)
     models = models or (live_data / "models")
     jobs = []
+    finished = run.done(day)
     for size in sizes:
         pick = fx.shards(size)[:shards] if shards else fx.shards(size)
         for shard in pick:
             for build in builds:
-                jobs.append((build, size, shard))
-            for row in replay.run_stock(
-                fx, size, shard, fx.shard_dir(size, shard), variants, limit
-            ):
-                row["day"] = day
-                run.append("replay", row)
+                if (build, size, shard) not in finished:
+                    jobs.append((build, size, shard))
+            if ("stock", size, shard) not in finished:
+                rows = replay.run_stock(fx, size, shard, fx.shard_dir(size, shard), variants, limit)
+                for row in rows:
+                    row["day"] = day
+                run.append_many("replay", rows)
+                run.append(
+                    "replay-done", {"day": day, "build": "stock", "size": size, "shard": shard}
+                )
     infos: list[dict[str, Any]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, parallel)) as pool:
         futures = [

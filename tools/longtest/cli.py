@@ -83,11 +83,13 @@ def cmd_pilot(a: argparse.Namespace) -> int:
     run = Run(Path(a.run_dir))
     manifest = run.manifest
     live_cfg, live_data = Path(manifest["live"]["config_dir"]), Path(manifest["live"]["data_dir"])
-    before = snapshot_tree(live_cfg / "projects"), snapshot_tree(live_data)
+    before = live_memory_snapshot(live_cfg)
     from .buildrunner import store_python
 
     python = store_python(live_data)
     gate2 = zero_token_gate(run, python)
+    log = run.dir / "private" / "external_connects.log"
+    after_probe = sandbox.count_refused(log)
     site = run.dir / "private" / "guard-site"
     sizes = parse_sizes(a.sizes)
     infos = (
@@ -108,18 +110,17 @@ def cmd_pilot(a: argparse.Namespace) -> int:
     rows = [r for r in replay_rows(run, 0)]
     summary = replay.summarize(rows)
     summary["char_ratio"] = report.char_ratio(rows)
-    after = snapshot_tree(live_cfg / "projects"), snapshot_tree(live_data)
+    after = live_memory_snapshot(live_cfg)
     # The live store writes its own files while the pilot runs; the pilot's own
     # claim is that the files it could touch (memory folders) did not change.
-    moved = changed_files(before[0], after[0])
+    moved = changed_files(before, after)
     gate3 = sanity_gate(rows)
     fired = channels_fired(rows)
     doc = {
         "gate2_zero_tokens": {
             **gate2,
-            "external_connects_in_children": sandbox.count_refused(
-                run.dir / "private" / "external_connects.log"
-            ),
+            # the probe of this run is one try; anything after it came from a child
+            "external_connects_during_replay": sandbox.count_refused(log) - after_probe,
         },
         "gate3_sanity": gate3,
         "gate4_channels_fired": fired,
@@ -132,9 +133,41 @@ def cmd_pilot(a: argparse.Namespace) -> int:
     return 0
 
 
+def live_memory_snapshot(config_dir: Path) -> dict:
+    """File stats of what the program must not touch: the memory folders of every
+    project, the settings file and the plugin lists. The session transcripts are left
+    out, because live sessions write them all the time."""
+    snap: dict = {}
+    for folder in sorted((Path(config_dir) / "projects").glob("*/memory")):
+        snap.update(snapshot_tree(folder))
+    for name in (
+        "settings.json",
+        "plugins/installed_plugins.json",
+        "plugins/known_marketplaces.json",
+    ):
+        snap.update(
+            snapshot_tree(Path(config_dir) / name)
+            if (Path(config_dir) / name).is_dir()
+            else _stat_one(Path(config_dir) / name)
+        )
+    return snap
+
+
+def _stat_one(path: Path) -> dict:
+    try:
+        st = path.stat()
+    except OSError:
+        return {}
+    return {str(path): (st.st_size, int(st.st_mtime_ns))}
+
+
 def sanity_gate(rows: Sequence[dict]) -> dict:
-    """Gate 3: V1 pull delivery of 0.95 or more for B0 and B1, S2 of 0.9 or more."""
-    out = {}
+    """Gate 3, at SMALL: V1 pull delivery of 0.95 or more for B0 and B1, S2 of 0.9 or
+    more. SMALL is the smallest size in the rows; at larger sizes stock is meant to fail."""
+    out: dict = {}
+    sizes = [r["size"] for r in rows if r.get("size")]
+    if sizes:
+        rows = [r for r in rows if r.get("size") == min(sizes)]
     for build in ("B0", "B1", "S2"):
         sel = [
             r
@@ -196,6 +229,75 @@ def brief(doc: dict) -> dict:
         "mrr_v2_pull": s["mrr_v2_pull"],
         "rates": s["rates"],
     }
+
+
+def bench_call(worker, cwd: str):  # type: ignore[no-untyped-def]
+    count = {"i": 0}
+
+    def call(prompt: str) -> float:
+        count["i"] += 1
+        return worker.call("prompt", sid=f"bench-{count['i']}", cwd=cwd, prompt=prompt)["ms"]
+
+    return call
+
+
+def cmd_bench(a: argparse.Namespace) -> int:
+    """Index build time, store memory and the prompt hook latency of each build at one
+    size. The nightly benchmark of the plan, once; the stores are removed after."""
+    import shutil
+
+    from . import soak
+    from .buildrunner import Harness, Worker, store_python
+    from .fixtures import Fixture
+
+    run = Run(Path(a.run_dir))
+    fx = Fixture(Path(a.fixture)) if a.fixture else run.fixture()
+    live_data = Path(run.manifest["live"]["data_dir"])
+    shard = fx.shards(a.size)[0]
+    texts = [fx.prompt_of(q) for q in fx.queries_for(a.size, ["V3", "V1"], shard)]
+    first = min(fx.scale(a.size)["lessons"].values(), key=lambda r: r["shard"])
+    cwd = "/work/" + first["session_project"]
+    out = []
+    for build in a.builds.split(","):
+        root = run.dir / "stores" / "bench" / build.lower() / str(a.size)
+        h = Harness(
+            build,
+            run.build_path(build),
+            root,
+            store_python(live_data),
+            live_data / "models",
+            wait_s=a.wait,
+            settings=run.manifest.get("settings_env"),
+        )
+        h.guard_site = run.dir / "private" / "guard-site"
+        h.prepare(fx, a.size, shard)
+        try:
+            health = h.start()
+            pid = h.store.proc.pid if h.store.proc else None
+            with Worker(h) as w:
+                lat = soak.latency_benchmark(
+                    bench_call(w, cwd), texts, n=a.prompts, budget_s=a.budget
+                )
+            res = soak.resources(h.data, pid)
+            row = {
+                "build": build,
+                "size": a.size,
+                "memories": health.get("memories"),
+                "index_s": h.timing["index_s"],
+                "ready_s": h.timing["ready_s"],
+                "rss_mb": res["rss_mb"],
+                "db_mb": res["db_mb"],
+                "wal_mb": res["wal_mb"],
+                "quick_check": res["quick_check"],
+                "hook_ms": lat,
+            }
+        finally:
+            h.stop()
+            shutil.rmtree(root, ignore_errors=True)
+        run.append("bench", row)
+        out.append(row)
+    print(json.dumps(out, indent=1, sort_keys=True))
+    return 0
 
 
 def cmd_run(a: argparse.Namespace) -> int:
@@ -290,6 +392,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--parallel", type=int, default=2)
     s.add_argument("--wait", type=float, default=900.0)
     s.add_argument("--reuse", action="store_true", help="analyse the rows of day 0 as they are")
+    s = add("bench", cmd_bench)
+    s.add_argument("--run-dir", required=True)
+    s.add_argument("--size", type=int, required=True)
+    s.add_argument("--fixture", default="", help="a fixture folder, default the run's own")
+    s.add_argument("--builds", default="B0,B1")
+    s.add_argument("--prompts", type=int, default=60)
+    s.add_argument("--budget", type=float, default=1200.0)
+    s.add_argument("--wait", type=float, default=3600.0)
     s = add("run", cmd_run)
     s.add_argument("--run-dir", required=True)
     s.add_argument("--soak-size", type=int, default=20000)

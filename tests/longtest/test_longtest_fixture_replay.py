@@ -178,3 +178,25 @@ def test_credentials_are_planted_where_the_source_says(fx, tmp_path):
     other = next(r for r in fx.lessons.values() if r.get("source") == "netrc")
     creds.plant(other, "atlas")
     assert other["canary"] in (h.home / ".netrc").read_text()
+
+
+def test_load_tool_gives_whole_modules_to_parallel_threads():
+    """A second thread must not get a module that is still executing (it did, in the
+    first pilot: ``Store`` was missing)."""
+    import sys
+    import threading
+
+    from longtest.util import load_tool
+
+    sys.modules.pop("lt_race_suite", None)
+    seen: list[bool] = []
+
+    def grab() -> None:
+        seen.append(hasattr(load_tool("eval_suite.py", "lt_race_suite"), "Store"))
+
+    threads = [threading.Thread(target=grab) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert seen == [True] * 8

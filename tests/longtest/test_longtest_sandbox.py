@@ -115,6 +115,8 @@ def test_open_guard_refuses_credentials_and_live_writes(tmp_path):
             open(live / "new.txt", "w")
         assert open(live / "notes.txt").read() == "fine"  # a read of a live file is allowed
         (work / "out.txt").write_text("ok")
+        (work / "token").write_text("harness token")  # a harness store's own token
+        assert (work / "token").read_text() == "harness token"
     assert guard.refused_reads == 1 and guard.refused_writes == 1
     assert guard.events == ["credential:token", "write:new.txt"]
     assert not (live / "new.txt").exists()

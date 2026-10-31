@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import sys
+import threading
 import types
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -18,17 +19,26 @@ REPO = TOOLS.parent
 DATA_NAME = "noblivion-noblivion"
 
 
+_LOAD_LOCK = threading.RLock()
+
+
 def load_tool(relative: str, alias: str) -> types.ModuleType:
-    """A module of ``tools/`` by path. The tools are scripts, not a package."""
-    if alias in sys.modules:
-        return sys.modules[alias]
-    spec = importlib.util.spec_from_file_location(alias, TOOLS / relative)
-    if spec is None or spec.loader is None:
-        raise ImportError(relative)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[alias] = mod  # a dataclass resolves its annotations here
-    spec.loader.exec_module(mod)
-    return mod
+    """A module of ``tools/`` by path. The tools are scripts, not a package. The lock
+    keeps a second thread from taking a module that is still being executed."""
+    with _LOAD_LOCK:
+        if alias in sys.modules:
+            return sys.modules[alias]
+        spec = importlib.util.spec_from_file_location(alias, TOOLS / relative)
+        if spec is None or spec.loader is None:
+            raise ImportError(relative)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[alias] = mod  # a dataclass resolves its annotations here
+        try:
+            spec.loader.exec_module(mod)
+        except BaseException:
+            sys.modules.pop(alias, None)
+            raise
+        return mod
 
 
 def private_dir(path: Path) -> Path:
