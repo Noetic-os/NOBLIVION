@@ -26,6 +26,8 @@ from array import array
 from collections import Counter
 from collections.abc import Iterable, Sequence
 
+# `zip(strict=)` needs Python 3.10. The store also runs on 3.9 in the eval suite lane of CI, and the
+# pairs here are two arrays of one length, made together in `InvertedIndex.add`, so no strict check.
 from noblivion import bm25
 
 
@@ -92,7 +94,7 @@ class InvertedIndex:
         terms = self.fterm[slot] if slot < len(self.fterm) else None
         if tid is None or not terms:
             return 0
-        for t, f in zip(terms, self.ftf[slot] or (), strict=True):
+        for t, f in zip(terms, self.ftf[slot] or ()):  # noqa: B905 - 3.9 lane
             if t == tid:
                 return int(f)
         return 0
@@ -178,7 +180,7 @@ class PoolView:
         self.syncs += 1
         self.sumdl += idx.dl[slot]
         cf = self._cf
-        for tid, freq in zip(idx.fterm[slot], idx.ftf[slot], strict=True):  # type: ignore[arg-type]
+        for tid, freq in zip(idx.fterm[slot], idx.ftf[slot]):  # type: ignore[arg-type]  # noqa: B905 - 3.9 lane
             d = self.df_by_id.get(tid, 0)
             if d:
                 self._hist_move(d, -1)
@@ -191,7 +193,7 @@ class PoolView:
         self.syncs += 1
         self.sumdl -= idx.dl[slot]
         cf = self._cf
-        for tid, freq in zip(idx.fterm[slot], idx.ftf[slot], strict=True):  # type: ignore[arg-type]
+        for tid, freq in zip(idx.fterm[slot], idx.ftf[slot]):  # type: ignore[arg-type]  # noqa: B905 - 3.9 lane
             d = self.df_by_id[tid]
             self._hist_move(d, -1)
             if d == 1:
@@ -263,7 +265,7 @@ class PoolView:
             if not d:
                 continue
             idf = self._idf(d)
-            for slot, freq in zip(idx.post_slot[tid], idx.post_tf[tid], strict=True):
+            for slot, freq in zip(idx.post_slot[tid], idx.post_tf[tid]):  # noqa: B905 - 3.9 lane
                 i = pos.get(slot)
                 if i is not None:
                     out[i] += idf * freq * (k1 + 1) / (freq + norm[i])
@@ -304,7 +306,7 @@ class PoolView:
             idx = self.index
             cf: Counter[int] = Counter()
             for slot in self.slots:
-                for tid, freq in zip(idx.fterm[slot], idx.ftf[slot], strict=True):  # type: ignore[arg-type]
+                for tid, freq in zip(idx.fterm[slot], idx.ftf[slot]):  # type: ignore[arg-type]  # noqa: B905 - 3.9 lane
                     cf[tid] += freq
             self._cf = cf
         uses: Counter[int] = Counter()
