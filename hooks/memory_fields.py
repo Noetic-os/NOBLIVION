@@ -41,7 +41,8 @@ carries, LAST in its front matter and in this fixed order:
                    the call is inside a glob: the working directory, the target of
                    ``git -C`` or of a ``cd`` in the command. ``*`` or ``**`` means
                    everywhere. A rule without ``where:`` that names a git
-                   repository by its path fires only inside that repository.
+                   repository by its path in ``violates`` or the triggers
+                   fires only inside that repository.
 
 Why this serialization. Three hand-rolled single-line parsers read these files:
 the reference memory mirror (``parse_frontmatter``),

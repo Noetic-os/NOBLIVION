@@ -102,7 +102,9 @@ _CFG = _hook_config()
 # The table of a session with no project folder (no cwd and no override).
 DEFAULT_TABLE = _CFG.data_dir() / "guard-table.json"
 TABLES_SUBDIR = "guard-tables"
-TABLE_VERSION = 4  # 2: label index key; 3: its roots, counts, paths (152); 4: where, repos (155)
+# 2: label index key; 3: its roots, counts, paths (152); 4: where, repos (155);
+# 5: repos from violates and triggers only (173)
+TABLE_VERSION = 5
 # Index and topic files are not memories.
 _NOT_MEMORY = re.compile(r"^(MEMORY|MEMORY_ARCHIVE|topic_.*)\.md$")
 
@@ -1667,12 +1669,13 @@ def repo_roots(path: str) -> List[str]:
 
 
 def named_repos(fields: Mapping[str, Any], triggers: Optional[List[str]] = None) -> List[str]:
-    """The git repositories a note names by an absolute path (or ``~/``) in its
-    rule, apply, regex, examples or triggers: the roots of the work trees around
-    those paths. ``[]`` when it names none, names more than ``_MAX_REPOS`` (a
-    note about many repositories is general) or only the home folder itself."""
-    texts = [str(fields.get(k) or "") for k in ("rule", "apply", "example_repeat", "example_ok")]
-    texts.append(re.sub(r"\\([./-])", r"\1", str(fields.get("violates") or "")))
+    """The git repositories a note names by an absolute path (or ``~/``) in the
+    text that makes its rule fire: the ``violates`` regex and the triggers. A
+    path in the rule, the apply text or the examples is the remedy, not the
+    place of the hazard, so it does not scope the rule (NOBLIVION-173). ``[]``
+    when the note names none, names more than ``_MAX_REPOS`` (a note about many
+    repositories is general) or only the home folder itself."""
+    texts = [re.sub(r"\\([./-])", r"\1", str(fields.get("violates") or ""))]
     texts.extend(
         t for t in (triggers or []) if isinstance(t, str) and not t.startswith(("tool:", "phrase:"))
     )

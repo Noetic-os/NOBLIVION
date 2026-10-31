@@ -8,6 +8,11 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Guard rules keep firing outside the repository their remedy names (NOBLIVION-173, amends NOBLIVION-155
+  part b). The repository a note names now comes from its `violates` regex and its triggers only. A path in
+  the rule, the apply text or the examples is the remedy, not the place of the hazard, and scoped the rule
+  to that repository: two notes lost their deny or row in the eval suite gate 0 (cases 3a and 7a). The guard
+  table is rebuilt once (table version 5).
 - Subagent rules show less and match the right task more often (NOBLIVION-159). A subagent sees at most 3
   rows (`NOBLIVION_SUBAGENT_RULES_ROWS`), and only row 1 carries its apply text
   (`NOBLIVION_SUBAGENT_RULES_APPLY_ROWS`); before, up to 5 rows carried it. The cut is by rank, behind the

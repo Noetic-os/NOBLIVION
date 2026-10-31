@@ -348,13 +348,17 @@ def test_a_note_that_names_a_repository_has_it_as_its_own_project(tmp_path):
     assert gt.named_repos(fields) == [str(repo)]
     nothing = {"rule": "Use short output.", "apply": "pytest -q"}
     assert gt.named_repos(nothing) == []
-    both = dict(fields, apply=f"cd {repo} && cd {other}")
+    both = dict(fields, violates=rf"git\s+-C\s+{repo}\s+push|{other}/tools/x")
     assert gt.named_repos(both) == sorted([str(repo), str(other)])
-    gone = {"rule": "x", "apply": "cd /no/such/place/anywhere"}
+    # NOBLIVION-173: a path in the remedy text is not the place of the hazard.
+    remedy = {"rule": "x", "apply": f"cd {repo} && tools/release.sh", "example_ok": f"ls {repo}"}
+    assert gt.named_repos(remedy) == []
+    assert gt.named_repos(remedy, ["docker cp", f"{repo}/tools/release.sh"]) == [str(repo)]
+    gone = {"rule": "x", "violates": r"cd /no/such/place/anywhere"}
     assert gt.named_repos(gone) == []
     (tmp_path / "home" / "x").mkdir()
     assert (
-        gt.named_repos({"rule": "x", "apply": "ls ~/x"}) == []
+        gt.named_repos({"rule": "x", "violates": r"^ls ~/x"}) == []
     )  # the home folder is no repository
 
 
@@ -411,7 +415,8 @@ def test_the_table_build_carries_where_and_the_named_repository(tmp_path):
         (folder / name).write_text(mf.write_fields(base, fields))
 
     note("feedback_where.md", where="/srv/app/**, ~/work")
-    note("feedback_named.md", apply=f"cd {repo} && tools/release.sh")
+    note("feedback_named.md", violates=rf"git\s+-C\s+{repo}\s+push")
+    note("feedback_remedy.md", apply=f"cd {repo} && tools/release.sh")
     note("feedback_plain.md")
     note("feedback_badwhere.md", where="relative/path")
     table = gt.build(folder)
@@ -420,6 +425,7 @@ def test_the_table_build_carries_where_and_the_named_repository(tmp_path):
     assert "repos" not in by["feedback_where"]
     assert by["feedback_named"]["repos"] == [str(repo)]
     assert "where" not in by["feedback_plain"] and "repos" not in by["feedback_plain"]
+    assert "repos" not in by["feedback_remedy"]  # NOBLIVION-173
     assert "where" not in by["feedback_badwhere"]  # dropped alone: the rule fires everywhere
     assert any(s["id"] == "feedback_badwhere" and "where" in s for s in table["skipped"])
     assert "where field is skipped" in gt.skipped_line(table)

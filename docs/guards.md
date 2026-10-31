@@ -339,8 +339,10 @@ directory that the hook cannot work out (`cd "$DIR"`, `git -C $(pwd)`) keeps the
 rule firing, so the guard is never switched off by a variable.
 
 **The repository the note names.** A note without `where:` that names a git
-repository by an absolute path (or `~/path`) in its rule, apply, regular
-expression, examples or triggers fires only inside that repository. A linked
+repository by an absolute path (or `~/path`) in its `violates` regular
+expression or its triggers fires only inside that repository. A path in the
+rule, the apply text or the examples names the remedy, not the place of the
+hazard, so it does not scope the rule. A linked
 work tree (`git worktree add`) counts as its main repository. A note that names
 more than three repositories, or only the home folder, is general and fires
 everywhere. The table build works this out and keeps it in the table entry
