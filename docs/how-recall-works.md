@@ -260,7 +260,7 @@ and a config key. The env var wins.
 | --- | --- |
 | `NOBLIVION_RECALL_RULES_ONLY` (`recall.rules_only`) | Shows only a row whose file has both a `rule:` and an `apply:`. Each row carries a short apply text under it (400, 250 and 150 characters for ranks 1, 2 to 3 and 4 to 5). Label rows follow the same rule. A project or reference note stays reachable with the `noblivion_recall` tool. |
 | `NOBLIVION_RECALL_PROMPT_ROWS` (`recall.prompt_rows`) | The most rows one prompt shows. Default `5`; `0` means no cap. |
-| `NOBLIVION_RECALL_HUB_DAYS` (`recall.hub_days`) | Hub rows. A note that the hook would show in more than half of the sessions of the last N days (default: 14, `0` = off) is a hub. A hub row goes behind the other rows, and `NOBLIVION_RECALL_HUB_ROWS` (default 1) of them may stay. The hook counts in `<cache folder>/hub-stats.json`, and calls no note a hub before the window holds 10 sessions. |
+| `NOBLIVION_RECALL_HUB_DAYS` (`recall.hub_days`) | Hub rows. A note that the hook would show in more than half of the sessions of the last N days (default: 14, `0` = off) is a hub. A hub row goes behind the other rows, and `NOBLIVION_RECALL_HUB_ROWS` (default 1) of them may stay. The hook counts in `<cache folder>/hub-stats.json`, and calls no note a hub before the window holds 10 sessions. `noblivion explain --hubs` lists the hub notes as candidates for `MEMORY.md`; it only reports. |
 
 The settings work with the rule rows (`NOBLIVION_RECALL_INDEX_RULE_ROWS`) and
 need a memory folder. The line in `recall.log` has these notes:
