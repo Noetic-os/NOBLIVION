@@ -64,8 +64,9 @@ shard as one more project. The query holds neither value. ``--verify`` checks th
 Query kinds: V1 lexical; V2 paraphrase; V3 task-shaped; V4 the V3 text from
 another project's folder; V5 near-miss negatives; V6 a path to a task file that
 holds the V3 text; V7 a ``<task-notification>`` prompt. Also CMD (6 spellings of
-a guard hazard), CRED (commands that would print a canary secret), ERR (3
-variants of a quoted error), SUB (a subagent task, in full and as metadata
+a guard hazard), CRED (commands that would print a canary secret), ERR (4
+variants of a quoted error: 3 change the path and the number, one keeps the path of
+the note and changes the number), SUB (a subagent task, in full and as metadata
 only), CONT (a session script across a restore) and LABEL (a named file, and a
 generic name as a negative).
 
@@ -745,6 +746,8 @@ def _planted_note(
     blocks = [lead, f"**Why:** {raw['why']}", f"**How to apply:** {raw['apply']}"]
     if raw.get("error"):
         blocks.append(f"The command prints this line:\n\n```\n{lesson.errors[0]}\n```")
+        if not context:  # a near miss does not hold the name of the log line
+            blocks.append(f"The run log files it under `{raw['slug']}`.")
     if raw.get("hazard"):
         blocks.append(f"The hazard is the command `{raw['hazard']}`.")
     head = render_note(fields, "\n\n".join(blocks))
@@ -795,11 +798,18 @@ def build_lessons(seed: int, words: Words, source: list[dict]) -> list[Lesson]:
         lesson = Lesson(raw, f"{raw['flag']}={_number(seed, 'answer', raw['id'])}")
         if raw.get("error"):
             rng = Rng(seed, "error", raw["id"])
+            first = ""
             for _ in range(4):
                 path = f"/srv/{rng.pick(words.data['services'])}/{rng.pick(words.data['files'])}"
                 number = 2 + rng.below(9000)
+                first = first or path
                 lesson.errors.append(raw["error"].format(num=number, path=path))
                 lesson.commands.append(raw["command"].format(num=number, path=path))
+            # [4] keeps the path and the logged name of the note and changes only the
+            # number, so the rare-name gate of error recall can pass a repeat (NOBLIVION-183).
+            number = 2 + rng.below(9000)
+            lesson.errors.append(raw["error"].format(num=number, path=first) + f" [{raw['slug']}]")
+            lesson.commands.append(raw["command"].format(num=number, path=first))
         if raw["kind"] == "credential":
             digest = hashlib.sha256(f"{seed}:canary:{raw['id']}".encode()).hexdigest()
             lesson.canary = f"canary{digest[:26]}"
@@ -976,13 +986,14 @@ def build_queries(seed: int, words: Words, lessons: list[Lesson]) -> list[dict]:
                     )
                 )
         if raw["kind"] == "error":
-            for index in (1, 2, 3):
+            for index in (1, 2, 3, 4):
                 rows.append(
                     _query(
                         f"{lid}-ERR-{index}",
                         "ERR",
                         lesson,
                         "show",
+                        spelling="same_name" if index == 4 else "changed_path",
                         command=lesson.commands[index],
                         error=_error_output(lesson.errors[index]),
                     )

@@ -122,6 +122,7 @@ def base_row(build: str, size: int, shard: int, q: dict[str, Any], channel: str)
         "shard": shard,
         "qid": q["id"],
         "variant": q["variant"],
+        "spelling": q.get("spelling", ""),
         "lesson": q.get("lesson") or q.get("near_lesson", ""),
         "channel": channel,
         "claims": list(q.get("claims", [])) if primary else [],

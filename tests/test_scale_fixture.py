@@ -128,11 +128,11 @@ def test_golden_hash_holds_on_every_lane(tmp_path):
     or its frozen files changes this hash: that is a new fixture, not a fix."""
     manifest = sf.generate(tmp_path / "golden", SEED, [30])
     assert manifest["scales"]["30"]["tree_sha256"] == (
-        "d3d172fc82152e97619baaa87d60dd362b0fc4bae070421610ca36b39521cc8b"
+        "62f0c447a2d5bd5764b32c3a6c645434e4fc0e4aeac40098d51c6f319e51e232"
     )
     assert (
         manifest["queries_sha256"]
-        == "dadf79b34a0eb9754b1a0aaf16c03a85815fa4470e8ba1a86d88cd54cbd0e12e"
+        == "314b9a063287ea2e9be8eaa4db5534d164cbcf88ac6dd62e26c40fa1028151a0"
     )
 
 
@@ -462,7 +462,7 @@ def test_manifest_records_inputs_and_hashes(out):
     assert manifest["generator_sha256"] == hashlib.sha256(TOOL.read_bytes()).hexdigest()
     assert manifest["words_sha256"] == hashlib.sha256(WORDS.read_bytes()).hexdigest()
     assert manifest["lessons_source_sha256"] == hashlib.sha256(LESSONS.read_bytes()).hexdigest()
-    assert manifest["queries_total"] == 620
+    assert manifest["queries_total"] == 630
     for size, row in manifest["scales"].items():
         listing = (out / f"scale-{int(size):05d}" / "files.sha256").read_bytes()
         assert hashlib.sha256(listing).hexdigest() == row["tree_sha256"]
@@ -485,7 +485,7 @@ def test_query_counts_match_the_plan(queries):
         "V7": 60,
         "CMD": 60,
         "CRED": 30,
-        "ERR": 30,
+        "ERR": 40,
         "SUB": 10,
         "CONT": 15,
         "LABEL": 15,
@@ -693,21 +693,50 @@ def test_rewrite_notes_are_valid(out):
 
 
 def test_error_quotes_pass_the_quote_gate(out, lessons, queries):
-    """Each variant changes the path and the number, and the gate still sees
-    the quoted message. A variant it refuses would measure nothing."""
+    """Each variant changes the number and the gate still sees the quoted message.
+    The variant that keeps the path and the logged name of the note also passes the
+    rare-name gate of error recall (NOBLIVION-183); the three that change the path
+    measure the refusal and need not pass it."""
     hook = load_hook("error_recall_hook", "error_recall_hook_t_scale")
     folders = memory_of(out, 1000)
     by_id = {row["id"]: row for row in lessons}
     variants = [q for q in queries if q["variant"] == "ERR"]
-    assert len({q["error"] for q in variants}) == 30
+    assert len({q["error"] for q in variants}) == 40
+    assert sorted({q["spelling"] for q in variants}) == ["changed_path", "same_name"]
+    assert sum(q["spelling"] == "same_name" for q in variants) == 10
     for query in variants:
         row = by_id[query["lesson"]]
-        path = next(f / row["target_note"] for f in folders if (f / row["target_note"]).exists())
-        text = path.read_text(encoding="utf-8")
+        folder = next(f for f in folders if (f / row["target_note"]).exists())
+        index = hook.LocalIndex(folder)
+        memory = next(m for m in index.docs if m["id"] == Path(row["target_note"]).stem)
         lines = hook.error_lines(query["error"], True)
         assert lines, query["id"]
-        memory = {"body": text.split("\n---\n", 1)[1]}
-        assert hook.quotes_error(memory, hook.query_of(lines)), query["id"]
+        text = hook.query_of(lines)
+        assert hook.quotes_error(memory, text), query["id"]
+        if query["spelling"] == "same_name":
+            assert hook.passes_quote_gate(memory, text, index.is_rare), query["id"]
+
+
+def test_same_name_variant_keeps_what_the_note_holds(out, lessons, queries):
+    """ERR-4 repeats the path and the logged name of the note; the other three keep
+    their ids and carry no logged name."""
+    folders = memory_of(out, 1000)
+    by_id = {row["id"]: row for row in lessons}
+    errors = {q["id"]: q for q in queries if q["variant"] == "ERR"}
+    for row in lessons:
+        if row["kind"] != "error":
+            continue
+        assert [f"{row['id']}-ERR-{i}" in errors for i in (1, 2, 3, 4)] == [True] * 4
+        note = next(f / row["target_note"] for f in folders if (f / row["target_note"]).exists())
+        text = note.read_text(encoding="utf-8")
+        line = re.search(r"```\n(.+)\n```", text).group(1)
+        path = line.rsplit(" ", 1)[-1].rstrip(")").split("/srv/", 1)[-1]
+        same = errors[f"{row['id']}-ERR-4"]["error"]
+        name = re.search(r"\[(\w+)\]$", same).group(1)
+        assert f"`{name}`" in text and path in same
+        for i in (1, 2, 3):
+            assert not errors[f"{row['id']}-ERR-{i}"]["error"].endswith("]")
+        assert by_id[row["id"]]["target_note"]
 
 
 def test_label_lessons_get_their_file_label(out, lessons):
