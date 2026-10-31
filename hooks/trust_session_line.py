@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""SessionStart hook: at most two short lines about memory upkeep for the user.
+"""SessionStart hook: at most three short lines about memory upkeep for the user.
 Part H of the adaptive memory trust work, and the dedup status. The lines go
 out as one ``systemMessage`` (the user sees them, the model does not), so they
 cost no model tokens (NOBLIVION-150).
 
-It reads two local files only. No daemon call, no memory folder scan; the work
-is two small JSON reads (well under 5 ms):
+It reads local files only. No daemon call, no memory folder scan; the work
+is two small JSON reads (well under 5 ms) and one read of the guard log:
 
 - the trust report cache (contract C5; ``NOBLIVION_TRUST_REPORT_FILE``, default
   ``<data dir>/cache/trust-report.json``) ->
@@ -15,6 +15,10 @@ is two small JSON reads (well under 5 ms):
   ``<data dir>/cache/dedup-last-run.json``, written by every ``noblivion dedup``
   plan, apply and undo) -> for example
   ``Memory dedup REFUSED on <date>, nothing merged: <reason>``
+
+- the guard log (NOBLIVION-155, ``guard_quarantine``: the last 14 days) -> for example
+  ``Guard: 1 deny rule(s) shown as a row only, overridden too often in 14 days: <id>
+  (overridden 32 of 53). Fix or remove them``
 
 A missing or unreadable file gives no line. A line whose counts are all zero is
 not printed either: it would ask for an action that has nothing to act on. A
@@ -167,7 +171,27 @@ def lines(environ: Mapping[str, str], now: Optional[_dt.datetime] = None) -> Lis
     dedup = os.path.expanduser(environ.get(DEDUP_FILE_ENV) or "") or str(
         _cache_dir(environ) / DEDUP_FILE_NAME
     )
-    return [x for x in (trust_line(_read(trust)), dedup_line(_read(dedup), now)) if x]
+    return [
+        x
+        for x in (trust_line(_read(trust)), dedup_line(_read(dedup), now), quarantine_line(environ))
+        if x
+    ]
+
+
+def quarantine_line(environ: Mapping[str, str]) -> str:
+    """NOBLIVION-155: the deny rules that the guard shows as a row only, because the
+    model overrode them most of the time (``guard_quarantine``). The guard log is
+    read from the last 14 days; a missing or unreadable log gives no line."""
+    try:
+        path = Path(__file__).resolve().parent / "guard_quarantine.py"
+        spec = importlib.util.spec_from_file_location("guard_quarantine_line", path)
+        if spec is None or spec.loader is None:
+            return ""
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return str(mod.line(environ))
+    except Exception:  # noqa: BLE001 - the session starts without the line
+        return ""
 
 
 def main(stdin=None, stdout=None, environ: Optional[Mapping[str, str]] = None) -> int:

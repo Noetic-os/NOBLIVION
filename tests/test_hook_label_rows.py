@@ -502,7 +502,7 @@ def test_recall_hook_label_rows_stop_on_the_config_files_disable_switch(env, hoo
 # 8. the guard table -------------------------------------------------------------
 def test_table_version_2_index_covers_every_memory_file(env, mem):
     table = json.loads(Path(env["NOBLIVION_GUARD_TABLE"]).read_text())
-    assert table["version"] == 3 and "label_error" not in table
+    assert table["version"] == gt.TABLE_VERSION and "label_error" not in table
     ids = {d["id"] for d in table["label_index"]["docs"]}
     files = {p.stem for p in mem.glob("*.md") if p.stem != "MEMORY"}
     assert ids == files

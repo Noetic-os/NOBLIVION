@@ -115,6 +115,15 @@ FIXTURE = [
         "python -m pytest -q t | tail -3",
     ),
     ("cd x && uv run pytest", "add-flag -q after uv run pytest", "cd x && uv run pytest -q"),
+    # NOBLIVION-155: uv run <prog> and a venv program are <prog>
+    ("uv run pytest", Q, "uv run pytest -q"),
+    ("uv run --with rich pytest -x", Q, "uv run --with rich pytest -q -x"),
+    ("uv run python3 -m pytest t", Q, "uv run python3 -m pytest -q t"),
+    (".venv/bin/pytest tests", Q, ".venv/bin/pytest -q tests"),
+    ("uv run pytest -q", Q, None),
+    ("uv run --no-such pytest", Q, "uv run --no-such pytest -q"),
+    ("uv run ruff check", Q, None),
+    ("uv pip install pytest", Q, None),
     # NOBLIVION-126: still left alone
     ("python3 -m pytest -q", Q, None),
     ("python3 -c pytest", Q, None),
@@ -122,7 +131,6 @@ FIXTURE = [
     ("python3 -u -m pytest", Q, None),
     ("node -m pytest", Q, None),
     ("'pytest' tests", Q, None),
-    ("uv run pytest", Q, None),
     ("cd x && pytest > log", Q, None),
     ("cd x && pytest | grep FAIL", Q, None),
     ("pytest | tail -5 | grep x", Q, None),

@@ -102,7 +102,7 @@ _CFG = _hook_config()
 # The table of a session with no project folder (no cwd and no override).
 DEFAULT_TABLE = _CFG.data_dir() / "guard-table.json"
 TABLES_SUBDIR = "guard-tables"
-TABLE_VERSION = 3  # 2: the label index key; 3: its roots, root counts and paths (NOBLIVION-152)
+TABLE_VERSION = 4  # 2: label index key; 3: its roots, counts, paths (152); 4: where, repos (155)
 # Index and topic files are not memories.
 _NOT_MEMORY = re.compile(r"^(MEMORY|MEMORY_ARCHIVE|topic_.*)\.md$")
 
@@ -267,6 +267,7 @@ def build(folder: Any) -> Dict[str, Any]:
     entries: List[Dict[str, object]] = []
     skipped: List[Dict[str, object]] = []
     warnings: List[Dict[str, object]] = []
+    lints: List[Dict[str, object]] = []
     label_docs: List[Dict[str, object]] = []
     root_of = {str(f): i for i, f in reversed(list(enumerate(folders)))}
     label_error = ""
@@ -354,6 +355,24 @@ def build(folder: Any) -> Dict[str, Any]:
                                 "problems": ["no piece of example_ok is a run of complies"],
                             }
                         )
+        # NOBLIVION-155: where: (path globs) or, with none, the repositories the
+        # note names by path. A bad where: is dropped alone: the rule then fires
+        # everywhere, as before.
+        where_globs: List[str] = []
+        repos: List[str] = []
+        wvalue = str(fields.get("where") or "")
+        if wvalue:
+            wprobs = mf.where_problems(fields)
+            if wprobs:
+                skipped.append({"id": mem_id, "where": wvalue, "problems": wprobs})
+            else:
+                where_globs = mf.where_globs(wvalue)
+        elif violates or triggers or protects:
+            repos = named_repos(fields, triggers)
+        if violates:
+            tail = mf.violates_warnings(fields)
+            if tail:
+                lints.append({"id": mem_id, "lint": tail[0]})
         entries.append(
             {
                 "id": mem_id,
@@ -373,6 +392,10 @@ def build(folder: Any) -> Dict[str, Any]:
             entries[-1]["on_violation"] = on_violation
         if protects:  # NOBLIVION-127
             entries[-1]["protects_process"] = protects
+        if where_globs:  # NOBLIVION-155
+            entries[-1]["where"] = where_globs
+        if repos:
+            entries[-1]["repos"] = repos
     table: Dict[str, Any] = {
         "version": TABLE_VERSION,
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -384,6 +407,8 @@ def build(folder: Any) -> Dict[str, Any]:
     }
     if warnings:  # NOBLIVION-122: a rewrite note that also says deny
         table["warnings"] = warnings
+    if lints:  # NOBLIVION-155: a deny regex that ends in a fixed path; --report lists them
+        table["lints"] = lints
     if not label_error:
         try:
             table["label_index"] = _ml().build_index(label_docs, own_root=not _is_hub(folders))
@@ -515,9 +540,11 @@ def _one_line(text: object, n: int) -> str:
 def _skipped_kind(row: Mapping[str, Any]) -> str:
     """Which field a ``skipped`` row is about: ``complies``, ``rewrite``
     (also ``on_violation``, NOBLIVION-122), ``protects_process``
-    (NOBLIVION-127) or ``violates``."""
+    (NOBLIVION-127), ``where`` (NOBLIVION-155) or ``violates``."""
     if "protects_process" in row:
         return "protects_process"
+    if "where" in row:
+        return "where"
     if "complies" in row:
         return "complies"
     if "rewrite" in row or "on_violation" in row:
@@ -549,6 +576,11 @@ def skipped_line(table: Mapping[str, Any]) -> str:
             "protects_process",
             "protects_process field is skipped (the process is not protected)",
             "protects_process fields are skipped (the processes are not protected)",
+        ),
+        (
+            "where",
+            "where field is skipped (the rule fires everywhere)",
+            "where fields are skipped (the rules fire everywhere)",
         ),
     ):
         group = [r for r in rows if _skipped_kind(r) == kind]
@@ -816,13 +848,92 @@ def _normalize(text: str, lead: bool = True) -> str:
     return _GIT_GLOBALS.sub("git", text)
 
 
-def _variants(segment: str) -> List[str]:
+# NOBLIVION-155: the interpreter form of a command. ``python3 -m pytest``,
+# ``.venv/bin/python -u -m pytest``, ``uv run pytest`` and ``.venv/bin/pytest`` all
+# run the program ``pytest``; a deny or rewrite rule written for ``pytest`` must
+# see them as it.
+_PYTHON_WORD = re.compile(r"(?:[A-Za-z0-9_.~+/-]*/)?python(?:[0-9]+(?:\.[0-9]+)*)?")
+_VENV_BIN = re.compile(
+    r"^(?:[A-Za-z0-9_.~+/-]*/)?\.?(?:venv|virtualenv|env)/bin/([A-Za-z0-9_.+-]+)$"
+)
+_UV_VALUE_OPTS = frozenset(
+    (
+        "--with",
+        "--with-requirements",
+        "--with-editable",
+        "--python",
+        "-p",
+        "--project",
+        "--directory",
+        "--extra",
+        "--group",
+        "--package",
+        "--env-file",
+        "--index",
+        "--index-url",
+    )
+)
+
+
+def launcher_skip(words: List[str]) -> int:
+    """How many leading ``words`` only launch the program of a command:
+    ``python -m`` (also ``python3.12 -m`` and a path to a python binary) and
+    ``uv run`` with its options. ``0`` when the command does not start with a
+    launcher. A launcher before a launcher counts both (``uv run python -m x``)."""
+    if not words:
+        return 0
+    first = words[0]
+    if _PYTHON_WORD.fullmatch(first):
+        # ``python -u -m x`` is not read: a flag may change what the program does
+        return 2 if len(words) > 2 and words[1] == "-m" else 0
+    if _base(first) == "uv" and len(words) > 2 and words[1] == "run":
+        i = 2
+        while i < len(words) and words[i].startswith("-"):
+            w = words[i]
+            if w == "--":
+                i += 1
+                break
+            i += 2 if (w in _UV_VALUE_OPTS and i + 1 < len(words)) else 1
+        if i >= len(words):
+            return 0
+        return i + launcher_skip(words[i:])
+    return 0
+
+
+def interpreter_form(text: str) -> str:
+    """``text`` (one simple command, wrappers already off) as the program it
+    runs, or ``""`` when it starts with no launcher: ``python3 -m pytest -x`` and
+    ``uv run pytest -x`` as ``pytest -x``, ``.venv/bin/pytest -x`` as ``pytest -x``.
+    The rest of the text is kept as it was."""
+    spans = [(m.start(), m.end()) for m in re.finditer(r"\S+", text)]
+    if not spans:
+        return ""
+    words = [text[a:b] for a, b in spans]
+    skip = launcher_skip(words)
+    if skip and skip < len(words):
+        rest = text[spans[skip][0] :]
+        deeper = interpreter_form(rest)
+        return deeper or rest
+    venv = _VENV_BIN.match(words[0])
+    if venv:
+        return venv.group(1) + text[spans[0][1] :]
+    return ""
+
+
+def _variants(segment: str, interp: bool = False) -> List[str]:
     """The raw segment, the segment without leading assignments, and the
-    segment normalized by ``_normalize``. Duplicates and empties left out."""
+    segment normalized by ``_normalize``. Duplicates and empties left out.
+    With ``interp`` (NOBLIVION-155) each form is also given as the program it
+    runs (``interpreter_form``)."""
     out = [segment]
     for v in (_ASSIGN.sub("", segment, count=1), _normalize(segment)):
         if v and v not in out:
             out.append(v)
+    if interp:
+        for v in list(out):
+            f = interpreter_form(v)
+            if f and f not in out:
+                out.append(f)
     return out
 
 
@@ -1260,9 +1371,10 @@ def command_segments(command: str) -> List[str]:
     return out
 
 
-def variants(segment: str) -> List[str]:
-    """Public name of ``_variants`` for the guard hook."""
-    return _variants(segment)
+def variants(segment: str, interp: bool = False) -> List[str]:
+    """Public name of ``_variants`` for the guard hook. The rows leg reads the
+    interpreter form its own way (NOBLIVION-129), so ``interp`` is off there."""
+    return _variants(segment, interp)
 
 
 _RAW_TRIES = 32
@@ -1352,7 +1464,7 @@ def match(command: str, table: Optional[Mapping[str, Any]] = None) -> List[Dict[
         table = load_table()
     views = []
     for masked, raw, dead in command_views(command):
-        segs = [(seg, _variants(seg)) for seg in _lex(masked)[0]]
+        segs = [(seg, _variants(seg, True)) for seg in _lex(masked)[0]]
         views.append((segs, masked, _normalize(masked, lead=False), raw, dead))
     hits: List[Dict[str, object]] = []
     for e in table.get("entries") or []:
@@ -1404,7 +1516,7 @@ def _complies_hit(rx: Pattern[str], command: str) -> bool:
     removed, and each shell segment variant (wrappers and ``VAR=`` removed)."""
     if rx.search(command) or rx.search(_normalize(command, lead=False)):
         return True
-    return any(rx.search(v) for seg in command_segments(command) for v in variants(seg))
+    return any(rx.search(v) for seg in command_segments(command) for v in variants(seg, True))
 
 
 _SHELL_WORDS = frozenset(
@@ -1495,6 +1607,268 @@ def complies_match(command: str, table: Optional[Mapping[str, Any]] = None) -> L
 
 
 # --------------------------------------------------------------------------
+# NOBLIVION-155: where a rule fires
+# --------------------------------------------------------------------------
+# ``where:`` (path globs) or, for a note without it that names a git repository
+# by its path, that repository (``repos``). A call is inside when one of its
+# directories is: the working directory, the target of ``git -C`` and the target
+# of a ``cd`` in the command. A directory the code cannot work out (``cd "$X"``,
+# ``git -C $(pwd)``) is unknown, and an unknown directory keeps the rule firing.
+_ABS_PATH = re.compile(r"(?<![\w./~$-])(~?/[\w.@+-]+(?:/[\w.@+-]+)*)")
+_MAX_REPOS = 3
+
+
+def _home() -> str:
+    return os.path.expanduser("~")
+
+
+def _repo_root(path: str) -> str:
+    """The git work tree around ``path`` (an existing folder or a path below
+    one), or ``""``. The main repository of a linked work tree is not this one: see
+    ``repo_roots``."""
+    d = path
+    while d and not os.path.isdir(d):
+        parent = os.path.dirname(d)
+        if parent == d:
+            return ""
+        d = parent
+    home = _home()
+    while d and d != "/" and d != home:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return ""
+
+
+def repo_roots(path: str) -> List[str]:
+    """The repository roots of ``path``: its work tree and, for a linked work
+    tree (``.git`` is a file naming ``<repo>/.git/worktrees/<name>``), the main
+    repository. ``[]`` outside a repository."""
+    root = _repo_root(path)
+    if not root:
+        return []
+    out = [root]
+    git = os.path.join(root, ".git")
+    if os.path.isfile(git):
+        try:
+            with open(git, encoding="utf-8", errors="replace") as fh:
+                line = fh.readline().strip()
+        except OSError:
+            line = ""
+        if line.startswith("gitdir:"):
+            target = line[len("gitdir:") :].strip()
+            cut = target.find("/.git/worktrees/")
+            if cut > 0 and target[:cut] not in out:
+                out.append(target[:cut])
+    return out
+
+
+def named_repos(fields: Mapping[str, Any], triggers: Optional[List[str]] = None) -> List[str]:
+    """The git repositories a note names by an absolute path (or ``~/``) in its
+    rule, apply, regex, examples or triggers: the roots of the work trees around
+    those paths. ``[]`` when it names none, names more than ``_MAX_REPOS`` (a
+    note about many repositories is general) or only the home folder itself."""
+    texts = [str(fields.get(k) or "") for k in ("rule", "apply", "example_repeat", "example_ok")]
+    texts.append(re.sub(r"\\([./-])", r"\1", str(fields.get("violates") or "")))
+    texts.extend(
+        t for t in (triggers or []) if isinstance(t, str) and not t.startswith(("tool:", "phrase:"))
+    )
+    roots: List[str] = []
+    for text in texts:
+        for m in _ABS_PATH.finditer(text):
+            path = os.path.normpath(os.path.expanduser(m.group(1)))
+            if path in ("/", _home()):
+                continue
+            root = _repo_root(path)
+            if root and root not in roots:
+                roots.append(root)
+    return sorted(roots) if 0 < len(roots) <= _MAX_REPOS else []
+
+
+def _glob_regex(glob: str) -> Pattern[str]:
+    out: List[str] = []
+    i = 0
+    while i < len(glob):
+        c = glob[i]
+        if glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+            continue
+        out.append("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c))
+        i += 1
+    return re.compile("".join(out), re.DOTALL)
+
+
+def _ancestors(path: str) -> List[str]:
+    out = [path]
+    while path not in ("", "/"):
+        parent = os.path.dirname(path)
+        if parent == path:
+            break
+        path = parent
+        out.append(path)
+    return out
+
+
+def where_match(globs: List[str], directory: str) -> bool:
+    """Is ``directory`` inside one of the ``globs``? A glob matches the folder
+    itself and every folder below it (``/srv/app`` holds ``/srv/app/src``).
+    ``*`` and ``**`` match everywhere."""
+    d = os.path.normpath(directory)
+    forms = [d]
+    try:
+        real = os.path.realpath(d)
+        if real != d:
+            forms.append(real)
+    except OSError:
+        pass
+    for g in globs:
+        if g in ("*", "**", "/**", "/*"):
+            return True
+        g = os.path.expanduser(g)
+        try:
+            rx = _glob_regex(g.rstrip("/") if len(g) > 1 else g)
+        except re.error:
+            continue
+        for form in forms:
+            if any(rx.fullmatch(a) for a in _ancestors(form)):
+                return True
+    return False
+
+
+def _repos_match(repos: List[str], directory: str) -> bool:
+    d = os.path.normpath(directory)
+    for r in repos:
+        if any(a == r for a in _ancestors(d)):
+            return True
+    mine = repo_roots(d)
+    return any(m == r for m in mine for r in repos)
+
+
+def _join(cur: Optional[str], target: str) -> Optional[str]:
+    """``target`` as an absolute path from ``cur``, or ``None`` when it holds a
+    shell expansion."""
+    if cur is None or not target or any(ch in target for ch in "$`*?[{(\\"):
+        return None
+    if target.startswith("~"):
+        if target != "~" and not target.startswith("~/"):
+            return None
+        target = os.path.expanduser(target)
+    return os.path.normpath(target if os.path.isabs(target) else os.path.join(cur, target))
+
+
+def _split_words(piece: str) -> List[str]:
+    import shlex
+
+    try:
+        return shlex.split(piece)
+    except ValueError:
+        return piece.split()
+
+
+def _git_dir(words: List[str], cur: Optional[str]) -> Tuple[bool, Optional[str]]:
+    """``(is git, directory)`` of a simple command: the folder after the ``-C``
+    options of ``git``, else ``cur``."""
+    if not words or _base(words[0]) != "git":
+        return False, cur
+    here = cur
+    i = 1
+    while i < len(words):
+        w = words[i]
+        if w == "-C" and i + 1 < len(words):
+            here = _join(here, words[i + 1])
+            i += 2
+        elif w.startswith("-C") and len(w) > 2:
+            here = _join(here, w[2:])
+            i += 1
+        elif w in ("-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"):
+            i += 2
+        elif w.startswith("-"):
+            i += 1
+        else:
+            break
+    return True, here
+
+
+def command_dirs(command: str, cwd: str) -> List[Optional[str]]:
+    """The directories a Bash command works in: ``cwd``, the target of each
+    ``git -C`` and the directory after each ``cd`` / ``pushd`` for the commands
+    that follow it. A ``cd`` segment itself adds none. ``None`` is a directory
+    the code cannot work out. Never raises."""
+    try:
+        return _command_dirs(command, cwd)
+    except Exception:  # noqa: BLE001 - unknown, so the rule keeps firing
+        return [None]
+
+
+def _command_dirs(command: str, cwd: str) -> List[Optional[str]]:
+    dirs: List[Optional[str]] = []
+    for masked, raw, _dead in command_views(command):
+        cur: Optional[str] = os.path.normpath(cwd) if cwd else None
+        pos = 0
+        moved = False
+        for seg in _lex(masked)[0]:
+            at = masked.find(seg, pos)
+            if at < 0:
+                continue
+            pos = at + len(seg)
+            piece = raw[at:pos].strip()
+            while True:  # leading wrappers and assignments, as the deny path skips them
+                t = _WRAPPER.sub("", piece, count=1)
+                t = _ASSIGN.sub("", t, count=1)
+                if t == piece or not t.strip():
+                    break
+                piece = t
+            words = _split_words(piece)
+            if not words:
+                continue
+            if words[0] in ("cd", "pushd"):
+                args = [w for w in words[1:] if w not in ("--", "-P", "-L", "-e", "-@")]
+                if not args:
+                    cur = _join(cur, "~")
+                elif args[0] == "-":
+                    cur = None
+                else:
+                    cur = _join(cur, args[0])
+                moved = True
+                continue
+            if words[0] == "popd":
+                cur, moved = None, True
+                continue
+            _is_git, here = _git_dir(words, cur)
+            dirs.append(here)
+        if moved and not dirs:
+            dirs.append(cur)
+    out: List[Optional[str]] = []
+    for d in dirs or [os.path.normpath(cwd) if cwd else None]:
+        if d not in out:
+            out.append(d)
+    return out
+
+
+def where_ok(entry: Mapping[str, Any], dirs: List[Optional[str]]) -> bool:
+    """Does the rule ``entry`` fire for a call that works in ``dirs``?
+    ``True`` for a rule with neither ``where`` nor ``repos``, and when one
+    directory is unknown."""
+    globs = entry.get("where")
+    repos = entry.get("repos")
+    if not globs and not repos:
+        return True
+    if not dirs or any(d is None for d in dirs):
+        return True
+    for d in dirs:
+        assert d is not None
+        if globs and where_match([str(g) for g in globs], d):
+            return True
+        if not globs and repos and _repos_match([str(r) for r in repos], d):
+            return True
+    return False
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 def main(argv: Optional[List[str]] = None) -> int:
@@ -1543,6 +1917,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     print(f"  skipped {s['id']}: {'; '.join(s['problems'])}")
                 for w in table.get("warnings") or []:
                     print(f"  warning {w['id']}: {w['warning']}")
+                for w in table.get("lints") or []:
+                    print(f"  lint {w['id']}: {w['lint']}")
             else:
                 line = skipped_line(table)
                 if line:

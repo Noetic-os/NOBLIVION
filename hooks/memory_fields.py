@@ -35,6 +35,13 @@ carries, LAST in its front matter and in this fixed order:
                    would signal a process whose command line matches
                    (``kill``, ``pkill``, ``killall``, ``pgrep | xargs kill``).
                    Not tied to ``violates``.
+  where:           a JSON string: one or more path globs, separated by commas
+                   (``/srv/app/**, ~/work/tool``), optional (NOBLIVION-155). The
+                   rule (deny, rewrite and rows) fires only when the directory of
+                   the call is inside a glob: the working directory, the target of
+                   ``git -C`` or of a ``cd`` in the command. ``*`` or ``**`` means
+                   everywhere. A rule without ``where:`` that names a git
+                   repository by its path fires only inside that repository.
 
 Why this serialization. Three hand-rolled single-line parsers read these files:
 the reference memory mirror (``parse_frontmatter``),
@@ -115,7 +122,7 @@ KEYS = (
 )
 # NOBLIVION-122: written after ``KEYS`` and only when a memory sets them, so
 # a file without them reads and writes exactly as before.
-OPTIONAL_KEYS = ("rewrite", "on_violation", "protects_process")  # 127: protects_process
+OPTIONAL_KEYS = ("rewrite", "on_violation", "protects_process", "where")  # 127; 155: where
 ALL_KEYS = KEYS + OPTIONAL_KEYS
 ON_VIOLATION = ("deny", "ask")
 # The two fields of a project memory. Not part of KEYS: they are not written
@@ -137,6 +144,7 @@ JSON_KEYS = (
     "complies",
     "rewrite",
     "protects_process",
+    "where",
 )
 
 SCHEMA_LINE = (
@@ -989,6 +997,86 @@ def protects_process_problems(fields: Dict[str, object]) -> List[str]:
     return out
 
 
+WHERE_MAX_GLOBS = 8
+WHERE_MAX_CHARS = 200
+WHERE_EVERYWHERE = frozenset(("*", "**", "/**", "/*"))
+
+
+def where_globs(value: object) -> List[str]:
+    """The globs of a ``where:`` value (NOBLIVION-155): split at commas, blanks cut."""
+    if not isinstance(value, str):
+        return []
+    return [g.strip() for g in value.split(",") if g.strip()]
+
+
+def where_problems(fields: Dict[str, object]) -> List[str]:
+    """Problems of the optional ``where:`` field (NOBLIVION-155): at most
+    ``WHERE_MAX_GLOBS`` path globs, each absolute (``/``), under the home folder
+    (``~/``), or starting with ``**/``; ``*`` and ``**`` alone mean everywhere."""
+    value = fields.get("where") or ""
+    if not value:
+        return []
+    if not isinstance(value, str):
+        return ["where is not a string"]
+    globs = where_globs(value)
+    if not globs:
+        return ["where holds no glob"]
+    out: List[str] = []
+    if len(globs) > WHERE_MAX_GLOBS:
+        out.append(f"where holds more than {WHERE_MAX_GLOBS} globs")
+    for g in globs[:WHERE_MAX_GLOBS]:
+        if len(g) > WHERE_MAX_CHARS:
+            out.append(f"where glob is longer than {WHERE_MAX_CHARS} characters")
+        elif g in WHERE_EVERYWHERE:
+            continue
+        elif not (g.startswith(("/", "~/", "**/")) or g == "~"):
+            out.append(f"where glob {g!r} must start with /, ~/ or **/")
+        elif "\x00" in g or "\n" in g:
+            out.append("where glob holds a control character")
+    return out
+
+
+# NOBLIVION-155: a deny regex that ends in a fixed path ("...:/app/", "/tmp/x") catches
+# one spelling of the target. The same command with another path is not caught.
+_LITERAL_TAIL = re.compile(r"(?:[A-Za-z0-9_\-/]|\\[./\-])+$")
+_TAIL_ANCHORS = re.compile(r"(?:\$|\\b|\\s\*|\)|\?)+$")
+LINT_TAIL_MIN = 3
+
+
+def fixed_path_tail(pattern: str) -> str:
+    """The fixed path text at the end of the regex ``pattern`` (``/app/`` in
+    ``docker cp .*:/app/``), or ``""``. A tail counts when it holds a ``/``, is
+    literal to the end (anchors such as ``$`` and ``\\b`` are skipped) and has at least
+    ``LINT_TAIL_MIN`` characters."""
+    pat = _TAIL_ANCHORS.sub("", pattern)
+    m = _LITERAL_TAIL.search(pat)
+    if not m:
+        return ""
+    tail = m.group(0)
+    if "/" not in tail or len(tail.replace("\\", "")) < LINT_TAIL_MIN:
+        return ""
+    before = pat[: m.start()]
+    if not before or before[-1] in "^(|":
+        return ""  # the path is the command itself (``^tools/run\\.sh``), not a target
+    return tail.replace("\\", "")
+
+
+def violates_warnings(fields: Dict[str, object]) -> List[str]:
+    """Lint warnings (not problems) of a ``violates`` regex (NOBLIVION-155).
+    Nothing here switches a guard off."""
+    pat = fields.get("violates") or ""
+    if not pat or not isinstance(pat, str):
+        return []
+    tail = fixed_path_tail(pat)
+    if not tail:
+        return []
+    return [
+        f"violates ends in the fixed path {tail!r}: the same command with another path is "
+        "not caught. End the regex on the command and its flag, or match the path with a "
+        "pattern such as [^ ]*"
+    ]
+
+
 def on_violation_problems(fields: Dict[str, object]) -> List[str]:
     """Problems of the optional ``on_violation:`` field (NOBLIVION-122)."""
     value = fields.get("on_violation") or ""
@@ -1049,6 +1137,7 @@ def check_fields(fields: Dict[str, object], kind: str = "feedback") -> List[str]
         + rewrite_problems(fields)
         + on_violation_problems(fields)
         + protects_process_problems(fields)
+        + where_problems(fields)
         + status_project_problems(fields, kind)
     )
 
@@ -1108,6 +1197,9 @@ def _serialize(fields: Dict[str, Any]) -> List[str]:
     protects = str(fields.get("protects_process") or "")
     if protects:
         out.append("protects_process: " + json.dumps(protects))
+    where = str(fields.get("where") or "")
+    if where:
+        out.append("where: " + json.dumps(where))
     return out
 
 

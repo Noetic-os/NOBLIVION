@@ -175,6 +175,7 @@ def run(stdin_text: str) -> str:
     problems = mf.check_fields(fields, kind)
     nested = mf.nested_keys(text)
     warnings = getattr(mf, "rewrite_warnings", lambda f: [])(fields)  # NOBLIVION-122
+    warnings += getattr(mf, "violates_warnings", lambda f: [])(fields)  # NOBLIVION-155
     if not problems and not nested:
         if not warnings:
             return ""

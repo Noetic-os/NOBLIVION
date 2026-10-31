@@ -406,6 +406,7 @@ See [guards.md](guards.md) for what each guard does.
 | `NOBLIVION_GUARD_ROWS_SESSION_CHARS` | none | `6000` | The most characters of guard rows per agent in one session. |
 | `NOBLIVION_GUARD_WEAK_SHARE` | none | `4` | A trigger that this many notes share is weak. `0` turns the weak-trigger check off. |
 | `NOBLIVION_GUARD_EVERYDAY_TRIGGERS` | `guard.everyday_triggers` | on (switch) | A note whose trigger is an everyday command (`pytest`, `kill`, `git worktree`) shows its row when the note fits the command or the context of the call, at most 3 such rows per call. `python3 -m X` also fires a trigger `X`. Off: these triggers give no row, as before. Needs `NOBLIVION_GUARD_WEAK_SHARE` not `0`. See [guards.md](guards.md). |
+| `NOBLIVION_GUARD_QUARANTINE` | `guard.quarantine` | on (switch) | A deny rule with 3 or more overrides and an override rate of 50% or more in 14 days shows as a row only, and the session-start line names it. The credential guard is never quarantined. See [guards.md](guards.md). |
 | `NOBLIVION_GUARD_CREDENTIAL` | none | on (switch) | The credential guard. |
 | `NOBLIVION_GUARD_LABELS` | none | on (switch) | Label rows at tool time. |
 | `NOBLIVION_GUARD_LABEL_SESSION_CHARS` | none | `700` | The most characters of label rows in one session. |

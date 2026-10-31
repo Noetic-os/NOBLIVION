@@ -26,7 +26,8 @@ sees the same simple commands as ``guard_table.match``:
     ``timeout <n>``, ``VAR=value``, ``sudo``, ``nice``, ``nohup``, ...).
   * ``python -m <prog>``, ``python3 -m <prog>`` and a path to a python binary
     (``.venv/bin/python -m <prog>``) count as ``<prog>``, in the command and in
-    the prefix of the spec.
+    the prefix of the spec. So do ``uv run [options] <prog>`` and
+    ``.venv/bin/<prog>`` (NOBLIVION-155). ``python -u -m <prog>`` is left alone.
   * The arguments of a rewritten command are plain words, then at most
     ``2>&1``. A pipe after it is allowed only into one ``tail`` stage, for a
     test runner only (``TAIL_OK``), because the summary of a quiet run is still
@@ -143,8 +144,6 @@ _TAIL = re.compile(r"^tail(?:[ \t]+-(?:n[ \t]*)?[0-9]{1,4})?$")
 _PIPE = re.compile(r"(?<!\|)\|(?!\|)")
 # One shell word of the raw text: quoted parts, escapes and plain characters.
 _WORD = re.compile(r"""(?:'[^']*'|"(?:[^"\\]|\\.)*"|\\.|[^\s'"\\])+""")
-# A python launcher: ``python``, ``python3``, ``python3.12``, also by path.
-_PYTHON = re.compile(r"(?:[A-Za-z0-9_.~+/-]*/)?python(?:[0-9]+(?:\.[0-9]+)*)?")
 # The first word of a simple command that opens or closes a group or a
 # compound command: the output of a command inside may go to a later reader.
 _OPENS = frozenset(("if", "while", "until", "for", "case", "select", "{"))
@@ -175,8 +174,9 @@ def program(prefix: Sequence[str]) -> Tuple[str, ...]:
     """The program words of a prefix: ``python -m pytest`` and
     ``python3 -m pytest`` are ``pytest``; any other prefix is itself."""
     words = tuple(prefix)
-    if len(words) >= 3 and _PYTHON.fullmatch(words[0]) and words[1] == "-m":
-        return words[2:]
+    skip = _gt().launcher_skip(list(words))  # NOBLIVION-155: also ``uv run`` and python flags
+    if 0 < skip < len(words):
+        return words[skip:]
     return words
 
 
@@ -238,9 +238,14 @@ def _apply_flag(command: str, prefix: Tuple[str, ...], flag: str) -> Optional[st
             depth -= 1
         start = _after_wrappers(text)
         cmd = [m for m in words if m.start() >= start]
-        if len(cmd) >= 2 and _PYTHON.fullmatch(cmd[0].group(0)) and cmd[1].group(0) == "-m":
-            cmd = cmd[2:]
-        if tuple(m.group(0) for m in cmd[: len(prog)]) != prog:
+        skip = gt.launcher_skip([m.group(0) for m in cmd])  # python -m, uv run (NOBLIVION-155)
+        if 0 < skip < len(cmd):
+            cmd = cmd[skip:]
+        names = [m.group(0) for m in cmd[: len(prog)]]
+        venv = gt._VENV_BIN.match(names[0]) if names and not skip else None
+        if venv:  # .venv/bin/pytest is pytest
+            names[0] = venv.group(1)
+        if tuple(names) != prog:
             continue  # another command: kept byte for byte
         if inside:
             return None

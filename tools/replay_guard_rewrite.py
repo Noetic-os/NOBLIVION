@@ -59,12 +59,10 @@ BUILTIN_RULES: list[dict[str, str]] = [
         "rewrite": f"add-flag -q after {prefix}",
         "complies": rf"^{regex}\s+-q\b",
     }
-    for name, regex, prefix in (
-        ("pytest", "pytest", "pytest"),
-        ("python_pytest", r"python\s+-m\s+pytest", "python -m pytest"),
-        ("python3_pytest", r"python3\s+-m\s+pytest", "python3 -m pytest"),
-        ("uv_pytest", r"uv\s+run\s+pytest", "uv run pytest"),
-    )
+    # One rule for pytest: the deny and the rewrite read ``python3 -m pytest``,
+    # ``.venv/bin/python -m pytest``, ``uv run pytest`` and ``.venv/bin/pytest`` as
+    # ``pytest`` (NOBLIVION-155), so a rule per form would hit twice and rewrite nothing.
+    for name, regex, prefix in (("pytest", "pytest", "pytest"),)
 ] + [
     {
         "id": "demo_log_oneline",
@@ -164,6 +162,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         spec = next((e.get("rewrite") for e in table["entries"] if e["id"] == ids[0]), "")
         if rw.apply(new, spec) is not None:
             not_idem += 1
+    forms: dict[str, Counter] = {}
+    for cmd, (ids, outcome, _new) in seen.items():
+        if ids:
+            f = forms.setdefault(launcher_form(gt, cmd), Counter())
+            f["unique_hits"] += 1
+            if outcome == "rewrite":
+                f["unique_rewrites"] += 1
     report: dict[str, Any] = {
         "transcripts": len(paths),
         "commands": total,
@@ -172,6 +177,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "rewrite_commands": len(rewrites),
         "not_idempotent": not_idem,
         "rules": {k: dict(sorted(v.items())) for k, v in sorted(per_rule.items())},
+        "forms": {k: dict(sorted(v.items())) for k, v in sorted(forms.items())},
     }
     if args.sample and args.sample_out:
         # "rewrite": the rewrites. "hit": every command the violates regex fired on
@@ -189,6 +195,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if args.labels:
         report["labels"] = precision(Path(args.labels))
     return report
+
+
+def launcher_form(gt: Any, cmd: str) -> str:
+    """How the first simple command that the interpreter form changes launches its program:
+    ``python -m``, ``uv run``, ``venv program``, or ``plain``. Counts only."""
+    for seg in gt.command_segments(cmd):
+        for v in gt.variants(seg):
+            words = v.split()
+            if gt.launcher_skip(words):
+                return "uv run" if words[0].rsplit("/", 1)[-1] == "uv" else "python -m"
+            if gt.interpreter_form(v):
+                return "venv program"
+    return "plain"
 
 
 def judge(gh: Any, gt: Any, table: dict[str, Any], env: dict[str, str], cmd: str):

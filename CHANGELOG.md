@@ -8,6 +8,20 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Guard precision (NOBLIVION-155). Four changes. (a) A deny rule with 3 or more overrides and an
+  override rate of 50% or more in 14 days (counted from the `deny` and `override` lines of the guard
+  log) shows as a row only; the guard log gets a `quarantined` line and the session-start line names the
+  rule ("overridden 32 of 53"). The credential guard is never quarantined. Off with
+  `NOBLIVION_GUARD_QUARANTINE=0` (`guard.quarantine`). Replay of 21 days of one guard log
+  (`tools/replay_guard_quarantine.py`): of 231 rule denies, the 6 rules that the log shows as overridden
+  held 131, and the replay drops 106 of them; the 12 other rules held 100 and the replay keeps all 100.
+  (b) New optional note field `where:`, path globs over the working directory, the `git -C` target and the
+  `cd` target; a note without it that names a git repository by its path fires only in that repository
+  (a linked work tree counts). (c) The deny, the rewrite and the compliant-form check read `python3 -m X`,
+  a venv python and `uv run X` as `X`, and `.venv/bin/X` as `X`; `python -u -m X` stays as it was.
+  Replay of 105,303 logged Bash calls with one `pytest` rule: 3 hits and 1 rewrite before, 18 hits and 5
+  rewrites after, 0 rewrites that apply twice. (d) The memory fields check and the table build report a
+  `violates` regex that ends in a fixed path (`docker cp .*:/app/`); the rule is kept.
 - Keyword-only mode shows rows only when the top row is relevant, and the embedder is warm at the first
   prompt (NOBLIVION-153, takes in NOBLIVION-97 and NOBLIVION-82). Without a cosine no floor can judge a
   row, so every prompt with one non-stop word got its five rows. The prompt index now keeps the rows only

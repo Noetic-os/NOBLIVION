@@ -370,6 +370,7 @@ _MF = None
 _MT = None
 _RW = None
 _PT = None
+_GQ = None
 
 
 def _mf():
@@ -394,6 +395,13 @@ def _rw():
     return _RW
 
 
+def _gq():
+    global _GQ
+    if _GQ is None:
+        _GQ = _load("guard_quarantine")
+    return _GQ
+
+
 def _pt():
     global _PT
     if _PT is None:
@@ -406,6 +414,72 @@ def _proc_table():
     """The process table of the ``protects_process`` check (NOBLIVION-127):
     ``/proc``, empty off Linux. The tests replace it with a fake table."""
     return _pt().ProcTable.system()
+
+
+# --------------------------------------------------------------------------
+# NOBLIVION-155: where a rule fires, and the quarantine of an overridden rule
+# --------------------------------------------------------------------------
+QUARANTINE_WEIGHT = 1000  # a quarantined rule leads the rows: it would have denied
+
+
+def scope_dirs(
+    table: Mapping[str, Any], tool: str, ti: Mapping[str, Any], cwd: str
+) -> Optional[List[Optional[str]]]:
+    """The directories of this call when some rule of the table has ``where`` or
+    ``repos`` (``guard_table.command_dirs``; the folder of the file for an edit
+    or a read), else ``None`` (no rule is scoped: nothing to work out)."""
+    if not any(
+        isinstance(e, dict) and (e.get("where") or e.get("repos"))
+        for e in table.get("entries") or []
+    ):
+        return None
+    try:
+        if tool in BASH_TOOLS:
+            return _gt().command_dirs(str(ti.get("command") or ""), cwd)
+        raw = ti.get("file_path") or ti.get("path")
+        if isinstance(raw, str) and raw:
+            p = raw if os.path.isabs(raw) else os.path.join(cwd, raw)
+            return [os.path.dirname(os.path.normpath(p))]
+    except Exception:  # noqa: BLE001 - unknown directory: every rule fires
+        pass
+    return [None]
+
+
+def _log_quarantined(dec: Decision, quar: List[Dict[str, object]]) -> None:
+    """One more log line for the rules that showed as a row instead of a deny."""
+    if quar:
+        dec.also.append(("quarantined", [str(h.get("id", "")) for h in quar], {}))
+
+
+def in_scope(entry: Mapping[str, Any], dirs: Optional[List[Optional[str]]]) -> bool:
+    """False when the rule ``entry`` is scoped to other directories than ``dirs``."""
+    if dirs is None:
+        return True
+    try:
+        return _gt().where_ok(entry, dirs)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def quarantine_split(
+    hits: List[Dict[str, object]], env: Mapping[str, str]
+) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
+    """``(denying, quarantined)``: a hit of a rule that the guard log shows as
+    overridden too often (``guard_quarantine``) does not deny. Fails open: an
+    unreadable log quarantines nothing."""
+    if not hits:
+        return hits, []
+    try:
+        gq = _gq()
+        if not gq.enabled(env):
+            return hits, []
+        bad = gq.quarantined(log_path(env))
+    except Exception:  # noqa: BLE001
+        return hits, []
+    if not bad:
+        return hits, []
+    keep = [h for h in hits if str(h.get("id", "")) not in bad]
+    return keep, [h for h in hits if str(h.get("id", "")) in bad]
 
 
 def process_hits(
@@ -2009,6 +2083,8 @@ def decide(
         _settled(pending)  # only the credential guard denies these tools
     file_q: Optional[Tuple[str, str]] = None
     everyday: List[Tuple[int, str, Dict[str, object]]] = []
+    quar: List[Dict[str, object]] = []
+    quar_cands: List[Tuple[float, str, Dict[str, object]]] = []
     if tool not in BASH_TOOLS and _file_tools_on(env):
         file_q = _file_query(tool, ti, cwd)
     if tool in READ_TOOLS and file_q is None:
@@ -2028,6 +2104,13 @@ def decide(
             return Decision()
         hits = _gt().match(command, table)
         hits = process_hits(command, table, hits)  # NOBLIVION-127: a protected process
+        sdirs = scope_dirs(table, tool, ti, cwd)  # NOBLIVION-155: where: / the named repository
+        by_id = {str(e.get("id", "")): e for e in table.get("entries") or [] if isinstance(e, dict)}
+        hits = [h for h in hits if in_scope(by_id.get(str(h.get("id", "")), {}), sdirs)]
+        hits, quar = quarantine_split(hits, env)  # NOBLIVION-155: overridden too often
+        quar_cands = [
+            (QUARANTINE_WEIGHT, "", by_id[str(h["id"])]) for h in quar if str(h["id"]) in by_id
+        ]
         if not hits:
             _settled(pending)
         marker, marker_seen = override_marker(command) if hits else (None, False)
@@ -2040,6 +2123,8 @@ def decide(
                 everyday = everyday_rows(command, table)
             except Exception:  # noqa: BLE001 - no everyday rows, the rows before NOBLIVION-129
                 everyday = []
+        cands = [c for c in cands if in_scope(c[2], sdirs)]
+        everyday = [c for c in everyday if in_scope(c[2], sdirs)]
         query, subject = command, "command"
         label_q, label_s = query, subject
     elif tool in READ_TOOLS and file_q is not None:
@@ -2053,6 +2138,8 @@ def decide(
         p = raw if os.path.isabs(raw) else os.path.join(cwd, raw)
         hits = []  # file edits are never denied (see the module text)
         cands = path_rows(os.path.normpath(p), table)
+        fdirs = scope_dirs(table, tool, ti, cwd)  # NOBLIVION-155
+        cands = [c for c in cands if in_scope(c[2], fdirs)]
         query, subject = os.path.normpath(p), "file"
         label_q, label_s = (file_q[0] if file_q is not None else query), subject
     # Label rows only where no rule denies (a label never denies).
@@ -2061,7 +2148,7 @@ def decide(
         if not hits and table.get("label_index")
         else []
     )
-    if not hits and not cands and not everyday and not labs:
+    if not hits and not cands and not everyday and not labs and not quar_cands:
         return Decision()
     rule_only: Dict[str, str] = {}
     everyday_ids: List[str] = []
@@ -2106,6 +2193,10 @@ def decide(
                 everyday_ids = [str(e.get("id", "")) for _w, _t, e in erows]
             except Exception:  # noqa: BLE001 - no everyday rows
                 everyday_ids = []
+        if quar_cands:  # NOBLIVION-155: the rows of the rules that do not deny now
+            have = {str(c[2].get("id", "")) for c in quar_cands}
+            cands = [c for c in cands if str(c[2].get("id", "")) not in have] + quar_cands
+            rule_only = {i: t for i, t in rule_only.items() if i not in have}
         if not cands and not labs:
             return Decision()
 
@@ -2194,13 +2285,15 @@ def decide(
             if lab is None:
                 state.close(save=False)
                 return Decision()
-            return Decision(
+            ldec = Decision(
                 _out(context=lab.text),
                 state,
                 lab.charge,
                 ("labels", lab.ids),
                 log_text=(lambda: redact(log_head(query))) if subject == "read" else None,
             )
+            _log_quarantined(ldec, quar)
+            return ldec
         # What a row says (NOBLIVION-152): the rule line, and the apply line of a
         # strong match. Three rows stay under ROWS_MAX_CHARS (``render_rows``);
         # a row is dropped only when its fields are over the schema caps.
@@ -2247,12 +2340,14 @@ def decide(
             return extra or None
 
         context = text_out + ("\n" + lab.text if lab is not None else "")
-        return Decision(
+        rdec = Decision(
             _out(context=context),
             state,
             charge_rows,
             ("rows", [str(e.get("id", "")) for e in rows]),
         )
+        _log_quarantined(rdec, quar)
+        return rdec
     except BaseException:
         state.close(save=False)
         raise

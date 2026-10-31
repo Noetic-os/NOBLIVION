@@ -93,6 +93,7 @@ example_ok: "git -C /repo status"
 | `rewrite` | Optional, only with `violates`. `add-flag <flag> after <prefix>`. A note with `rewrite` is a rewrite note, not a deny note. See "Rewrite and ask". |
 | `on_violation` | Optional, only with `violates`. `deny` (default) or `ask`. See "Rewrite and ask". |
 | `protects_process` | Optional. A regular expression over the command line of a process. A command that would signal a matching process is blocked. At most 300 characters. See "Deny: protect a process". |
+| `where` | Optional. One or more path globs, separated by commas. The rule fires only inside them. See "Where a rule fires". |
 
 A `feedback_*.md` file needs `rule`, `apply` and `scope`. With scope `tool`,
 it needs a command trigger or a `tool:` trigger. With scope `file`, it
@@ -303,6 +304,59 @@ The check has these limits:
 - `pkill -f PAT` also matches the shell that runs the command, because its
   command line holds `PAT`. That shell does not exist yet when the hook runs,
   so the hook cannot see it.
+
+### Where a rule fires
+
+A rule can be right in one repository and wrong in another. Two things limit it.
+
+**`where:`** is a list of path globs, separated by commas:
+
+```yaml
+where: "/srv/app/**, ~/work/tool"
+```
+
+The rule (deny, rewrite and rows) fires only when the call works inside one of
+the globs. The call works in its working directory, in the target of each
+`git -C <path>` and in the directory after each `cd <path>` in the command
+(for the commands that follow the `cd`). A glob matches the folder and every
+folder below it. `*` matches inside one folder name, `**` matches across
+folders, and `*` or `**` alone means everywhere. A glob starts with `/`, `~/` or
+`**/`. For a file edit or a file read, the folder of the file counts. A
+directory that the hook cannot work out (`cd "$DIR"`, `git -C $(pwd)`) keeps the
+rule firing, so the guard is never switched off by a variable.
+
+**The repository the note names.** A note without `where:` that names a git
+repository by an absolute path (or `~/path`) in its rule, apply, regular
+expression, examples or triggers fires only inside that repository. A linked
+work tree (`git worktree add`) counts as its main repository. A note that names
+more than three repositories, or only the home folder, is general and fires
+everywhere. The table build works this out and keeps it in the table entry
+(`repos`). Write `where: "**"` to make such a note fire everywhere.
+
+### Quarantine of an overridden rule
+
+A deny that the model overrides most of the time costs one turn and the deny
+text, and teaches nothing. When a deny rule has 3 or more overrides and an
+override rate of 50 percent or more in the last 14 days, the guard stops
+denying it. The rule shows as a row where it would have denied, and the guard
+log gets a `quarantined` line. The session-start line names the rule:
+
+```text
+Guard: 1 deny rule(s) shown as a row only, overridden too often in 14 days:
+feedback_example (overridden 32 of 53). Fix or remove them
+```
+
+The counts come from the `deny` and `override` lines of the guard log
+(`guard-log.jsonl` and `.1`). The rate is overrides over the larger of denies and
+overrides. The rule leaves the quarantine by itself: when it is not overridden
+for 14 days, or when its overrides leave the window, it denies again. Fix the
+rule or remove it. The credential guard is never quarantined. Turn the
+quarantine off with `NOBLIVION_GUARD_QUARANTINE=0` (config key
+`guard.quarantine`).
+
+To measure the rule on your own log, run
+`python tools/replay_guard_quarantine.py <data dir>/guard-log.jsonl`. It prints
+counts only.
 
 ### Override
 
@@ -571,6 +625,12 @@ the file. After a memory file of any kind changes, it rebuilds the guard
 table, because a note of any kind can hold a `violates` rule. A change to
 `MEMORY.md`, `MEMORY_ARCHIVE.md` or a `topic_*.md` file does not rebuild it.
 
+It also warns (and keeps the rule) when a `violates` expression ends in a fixed
+path, such as `docker cp .*:/app/`. That rule catches one spelling of the
+target: the same command with `/tmp/` is not caught. End the expression on the
+command and its flag, or match the path with a pattern such as `[^ ]*`. The
+table build lists the same warnings in `guard_table.py --rebuild --report`.
+
 ## The memory sync hook
 
 After Claude Code writes a `*.md` file in the memory folder, this hook
@@ -637,6 +697,7 @@ tool, the check does not fire and the log row notes `notify_skipped`.
 | Rewrite, ask, shadow | They are off by default. Unset `NOBLIVION_GUARD_REWRITE`, `NOBLIVION_GUARD_ASK` and `NOBLIVION_GUARD_ACT_SHADOW`. |
 | Weak-trigger check | `NOBLIVION_GUARD_WEAK_SHARE=0` |
 | Everyday triggers, `python -m X` | `NOBLIVION_GUARD_EVERYDAY_TRIGGERS=0` |
+| Quarantine of overridden deny rules | `NOBLIVION_GUARD_QUARANTINE=0` |
 | Stop checks | They do not block by default (`shadow` mode). In `enforce` mode: `NOBLIVION_STOP_CHECKS=none`, or `NOBLIVION_STOP_CHECK_MODE=shadow` |
 | Memory sync | `NOBLIVION_MEMORY_SYNC_OFF=1` |
 | Guard hook, memory fields hook | Remove the rule fields from the note, or turn off the plugin. These hooks have no switch. |

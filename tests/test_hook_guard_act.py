@@ -73,8 +73,6 @@ TABLE = [
     entry("feedback_log_cap", LOG_V, rewrite="add-flag --oneline after git log"),
     entry("feedback_ask_prune", ASK_V, on_violation="ask"),
     entry("feedback_no_force", FORCE),
-    # a rule whose rewrite does not remove the hit (a bad pair of regex and rewrite)
-    entry("feedback_bad_pair", r"^uv\s+run\s+pytest\b", rewrite="add-flag -q after uv run pytest"),
     # a rewrite that lacks the compliant form of the memory
     entry(
         "feedback_no_complies",
@@ -82,6 +80,14 @@ TABLE = [
         rewrite="add-flag -sb after git status",
         complies=r"^git\s+status\s+--porcelain",
     ),
+]
+
+# Two more notes on the pytest program. NOBLIVION-155: ``uv run pytest`` and
+# ``python -m pytest`` are read as ``pytest``, so these cannot sit in the table
+# with the pytest note above (two hits: no rewrite). They get a table of their own.
+EXTRA = [
+    # a rule whose rewrite does not remove the hit (a bad pair of regex and rewrite)
+    entry("feedback_bad_pair", r"^uv\s+run\s+pytest\b", rewrite="add-flag -q after uv run pytest"),
     # a rewrite and an ask together: the rewrite is tried first
     entry(
         "feedback_both",
@@ -118,6 +124,13 @@ def env(tmp_path):
         "NOBLIVION_CONFIG": str(tmp_path / "no-config.json"),
         "NOBLIVION_TRUST_EVENTS": "0",
     }
+
+
+@pytest.fixture
+def env_extra(env, tmp_path):
+    table = tmp_path / "table-extra.json"
+    table.write_text(json.dumps({"version": 1, "entries": [dict(e) for e in EXTRA]}))
+    return dict(env, NOBLIVION_GUARD_TABLE=str(table))
 
 
 def on(env, *names):
@@ -220,7 +233,6 @@ def test_the_config_key_turns_the_rewrite_on(env, tmp_path):
         ("cd x && pytest tests | grep FAIL", "not_applicable"),
         ("(cd x && pytest tests)", "not_applicable"),
         ("bash -c 'pytest tests'", "not_applicable"),
-        ("uv run pytest", "still_violates"),
         ("git status", "no_compliant_form"),
     ],
 )
@@ -292,8 +304,19 @@ def test_an_ask_mixed_with_a_deny_rule_is_a_deny(env):
     assert rows[1]["why"] == "mixed_with_deny"
 
 
-def test_a_rewrite_comes_before_an_ask_and_an_ask_covers_a_failed_rewrite(env):
-    e = on(env, "NOBLIVION_GUARD_REWRITE", "NOBLIVION_GUARD_ASK")
+def test_a_rewrite_that_leaves_the_hit_is_skipped(env_extra):
+    e = on(env_extra, "NOBLIVION_GUARD_REWRITE")
+    assert call(e, bash("uv run pytest")) is None
+    rows = lines(e)
+    assert [r["decision"] for r in rows] == ["rewrite-skipped"]
+    assert rows[0]["why"] == "still_violates"
+    e = on(env_extra, "NOBLIVION_GUARD_REWRITE", "NOBLIVION_GUARD_ASK")
+    out = call(e, bash("uv run pytest"))
+    assert out["permissionDecision"] == "ask" and "updatedInput" not in out
+
+
+def test_a_rewrite_comes_before_an_ask_and_an_ask_covers_a_failed_rewrite(env_extra):
+    e = on(env_extra, "NOBLIVION_GUARD_REWRITE", "NOBLIVION_GUARD_ASK")
     out = call(e, bash("python -m pytest tests"))
     assert out["updatedInput"]["command"] == "python -m pytest -q tests"
     out = call(e, bash("python -m pytest tests > log.txt"))  # a redirect: no rewrite

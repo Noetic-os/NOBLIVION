@@ -77,6 +77,7 @@ def test_every_moved_module_is_present() -> None:
         "credential_guard",
         "error_recall_hook",
         "guard_hook",
+        "guard_quarantine",  # NOBLIVION-155
         "guard_rewrite",  # NOBLIVION-122
         "process_targets",  # NOBLIVION-127
         "guard_table",

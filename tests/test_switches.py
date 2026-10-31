@@ -34,6 +34,7 @@ te = load_hook("trust_events", "switchtest_trust_events")
 ts = load_hook("trust_signals", "switchtest_trust_signals")
 gh = load_hook("guard_hook", "switchtest_guard_hook")
 rn = load_hook("recall_nudge", "switchtest_recall_nudge")
+gq = load_hook("guard_quarantine", "switchtest_guard_quarantine")
 
 Reader = Callable[[Mapping[str, str]], bool]
 
@@ -67,6 +68,7 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_GUARD_ASK": gh.ask_on,
     "NOBLIVION_GUARD_ACT_SHADOW": gh.act_shadow,
     "NOBLIVION_GUARD_EVERYDAY_TRIGGERS": gh.everyday_on,  # NOBLIVION-129
+    "NOBLIVION_GUARD_QUARANTINE": gq.enabled,  # NOBLIVION-155
     "NOBLIVION_GUARD_LABELS": lr.enabled,
     "NOBLIVION_GUARD_LABELS_FILE_TOOLS": lr.file_tools_enabled,
     "NOBLIVION_MEMORY_SYNC_OFF": ms.is_off,
