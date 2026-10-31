@@ -475,6 +475,27 @@ SCORE_WINDOW_KEY = "recall.score_window"
 SCORE_WINDOW_DEFAULT = 0.0
 SCORE_WINDOW_MAX = 2.0
 SCORE_RESCUE_MARGIN = 0.02  # how far under the floor the store's rank 1 may be and stay
+# NOBLIVION-160, OWN-PROJECT ROWS. In a project folder the notes of the home root and of the
+# other shared roots out-rank the notes of the folder, and ``rules_only`` hides every note of
+# the folder that has no ``rule:`` and ``apply:`` (0 of 130 rows were own-root in a replay of
+# one project folder). Three rules put the own lessons back, all behind ``recall.own_rows``
+# (on): (1) one of the shown rows is reserved for the best own-root row that passed the floor
+# (and the window, when it is on); (2) one DESCRIPTION row, the name and the description of
+# an own-root note with no rule fields that is in the first OWN_DESC_TOP rows of the fused
+# order, at most OWN_DESC_MAX_CHARS characters with the name; (3) a row of a shared root
+# needs a cosine ``recall.shared_root_margin`` (0.02) higher than the floor, except the
+# store's rank 1, which the floor and the rescue judge as before. An own-root row
+# is a row of the run's own project folder (``MemoryFile.own``). Log notes: ``:own1`` (a row
+# was moved in), ``:desc1`` (the description row), ``:shared_cutN`` (rows the margin cut).
+OWN_ROWS_ENV = "NOBLIVION_RECALL_OWN_ROWS"
+OWN_ROWS_KEY = "recall.own_rows"
+OWN_ROWS_DEFAULT = True
+SHARED_MARGIN_ENV = "NOBLIVION_RECALL_SHARED_ROOT_MARGIN"
+SHARED_MARGIN_KEY = "recall.shared_root_margin"
+SHARED_MARGIN_DEFAULT = 0.02
+SHARED_MARGIN_MAX = 1.0
+OWN_DESC_TOP = 3
+OWN_DESC_MAX_CHARS = 150
 # The pull path (NOBLIVION-151): the store's top hit is returned although it is
 # under the floor, from this cosine up, and marked ``weak match``.
 WEAK_MATCH_MIN_SCORE = 0.60
@@ -1239,6 +1260,7 @@ class IndexLine:
         "model",
         "source",
         "lexical",
+        "desc_cap",
     )
 
     def __init__(
@@ -1258,6 +1280,7 @@ class IndexLine:
         trust_ranking: str = "",
         model: str = "",
         source: str = "",
+        desc_cap: int = 0,
     ):
         self.rank = rank
         self.mid = mid
@@ -1291,6 +1314,9 @@ class IndexLine:
         # (``rerank_index``): None when the re-rank did not run, 0.0 for a row with
         # no such word in its file or with no local file. Read by ``rescue_ids``.
         self.lexical: Optional[float] = None
+        # NOBLIVION-160. Not 0 for a description row (``own_description_row``): the most
+        # characters the name and the description take together on the row.
+        self.desc_cap = desc_cap
         # W6 (F1) and W7 (F2). The two W5 fields of the LOCAL file this row
         # names, filled by ``annotate_index`` before rendering. Both are "" for
         # a row whose title names no local file and for the un-annotated corpus
@@ -1370,6 +1396,8 @@ class IndexLine:
         suffix = f" ({name})"
         room = INDEX_ROW_MAX_CHARS - len(prefix) - len(suffix)
         limit = max(1, min(INDEX_RULE_MAX_CHARS, room))
+        if self.desc_cap > 0 and not self.rule:
+            limit = max(1, min(limit, self.desc_cap - len(suffix) + 3))
         text = self.rule or self.summary
         rule = _at_word_boundary(strip_host_paths(_neutral(text, 2 * limit)), limit)
         return prefix, rule, suffix, limit
@@ -2715,12 +2743,16 @@ def score_window(environ: Optional[Mapping[str, str]] = None) -> float:
     return value if 0.0 <= value <= SCORE_WINDOW_MAX else SCORE_WINDOW_DEFAULT
 
 
+def _has_rule_and_apply(ln: IndexLine) -> bool:
+    return bool((ln.rule or "").strip() and (ln.apply_block or "").strip())
+
+
 def drop_unruled_index(lines: Sequence[IndexLine]) -> Tuple[List[IndexLine], int]:
     """NOBLIVION-121. The rows whose local file has both a rule and an apply
     text, in the order given, and how many rows were dropped. The rows must be
     annotated first (``annotate_index``): a row with no local file has neither
     field and is dropped."""
-    kept = [ln for ln in lines if (ln.rule or "").strip() and (ln.apply_block or "").strip()]
+    kept = [ln for ln in lines if _has_rule_and_apply(ln)]
     return kept, len(lines) - len(kept)
 
 
@@ -2770,16 +2802,149 @@ def window_index(lines: Sequence[IndexLine], window: float) -> Tuple[List[IndexL
 
 
 def floor_index(
-    lines: Sequence[IndexLine], floor: float, keep: Optional[Set[int]] = None
+    lines: Sequence[IndexLine],
+    floor: float,
+    keep: Optional[Set[int]] = None,
+    raised: Optional[Set[int]] = None,
+    margin: float = 0.0,
 ) -> Tuple[List[IndexLine], int]:
     """WI-6. The rows at or above the floor, in the order given, and how many of
     them carry no score. A row with no score is kept (see INDEX_MIN_SCORE_ENV).
     ``keep`` (NOBLIVION-151, ``rescue_ids``) are the ids of rows that stay
-    although they are under the floor.
+    although they are under the floor. ``raised`` (NOBLIVION-160) are the ids of
+    rows that need the floor plus ``margin``: the rows of a shared root.
     """
     held = keep or set()
-    kept = [ln for ln in lines if ln.score is None or ln.score >= floor or int(ln.mid) in held]
+    up = raised or set()
+
+    def passes(ln: IndexLine) -> bool:
+        if ln.score is None or int(ln.mid) in held:
+            return True
+        return ln.score >= (floor + margin - 1e-9 if int(ln.mid) in up else floor)
+
+    kept = [ln for ln in lines if passes(ln)]
     return kept, sum(1 for ln in kept if ln.score is None)
+
+
+def own_rows(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """NOBLIVION-160. True when the own-project rows are on: the reserved own-root
+    row, the description row and the shared-root margin. On unless
+    ``NOBLIVION_RECALL_OWN_ROWS`` / ``recall.own_rows`` is off."""
+    env = os.environ if environ is None else environ
+    return bool(
+        _sibling_module("hook_config").switch(OWN_ROWS_ENV, OWN_ROWS_DEFAULT, env, OWN_ROWS_KEY)
+    )
+
+
+def shared_root_margin(environ: Optional[Mapping[str, str]] = None) -> float:
+    """NOBLIVION-160. How much higher than the floor a row of a shared root needs its
+    cosine: ``NOBLIVION_RECALL_SHARED_ROOT_MARGIN``, else ``recall.shared_root_margin``,
+    else SHARED_MARGIN_DEFAULT. 0 is no margin. A value that is not a finite number from
+    0 to SHARED_MARGIN_MAX is the default: a malformed setting must not close the margin."""
+    env = os.environ if environ is None else environ
+    raw = _sibling_module("hook_config").setting(SHARED_MARGIN_ENV, SHARED_MARGIN_KEY, "", env)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return SHARED_MARGIN_DEFAULT
+    return value if 0.0 <= value <= SHARED_MARGIN_MAX else SHARED_MARGIN_DEFAULT
+
+
+def shared_row_ids(lines: Sequence[IndexLine], by_name: Mapping[str, MemoryFile]) -> Set[int]:
+    """NOBLIVION-160. The ids of the rows whose local file is not a file of the own
+    project folder: the rows of the user-wide folder and of the shared roots. A row with no
+    local file is not here (nothing says where it is from). Empty when the corpus holds
+    no own file, because then the session has no own folder to rank against."""
+    if not any(md.own for md in by_name.values()):
+        return set()
+    out: Set[int] = set()
+    for ln in lines:
+        md = file_of(ln, by_name)
+        if md is not None and not md.own:
+            out.add(int(ln.mid))
+    return out
+
+
+def own_description_row(
+    lines: Sequence[IndexLine], by_name: Mapping[str, MemoryFile]
+) -> Tuple[Optional[IndexLine], int]:
+    """NOBLIVION-160. The description row, and the number of rows of ``lines`` that
+    rank above it.
+
+    ``lines`` are the annotated rows in the fused order, before ``rules_only`` drops
+    the rows with no rule text. The row is the first of the first OWN_DESC_TOP rows
+    that is a note of the own folder with neither ``rule:`` nor ``apply:`` and has a
+    description. It is a copy that shows the name and the description, at most
+    OWN_DESC_MAX_CHARS characters together, and no apply text. ``(None, 0)`` when
+    there is none."""
+    for pos, ln in enumerate(list(lines)[:OWN_DESC_TOP]):
+        md = file_of(ln, by_name)
+        if md is None or not md.own or (ln.rule or "").strip() or (ln.apply_block or "").strip():
+            continue
+        text = (md.description or "").strip()
+        if not text:
+            continue
+        row = IndexLine(
+            rank=ln.rank,
+            mid=ln.mid,
+            title=ln.title,
+            summary=text,
+            score=ln.score,
+            fused=ln.fused,
+            trust=ln.trust,
+            trials=ln.trials,
+            trust_prior=ln.trust_prior,
+            keyword=ln.keyword,
+            model=ln.model,
+            source=ln.source,
+            desc_cap=OWN_DESC_MAX_CHARS,
+        )
+        return row, pos
+    return None, 0
+
+
+def place_own_rows(
+    rows: Sequence[IndexLine],
+    k: int,
+    by_name: Mapping[str, MemoryFile],
+    desc: Optional[IndexLine] = None,
+    desc_pos: int = 0,
+) -> Tuple[List[IndexLine], int, int]:
+    """NOBLIVION-160. The rows to show, at most ``k``, with the own-project rows in.
+
+    ``rows`` are the rows that passed every cut, in the order to show. The description
+    row ``desc`` goes in at ``desc_pos``. When none of the first ``k`` rows is a row of
+    the own folder, the best one below them (the first in order) takes the place of the
+    lowest row. A row that is put in never gives its place to the other one. Returns
+    ``(rows, 1 if an own row was moved in, 1 if the description row is in)``. With
+    ``k`` under 2 nothing changes: one row cannot be shared."""
+    rows = list(rows)
+    if k < 2:
+        return rows[:k], 0, 0
+    if desc is not None:
+        rows.insert(min(max(desc_pos, 0), len(rows)), desc)
+
+    def own_rule_row(ln: IndexLine) -> bool:
+        md = file_of(ln, by_name)
+        return md is not None and md.own and ln is not desc
+
+    head = rows[:k]
+    reserved: Optional[IndexLine] = None
+    if not any(own_rule_row(ln) for ln in head):
+        reserved = next((ln for ln in rows[k:] if own_rule_row(ln)), None)
+    must = [ln for ln in (desc, reserved) if ln is not None]
+    for ln in must:
+        if not any(ln is h for h in head):
+            # The lowest row that is not put in, and not the only own row if it can be helped.
+            spare = [i for i in range(len(head)) if not any(head[i] is m for m in must)]
+            plain = [i for i in spare if not own_rule_row(head[i])]
+            pick = plain or spare
+            if pick:
+                del head[pick[-1]]
+            head.append(ln)
+    order = {id(ln): i for i, ln in enumerate(rows)}
+    head.sort(key=lambda ln: order[id(ln)])
+    return head, 1 if reserved is not None else 0, 1 if desc is not None else 0
 
 
 def memory_dir(environ: Optional[Mapping[str, str]] = None) -> Optional[str]:
@@ -2889,8 +3054,12 @@ def load_session_corpus(environ: Optional[Mapping[str, str]] = None) -> List[Mem
             _make_dirs(os.path.dirname(cache_path))  # never makes a deleted data dir (NOBLIVION-28)
         except OSError:
             cache_path = None
+    own_folder = memory_dir(environ)
     for folder in memory_dirs(environ):
+        # NOBLIVION-160. The run's own project folder is the first folder of the list.
+        is_own = own_folder is not None and os.path.realpath(folder) == os.path.realpath(own_folder)
         for md in load_memory_corpus(folder, cache_path):
+            md.own = is_own
             seen.setdefault(md.rel_path, md)
     return [seen[name] for name in sorted(seen)]
 
@@ -3111,6 +3280,7 @@ def renumber(lines: Sequence[IndexLine]) -> List[IndexLine]:
             keyword=ln.keyword,
             model=ln.model,
             source=ln.source,
+            desc_cap=ln.desc_cap,
         )
         for i, ln in enumerate(lines, start=1)
     ]
@@ -3568,8 +3738,11 @@ def _serve_index(
     rules_asked = rules_only(environ)
     rules_on = rules_asked and rule_rows and bool(memory_dirs(environ))
     row_cap = prompt_rows(environ)
+    own_on = own_rows(environ)
     hub_span = _sibling_module("hub_stats").window_days(environ)
     changed = rules_on or row_cap > 0 or hub_span > 0
+    desc_row: Optional[IndexLine] = None
+    desc_ahead = 0
     local = hygiene or rerank or rule_rows
     # P3. Ask for more than will be shown, so that a dropped row costs the list
     # nothing: INDEX_CANDIDATE_TOP_K rows, not the shown k, and the route bounds
@@ -3652,10 +3825,27 @@ def _serve_index(
         # NOBLIVION-151. The rescue reads the BM25 value of the re-rank, so it
         # needs the re-rank; without it nothing is rescued.
         in_lines = {int(ln.mid) for ln in lines}
+        # NOBLIVION-160. A row of a shared root needs the floor plus the margin. The
+        # store's rank 1 is left out: the floor and the rescue above judge it, as before.
+        margin = shared_root_margin(environ) if own_on else 0.0
+        raised = shared_row_ids(lines, by_name) if margin > 0.0 else set()
+        if candidates:
+            raised.discard(int(candidates[0].mid))
         rescued = rescue_ids(candidates, floor) & in_lines
-        lines, unscored = floor_index(lines, floor, rescued)
+        lines, unscored = floor_index(lines, floor, rescued, raised, margin)
         trace("relevance_floor", lines)
         note += f":floor{len(lines)}of{ranked}"
+        if raised:
+            cut = sum(
+                1
+                for ln in candidates
+                if int(ln.mid) in raised
+                and ln.score is not None
+                and floor <= ln.score < floor + margin - 1e-9
+                and int(ln.mid) not in rescued
+            )
+            if cut:
+                note += f":shared_cut{cut}"
         if unscored:
             note += f":unscored{unscored}"
         if rescued:
@@ -3686,6 +3876,11 @@ def _serve_index(
         # Annotated here, on the whole ranked list, because the admission reads
         # the file's rule and apply.
         annotate_index(lines, by_name)
+        if own_on and by_name:
+            # NOBLIVION-160. Before the drop: the description row is a row the drop removes.
+            desc_row, desc_ahead = own_description_row(lines, by_name)
+            if desc_row is not None:
+                desc_ahead = sum(1 for ln in lines[:desc_ahead] if _has_rule_and_apply(ln))
         lines, unruled = drop_unruled_index(lines)
         trace("missing_rule_or_apply", lines)
         note += f":rules_drop{unruled}"
@@ -3706,6 +3901,13 @@ def _serve_index(
         )
         trace("hub_row_cap", lines)
         note += f":hub{hub_seen}" + (f":hubcut{hub_cut}" if hub_cut else "")
+    if desc_row is not None and desc_row.title in hub_names:
+        desc_row = None  # a hub note fits almost every prompt: no description row for it
+    if own_on and by_name and k_shown >= 2:
+        # NOBLIVION-160. After the hub demotion, before the cut to k.
+        lines, own_moved, desc_in = place_own_rows(lines, k_shown, by_name, desc_row, desc_ahead)
+        trace("own_rows", lines)
+        note += (":own1" if own_moved else "") + (":desc1" if desc_in else "")
     if row_cap > 0 and min(len(lines), k) > k_shown:
         note += f":rowcap{min(len(lines), k) - k_shown}"
     if local or floor is not None:

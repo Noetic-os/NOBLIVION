@@ -6,6 +6,8 @@
     "hub_days": 14,
     "score_window": 0,
     "task_file": 1,
+    "own_rows": 1,
+    "shared_root_margin": 0.02,
     "env": {
       "NOBLIVION_RECALL_INDEX": "1",
       "NOBLIVION_RECALL_INDEX_APPLY": "1",

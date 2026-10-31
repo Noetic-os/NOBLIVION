@@ -228,6 +228,27 @@ The pull path (the `noblivion_recall` tool with a query) is the other side of
 the same rule. It always returns the store's top hit when its score is 0.60 or
 more, even under the floor, and marks it `weak match` in its line.
 
+#### Rows of the project folder
+
+In a project folder the home root outranks the notes of the folder, and the
+rules-only path (below) hides every project note that has no `rule:` and
+`apply:`. A replay of one project folder showed 0 own rows of 130. With
+`NOBLIVION_RECALL_OWN_ROWS` (`recall.own_rows`, on) three rules bring them back:
+
+- One of the shown rows is reserved for the best row of the project folder that
+  passed the floor, when none of the first rows is one.
+- One description row may show: the name and the description (150 characters
+  together, no apply text) of a project note with no `rule:` and `apply:` that is
+  in the first 3 rows of the ranking. At most one shows.
+- A row of the home folder or of another shared root needs the floor plus
+  `NOBLIVION_RECALL_SHARED_ROOT_MARGIN` (`recall.shared_root_margin`, `0.02`).
+  The store's rank 1 is left out: the floor and the rescue judge it as before.
+
+The row count stays at most `recall.prompt_rows` (5). The line in `recall.log`
+has the notes `own1` (a project row was moved in), `desc1` (the description row)
+and `shared_cutN` (rows the margin cut). This amends the rule of NOBLIVION-121
+for the notes of the project folder only.
+
 ### Rules only prompt path
 
 The ranked index can fill a prompt with rows that give the model little to

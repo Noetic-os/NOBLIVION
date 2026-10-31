@@ -214,6 +214,23 @@ def busy(doc: Mapping[str, Any]) -> bool:
     return any(m["load_1m"] > BUSY_LOAD * m["cpus"] for m in marks)
 
 
+NAME_LINE = re.compile(r"^name:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def note_names(folder: Path) -> set[str]:
+    """The ``name`` of every note of a memory folder: the text in the brackets of a row."""
+    out: set[str] = set()
+    for path in folder.glob("*.md"):
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace")[:2000]
+        except OSError:
+            continue
+        found = NAME_LINE.search(head)
+        if found:
+            out.add(found.group(1).strip("'\""))
+    return out
+
+
 def slugify(folder: str) -> str:
     """The Claude Code project folder name of an absolute path."""
     return re.sub(r"[^A-Za-z0-9-]", "-", folder)
@@ -1253,11 +1270,16 @@ class Suite:
             births = self.rt.note_births(self.rt.all_transcripts(paths), names)
             work = private_dir(self.work / label / slug)
             shutil.copyfile(self.table_of(slug), work / "guard-table.json")
+            own = note_names(memory)
             for arm, settings in arms.items():
                 every = arm not in typed_only
-                prompts[arm] += self.rows.run_arm(
+                got = self.rows.run_arm(
                     self.rt, paths, self.env, settings, work, arm, str(memory), births, every
                 )
+                for prompt in got:  # NOBLIVION-160: the rows of the folder's own notes
+                    prompt["folder"] = slug
+                    prompt["own_rows"] = sum(1 for name in prompt["names"] if name in own)
+                prompts[arm] += got
                 states[arm].update(fail_states(read_lines(work / arm / "cache" / "recall.log")))
         return {"prompts": prompts, "states": states, "left_out": left_out}
 
@@ -1271,8 +1293,20 @@ class Suite:
             later = self.scan.later(prompt["session"], "main", prompt["moment"].timestamp())
             resent += prompt["chars"] / 4 * (later or 0)
         total_chars = sum(p["chars"] for p in prompts)
+        folders: dict[str, Counter] = defaultdict(Counter)
+        for prompt in typed:  # NOBLIVION-160: rows of the notes of the folder itself
+            folder = folders[prompt.get("folder", "")]
+            folder.update(
+                prompts=1,
+                prompts_with_rows=1 if prompt["names"] else 0,
+                rows=len(prompt["names"]),
+                own_rows=prompt.get("own_rows", 0),
+                chars=prompt["chars"],
+            )
         report.update(
             {
+                "own_rows": sum(c["own_rows"] for c in folders.values()),
+                "by_folder": {name: dict(count) for name, count in sorted(folders.items())},
                 "rows_max": max((len(p["names"]) for p in typed), default=0),
                 "prompt_events": len(prompts),
                 "prompt_events_by_kind": dict(Counter(p["kind"] for p in prompts)),
@@ -2178,6 +2212,7 @@ METRICS: tuple[tuple[str, str, str], ...] = (
     ("prompt chars per hook event", "prompt_rows.arms.shipped.chars_per_event", "down"),
     ("prompt chars p95", "prompt_rows.arms.shipped.chars_p95", "down"),
     ("prompt rows per prompt", "prompt_rows.arms.shipped.rows_per_prompt", "down"),
+    ("prompt rows of the folder's own notes", "prompt_rows.arms.shipped.own_rows", "up"),
     ("prompt hub share", "prompt_rows.arms.shipped.hub_share", "down"),
     ("hub note, top session share", "prompt_rows.arms.shipped.hub_notes_max_session_share", "down"),
     ("prompt hook ms p50", "prompt_rows.arms.shipped.ms_p50", "down"),

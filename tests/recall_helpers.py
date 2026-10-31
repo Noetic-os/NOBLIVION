@@ -183,6 +183,10 @@ def hook_env(tmp_path: Path, **extra: str) -> dict[str, str]:
         # stores spread scores at will, so a test of another rule turns it off;
         # a test of the window itself sets the variable.
         "NOBLIVION_RECALL_SCORE_WINDOW": "0",
+        # NOBLIVION-160. The own-project rows (a reserved own-root row, a description
+        # row, the shared-root margin) change which rows a rule-only prompt shows. A
+        # test of another rule turns them off; a test of them sets the variable.
+        "NOBLIVION_RECALL_OWN_ROWS": "0",
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     }
     env.update(extra)

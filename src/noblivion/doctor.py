@@ -75,13 +75,13 @@ _INT_KEYS = frozenset(
 _FLOAT_KEYS = frozenset(
     "recall.timeout_s recall.min_score trust.prior_mined dedup.min_cosine "
     "dedup.daily_cost_cap_usd dedup.timeout_s dedup.min_interval_s dedup.price_in_per_mtok "
-    "dedup.price_out_per_mtok miner.max_run_s recall.score_window".split()
+    "dedup.price_out_per_mtok miner.max_run_s recall.score_window recall.shared_root_margin".split()
 )
 _SWITCH_KEYS = frozenset(
     "embedding.allow_download embedding.allow_remote "
     "embedding.remote_include_mined trust.events trust.citation_use "
     "trust.correction_contradict trust.behaviour_use recall.rules_only recall.task_file "
-    "miner.enabled "
+    "recall.own_rows miner.enabled "
     "guard.rewrite guard.ask guard.act_shadow guard.everyday_triggers guard.quarantine".split()
 )
 _CHOICES = {
@@ -123,6 +123,8 @@ ENV_KEYS = {
     "NOBLIVION_RECALL_RULES_ONLY": "recall.rules_only",
     "NOBLIVION_RECALL_SCORE_WINDOW": "recall.score_window",
     "NOBLIVION_RECALL_TASK_FILE": "recall.task_file",
+    "NOBLIVION_RECALL_OWN_ROWS": "recall.own_rows",
+    "NOBLIVION_RECALL_SHARED_ROOT_MARGIN": "recall.shared_root_margin",
     "NOBLIVION_RECALL_PROMPT_ROWS": "recall.prompt_rows",
     "NOBLIVION_RECALL_HUB_DAYS": "recall.hub_days",
     "NOBLIVION_RECALL_HUB_ROWS": "recall.hub_rows",
@@ -351,6 +353,8 @@ def _valid(key: str, value: object) -> bool:
             return -1 <= number <= 1
         if key == "recall.score_window":
             return 0 <= number <= 2
+        if key == "recall.shared_root_margin":
+            return 0 <= number <= 1
         if key == "dedup.min_cosine":
             return 0 <= number <= 1
         if key == "dedup.timeout_s":

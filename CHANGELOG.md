@@ -22,6 +22,19 @@ All notable changes to NOBLIVION. The format follows
   Replay of 105,303 logged Bash calls with one `pytest` rule: 3 hits and 1 rewrite before, 18 hits and 5
   rewrites after, 0 rewrites that apply twice. (d) The memory fields check and the table build report a
   `violates` regex that ends in a fixed path (`docker cp .*:/app/`); the rule is kept.
+- Prompt recall keeps the notes of the project folder (NOBLIVION-160, amends NOBLIVION-121 for the notes of
+  the project folder only). In a project folder the home notes outranked the folder's own notes, and
+  `rules_only` hid every own note without `rule:` and `apply:`. Three rules, behind the new switch
+  `recall.own_rows` (on): one of the shown rows is the best row of the project folder that passed the floor,
+  when none of the first rows is one; one description row (name and description, 150 characters together,
+  no apply text) may show for a project note with no rule fields that is in the first 3 rows (not for a hub
+  note); a row of the home folder or of another shared root needs the floor plus the new setting
+  `recall.shared_root_margin` (0.02), except the store's rank 1, which the floor and the rescue judge as
+  before. The score window of NOBLIVION-151 stays off, so this uses the rank-1 rescue and the weak-match pull
+  hit. Replay of the real prompts of two project folders (613 typed prompts, a read-only copy of the notes):
+  rows from the project folder's own notes 0 of 951 before and 240 of 891 after (0 of 130 and 26 of 130 in
+  the folder with 26 prompts); characters per prompt 763 before and 613 after (2,291 and 2,195 in that
+  folder). `tools/eval_suite.py` now reports `own_rows` and rows per folder.
 - Keyword-only mode shows rows only when the top row is relevant, and the embedder is warm at the first
   prompt (NOBLIVION-153, takes in NOBLIVION-97 and NOBLIVION-82). Without a cosine no floor can judge a
   row, so every prompt with one non-stop word got its five rows. The prompt index now keeps the rows only

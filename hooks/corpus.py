@@ -224,7 +224,17 @@ class MemoryFile:
     ``tokens`` is the sub-token list P1h scores; it is computed once per file.
     """
 
-    __slots__ = ("rel_path", "name", "kind", "description", "body", "tokens", "rule", "apply_block")
+    __slots__ = (
+        "rel_path",
+        "name",
+        "kind",
+        "description",
+        "body",
+        "tokens",
+        "rule",
+        "apply_block",
+        "own",
+    )
 
     def __init__(
         self,
@@ -248,6 +258,10 @@ class MemoryFile:
         # that has never been annotated is not a different object here.
         self.rule = rule
         self.apply_block = apply_block
+        # NOBLIVION-160. True for a file of the run's own project folder, set by the
+        # session loader (``load_session_corpus``). False for a file of the user-wide
+        # folder or of a shared root, and for a file read on its own.
+        self.own = False
 
     @property
     def dropped(self) -> bool:
