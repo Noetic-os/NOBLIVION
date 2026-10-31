@@ -81,7 +81,7 @@ _SWITCH_KEYS = frozenset(
     "embedding.allow_download embedding.allow_remote "
     "embedding.remote_include_mined trust.events trust.citation_use "
     "trust.correction_contradict trust.behaviour_use recall.rules_only recall.task_file "
-    "recall.own_rows recall.guard_only_landing miner.enabled "
+    "memory.similar_hint recall.own_rows recall.older_mark recall.guard_only_landing miner.enabled "
     "guard.rewrite guard.ask guard.act_shadow guard.everyday_triggers guard.quarantine".split()
 )
 _CHOICES = {
@@ -124,6 +124,8 @@ ENV_KEYS = {
     "NOBLIVION_RECALL_SCORE_WINDOW": "recall.score_window",
     "NOBLIVION_RECALL_TASK_FILE": "recall.task_file",
     "NOBLIVION_RECALL_OWN_ROWS": "recall.own_rows",
+    "NOBLIVION_MEMORY_SIMILAR_HINT": "memory.similar_hint",
+    "NOBLIVION_RECALL_OLDER_MARK": "recall.older_mark",
     "NOBLIVION_RECALL_SHARED_ROOT_MARGIN": "recall.shared_root_margin",
     "NOBLIVION_RECALL_GUARD_ONLY_LANDING": "recall.guard_only_landing",
     "NOBLIVION_RECALL_PROMPT_ROWS": "recall.prompt_rows",
@@ -873,6 +875,50 @@ def diagnose(
     }
 
 
+def duplicate_pairs(
+    *,
+    data_dir: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    min_cosine: float | None = None,
+) -> dict:
+    """Pairs of notes that say nearly the same, from the vectors in the store (NOBLIVION-156).
+
+    A local read of the database: no judge, no network call and no paid call, whatever
+    ``dedup.judge`` says. The pair names are note file names, so this part of the report
+    is opt-in (``--duplicates``). Returns ``{"status", "min_cosine", "count", "pairs"}``;
+    ``status`` is ``unavailable`` when the database, the vectors or numpy cannot be read."""
+    from noblivion import dedup, embedding
+
+    env = dict(os.environ if env is None else env)
+    cosine = dedup.DUPLICATE_COSINE if min_cosine is None else min_cosine
+    out: dict = {"status": "unavailable", "min_cosine": cosine, "count": 0, "pairs": []}
+    folder = Path(data_dir).expanduser() if data_dir is not None else config.data_dir(env)
+    path = folder / config.DB_FILE
+    if not path.is_file() or path.is_symlink():
+        return out
+    try:
+        settings = config.load_settings(env)
+        conn = db.open_db(path, allow_migrate=False)
+        try:
+            found = dedup.duplicate_pairs(
+                conn, settings.namespace, embedding.load_embedding_settings(env).model_id,
+                min_cosine=cosine,
+            )  # fmt: skip
+        finally:
+            conn.close()
+    except (OSError, ValueError, RuntimeError, ImportError, sqlite3.Error, db.SchemaError):
+        return out
+    out.update(
+        status="warn" if found else "pass",
+        count=len(found),
+        pairs=[
+            {"root": c.root, "a": c.path_a, "b": c.path_b, "cosine": round(c.cosine, 4)}
+            for c in found[:MAX_ITEMS]
+        ],
+    )
+    return out
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message):
         self.exit(2, "doctor: invalid arguments; use --help.\n")
@@ -883,6 +929,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--root")
+    parser.add_argument(
+        "--duplicates",
+        action="store_true",
+        help="also list pairs of notes at cosine 0.92 or more (local; no paid call)",
+    )
     parser.add_argument(
         "--timeout", type=float, default=1.0, help="Per-check limit in seconds (0.05 to 2)."
     )
@@ -901,11 +952,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for k in CHECK_KEYS
             },
         }
+    if args.duplicates:
+        report["duplicates"] = duplicate_pairs(data_dir=args.data_dir)
     if args.json:
         print(json.dumps(report, sort_keys=True))
     else:
         for key, item in report["checks"].items():
             print(f"{key}: {item['status']}: {item['message']}")
+        if args.duplicates:
+            dup = report["duplicates"]
+            if dup["status"] == "unavailable":
+                print("duplicate_pairs: unavailable: The vectors could not be read.")
+            else:
+                print(
+                    f"duplicate_pairs: {dup['status']}: {dup['count']} pairs at cosine "
+                    f"{dup['min_cosine']:.2f} or more."
+                )
+                for pair in dup["pairs"]:
+                    print(f"  {pair['cosine']:.3f} {pair['root']}: {pair['a']} <> {pair['b']}")
     return report["exit_code"]
 
 

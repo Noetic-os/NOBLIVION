@@ -26,6 +26,7 @@ import stat
 import sys
 import unicodedata
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -236,6 +237,7 @@ class MemoryFile:
         "own",
         "scope",
         "triggers",
+        "stamp",
     )
 
     def __init__(
@@ -250,6 +252,7 @@ class MemoryFile:
         apply_block: str = "",
         scope: str = "",
         triggers: Sequence[str] = (),
+        stamp: float = 0.0,
     ):
         self.rel_path = rel_path
         self.name = name
@@ -270,6 +273,9 @@ class MemoryFile:
         # (with their ``glob:``, ``tool:`` and ``phrase:`` prefixes), for ``landing_note``.
         self.scope = scope
         self.triggers = tuple(triggers)
+        # NOBLIVION-156. When the file was last written, in seconds: its ``modified:`` line,
+        # else its modification time. 0.0 when unknown. The older-row mark reads it.
+        self.stamp = stamp
 
     @property
     def dropped(self) -> bool:
@@ -600,10 +606,27 @@ def memory_name(base: str, meta: Mapping[str, Any]) -> str:
     return name or (base[:-3] if base.endswith(".md") else base)
 
 
+def _stamp_of(meta: Mapping[str, Any], mtime: float) -> float:
+    """NOBLIVION-156. The time a file was written: the ``modified:`` front matter line (the
+    host writes it, and it survives a copy), else ``mtime``. A value that is not an ISO date
+    is ignored."""
+    raw = _rule_field(meta, "modified")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            when = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return mtime
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return when.timestamp()
+    return mtime
+
+
 def _read_memory_file(path: str, base: str) -> Optional[MemoryFile]:
     """One memory file as the hook reads it, or None for an empty file."""
     with open(path, "rb") as fh:
         raw = fh.read()
+        mtime = os.fstat(fh.fileno()).st_mtime
     if not raw.strip():
         return None
     text = raw.decode("utf-8", errors="replace")
@@ -625,6 +648,7 @@ def _read_memory_file(path: str, base: str) -> Optional[MemoryFile]:
         apply_block=apply_block,
         scope=(scope_v if isinstance(scope_v, str) else "").strip().lower(),
         triggers=read_trigger_items(text, keep_kind=True),
+        stamp=_stamp_of(meta, mtime),
     )
 
 
@@ -636,7 +660,7 @@ def _read_memory_file(path: str, base: str) -> Optional[MemoryFile]:
 # a token holds only ``a-z0-9_.-/`` and the split of one string is much cheaper than the decode of
 # a list of 400 strings.
 CACHE_BODY_CHARS = 200
-_CACHE_FORMAT = 2
+_CACHE_FORMAT = 3
 # The inputs of the parse, so a change of the tokenizer or of the weight drops every entry.
 _CACHE_SIGNATURE = repr(
     (
@@ -682,9 +706,11 @@ def _save_corpus_cache(path: str, files: Dict[str, Any]) -> None:
 
 def _file_from_cache(base: str, row: Any) -> Optional[MemoryFile]:
     """A ``MemoryFile`` from a cache row, or None when the row has not the expected shape."""
-    if not (isinstance(row, list) and len(row) == 11):
+    if not (isinstance(row, list) and len(row) == 12):
         return None
-    name, kind, description, body, rule, apply_block, tokens, scope, triggers = row[2:]
+    name, kind, description, body, rule, apply_block, tokens, scope, triggers, stamp = row[2:]
+    if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
+        return None
     if not all(isinstance(x, str) for x in (name, kind, description, body, rule, apply_block)):
         return None
     if not (isinstance(tokens, str) and isinstance(scope, str)):
@@ -692,7 +718,17 @@ def _file_from_cache(base: str, row: Any) -> Optional[MemoryFile]:
     if not (isinstance(triggers, list) and all(isinstance(t, str) for t in triggers)):
         return None
     return MemoryFile(
-        base, name, kind, description, body, tokens.split(), rule, apply_block, scope, triggers
+        base,
+        name,
+        kind,
+        description,
+        body,
+        tokens.split(),
+        rule,
+        apply_block,
+        scope,
+        triggers,
+        float(stamp),
     )
 
 
@@ -760,6 +796,7 @@ def load_memory_corpus(folder: str, cache_path: Optional[str] = None) -> List[Me
                 " ".join(md.tokens),
                 md.scope,
                 list(md.triggers),
+                md.stamp,
             ]
         kept[key] = row
         out.append(md)

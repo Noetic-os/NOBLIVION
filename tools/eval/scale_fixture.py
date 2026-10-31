@@ -52,6 +52,15 @@ holds the token ``{FIXTURE_ROOT}``: replace it with the output folder. A query
 runs in the shard that holds its lesson; a V5 query names its ``near_lesson``.
 SMALL has one project, so its V4 folder is ``/work/outside``, which has no notes.
 
+Supersede pairs (C21, NOBLIVION-156). 20 pairs of an older and a newer note on one subject
+are written apart from the scales, in ``supersede/``: ``pairs.json`` (the query, the two note
+names, the values, the expected outcome) and ``supersede/projects/-work-supersede/memory/``
+(40 notes; the older note has an earlier ``modified:`` line and file time). The two notes of a
+pair share 2 triggers. Pairs 1 to 15 have no link between them: the newer note must rank above
+the older and the older row carries the mark. Pairs 16 to 20 have ``supersedes:`` in the newer
+note: the older note must not be found. To rank them among many notes, copy the folder into a
+shard as one more project. The query holds neither value. ``--verify`` checks the files.
+
 Query kinds: V1 lexical; V2 paraphrase; V3 task-shaped; V4 the V3 text from
 another project's folder; V5 near-miss negatives; V6 a path to a task file that
 holds the V3 text; V7 a ``<task-notification>`` prompt. Also CMD (6 spellings of
@@ -75,18 +84,21 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import random
 import re
 import sys
 import time
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 WORDS_FILE = HERE / "scale_fixture_words.json"
 LESSONS_FILE = HERE / "scale_fixture_lessons.json"
+PAIRS_FILE = HERE / "scale_fixture_pairs.json"
 
 DEFAULT_SEED = 20261030
 FORMAT_VERSION = 1
@@ -1414,6 +1426,90 @@ def write_scale(scale: Scale, lessons: list[Lesson], words: Words, seed: int, ou
     return summary
 
 
+PAIR_PROJECT = "-work-supersede"
+PAIR_OLD_STAMP = (2026, 3, 2)  # year, month, day of the first older note
+PAIR_NEW_STAMP = (2026, 6, 2)
+
+
+def _pair_stamp(base: tuple[int, int, int], number: int) -> datetime:
+    return datetime(base[0], base[1], base[2], 9, 0, tzinfo=timezone.utc) + timedelta(days=number)
+
+
+def _pair_note(
+    row: dict, role: str, value: str, stamp: datetime, links: str = ""
+) -> tuple[str, str]:
+    """``(file name, text)`` of one note of a supersede pair."""
+    stem = f"feedback_{row['slug']}" + ("" if role == "old" else "_ruling")
+    rule = row["rule"].format(v=value)
+    lines = [
+        "---",
+        f"name: {stem}",
+        f"description: {rule}",
+        "metadata:",
+        "  type: feedback",
+        f"  modified: {stamp.strftime('%Y-%m-%dT%H:%M:%S.000Z')}",
+        f"rule: {rule}",
+        "apply: " + json.dumps(f"Check the value before you act: {rule}"),
+        "scope: always",
+        "triggers: [" + ", ".join(row["triggers"]) + "]",
+    ]
+    if links:
+        lines.append(f"supersedes: {links}")
+    lines += ["---", "", rule, "", f"**Why:** a review set this on {stamp.date().isoformat()}.", ""]
+    return stem + ".md", "\n".join(lines)
+
+
+def build_pairs(rows: list[dict]) -> list[dict]:
+    """The 20 supersede pairs: their notes, times and expected outcome."""
+    out = []
+    for number, row in enumerate(rows):
+        old_stamp = _pair_stamp(PAIR_OLD_STAMP, number)
+        new_stamp = _pair_stamp(PAIR_NEW_STAMP, number)
+        old_name, old_text = _pair_note(row, "old", row["old"], old_stamp)
+        links = old_name[:-3] if row["explicit"] else ""
+        new_name, new_text = _pair_note(row, "new", row["new"], new_stamp, links)
+        out.append(
+            {
+                "id": row["id"],
+                "query": row["query"],
+                "old_note": old_name,
+                "new_note": new_name,
+                "old_value": row["old"],
+                "new_value": row["new"],
+                "shared_triggers": list(row["triggers"]),
+                "explicit": row["explicit"],
+                "expect": "older_withdrawn" if row["explicit"] else "newer_first_older_marked",
+                "old_modified": old_stamp.isoformat(),
+                "new_modified": new_stamp.isoformat(),
+                "_files": [(old_name, old_text, old_stamp), (new_name, new_text, new_stamp)],
+            }
+        )
+    return out
+
+
+def write_pairs(out: Path, pairs_raw: bytes) -> dict:
+    """Write ``supersede/``. Returns the manifest entry."""
+    pairs = build_pairs(json.loads(pairs_raw))
+    root = out / "supersede"
+    memory = root / "projects" / PAIR_PROJECT / "memory"
+    memory.mkdir(parents=True)
+    listing = []
+    for pair in pairs:
+        for name, text, stamp in pair.pop("_files"):
+            digest = _write(memory / name, text)
+            os.utime(memory / name, (stamp.timestamp(), stamp.timestamp()))
+            listing.append(f"{digest}  projects/{PAIR_PROJECT}/memory/{name}")
+    pairs_text = _json_text(pairs)
+    _write(root / "pairs.json", pairs_text)
+    listing_text = "\n".join(sorted(listing)) + "\n"
+    _write(root / "files.sha256", listing_text)
+    return {
+        "pairs": len(pairs),
+        "pairs_sha256": _sha256(pairs_text.encode()),
+        "tree_sha256": _sha256(listing_text.encode()),
+    }
+
+
 def generate(out: Path, seed: int, scale_sizes: list[int]) -> dict:
     """Write the fixture to ``out``. Returns the manifest."""
     check_output_folder(out)
@@ -1445,12 +1541,16 @@ def generate(out: Path, seed: int, scale_sizes: list[int]) -> dict:
     scales = {}
     for size in scale_sizes:
         scales[str(size)] = write_scale(SCALES[size], lessons, words, seed, out)
+    pairs_raw = PAIRS_FILE.read_bytes()
+    supersede = write_pairs(out, pairs_raw)
     manifest = {
         "format": FORMAT_VERSION,
         "generator": "tools/eval/scale_fixture.py",
         "generator_sha256": _sha256(Path(__file__).read_bytes()),
         "words_sha256": _sha256(words_raw),
         "lessons_source_sha256": _sha256(lessons_raw),
+        "pairs_source_sha256": _sha256(pairs_raw),
+        "supersede": supersede,
         "lessons_sha256": _sha256(lessons_text.encode()),
         "queries_sha256": _sha256(queries_text.encode()),
         "tasks_sha256": task_hash.hexdigest(),
@@ -1587,6 +1687,50 @@ def _verify_answers(rows: list[dict], shard: Path, problems: list[str]) -> None:
                 problems.append(f"{path.name} holds the answer {hit}")
 
 
+def _verify_pairs(out: Path, manifest: dict, problems: list[str]) -> None:
+    """The 20 supersede pairs: files, hashes, shared triggers, time order, no leak."""
+    entry = manifest.get("supersede")
+    root = out / "supersede"
+    if not entry or not (root / "pairs.json").is_file():
+        problems.append("supersede/pairs.json is missing")
+        return
+    pairs_bytes = (root / "pairs.json").read_bytes()
+    if _sha256(pairs_bytes) != entry["pairs_sha256"]:
+        problems.append("supersede/pairs.json does not match the manifest")
+    listing = (root / "files.sha256").read_text(encoding="utf-8")
+    if _sha256(listing.encode()) != entry["tree_sha256"]:
+        problems.append("supersede/files.sha256 does not match the manifest")
+    for line in listing.splitlines():
+        digest, name = line.split("  ", 1)
+        if not (root / name).is_file() or _sha256((root / name).read_bytes()) != digest:
+            problems.append(f"supersede/{name}: missing or changed")
+    pairs = json.loads(pairs_bytes)
+    if len(pairs) != 20:
+        problems.append(f"supersede: {len(pairs)} pairs, not 20")
+    memory = root / "projects" / PAIR_PROJECT / "memory"
+    for pair in pairs:
+        old, new = memory / pair["old_note"], memory / pair["new_note"]
+        if not (old.is_file() and new.is_file()):
+            problems.append(f"{pair['id']}: a note is missing")
+            continue
+        triggers = [
+            set(_front_field(p.read_text(encoding="utf-8"), "triggers").strip("[]").split(", "))
+            for p in (old, new)
+        ]
+        if len(triggers[0] & triggers[1]) < 2:
+            problems.append(f"{pair['id']}: the notes share fewer than 2 triggers")
+        if not old.stat().st_mtime < new.stat().st_mtime:
+            problems.append(f"{pair['id']}: the older note is not older")
+        if not pair["old_modified"] < pair["new_modified"]:
+            problems.append(f"{pair['id']}: the times are not in order")
+        for value in (pair["old_value"], pair["new_value"]):
+            if value.lower() in pair["query"].lower():
+                problems.append(f"{pair['id']}: the query holds a value")
+        has_link = "supersedes:" in new.read_text(encoding="utf-8")
+        if has_link != pair["explicit"] or "supersedes:" in old.read_text(encoding="utf-8"):
+            problems.append(f"{pair['id']}: the supersedes line is wrong")
+
+
 def verify_output(out: Path) -> list[str]:
     """Check a fixture from its files alone. Returns the problems found."""
     problems: list[str] = []
@@ -1609,6 +1753,7 @@ def verify_output(out: Path) -> list[str]:
                 problems.append(f"{query['id']} holds the answer of {row['id']}")
         if query["variant"] == "V6" and not (out / query["task_file"]).is_file():
             problems.append(f"{query['id']}: the task file is missing")
+    _verify_pairs(out, manifest, problems)
     for size, summary in manifest["scales"].items():
         scale = SCALES[int(size)]
         root = out / scale.folder

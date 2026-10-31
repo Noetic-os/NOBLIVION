@@ -21,8 +21,15 @@ A write of ANY memory file directly inside a memory folder (not an index or
 topic file) rebuilds the guard table first: ``guard_table.build`` reads
 ``violates`` from every memory file, whatever its name prefix (NOBLIVION-50).
 
-It NEVER blocks a memory write: exit 0 always, silent on any error, no network
-call, standard library only.
+Similar notes (NOBLIVION-156). After a write of a memory file that the store has not indexed
+yet, the hook asks the store for the notes nearest to the new text. A note with a cosine of
+0.70 or more that shares a trigger or a subject label with the new note (at most 3, nearest
+first) is named in one line: "add supersedes or merge". The call goes to the store on the
+loopback address only, starts nothing, and stops after 1.5 s. Turn it off with
+``NOBLIVION_MEMORY_SIMILAR_HINT=0`` (config key ``memory.similar_hint``).
+
+It NEVER blocks a memory write: exit 0 always, silent on any error. It makes no network
+call except the store call above, and uses the standard library only.
 """
 
 from __future__ import annotations
@@ -139,6 +146,108 @@ def message(mf, name: str, kind: str, problems: list, nested: Optional[list] = N
     return msg
 
 
+# ── NOBLIVION-156: similar notes ───────────────────────────────────────────
+SIMILAR_ENV = "NOBLIVION_MEMORY_SIMILAR_HINT"
+SIMILAR_KEY = "memory.similar_hint"
+SIMILAR_MIN_COSINE = 0.70
+SIMILAR_MAX = 3
+SIMILAR_ASK = 12  # rows asked for; the pool the 3 are taken from
+SIMILAR_TIMEOUT_S = "1.5"
+
+
+def similar_on(environ: Optional[dict] = None) -> bool:
+    """On unless ``NOBLIVION_MEMORY_SIMILAR_HINT`` is off or ``memory.similar_hint`` is 0."""
+    return bool(
+        _CFG.switch(SIMILAR_ENV, True, environ if environ is not None else os.environ, SIMILAR_KEY)
+    )
+
+
+def _supersedes_of(text: str) -> set:
+    """The stems a note names in ``supersedes:``, as the indexer reads them."""
+    out: set = set()
+    for line in text.split("\n")[1:40]:
+        if line.strip() == "---":
+            break
+        stripped = line.strip()
+        if stripped.startswith("supersedes:"):
+            for item in (
+                stripped[len("supersedes:") :].strip().strip("[]").replace(",", " ").split()
+            ):
+                item = item.strip("\"'")
+                out.add(item[:-3] if item.endswith(".md") else item)
+    return out
+
+
+def store_rows(query: str, root: str) -> list:
+    """The store's index rows for ``query`` (an ``IndexLine`` has ``source`` and ``score``).
+    Loopback only; it starts no store. Raises on any failure."""
+    recall = _load("recall_hook")
+    if recall is None:
+        return []
+    env = dict(os.environ)
+    env["NOBLIVION_STORE_AUTOSTART"] = "0"  # a note hint never starts a store
+    env["NOBLIVION_RECALL_TIMEOUT_S"] = SIMILAR_TIMEOUT_S
+    return list(recall.recall_index(query[:600], SIMILAR_ASK, environ=env, root=root))
+
+
+def similar_notes(path: Path, text: str, cwd: Optional[str] = None) -> List[tuple]:
+    """``[(stem, cosine)]``: up to 3 stored notes at 0.70 or more that share a trigger or a
+    label with the note at ``path``, nearest first. ``[]`` when the note is in the store
+    already, when the store is down, and on any error."""
+    corpus = _load("corpus")
+    labels = _load("memory_labels")
+    if corpus is None or labels is None:
+        return []
+    meta, _ = corpus.parse_frontmatter(text)
+    rule, _apply = corpus.read_rule_apply(meta)
+    description = meta.get("description") if isinstance(meta.get("description"), str) else ""
+    query = " ".join(p.strip() for p in (rule, str(description or "")) if p and p.strip())
+    if not query:
+        return []
+    rows = store_rows(query, path.parent.parent.name)
+    if any(getattr(r, "source", "") == path.name for r in rows):
+        return []  # a note that is indexed already: an edit, not a new note
+    own_triggers = {t.strip().lower() for t in corpus.read_trigger_items(text, keep_kind=True)}
+    own_labels = set(labels.memory_labels(text, path.stem))
+    named = _supersedes_of(text)
+    folders = memory_dirs(cwd)
+    found: List[tuple] = []
+    for row in sorted(rows, key=lambda r: -(r.score if r.score is not None else -1.0)):
+        score = row.score
+        source = getattr(row, "source", "")
+        stem = source[:-3] if source.endswith(".md") else source
+        if score is None or score < SIMILAR_MIN_COSINE or not stem or stem in named:
+            continue
+        if stem == path.stem or "/" in source:
+            continue
+        other = next((d / source for d in [path.parent, *folders] if (d / source).is_file()), None)
+        if other is None:
+            continue
+        other_text = other.read_text(encoding="utf-8", errors="replace")
+        theirs = {t.strip().lower() for t in corpus.read_trigger_items(other_text, keep_kind=True)}
+        if own_triggers & theirs or own_labels & set(labels.memory_labels(other_text, stem)):
+            found.append((stem, float(score)))
+        if len(found) >= SIMILAR_MAX:
+            break
+    return found
+
+
+def similar_hint(path: Path, text: str, cwd: Optional[str] = None) -> str:
+    """The one-line hint for the note at ``path``, or ``""``."""
+    try:
+        if not similar_on():
+            return ""
+        found = similar_notes(path, text, cwd)
+    except Exception:  # noqa: BLE001 - a hook fails open
+        return ""
+    if not found:
+        return ""
+    return "; ".join(
+        f"similar note {stem} exists (cosine {score:.2f}): add supersedes or merge"
+        for stem, score in found
+    )
+
+
 # ── WI-2 call site ─────────────────────────────────────────────────────────
 # tools/guard_table.py (WI-2) rebuilds the local guard table after a
 # memory write. A missing module or a failed rebuild is skipped silently.
@@ -176,14 +285,26 @@ def run(stdin_text: str) -> str:
     nested = mf.nested_keys(text)
     warnings = getattr(mf, "rewrite_warnings", lambda f: [])(fields)  # NOBLIVION-122
     warnings += getattr(mf, "violates_warnings", lambda f: [])(fields)  # NOBLIVION-155
+    hint = similar_hint(path, text, _cwd(event))
     if not problems and not nested:
-        if not warnings:
+        if not warnings and not hint:
             return ""
-        msg = f"Memory file {path.name} has a warning: " + "; ".join(warnings) + "."
+        parts = []
+        if warnings:
+            parts.append(f"Memory file {path.name} has a warning: " + "; ".join(warnings) + ".")
+        if hint:
+            parts.append(f"Memory file {path.name}: {hint}.")
         return json.dumps(
-            {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": msg}}
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUse",
+                    "additionalContext": " ".join(parts),
+                }
+            }
         )
     msg = message(mf, path.name, kind, problems, nested)
+    if hint:
+        msg += f" {hint}."
     return json.dumps(
         {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": msg}}
     )

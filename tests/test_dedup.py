@@ -204,6 +204,40 @@ def test_pairs_lists_candidates_without_consent(garden, no_network):
     assert no_network == []
 
 
+def test_pairs_takes_a_cosine_and_lists_fresh_files_too(garden, no_network):
+    code, out = run(garden, ["pairs", "--min-cosine", "0.99"])
+    assert code == 0 and "0 candidate pairs" in out
+    code, out = run(garden, ["pairs", "--min-cosine", "0.9"])
+    assert "reference_fern_noon.md <> reference_fern_time.md" in out and no_network == []
+
+
+def test_doctor_lists_duplicate_pairs_from_local_vectors(garden, no_network, monkeypatch, capsys):
+    from noblivion import doctor
+
+    env = dict(garden["env"], NOBLIVION_CONFIG=str(garden["data"] / "none.json"))
+    monkeypatch.setattr(doctor.os, "environ", env)
+    found = doctor.duplicate_pairs(data_dir=garden["data"], env=env)
+    assert found["status"] == "warn" and found["count"] == 1 and found["min_cosine"] == 0.92
+    assert found["pairs"][0]["a"] == "reference_fern_noon.md"
+    assert 0.92 <= found["pairs"][0]["cosine"] <= 1.0
+    doctor.main(["--duplicates", "--data-dir", str(garden["data"])])
+    text = capsys.readouterr().out
+    assert "duplicate_pairs: warn: 1 pairs at cosine 0.92 or more." in text
+    assert "reference_fern_noon.md <> reference_fern_time.md" in text
+    doctor.main(["--duplicates", "--json", "--data-dir", str(garden["data"])])
+    assert json.loads(capsys.readouterr().out)["duplicates"]["count"] == 1
+    doctor.main(["--json", "--data-dir", str(garden["data"])])  # without the flag: no pair list
+    assert "duplicates" not in json.loads(capsys.readouterr().out)
+    assert no_network == []
+
+
+def test_doctor_duplicates_says_unavailable_without_a_database(tmp_path):
+    from noblivion import doctor
+
+    found = doctor.duplicate_pairs(data_dir=tmp_path / "none", env={})
+    assert found["status"] == "unavailable" and found["pairs"] == []
+
+
 # -- consent and refusal --------------------------------------------------------
 
 

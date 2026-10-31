@@ -35,6 +35,7 @@ ts = load_hook("trust_signals", "switchtest_trust_signals")
 gh = load_hook("guard_hook", "switchtest_guard_hook")
 rn = load_hook("recall_nudge", "switchtest_recall_nudge")
 gq = load_hook("guard_quarantine", "switchtest_guard_quarantine")
+mfh = load_hook("memory_fields_hook", "switchtest_memory_fields_hook")
 
 Reader = Callable[[Mapping[str, str]], bool]
 
@@ -56,6 +57,7 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_RECALL_RULES_ONLY": rh.rules_only,  # NOBLIVION-121
     "NOBLIVION_RECALL_TASK_FILE": rh.task_file_on,  # NOBLIVION-158
     "NOBLIVION_RECALL_OWN_ROWS": rh.own_rows,  # NOBLIVION-160
+    "NOBLIVION_RECALL_OLDER_MARK": rh.older_mark,  # NOBLIVION-156
     "NOBLIVION_RECALL_GUARD_ONLY_LANDING": rh.guard_only_landing,  # NOBLIVION-164
     "NOBLIVION_RECALL_NUDGE": rn.nudge_on,  # NOBLIVION-123
     "NOBLIVION_RECALL_NUDGE_SHADOW": rn.shadow_on,
@@ -74,6 +76,7 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_GUARD_QUARANTINE": gq.enabled,  # NOBLIVION-155
     "NOBLIVION_GUARD_LABELS": lr.enabled,
     "NOBLIVION_GUARD_LABELS_FILE_TOOLS": lr.file_tools_enabled,
+    "NOBLIVION_MEMORY_SIMILAR_HINT": mfh.similar_on,  # NOBLIVION-156
     "NOBLIVION_MEMORY_SYNC_OFF": ms.is_off,
     "NOBLIVION_MEMORY_SYNC_BASH_OFF": ms.is_bash_off,
     "NOBLIVION_TRUST_EVENTS": te.enabled,

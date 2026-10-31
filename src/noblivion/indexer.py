@@ -192,6 +192,8 @@ INDEX_FIELDS_MAX_CHARS = 4000
 _FM_TRIGGERS_RE = re.compile(r"^[ \t]*triggers:[ \t]*(.*)$")
 _FM_ITEM_RE = re.compile(r"^[ \t]+-[ \t]+(.*)$")
 _TRIGGER_KIND_RE = re.compile(r"^(?:glob|tool|phrase):[ \t]*", re.I)
+_STEM_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*")
+SUPERSEDES_MAX = 8  # stems one note may name
 
 
 def _front_lines(text: str) -> list[str]:
@@ -274,6 +276,21 @@ class ParsedFile:
     body: str
     active: bool = True
     index_text: str = ""
+    supersedes: tuple[str, ...] = ()
+
+
+def supersedes_stems(meta: dict[str, object], own_stem: str = "") -> tuple[str, ...]:
+    """The note stems that ``supersedes:`` names, in order and without a repeat. The value is
+    one stem or a ``[a, b]`` / ``a, b`` list; a ``.md`` suffix is dropped. An item that is not a
+    plain file stem is ignored, and so is the note's own stem (NOBLIVION-156)."""
+    raw = _text_field(meta, "supersedes")
+    out: list[str] = []
+    for item in re.split(r"[,\s]+", raw.strip().strip("[]")):
+        stem = _unquote(item.strip())
+        stem = stem[:-3] if stem.endswith(".md") else stem
+        if stem and stem != own_stem and _STEM_RE.fullmatch(stem) and stem not in out:
+            out.append(stem)
+    return tuple(out[:SUPERSEDES_MAX])
 
 
 def parse_file(file_name: str, text: str) -> ParsedFile:
@@ -289,6 +306,7 @@ def parse_file(file_name: str, text: str) -> ParsedFile:
         active=str(meta.get("status", "active")).strip().lower()
         not in ("superseded", "excluded", "forgotten"),
         index_text=index_fields_text(text),
+        supersedes=supersedes_stems(meta, stem),
     )
 
 
@@ -503,6 +521,7 @@ class ScanResult:
     unarchived: int = 0
     moved: int = 0
     deleted: int = 0
+    superseded: int = 0  # rows withdrawn because a note names them in ``supersedes:``
     unchanged: int = 0
     skipped: list[str] = field(default_factory=list)
     blocked: bool = False
@@ -515,8 +534,10 @@ class ScanResult:
     @property
     def changed(self) -> int:
         return (
-            self.inserted + self.updated + self.revived + self.unarchived + self.moved
-        ) + self.deleted
+            (self.inserted + self.updated + self.revived + self.unarchived + self.moved)
+            + self.deleted
+            + self.superseded
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -526,6 +547,7 @@ class ScanResult:
             "unarchived": self.unarchived,
             "moved": self.moved,
             "deleted": self.deleted,
+            "superseded": self.superseded,
             "unchanged": self.unchanged,
             "skipped": list(self.skipped),
             "index_blocked": self.blocked,
@@ -666,6 +688,7 @@ class _Prepared:
     cut: bool  # the file is larger than MAX_FILE_BYTES: only its head is stored
     active: bool = True
     index_text: str = ""  # the redacted rule, apply and triggers text (keyword score only)
+    supersedes: tuple[str, ...] = ()  # the stems the note names in ``supersedes:``
 
 
 def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
@@ -705,6 +728,7 @@ def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
         cut,
         parsed.active,
         index_text,
+        parsed.supersedes,
     )
 
 
@@ -715,6 +739,7 @@ def _apply_batch(
     result: ScanResult,
     *,
     force: bool,
+    superseded: Collection[tuple[str, str]] = (),
 ) -> None:
     with db.write_tx(conn):
         rev = db.bump_rev(conn, "content_rev")
@@ -748,7 +773,8 @@ def _apply_batch(
             projection_active = managed is None or (
                 managed["status"] == "active" and managed["file_hash"] == entry.hash
             )
-            if not prep.active or not projection_active:
+            named = (entry.root, entry.path.removesuffix(".md")) in superseded
+            if not prep.active or not projection_active or named:
                 # Lifecycle is a deliberate withdrawal, not a missing-file
                 # shrink. Never expose this text, even for one scan interval.
                 if current is not None and current.archived_at is None:
@@ -756,7 +782,10 @@ def _apply_batch(
                         "UPDATE memories SET archived_at=?, rev=?, updated_at=? WHERE id=?",
                         (now, rev, now, current.id),
                     )
-                    result.deleted += 1
+                    if prep.active and projection_active:
+                        result.superseded += 1
+                    else:
+                        result.deleted += 1
                 continue
             target = op.row_id
             kind = op.kind
@@ -846,6 +875,7 @@ def scan(
         stored_redo = _read_redo(db.get_meta(conn, _redo_key(project)))
         stored_rev = _read_rev(db.get_meta(conn, _rev_key(project)))
         stored_fields = db.get_meta(conn, _fields_key(project))
+        stored_supersedes = db.get_meta(conn, _supersedes_key(project))
         content_rev = db.revisions(conn)[0]
     # The live rows that hold text of another redactor version: all of them
     # after a version change, else the ones an earlier scan could not redo
@@ -904,22 +934,144 @@ def scan(
         result.deletes_cancelled += sum(result.deletes_held.values())
         work = kept
 
+    supersedes = update_supersedes(_read_supersedes(stored_supersedes), folders, work)
+    named = superseded_set(supersedes)
     for start in range(0, len(work), db.BATCH_ROWS):
         batch = work[start : start + db.BATCH_ROWS]
-        _apply_batch(conn, project, batch, result, force=force or (stale and bool(rows)))
+        _apply_batch(
+            conn, project, batch, result, force=force or (stale and bool(rows)), superseded=named
+        )
+    _archive_superseded(conn, project, named, result)
 
     # The scan wrote or deleted every row that has an entry in ``work``. A row
     # with no entry (its file was skipped, or its folder is gone) keeps its old
     # text, so it stays on the redo list. The version mark is set also then:
     # the next scan redoes the list, not every row again.
     left = redo - {op.row_id for op, _ in work}
-    if stale or left != stored_redo or work or stored_rev is None:
+    if stale or left != stored_redo or work or result.superseded or stored_rev is None:
         with db.write_tx(conn):
             db.set_meta(conn, _version_key(project), redaction.REDACTOR_VERSION)
             db.set_meta(conn, _redo_key(project), json.dumps(sorted(left)))
             db.set_meta(conn, _rev_key(project), str(result.content_rev))
             db.set_meta(conn, _fields_key(project), INDEX_FIELDS_VERSION)
+    encoded = json.dumps(supersedes, sort_keys=True)
+    if encoded != stored_supersedes:
+        with db.write_tx(conn):
+            db.set_meta(conn, _supersedes_key(project), encoded)
     return result
+
+
+# -- supersedes (NOBLIVION-156) ------------------------------------------------
+#
+# A note that says ``supersedes: <stem>`` withdraws the note of that stem in the same
+# memory folder, by the same path as ``status: superseded``: the row is archived, and a
+# later scan brings it back when the line goes. The map from each note to its stems is kept
+# in the meta table, so a scan reads only the files it changed. A store without the map
+# reads every file once.
+
+
+def _supersedes_key(project: str) -> str:
+    return f"supersedes:{project}"
+
+
+def _read_supersedes(raw: str | None) -> dict[str, list[str]] | None:
+    """The stored map ``root/path -> stems``, or ``None`` when absent or not valid."""
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, list[str]] = {}
+    for key, stems in value.items():
+        if isinstance(key, str) and isinstance(stems, list):
+            out[key] = [s for s in stems if isinstance(s, str)]
+    return out
+
+
+def _file_supersedes(entry: FileEntry) -> tuple[str, ...] | None:
+    """The stems an unchanged file names, read from disk. ``None`` when it cannot be read."""
+    try:
+        text = _head(entry.abspath.read_bytes()).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    parsed = parse_file(entry.path, text)
+    return parsed.supersedes if parsed.active else ()
+
+
+def update_supersedes(
+    stored: dict[str, list[str]] | None,
+    folders: Sequence[Folder],
+    work: Sequence[tuple[Op, _Prepared | None]],
+) -> dict[str, list[str]]:
+    """The map after this scan. A note in ``work`` takes the stems of its fresh text, a note
+    that is gone leaves the map, and with no stored map every file is read once. A note that
+    is not ``active`` (its own ``status:`` withdraws it) names nothing."""
+    fresh = {
+        f"{prep.entry.root}/{prep.entry.path}": prep.supersedes if prep.active else ()
+        for _, prep in work
+        if prep is not None
+    }
+    out: dict[str, list[str]] = {}
+    for folder in folders:
+        if not folder.exists:
+            for key, stems in (stored or {}).items():
+                if key.split("/", 1)[0] == folder.root:
+                    out[key] = stems  # a missing folder: keep what it named
+            continue
+        for entry in folder.files:
+            key = f"{entry.root}/{entry.path}"
+            if key in fresh:
+                stems = fresh[key]
+            elif stored is not None:
+                stems = tuple(stored.get(key, ()))
+            else:
+                read = _file_supersedes(entry)
+                stems = read if read is not None else ()
+            if stems:
+                out[key] = list(stems)
+    return out
+
+
+def superseded_set(mapping: dict[str, list[str]]) -> set[tuple[str, str]]:
+    """``(root, stem)`` of every note that another note of the same folder names."""
+    out: set[tuple[str, str]] = set()
+    for key, stems in mapping.items():
+        root = key.split("/", 1)[0]
+        own = key.split("/", 1)[1].removesuffix(".md") if "/" in key else ""
+        out.update((root, stem) for stem in stems if stem != own)
+    return out
+
+
+def _archive_superseded(
+    conn: sqlite3.Connection, project: str, named: Collection[tuple[str, str]], result: ScanResult
+) -> None:
+    """Archive the live rows that ``named`` holds and that no batch touched."""
+    if not named:
+        return
+    with db.write_tx(conn):
+        hit = [
+            row_id
+            for root, stem in sorted(named)
+            for (row_id,) in conn.execute(
+                "SELECT id FROM memories WHERE project=? AND source_type=? AND root=? AND path=? "
+                "AND archived_at IS NULL AND deleted_at IS NULL",
+                (project, db.SOURCE_MD, root, f"{stem}.md"),
+            )
+        ]
+        if not hit:
+            return
+        rev = db.bump_rev(conn, "content_rev")
+        now = db.utc_now()
+        for row_id in hit:
+            conn.execute(
+                "UPDATE memories SET archived_at=?, rev=?, updated_at=? WHERE id=?",
+                (now, rev, now, row_id),
+            )
+        result.superseded += len(hit)
+        result.content_rev = rev
 
 
 # -- lock and CLI -------------------------------------------------------------

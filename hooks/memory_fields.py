@@ -151,8 +151,9 @@ JSON_KEYS = (
 SCHEMA_LINE = (
     "A feedback memory carries, last in its front matter: rule: <one imperative "
     'sentence>; apply: "<JSON string, the exact shape>"; scope: tool|stop|file|always; '
-    "triggers: [command prefix, glob:<path>, tool:<Name>, phrase:<words>] (no comma or "
-    "quote in an item; may be left out only for scope always or stop); optional "
+    "triggers: [command prefix, glob:<path>, tool:<Name>] (no comma or "
+    "quote in an item; may be left out only for scope always or stop; a phrase:<words> "
+    "item is allowed and never needed); optional "
     'violates: "<Python regex over the raw Bash command>" with example_repeat: '
     '"<command that breaks the rule>" and example_ok: "<compliant command>"; optional '
     'complies: "<Python regex that matches a run of the rule\'s own command>" '
@@ -167,8 +168,8 @@ SCHEMA_LINE = (
 SCHEMA_LINE_SHORT = (
     "Last in the front matter write: rule: <one imperative sentence>; "
     'apply: "<JSON string, the exact shape>"; scope: tool|stop|file|always; '
-    "triggers: [command prefix, glob:<path>, tool:<Name>, phrase:<words>] "
-    "(optional fields: docs/guards.md)."
+    "triggers: [command prefix, glob:<path>, tool:<Name>] "
+    "(phrase: items and optional fields: docs/guards.md)."
 )
 
 # About 30 everyday commands. A `violates:` regex runs on EVERY Bash call, so

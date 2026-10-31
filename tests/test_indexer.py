@@ -1272,3 +1272,80 @@ def test_a_scan_writes_the_chunks_and_a_changed_file_rewrites_only_its_chunks(co
             "SELECT text FROM memory_chunks WHERE parent_id = ? AND heading = 'Part 1'", (long_id,)
         ).fetchone()[0]
     )
+
+
+# -- supersedes (NOBLIVION-156) --------------------------------------------------
+
+OLD_NOTE = "---\nname: old\ndescription: the old limit\n---\nThe limit is 100 units.\n"
+NEW_NOTE = (
+    "---\nname: new\ndescription: the new limit\nsupersedes: feedback_old\n---\n"
+    "The limit is 200 units.\n"
+)
+
+
+def test_a_note_with_supersedes_withdraws_its_target(conn, tmp_path):
+    folder = make_folder(
+        tmp_path, "-proj", {"feedback_old.md": OLD_NOTE, "feedback_new.md": NEW_NOTE}
+    )
+    result = indexer.scan(conn, [folder])
+    assert live(conn) == {("-proj", "feedback_new.md")}
+    assert result.inserted == 1  # the target is never stored, as with `status: superseded`
+    again = indexer.scan(conn, [folder])  # a second scan changes nothing
+    assert again.changed == 0 and again.superseded == 0
+    assert live(conn) == {("-proj", "feedback_new.md")}
+
+
+def test_supersedes_withdraws_a_target_that_is_already_indexed(conn, tmp_path):
+    folder = make_folder(tmp_path, "-proj", {"feedback_old.md": OLD_NOTE})
+    indexer.scan(conn, [folder])
+    assert live(conn) == {("-proj", "feedback_old.md")}
+    (folder / "feedback_new.md").write_text(NEW_NOTE, encoding="utf-8")
+    result = indexer.scan(conn, [folder])
+    assert result.superseded == 1
+    assert live(conn) == {("-proj", "feedback_new.md")}
+
+
+def test_the_target_returns_when_the_line_goes(conn, tmp_path):
+    folder = make_folder(
+        tmp_path, "-proj", {"feedback_old.md": OLD_NOTE, "feedback_new.md": NEW_NOTE}
+    )
+    indexer.scan(conn, [folder])
+    (folder / "feedback_new.md").write_text(NEW_NOTE.replace("supersedes: feedback_old\n", ""))
+    indexer.scan(conn, [folder])
+    assert live(conn) == {("-proj", "feedback_old.md"), ("-proj", "feedback_new.md")}
+    (folder / "feedback_new.md").write_text(NEW_NOTE, encoding="utf-8")
+    indexer.scan(conn, [folder])
+    assert live(conn) == {("-proj", "feedback_new.md")}
+    (folder / "feedback_new.md").unlink()  # the note that named it is gone
+    indexer.scan(conn, [folder], allow_shrink=True)
+    assert live(conn) == {("-proj", "feedback_old.md")}
+
+
+def test_supersedes_stays_in_its_own_folder_and_ignores_bad_items(conn, tmp_path):
+    other = make_folder(tmp_path, "-other", {"feedback_old.md": OLD_NOTE})
+    mine = make_folder(
+        tmp_path,
+        "-proj",
+        {
+            "feedback_new.md": NEW_NOTE.replace("feedback_old", "feedback_old, ../x, feedback_new"),
+            "feedback_old.md": OLD_NOTE,
+        },
+    )
+    indexer.scan(conn, [mine, other])
+    assert live(conn) == {("-proj", "feedback_new.md"), ("-other", "feedback_old.md")}
+
+
+def test_a_withdrawn_note_names_nothing(conn, tmp_path):
+    gone = NEW_NOTE.replace("---\nThe", "status: superseded\n---\nThe")
+    folder = make_folder(tmp_path, "-proj", {"feedback_old.md": OLD_NOTE, "feedback_new.md": gone})
+    indexer.scan(conn, [folder])
+    assert live(conn) == {("-proj", "feedback_old.md")}
+
+
+def test_supersedes_reads_the_list_and_the_nested_form():
+    parse = indexer.parse_file
+    assert parse("a.md", "---\nsupersedes: [b, c.md]\n---\nx").supersedes == ("b", "c")
+    assert parse("a.md", '---\nsupersedes: "b"\n---\nx').supersedes == ("b",)
+    assert parse("a.md", "---\nmetadata:\n  supersedes: b\n---\nx").supersedes == ("b",)
+    assert parse("a.md", "---\nsupersedes: a\n---\nx").supersedes == ()
+    assert parse("a.md", "---\nname: a\n---\nx").supersedes == ()

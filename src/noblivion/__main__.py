@@ -22,7 +22,7 @@ import sys
 from collections.abc import Sequence
 
 USAGE = (
-    "usage: noblivion doctor [--json] [--data-dir DIR] [--root ROOT]\n"
+    "usage: noblivion doctor [--json] [--data-dir DIR] [--root ROOT] [--duplicates]\n"
     "       noblivion explain PROMPT [--json] [--root ROOT] [--live]\n"
     "       noblivion explain --hubs [--json]\n"
     "       noblivion learning status|inspect|controls|edit|exclude|forget|summary|retry\n"

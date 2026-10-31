@@ -43,6 +43,17 @@ rollback journal makes them unavailable because immutable inspection could
 otherwise report stale data. Doctor does not force a checkpoint or stop the
 store. Re-run against a safely obtained checkpointed copy when needed.
 
+### Duplicate notes
+
+`doctor --duplicates` adds a list of note pairs whose stored vectors have a cosine of
+0.92 or more, nearest first (at most 256 pairs), and a count. It reads the vectors in the
+database on this host. It sends no text, calls no judge and spends nothing, whatever
+`dedup.judge` is set to, and it changes no file. The pair names are note file names, so
+the list is off unless you ask for it. It does not change the exit status. With `--json`
+the list is `duplicates` in the report. If a pair is a real copy, `noblivion dedup pairs
+--min-cosine 0.92` shows the same pairs, and `noblivion dedup plan` starts the merge with
+the usual consent. Run it once a week and note the count to see the trend.
+
 ## Explain
 
 By default, `explain` ranks the selected root's indexed notes with keyword

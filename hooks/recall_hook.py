@@ -504,6 +504,14 @@ SCORE_RESCUE_MARGIN = 0.02  # how far under the floor the store's rank 1 may be 
 OWN_ROWS_ENV = "NOBLIVION_RECALL_OWN_ROWS"
 OWN_ROWS_KEY = "recall.own_rows"
 OWN_ROWS_DEFAULT = True
+# NOBLIVION-156. Two shown rows that share this many triggers are two notes on one subject. The
+# newer one (by ``MemoryFile.stamp``) goes first and the older one says so, behind
+# ``recall.older_mark`` (on). Log note: ``:olderN`` (rows marked).
+OLDER_MARK_ENV = "NOBLIVION_RECALL_OLDER_MARK"
+OLDER_MARK_KEY = "recall.older_mark"
+OLDER_MARK_DEFAULT = True
+OLDER_MIN_SHARED = 2
+OLDER_MARK = "; older, a newer note exists"
 SHARED_MARGIN_ENV = "NOBLIVION_RECALL_SHARED_ROOT_MARGIN"
 SHARED_MARGIN_KEY = "recall.shared_root_margin"
 SHARED_MARGIN_DEFAULT = 0.02
@@ -1286,6 +1294,7 @@ class IndexLine:
         "source",
         "lexical",
         "desc_cap",
+        "older",
     )
 
     def __init__(
@@ -1306,6 +1315,7 @@ class IndexLine:
         model: str = "",
         source: str = "",
         desc_cap: int = 0,
+        older: bool = False,
     ):
         self.rank = rank
         self.mid = mid
@@ -1342,6 +1352,9 @@ class IndexLine:
         # NOBLIVION-160. Not 0 for a description row (``own_description_row``): the most
         # characters the name and the description take together on the row.
         self.desc_cap = desc_cap
+        # NOBLIVION-156. True when another shown row is a newer note on the same subject
+        # (``mark_older_rows``): the row says so after its name.
+        self.older = older
         # W6 (F1) and W7 (F2). The two W5 fields of the LOCAL file this row
         # names, filled by ``annotate_index`` before rendering. Both are "" for
         # a row whose title names no local file and for the un-annotated corpus
@@ -1418,7 +1431,7 @@ class IndexLine:
         # the rule would be the first text on the row, and a rule that begins
         # "[id 5]" would forge an id. An index row's id is always 1 or more.
         prefix = f"{INDEX_ROW_PREFIX}{int(self.mid)}] " if int(self.mid) > 0 else INDEX_ROW_NO_ID
-        suffix = f" ({name})"
+        suffix = f" ({name}{OLDER_MARK})" if self.older else f" ({name})"
         room = INDEX_ROW_MAX_CHARS - len(prefix) - len(suffix)
         limit = max(1, min(INDEX_RULE_MAX_CHARS, room))
         if self.desc_cap > 0 and not self.rule:
@@ -2941,6 +2954,47 @@ def own_rows(environ: Optional[Mapping[str, str]] = None) -> bool:
     )
 
 
+def older_mark(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """NOBLIVION-156. True when the newer of two rows on one subject goes first and the older
+    row is marked. On unless ``NOBLIVION_RECALL_OLDER_MARK`` / ``recall.older_mark`` is off."""
+    env = os.environ if environ is None else environ
+    return bool(
+        _sibling_module("hook_config").switch(
+            OLDER_MARK_ENV, OLDER_MARK_DEFAULT, env, OLDER_MARK_KEY
+        )
+    )
+
+
+def mark_older_rows(
+    rows: Sequence[IndexLine], k: int, by_name: Mapping[str, MemoryFile]
+) -> Tuple[List[IndexLine], int]:
+    """NOBLIVION-156. Of two of the first ``k`` rows whose notes share ``OLDER_MIN_SHARED`` or
+    more triggers, the newer note goes to the place of the higher one, and the older row is
+    marked. Returns ``(rows, rows marked)``. A row with no local file, a note with no time and
+    two notes with one time are left as they are: the order of the store stays. Only the two
+    places swap, so no other row moves."""
+    out = list(rows)
+    top = min(k, len(out))
+    files = [file_of(ln, by_name) for ln in out[:top]]
+    sets = [
+        {t.strip().lower() for t in md.triggers if t.strip()} if md is not None else set()
+        for md in files
+    ]
+    for i in range(top):
+        for j in range(i + 1, top):
+            a, b = files[i], files[j]
+            if a is None or b is None or not a.stamp or not b.stamp or a.stamp == b.stamp:
+                continue
+            if len(sets[i] & sets[j]) < OLDER_MIN_SHARED:
+                continue
+            if b.stamp > a.stamp:
+                out[i], out[j] = out[j], out[i]
+                files[i], files[j] = files[j], files[i]
+                sets[i], sets[j] = sets[j], sets[i]
+            out[j].older = True
+    return out, sum(1 for ln in out[:top] if ln.older)
+
+
 def shared_root_margin(environ: Optional[Mapping[str, str]] = None) -> float:
     """NOBLIVION-160. How much higher than the floor a row of a shared root needs its
     cosine: ``NOBLIVION_RECALL_SHARED_ROOT_MARGIN``, else ``recall.shared_root_margin``,
@@ -3386,6 +3440,7 @@ def renumber(lines: Sequence[IndexLine]) -> List[IndexLine]:
             model=ln.model,
             source=ln.source,
             desc_cap=ln.desc_cap,
+            older=ln.older,
         )
         for i, ln in enumerate(lines, start=1)
     ]
@@ -4032,6 +4087,12 @@ def _serve_index(
         lines, own_moved, desc_in = place_own_rows(lines, k_shown, by_name, desc_row, desc_ahead)
         trace("own_rows", lines)
         note += (":own1" if own_moved else "") + (":desc1" if desc_in else "")
+    if by_name and older_mark(environ):
+        # NOBLIVION-156. After the cuts and the own rows, before the cut to k: the newer note of
+        # two on one subject is shown first, and the older row says so.
+        lines, marked = mark_older_rows(lines, k_shown, by_name)
+        if marked:
+            note += f":older{marked}"
     if row_cap > 0 and min(len(lines), k) > k_shown:
         note += f":rowcap{min(len(lines), k) - k_shown}"
     if local or floor is not None:

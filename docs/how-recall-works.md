@@ -255,6 +255,29 @@ has the notes `own1` (a project row was moved in), `desc1` (the description row)
 and `shared_cutN` (rows the margin cut). This amends the rule of NOBLIVION-121
 for the notes of the project folder only.
 
+#### Notes that replace notes
+
+An old rule that stays in the folder can rank above the ruling that replaced it. Four things
+handle it (NOBLIVION-156):
+
+- `supersedes: <note name>` in the front matter of the new note (one name, or `[a, b]`; the
+  file name without `.md`; the old note must be in the same memory folder). The indexer
+  withdraws the old note by the same path as `status: superseded`: its row is archived and
+  recall does not show it. The file stays. When the line goes, or the new note is deleted, the
+  next scan brings the old note back. A note that is itself withdrawn names nothing.
+- After a memory write, the memory fields hook names up to 3 stored notes at a cosine of 0.70
+  or more that share a trigger or a subject label with the new note, and says to add
+  `supersedes:` or merge (`NOBLIVION_MEMORY_SIMILAR_HINT`, on). It needs a running store and
+  starts none.
+- When two shown rows are notes that share 2 or more `triggers:` items, the newer note goes
+  first and the older row ends with "older, a newer note exists" (`NOBLIVION_RECALL_OLDER_MARK`,
+  on). The newer note has the later `modified:` line, else the later file time. The mark can
+  fall on a note that is still valid; the note stays shown. Log note: `olderN`.
+- `noblivion doctor --duplicates` lists note pairs at a cosine of 0.92 or more, from local
+  vectors, with no paid call (see `docs/diagnostics.md`).
+
+`phrase:` items in `triggers:` are never needed. Recall keeps their words as keyword text.
+
 ### Rules only prompt path
 
 The ranked index can fill a prompt with rows that give the model little to

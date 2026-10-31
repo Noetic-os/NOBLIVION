@@ -187,6 +187,9 @@ def hook_env(tmp_path: Path, **extra: str) -> dict[str, str]:
         # row, the shared-root margin) change which rows a rule-only prompt shows. A
         # test of another rule turns them off; a test of them sets the variable.
         "NOBLIVION_RECALL_OWN_ROWS": "0",
+        # NOBLIVION-156. The older-row mark swaps rows that share triggers; a test of
+        # another rule keeps the order it built. A test of the mark sets the variable.
+        "NOBLIVION_RECALL_OLDER_MARK": "0",
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     }
     env.update(extra)

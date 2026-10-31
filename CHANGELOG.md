@@ -8,6 +8,20 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Note hygiene: a replaced note leaves the rows (NOBLIVION-156). A note with `supersedes: <note name>` in
+  its front matter withdraws the named note of the same memory folder at index time, by the path of
+  `status: superseded` (the row is archived and the file stays; the next scan brings it back when the line
+  goes). After a memory write, the memory fields hook names up to 3 stored notes at a cosine of 0.70 or more
+  that share a trigger or a subject label, and says to add `supersedes:` or merge
+  (`NOBLIVION_MEMORY_SIMILAR_HINT`, on; it needs a running store and starts none). When two shown prompt
+  rows are notes that share 2 or more triggers, the newer note (the later `modified:` line, else the later
+  file time) goes first and the older row ends with "older, a newer note exists"
+  (`NOBLIVION_RECALL_OLDER_MARK`, on). `noblivion doctor --duplicates` lists note pairs at a cosine of 0.92
+  or more from the local vectors, with no paid call, and `noblivion dedup pairs --min-cosine` takes any
+  cosine. `phrase:` is no longer named in the note schema line: no check ever required it, and recall keeps
+  its words as keyword text. The scale fixture writes the 20 older and newer pairs of test C21 apart from
+  the scales (`supersede/`). The corpus cache file format changes (one more column), so each hook rebuilds
+  its cache once.
 - Guard rules keep firing outside the repository their remedy names (NOBLIVION-173, amends NOBLIVION-155
   part b). The repository a note names now comes from its `violates` regex and its triggers only. A path in
   the rule, the apply text or the examples is the remedy, not the place of the hazard, and scoped the rule

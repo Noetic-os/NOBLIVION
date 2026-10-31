@@ -459,3 +459,114 @@ def test_an_indented_key_outside_metadata_is_no_problem(mem):
     )
     r, _ = run_hook(event(p), mem)
     assert r.returncode == 0 and r.stdout == ""
+
+
+# -- similar notes (NOBLIVION-156) -------------------------------------------------
+
+
+class Row:
+    def __init__(self, source, score):
+        self.source, self.score = source, score
+
+
+def note(name, triggers, rule="Deploy only before 15:00."):
+    return (
+        f"---\nname: {name}\ndescription: about {name}\nmetadata:\n  type: feedback\n"
+        f'rule: {rule}\napply: "run it"\nscope: tool\ntriggers: [{triggers}]\n---\n\nBody.\n'
+    )
+
+
+@pytest.fixture
+def similar(mem, monkeypatch):
+    """The hook module with the store call replaced by ``rows``."""
+    mod = load_fields_hook()
+    rows: list = []
+    monkeypatch.setattr(mod, "store_rows", lambda query, root: list(rows))
+    (mem / "feedback_old_a.md").write_text(note("a", "deploy window, git push"))
+    (mem / "feedback_old_b.md").write_text(note("b", "other thing"))
+    (mem / "feedback_old_c.md").write_text(note("c", "Deploy Window"))
+    (mem / "feedback_new.md").write_text(note("new", "deploy window"))
+    return mod, rows, mem
+
+
+def run_in_process(mod, mem, name="feedback_new.md"):
+    out = mod.run(event(mem / name, cwd=str(mem)))
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else ""
+
+
+def test_the_hint_names_similar_notes_that_share_a_trigger(similar, monkeypatch):
+    mod, rows, mem = similar
+    monkeypatch.setenv("NOBLIVION_MEMORY_DIR", str(mem))
+    rows += [
+        Row("feedback_old_a.md", 0.84),
+        Row("feedback_old_b.md", 0.80),  # near, but shares no trigger or label
+        Row("feedback_old_c.md", 0.71),
+    ]
+    ctx = run_in_process(mod, mem)
+    assert "similar note feedback_old_a exists (cosine 0.84): add supersedes or merge" in ctx
+    assert "similar note feedback_old_c exists (cosine 0.71)" in ctx
+    assert "feedback_old_b" not in ctx
+    assert ctx.index("old_a") < ctx.index("old_c")  # nearest first
+
+
+def test_the_hint_takes_at_most_three_and_only_from_0_70(similar, monkeypatch):
+    mod, rows, mem = similar
+    monkeypatch.setenv("NOBLIVION_MEMORY_DIR", str(mem))
+    for i in range(5):
+        (mem / f"feedback_extra{i}.md").write_text(note(f"e{i}", "deploy window"))
+        rows.append(Row(f"feedback_extra{i}.md", 0.90 - 0.01 * i))
+    rows.append(Row("feedback_old_a.md", 0.69))
+    ctx = run_in_process(mod, mem)
+    assert ctx.count("similar note") == 3
+    assert "feedback_old_a" not in ctx and "feedback_extra3" not in ctx
+
+
+def test_no_hint_for_a_note_the_store_has_or_one_that_names_the_target(similar, monkeypatch):
+    mod, rows, mem = similar
+    monkeypatch.setenv("NOBLIVION_MEMORY_DIR", str(mem))
+    rows += [Row("feedback_old_a.md", 0.84), Row("feedback_new.md", 1.0)]
+    assert run_in_process(mod, mem) == ""  # it is an edit of an indexed note
+    rows[:] = [Row("feedback_old_a.md", 0.84)]
+    (mem / "feedback_new.md").write_text(
+        note("new", "deploy window").replace(
+            "scope: tool", "supersedes: feedback_old_a\nscope: tool"
+        )
+    )
+    assert run_in_process(mod, mem) == ""
+
+
+def test_the_hint_joins_the_format_warning_and_obeys_the_switch(similar, monkeypatch):
+    mod, rows, mem = similar
+    monkeypatch.setenv("NOBLIVION_MEMORY_DIR", str(mem))
+    rows.append(Row("feedback_old_a.md", 0.84))
+    (mem / "feedback_new.md").write_text(note("new", "deploy window").replace("scope: tool\n", ""))
+    ctx = run_in_process(mod, mem)
+    assert "scope is missing" in ctx and "similar note feedback_old_a exists" in ctx
+    monkeypatch.setenv("NOBLIVION_MEMORY_SIMILAR_HINT", "0")
+    assert "similar note" not in run_in_process(mod, mem)
+
+
+def test_a_failing_store_call_is_silent(similar, monkeypatch):
+    mod, rows, mem = similar
+    monkeypatch.setenv("NOBLIVION_MEMORY_DIR", str(mem))
+
+    def boom(query, root):
+        raise OSError("store is down")
+
+    monkeypatch.setattr(mod, "store_rows", boom)
+    assert run_in_process(mod, mem) == ""
+
+
+def test_a_note_needs_no_phrase_item_and_phrases_stay_keyword_text(mem):
+    for triggers in (["git stash"], ["git stash", "phrase:stash it"]):
+        fields = dict(GOOD, triggers=triggers)
+        assert mf.check_fields(fields, "feedback") == []
+    p = mem / "feedback_x.md"
+    p.write_text(mf.write_fields(BARE, GOOD))  # no phrase: item
+    r, _ = run_hook(event(p), mem)
+    assert r.returncode == 0 and r.stdout == ""
+    assert "phrase:<words>" not in mf.SCHEMA_LINE_SHORT  # the short schema does not ask for it
+    corpus = load_hook("corpus", "corpus_t_memory_fields_hook")
+    text = mf.write_fields(BARE, dict(GOOD, triggers=["git stash", "phrase:stash it"]))
+    meta, _ = corpus.parse_frontmatter(text)
+    assert "stash it" in corpus.index_fields_text(meta, text)

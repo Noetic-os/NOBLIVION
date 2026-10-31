@@ -66,6 +66,7 @@ EXAMPLE_MODEL = "google/gemini-2.5-flash"  # docs and help only, never a default
 # section 18). A test fails when embedding.DEFAULT_MODEL changes and this
 # string does not: a new model needs a new measurement.
 DEFAULT_MIN_COSINE = 0.75
+DUPLICATE_COSINE = 0.92  # `noblivion doctor --duplicates`: a pair this close is a copy
 THRESHOLD_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_MAX_PAIRS = 50
 DEFAULT_DAILY_COST_CAP_USD = 0.5  # for `sweep`: all judge spend of one UTC day
@@ -604,6 +605,21 @@ def select_pairs(
             out.append(Candidate(root, category, pa, pb, id_a, id_b, float(sims[i, j])))
     out.sort(key=lambda c: (-c.cosine, c.root, c.path_a, c.path_b))
     return out
+
+
+def duplicate_pairs(
+    conn: sqlite3.Connection,
+    project: str,
+    model_id: str,
+    *,
+    min_cosine: float = DUPLICATE_COSINE,
+) -> list[Candidate]:
+    """Pairs of live notes at ``min_cosine`` or more, best first, from the stored vectors.
+    A local read: no judge, no network and no file change. Unlike ``find_candidates`` it
+    does not wait for a file to age, because it only lists (NOBLIVION-156)."""
+    return select_pairs(
+        load_vectors(conn, project, model_id), min_cosine=min_cosine, vetoes=load_vetoes(conn)
+    )
 
 
 def find_candidates(
@@ -1596,6 +1612,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("pairs", help="list candidate pairs; sends nothing")
     p.add_argument("--json", action="store_true")
+    p.add_argument(
+        "--min-cosine",
+        type=float,
+        default=None,
+        help="list pairs at this cosine or more (default: dedup.min_cosine)",
+    )
     p = sub.add_parser("plan", help="judge the pairs and write a plan; changes no file")
     p.add_argument(
         "--dry-run",
@@ -1860,7 +1882,12 @@ def _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_
         )
 
     if args.command == "pairs":
-        pairs = candidates()
+        if args.min_cosine is None:
+            pairs = candidates()
+        else:
+            pairs = duplicate_pairs(
+                conn, settings.namespace, model_id, min_cosine=min(max(args.min_cosine, 0.0), 1.0)
+            )
         if args.json:
             print(json.dumps([c.__dict__ for c in pairs], indent=1), file=out)
         else:

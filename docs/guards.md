@@ -111,7 +111,7 @@ pattern.
 | `git push` | a shell command segment is this text, or starts with it and a space |
 | `glob:tools/*.sh` | Edit, Write or MultiEdit touches a file whose path matches |
 | `tool:<name>` | accepted in the table; the guard hook does not use it |
-| `phrase:<text>` | accepted in the table; the guard hook does not use it |
+| `phrase:<text>` | accepted and never needed: the guard hook does not use it, and recall keeps its words as keyword text |
 
 Each item is at most 80 characters. A list has at most 64 items. An item
 cannot hold a comma, a quote or a bracket.
