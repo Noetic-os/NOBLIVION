@@ -3696,11 +3696,13 @@ def _serve_index(
         hub_names, _hub_sessions = _sibling_module("hub_stats").hubs(
             "" if diagnostic is not None else cache, hub_span
         )
-        # The count is of the rows the hook WOULD show without this rule. Counting
-        # the rows it shows would let the demotion lower its own measure: a hub
+        # The count is of the rows the hook WOULD show without this rule: the first
+        # ``k_shown`` rows, not the whole candidate list (NOBLIVION-114: a note at rank
+        # 20 of 30 was a "candidate" in every session and never reached the model).
+        # Counting the rows it shows would let the demotion lower its own measure: a hub
         # that is shown less drops under the share, stops being a hub, comes back,
         # and the share settles at the threshold.
-        hub_candidates = [ln.title for ln in lines[:k]]
+        hub_candidates = [ln.title for ln in lines[:k_shown]]
         lines, hub_seen, hub_cut = demote_hubs(
             lines, hub_names, _sibling_module("hub_stats").hub_rows(environ), k_shown
         )

@@ -441,13 +441,18 @@ def test_the_hub_counts_work_with_a_replaced_clock(tmp_path):
     assert mod.window(mod.load_days(cache), 14) == (2, {"a": 2, "b": 1})
 
 
-def test_the_counts_cover_the_rows_before_the_cap_and_the_hub_rule(tmp_path, corpus, daemon):
-    """A hub must stay a hub while it is demoted, so the count is of the rows the
-    hook would show without the settings, not of the rows it shows."""
+def test_the_counts_cover_the_rows_the_hook_would_show_before_the_hub_rule(
+    tmp_path, corpus, daemon
+):
+    """A hub must stay a hub while it is demoted, so the count is of the rows the hook would
+    show without the hub rule. It is not of the whole candidate list (NOBLIVION-114): a note
+    past the row cap never reaches the model, so it is no hub."""
     _fill_hub_stats(tmp_path, 20, {"feedback_r01": 15})
     env = _env(tmp_path, corpus, NOBLIVION_RECALL_PROMPT_ROWS="2", **RULES, **HUB)
     text = _serve(env)
     assert _names(text) == ["feedback_r02", "feedback_r03"]  # the hub row r01 is behind
     (rec,) = hub.load_days(str(tmp_path / "cache")).values()
-    assert rec["n"]["feedback_r01"] == 16  # still counted
-    assert rec["n"]["feedback_r08"] == 1  # rank 8 of the admitted rows, past the cap of 2
+    assert rec["n"]["feedback_r01"] == 16  # still counted: rank 1 before the hub rule
+    assert rec["n"]["feedback_r02"] == 1  # rank 2, inside the cap of 2
+    assert "feedback_r03" not in rec["n"]  # shown in place of the hub, but not a candidate
+    assert "feedback_r08" not in rec["n"]  # rank 8 of the admitted rows, past the cap of 2

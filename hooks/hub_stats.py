@@ -8,8 +8,9 @@ costs characters again and again and tells the model little that it does not
 know. The hook counts, for each note, the sessions that were shown it on each
 day. A note that the hook would show in more than ``HUB_SHARE`` of the sessions of
 the last N days is a hub. The count is of the rows before the hub rule is
-applied, not of the rows shown: a count of the rows shown would fall when the
-rule works, the note would stop being a hub, and its share would settle at the
+applied, and it is of the rows the hook would show (the first ``recall.prompt_rows``
+rows), not of the whole candidate list (NOBLIVION-114): a count of the rows after the
+rule would fall when the rule works, the note would stop being a hub, and its share would settle at the
 threshold. The recall hook moves hub rows behind the other rows and keeps at most
 a few of them (``recall_hook.demote_hubs``).
 

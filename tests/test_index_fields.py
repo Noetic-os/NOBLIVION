@@ -64,21 +64,28 @@ NESTED = (
 
 def test_fields_text_of_a_flow_list():
     text = indexer.index_fields_text(FLOW)
+    # One line per field; a line break inside apply is folded to a space (NOBLIVION-114).
     assert text.splitlines() == [
         "Never push a tag before the changelog is merged",
-        "Run the check first.\nThen tag.".splitlines()[0],
-        "Then tag.",
+        "Run the check first. Then tag.",
         "git tag release/**/*.md Bash cut a release",
     ]
 
 
 def test_fields_text_of_a_block_list_and_of_nested_fields():
     assert indexer.index_fields_text(BLOCK) == (
-        "Keep the lease short\nlease renewal kubectl rollout Edit"
+        "Keep the lease short\n\nlease renewal kubectl rollout Edit"
     )
     assert indexer.index_fields_text(NESTED) == (
         "Rotate the signing key yearly\nUse the key ceremony.\nkey rotation"
     )
+
+
+def test_a_missing_field_leaves_an_empty_line_so_the_line_is_the_field():
+    only_apply = '---\nname: demo\napply: "Use the key ceremony."\n---\nbody\n'
+    assert indexer.index_fields_text(only_apply) == "\nUse the key ceremony."
+    only_rule = "---\nname: demo\nrule: Keep it short\n---\nbody\n"
+    assert indexer.index_fields_text(only_rule) == "Keep it short"
 
 
 def test_fields_text_is_empty_without_the_fields_and_without_frontmatter():

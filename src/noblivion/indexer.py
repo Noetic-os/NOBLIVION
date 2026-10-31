@@ -187,7 +187,7 @@ def category_for(file_name: str, meta: dict[str, object]) -> str:
 # -- the rule, apply and triggers fields (NOBLIVION-104) ---------------------------
 
 # Bump this when ``index_fields_text`` changes: the next scan rewrites every row.
-INDEX_FIELDS_VERSION = "1"
+INDEX_FIELDS_VERSION = "2"
 INDEX_FIELDS_MAX_CHARS = 4000
 _FM_TRIGGERS_RE = re.compile(r"^[ \t]*triggers:[ \t]*(.*)$")
 _FM_ITEM_RE = re.compile(r"^[ \t]+-[ \t]+(.*)$")
@@ -257,13 +257,21 @@ def trigger_items(text: str) -> list[str]:
 def index_fields_text(text: str) -> str:
     """The text of the ``rule``, ``apply`` and ``triggers`` fields, one part per line, for the
     keyword score. The prompt index shows ``rule`` and the APPLY excerpt shows ``apply``, so a
-    word that only they hold must find the file. ``hooks/corpus.py`` reads the same fields."""
+    word that only they hold must find the file. ``hooks/corpus.py`` reads the same fields.
+
+    The line is the field: line 1 is ``rule``, line 2 is ``apply``, line 3 is ``triggers``. A
+    field that is missing leaves an empty line (NOBLIVION-114), so the embedding can read the
+    rule and the apply text without the triggers. A part is one line: its white space is
+    folded. No field gives an empty text."""
     meta, _ = parse_frontmatter(text)
-    parts = [_text_field(meta, "rule").strip()]
     apply_text = _text_field(meta, "apply")
-    parts.append(_decode_apply(apply_text).strip() if apply_text else "")
-    parts.append(" ".join(trigger_items(text)))
-    return "\n".join(p for p in parts if p)[:INDEX_FIELDS_MAX_CHARS]
+    parts = [
+        _text_field(meta, "rule"),
+        _decode_apply(apply_text) if apply_text else "",
+        " ".join(trigger_items(text)),
+    ]
+    # Trailing empty lines go, leading ones stay: they are the missing fields in front.
+    return "\n".join(" ".join(p.split()) for p in parts).rstrip("\n")[:INDEX_FIELDS_MAX_CHARS]
 
 
 @dataclass(frozen=True)

@@ -445,10 +445,11 @@ def read_trigger_items(text: str) -> List[str]:
 
 def index_fields_text(meta: Mapping[str, Any], text: str) -> str:
     """The text of the ``rule``, ``apply`` and ``triggers`` fields, one part per line: the text
-    that ``indexer.index_fields_text`` of the store reads, before its redaction."""
+    that ``indexer.index_fields_text`` of the store reads, before its redaction. The line is the
+    field (rule, apply, triggers); a missing field is an empty line (NOBLIVION-114)."""
     rule, apply_block = read_rule_apply(meta)
-    parts = [rule.strip(), apply_block.strip(), " ".join(read_trigger_items(text))]
-    return "\n".join(p for p in parts if p)[:INDEX_FIELDS_MAX_CHARS]
+    parts = [rule, apply_block, " ".join(read_trigger_items(text))]
+    return "\n".join(" ".join(p.split()) for p in parts).rstrip("\n")[:INDEX_FIELDS_MAX_CHARS]
 
 
 def tokens_daemon(text: str) -> List[str]:

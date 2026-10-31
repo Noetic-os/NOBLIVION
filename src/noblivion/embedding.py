@@ -158,6 +158,37 @@ def embed_text(content: str) -> str:
     return "\n".join(kept).strip()[:MAX_EMBED_CHARS]
 
 
+# NOBLIVION-114. The index row shows the ``rule`` line and the APPLY excerpt of a note, so the
+# summary chunk (chunk 0) embeds them too: the relevance floor then judges the text that the
+# model sees. Each line is cut here, as the hook cuts it for the row.
+SHOWN_FIELD_CHARS = 400
+
+
+def shown_fields(index_text: str) -> tuple[str, str]:
+    """``(rule, apply)`` from the ``index_text`` column: its first and its second line.
+    ``indexer.index_fields_text`` keeps an empty line for a missing field, so the position
+    names the field. A mined row has the same two lines."""
+    lines = (index_text or "").split("\n")
+    rule = " ".join(lines[0].split())[:SHOWN_FIELD_CHARS]
+    apply_line = " ".join(lines[1].split())[:SHOWN_FIELD_CHARS] if len(lines) > 1 else ""
+    return rule, apply_line
+
+
+def chunk_embed_text(search_text: str, chunk_index: int, index_text: str) -> str:
+    """The text that the vector of a chunk reads. Chunk 0 gets the ``rule:`` and ``apply:`` lines
+    of its row after its own text; every other chunk reads ``search_text`` as it is. The keyword
+    score does not read this text, so it is not counted twice."""
+    text = str(search_text).strip()
+    if chunk_index == 0:
+        rule, apply_line = shown_fields(index_text)
+        extra = "\n".join(
+            f"{name}: {value}" for name, value in (("rule", rule), ("apply", apply_line)) if value
+        )
+        if extra:
+            text = f"{text}\n{extra}"
+    return text[:MAX_EMBED_CHARS]
+
+
 def text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -605,16 +636,26 @@ def _todo_chunks(
     with db.read_tx(conn):
         cur = conn.execute(
             "SELECT c.id, c.search_text, m.source_type, v.content_hash, f.content_hash, f.dim, "
-            "f.blob FROM memory_chunks c JOIN memories m ON m.id = c.parent_id "
+            "f.blob, c.chunk_index, m.index_text FROM memory_chunks c JOIN memories m ON m.id = c.parent_id "
             "LEFT JOIN chunk_vectors v ON v.chunk_id = c.id AND v.model = ? "
             "LEFT JOIN vectors f ON f.memory_id = m.id AND f.model = ? "
             "WHERE m.archived_at IS NULL AND m.deleted_at IS NULL ORDER BY c.id",
             (model_id, model_id),
         )
-        for chunk_id, search_text, source_type, have, file_hash, dim, blob in cur.fetchall():
+        for (
+            chunk_id,
+            search_text,
+            source_type,
+            have,
+            file_hash,
+            dim,
+            blob,
+            chunk_index,
+            index_text,
+        ) in cur.fetchall():
             if source_type == db.SOURCE_MINED and not include_mined:
                 continue
-            text = str(search_text).strip()[:MAX_EMBED_CHARS]
+            text = chunk_embed_text(search_text, int(chunk_index), index_text)
             if not text:
                 continue
             digest = text_hash(text)
@@ -638,9 +679,11 @@ def _copy_vectors(
         rev = db.bump_rev(conn, "vector_rev")
         for chunk_id, digest, dim, blob in copies:
             row = conn.execute(
-                "SELECT search_text FROM memory_chunks WHERE id = ?", (chunk_id,)
+                "SELECT c.search_text, c.chunk_index, m.index_text FROM memory_chunks c "
+                "JOIN memories m ON m.id = c.parent_id WHERE c.id = ?",
+                (chunk_id,),
             ).fetchone()
-            if row is None or text_hash(str(row[0]).strip()[:MAX_EMBED_CHARS]) != digest:
+            if row is None or text_hash(chunk_embed_text(row[0], int(row[1]), row[2])) != digest:
                 continue  # changed since the read: the next pass handles it
             conn.execute(
                 "INSERT INTO chunk_vectors (chunk_id, model, dim, content_hash, blob, rev) "
@@ -704,9 +747,11 @@ def _write_vectors(
             # vector of its current text, so a slow pass never overwrites a newer one.
             if chunks:
                 row = conn.execute(
-                    "SELECT search_text FROM memory_chunks WHERE id = ?", (memory_id,)
+                    "SELECT c.search_text, c.chunk_index, m.index_text FROM memory_chunks c "
+                    "JOIN memories m ON m.id = c.parent_id WHERE c.id = ?",
+                    (memory_id,),
                 ).fetchone()
-                current = None if row is None else str(row[0]).strip()[:MAX_EMBED_CHARS]
+                current = None if row is None else chunk_embed_text(row[0], int(row[1]), row[2])
             else:
                 row = conn.execute(
                     "SELECT content FROM memories WHERE id = ?", (memory_id,)
