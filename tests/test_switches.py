@@ -65,6 +65,7 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_CONTINUITY_REQUIRE_STATUS": lambda e: ch._flag(e, ch.REQUIRE_STATUS_ENV, False),
     "NOBLIVION_CONTINUITY_CURATED": lambda e: ch._flag(e, ch.CURATED_ENV, True),
     "NOBLIVION_GUARD_CREDENTIAL": cg.guard_on,
+    "NOBLIVION_GUARD_CREDENTIAL_SOURCES": cg.sources_on,  # NOBLIVION-72
     "NOBLIVION_GUARD_REWRITE": gh.rewrite_on,  # NOBLIVION-122
     "NOBLIVION_GUARD_ASK": gh.ask_on,
     "NOBLIVION_GUARD_ACT_SHADOW": gh.act_shadow,
