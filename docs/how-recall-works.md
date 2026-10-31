@@ -269,8 +269,9 @@ handle it (NOBLIVION-156):
   or more that share a trigger or a subject label with the new note, and says to add
   `supersedes:` or merge (`NOBLIVION_MEMORY_SIMILAR_HINT`, on). It needs a running store and
   starts none.
-- When two shown rows are notes that share 2 or more `triggers:` items, the newer note goes
-  first and the older row ends with "older, a newer note exists" (`NOBLIVION_RECALL_OLDER_MARK`,
+- When two shown rows are notes that share 2 or more `triggers:` items (a command or `phrase:`
+  item that at most 3 notes of the folder hold; `glob:` and `tool:` items do not count), the
+  newer note goes first and the older row ends with "older, a newer note exists" (`NOBLIVION_RECALL_OLDER_MARK`,
   on). The newer note has the later `modified:` line, else the later file time. The mark can
   fall on a note that is still valid; the note stays shown. Log note: `olderN`.
 - `noblivion doctor --duplicates` lists note pairs at a cosine of 0.92 or more, from local

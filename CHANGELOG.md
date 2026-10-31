@@ -14,7 +14,8 @@ All notable changes to NOBLIVION. The format follows
   goes). After a memory write, the memory fields hook names up to 3 stored notes at a cosine of 0.70 or more
   that share a trigger or a subject label, and says to add `supersedes:` or merge
   (`NOBLIVION_MEMORY_SIMILAR_HINT`, on; it needs a running store and starts none). When two shown prompt
-  rows are notes that share 2 or more triggers, the newer note (the later `modified:` line, else the later
+  rows are notes that share 2 or more rare triggers (held by at most 3 notes; 46 such pairs among 814
+  real notes, against 1,017 pairs that share any 2), the newer note (the later `modified:` line, else the later
   file time) goes first and the older row ends with "older, a newer note exists"
   (`NOBLIVION_RECALL_OLDER_MARK`, on). `noblivion doctor --duplicates` lists note pairs at a cosine of 0.92
   or more from the local vectors, with no paid call, and `noblivion dedup pairs --min-cosine` takes any

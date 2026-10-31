@@ -511,6 +511,9 @@ OLDER_MARK_ENV = "NOBLIVION_RECALL_OLDER_MARK"
 OLDER_MARK_KEY = "recall.older_mark"
 OLDER_MARK_DEFAULT = True
 OLDER_MIN_SHARED = 2
+# A trigger that more notes than this hold names a family of notes (``gh pr``), not one subject,
+# and a ``glob:`` or ``tool:`` item names a kind of file or tool. Neither counts as shared.
+OLDER_MAX_HOLDERS = 3
 OLDER_MARK = "; older, a newer note exists"
 SHARED_MARGIN_ENV = "NOBLIVION_RECALL_SHARED_ROOT_MARGIN"
 SHARED_MARGIN_KEY = "recall.shared_root_margin"
@@ -2970,16 +2973,34 @@ def mark_older_rows(
 ) -> Tuple[List[IndexLine], int]:
     """NOBLIVION-156. Of two of the first ``k`` rows whose notes share ``OLDER_MIN_SHARED`` or
     more triggers, the newer note goes to the place of the higher one, and the older row is
-    marked. Returns ``(rows, rows marked)``. A row with no local file, a note with no time and
-    two notes with one time are left as they are: the order of the store stays. Only the two
-    places swap, so no other row moves."""
+    marked. A shared trigger counts when at most ``OLDER_MAX_HOLDERS`` notes of the corpus hold
+    it and it is no ``glob:`` or ``tool:`` item: on a real corpus of 814 notes, 1,017 pairs
+    share 2 triggers of any kind and 46 share 2 rare ones. Returns ``(rows, rows marked)``. A
+    row with no local file, a note with no time and two notes with one time are left as they
+    are: the order of the store stays. Only the two places swap, so no other row moves."""
     out = list(rows)
     top = min(k, len(out))
     files = [file_of(ln, by_name) for ln in out[:top]]
-    sets = [
-        {t.strip().lower() for t in md.triggers if t.strip()} if md is not None else set()
-        for md in files
-    ]
+
+    def subject_triggers(md: Optional[MemoryFile]) -> Set[str]:
+        return (
+            {
+                t.strip().lower()
+                for t in md.triggers
+                if t.strip() and not t.lower().startswith(("glob:", "tool:"))
+            }
+            if md is not None
+            else set()
+        )
+
+    sets = [subject_triggers(md) for md in files]
+    if any(sets):
+        holders: Dict[str, int] = {}
+        seen = getattr(by_name, "by_path", None) or by_name
+        for md in seen.values():
+            for t in subject_triggers(md):
+                holders[t] = holders.get(t, 0) + 1
+        sets = [{t for t in s if holders.get(t, 0) <= OLDER_MAX_HOLDERS} for s in sets]
     for i in range(top):
         for j in range(i + 1, top):
             a, b = files[i], files[j]

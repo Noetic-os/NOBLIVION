@@ -59,6 +59,23 @@ def test_one_shared_trigger_is_not_a_pair():
     assert [r.title for r in got] == ["old", "new"] and marked == 0
 
 
+def test_family_triggers_and_file_kinds_are_not_a_subject():
+    old, new = _file("old", SAME, 100.0), _file("new", SAME, 200.0)
+    crowd = [_file(f"c{i}", SAME, 50.0) for i in range(hook.OLDER_MAX_HOLDERS - 2)]
+    rows = [_row(1, "old"), _row(2, "new")]
+    # 3 holders: still a subject. A 4th holder makes both triggers a family.
+    got, marked = hook.mark_older_rows(rows, 5, _map(old, new, *crowd))
+    assert [r.title for r in got] == ["new", "old"] and marked == 1
+    old, new = _file("old", SAME, 100.0), _file("new", SAME, 200.0)
+    rows = [_row(1, "old"), _row(2, "new")]
+    got, marked = hook.mark_older_rows(rows, 5, _map(old, new, *crowd, _file("c9", SAME, 50.0)))
+    assert [r.title for r in got] == ["old", "new"] and marked == 0
+    kinds = ["glob:**/*.yaml", "glob:**/*.yml", "tool:Bash"]
+    old, new = _file("old", kinds, 100.0), _file("new", kinds, 200.0)
+    got, marked = hook.mark_older_rows([_row(1, "old"), _row(2, "new")], 5, _map(old, new))
+    assert marked == 0
+
+
 @pytest.mark.parametrize("stamps", [(0.0, 200.0), (100.0, 100.0)])
 def test_a_note_with_no_time_or_the_same_time_is_left_alone(stamps):
     old, new = _file("old", SAME, stamps[0]), _file("new", SAME, stamps[1])
