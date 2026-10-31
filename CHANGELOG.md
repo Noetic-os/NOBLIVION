@@ -8,6 +8,18 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.19 - 2026-10-31
+
+- Zero-token replay against 0.1.18, on one stored input set (gate 0 and the replay suite, no model
+  calls; the host was busy, so the milliseconds are not comparable): gate 0 cases 12 to 14 of 14, checks
+  40 to 43, delivery not lower. Re-sent tokens in the replay 30.5M to 15.3M (-50%), prompt characters per
+  hook event 1,306 to 330, guard characters per call 137 to 74, subagent characters per show 2,353 to 862,
+  fixed characters per API call 3,082 to 2,452. Prompt rows per prompt
+  rose from 1.81 to 2.08. Keyword-only test 4 slots with the lesson in rows fell from 7 to 6. A paid
+  comparison against stock Claude Code memory has not been run for this build.
+- Upgrade: the one-process hook dispatcher replaces the separate hook commands on install. The warm
+  prompt hook (`mcp_tool`) is off until the file `warm-prompt-hooks` exists in the data folder.
+
 - The recall hook no longer builds a keyword index on every prompt (NOBLIVION-157). The store keeps the
   sub-token words of every file in a second shared index and answers the two BM25 values of the re-rank
   (`lex`, asked for with `lex=1` on the index route) for the rows it returns; the hook uses them and the
