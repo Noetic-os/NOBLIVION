@@ -35,6 +35,18 @@ All notable changes to NOBLIVION. The format follows
   sessions: a landing note was shown at 615 before and at 1,126 after. In the transcripts of the two bench
   campaigns, a run whose prompt does not name a landing action made 11.8 process calls with NOBLIVION and 6.1
   with stock memory (26 and 28 runs); a run whose prompt names one made 5.7 and 6.8 (6 and 4 runs).
+- `noblivion explain --hubs` lists the hub notes of the prompt hook as candidates for `MEMORY.md`
+  (NOBLIVION-114). A hub is a note shown in more than half of the sessions of the window
+  (`recall.hub_days`). It costs its row on every prompt and would cost it once per session in the
+  index. The command reads the hub counts only, needs no prompt, writes nothing and never edits an
+  index. Two other parts of this ticket were built and measured, and are not in this release: (a)
+  embedding the `rule:` and `apply:` lines in the summary chunk moved the gate 0 lesson cosine to the
+  prompt by +0.0010 (case 2a) and -0.0009 (6b), and not at all in 6a and 5b (the notes have no such
+  lines); no case crossed the 0.68 floor,
+  on 50 dev prompts it moved the 101 relevant and 312 other labelled notes by +0.0002 and -0.0001 on
+  average, and it lost gate 0 case 1c (a copy of the lesson fell from 0.6851 to 0.6727); (b) counting
+  hubs over the first `prompt_rows` rows, not the whole candidate list, raised the hub share of shown
+  rows from 0.062 to 0.095 (fewer notes count as hubs). Neither is shipped.
 - Guard precision (NOBLIVION-155). Four changes. (a) A deny rule with 3 or more overrides and an
   override rate of 50% or more in 14 days (counted from the `deny` and `override` lines of the guard
   log) shows as a row only; the guard log gets a `quarantined` line and the session-start line names the
