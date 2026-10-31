@@ -258,21 +258,45 @@ class OpenGuard:
 # -- processes ------------------------------------------------------------------------
 
 
+def _process_table(proc: Path) -> dict[int, tuple[int, str]]:
+    """``pid -> (parent pid, command name)``. Linux reads ``/proc``; a host without it
+    (macOS) reads ``ps``."""
+    table: dict[int, tuple[int, str]] = {}
+    if proc.is_dir():
+        for entry in proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                stat = (entry / "stat").read_text()
+                # The name sits in parentheses and may hold spaces: split after the last one.
+                parent = int(stat.rsplit(")", 1)[1].split()[1])
+                comm = (entry / "comm").read_text().strip() if (entry / "comm").exists() else ""
+                table[int(entry.name)] = (parent, comm)
+            except (OSError, ValueError, IndexError):
+                continue
+        return table
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,comm="], capture_output=True, text=True, timeout=20
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return table
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            table[int(parts[0])] = (int(parts[1]), Path(parts[2]).name)
+    return table
+
+
 def descendants(root_pid: int, proc: Path = Path("/proc")) -> list[int]:
-    """The pids below ``root_pid`` (children, grandchildren), from ``/proc``."""
-    parent_of: dict[int, int] = {}
-    for entry in proc.iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            stat = (entry / "stat").read_text()
-            # The name sits in parentheses and may hold spaces: split after the last one.
-            parent_of[int(entry.name)] = int(stat.rsplit(")", 1)[1].split()[1])
-        except (OSError, ValueError, IndexError):
-            continue
-    found, frontier = [], {root_pid}
+    """The pids below ``root_pid`` (children, grandchildren)."""
+    table = _process_table(proc)
+    found: list[int] = []
+    frontier = {root_pid}
     while frontier:
-        nxt = {pid for pid, ppid in parent_of.items() if ppid in frontier and pid not in found}
+        nxt = {pid for pid, (ppid, _) in table.items() if ppid in frontier and pid not in found}
         found.extend(sorted(nxt))
         frontier = nxt
     return found
@@ -280,14 +304,9 @@ def descendants(root_pid: int, proc: Path = Path("/proc")) -> list[int]:
 
 def claude_processes(root_pid: int, proc: Path = Path("/proc")) -> int:
     """Processes named ``claude`` at or below ``root_pid``."""
-    count = 0
-    for pid in [root_pid, *descendants(root_pid, proc)]:
-        try:
-            if (proc / str(pid) / "comm").read_text().strip() == "claude":
-                count += 1
-        except OSError:
-            continue
-    return count
+    table = _process_table(proc)
+    below = {root_pid, *descendants(root_pid, proc)}
+    return sum(1 for pid in below if table.get(pid, (0, ""))[1] == "claude")
 
 
 # -- the start check ------------------------------------------------------------------

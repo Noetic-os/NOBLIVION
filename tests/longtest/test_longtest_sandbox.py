@@ -190,3 +190,17 @@ def test_units_carry_the_limits_and_install_nothing(tmp_path):
     assert "ExecStart=/usr/bin/python3 -m longtest.cli run" in plain["nob-longtest.service"]
     assert f"PATH={tmp_path}/bin" in core
     assert not list(tmp_path.iterdir())
+
+
+def test_process_table_falls_back_to_ps_without_proc(tmp_path):
+    """macOS has no /proc: the same answers come from ps."""
+    import os
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        missing = tmp_path / "no-proc"
+        assert child.pid in sandbox.descendants(os.getpid(), missing)
+        assert sandbox.claude_processes(os.getpid(), missing) == 0
+    finally:
+        child.kill()
+        child.wait()
