@@ -636,7 +636,8 @@ def _todo_chunks(
     with db.read_tx(conn):
         cur = conn.execute(
             "SELECT c.id, c.search_text, m.source_type, v.content_hash, f.content_hash, f.dim, "
-            "f.blob, c.chunk_index, m.index_text FROM memory_chunks c JOIN memories m ON m.id = c.parent_id "
+            "f.blob, c.chunk_index, m.index_text FROM memory_chunks c "
+            "JOIN memories m ON m.id = c.parent_id "
             "LEFT JOIN chunk_vectors v ON v.chunk_id = c.id AND v.model = ? "
             "LEFT JOIN vectors f ON f.memory_id = m.id AND f.model = ? "
             "WHERE m.archived_at IS NULL AND m.deleted_at IS NULL ORDER BY c.id",

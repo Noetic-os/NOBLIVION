@@ -13,7 +13,6 @@ import pytest
 
 from noblivion import config, db, embedding, explain, indexer, ranking
 from store_helpers import FakeEmbedder, add_memory
-
 from test_chunks import long_body, make_service
 
 FILE_TEXT = (
@@ -144,13 +143,16 @@ def test_a_long_note_summary_chunk_reads_the_fields_and_a_section_chunk_does_not
     summary = [t for t in texts if "rule: Rotate the signing key yearly" in t]
     assert len(summary) == 1 and summary[0].startswith("# gateway")
     assert not any("apply: Use the ceremony" in t for t in texts if t.startswith("## "))
-    assert conn.execute(
-        "SELECT count(*) FROM chunk_vectors v JOIN memory_chunks c ON c.id = v.chunk_id "
-        "WHERE c.parent_id = ?",
-        (memory_id,),
-    ).fetchone()[0] == conn.execute(
-        "SELECT count(*) FROM memory_chunks WHERE parent_id = ?", (memory_id,)
-    ).fetchone()[0]
+    assert (
+        conn.execute(
+            "SELECT count(*) FROM chunk_vectors v JOIN memory_chunks c ON c.id = v.chunk_id "
+            "WHERE c.parent_id = ?",
+            (memory_id,),
+        ).fetchone()[0]
+        == conn.execute(
+            "SELECT count(*) FROM memory_chunks WHERE parent_id = ?", (memory_id,)
+        ).fetchone()[0]
+    )
 
 
 def test_the_keyword_text_of_a_chunk_does_not_gain_the_fields(conn):
