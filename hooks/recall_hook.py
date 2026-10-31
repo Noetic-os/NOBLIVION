@@ -979,13 +979,17 @@ def index_url(
     project: str = PERSONA,
     root: Optional[str] = None,
     include_mined: bool = False,
+    lex: bool = False,
 ) -> str:
     """(R1) — the ranked-index route. A different path, not a flag
     on the old one: the two answers have different shapes. ``include_mined``
-    is sent only when true (the MCP tool; design doc section 11.3)."""
+    is sent only when true (the MCP tool; design doc section 11.3). ``lex`` asks the store
+    for the BM25 values of the P1h re-rank (NOBLIVION-157)."""
     params: Dict[str, Any] = {"q": query, "project": project, "top_k": int(k)}
     if include_mined:
         params["include_mined"] = 1
+    if lex:
+        params["lex"] = 1
     qs = _qs(params, root)
     return f"{base}/api/memories/index?{qs}"
 
@@ -1298,6 +1302,7 @@ class IndexLine:
         "lexical",
         "desc_cap",
         "older",
+        "store_lex",
     )
 
     def __init__(
@@ -1319,7 +1324,12 @@ class IndexLine:
         source: str = "",
         desc_cap: int = 0,
         older: bool = False,
+        store_lex: Optional[Tuple[float, float]] = None,
     ):
+        # NOBLIVION-157. The two values of the P1h re-rank that the store computed for this
+        # row, when the request asked for them: (BM25 of every query sub-token, BM25 of the
+        # informative ones). None when the store sent none (an older store).
+        self.store_lex = store_lex
         self.rank = rank
         self.mid = mid
         self.title = title
@@ -1838,9 +1848,21 @@ def parse_index(payload: Any) -> List[IndexLine]:
                 trust_ranking=trust_ranking,
                 model=model,
                 source=source.strip() if isinstance(source, str) else "",
+                store_lex=_lex_of(item.get("lex")),
             )
         )
     return lines
+
+
+def _lex_of(value: Any) -> Optional[Tuple[float, float]]:
+    """The store's ``lex`` pair of an index row, or None when it is absent or not two real
+    numbers (NOBLIVION-157)."""
+    if not (isinstance(value, list) and len(value) == 2):
+        return None
+    first, second = _real_of(value[0]), _real_of(value[1])
+    if first is None or second is None or not (math.isfinite(first) and math.isfinite(second)):
+        return None
+    return first, second
 
 
 def _real_of(value: Any) -> Optional[float]:
@@ -3355,9 +3377,14 @@ def rerank_index(
     query: str,
     corpus: Sequence[MemoryFile],
     by_name: Mapping[str, MemoryFile],
-    bm25: BM25,
+    bm25: Optional[BM25],
 ) -> Tuple[List[IndexLine], int]:
     """P1h. Re-rank the store's candidates locally. Returns ``(rows, joined)``.
+
+    NOBLIVION-157. ``bm25`` is None when the store sent the two BM25 values of every row
+    (``IndexLine.store_lex``): it computed them over the same files with the same sub-token
+    words, so this hook builds no index per prompt. A row that names no local file still has
+    no BM25, as before.
 
     Two rank lists are fused:
 
@@ -3394,14 +3421,20 @@ def rerank_index(
             continue
         joined += 1
         wanted.append((i, index_of[md.rel_path]))
-    lexical = bm25.scores(tokens_sub(query), [j for _, j in wanted])
-    row_score = {i: lexical.get(j, 0.0) for i, j in wanted}
+    if bm25 is None:
+        row_score = {i: lines[i].store_lex[0] for i, _ in wanted}  # type: ignore[index]
+        shared = {j: lines[i].store_lex[1] for i, j in wanted}  # type: ignore[index]
+        informative: List[str] = []
+    else:
+        lexical = bm25.scores(tokens_sub(query), [j for _, j in wanted])
+        row_score = {i: lexical.get(j, 0.0) for i, j in wanted}
     # NOBLIVION-130. The value that the rescue (NOBLIVION-151) reads: the same BM25 over
     # the query words that are NOT in more than half the documents. A word such as
     # "the" is in nearly every note, so a score that counts it is above 0 for any
     # prompt and any note, and "shares a word" would mean nothing.
-    informative = [t for t in tokens_sub(query) if t not in bm25.common]
-    shared = bm25.scores(informative, [j for _, j in wanted]) if informative else {}
+    if bm25 is not None:
+        informative = [t for t in tokens_sub(query) if t not in bm25.common]
+        shared = bm25.scores(informative, [j for _, j in wanted]) if informative else {}
     for ln in lines:
         ln.lexical = 0.0
     for i, j in wanted:
@@ -3496,6 +3529,7 @@ def recall_index(
     environ: Optional[Mapping[str, str]] = None,
     root: Optional[str] = None,
     include_mined: bool = False,
+    lex: bool = False,
 ) -> List[IndexLine]:
     """(R1) — ask the store for a ranked index.
 
@@ -3512,7 +3546,7 @@ def recall_index(
     project = recall_project(env)
     where = session_root(env) if root is None else root
     payload = store_get(
-        lambda base: index_url(base, query, k, project, where, include_mined), env, timeout_s
+        lambda base: index_url(base, query, k, project, where, include_mined, lex), env, timeout_s
     )
     if isinstance(payload, dict) and "namespace" in payload and payload["namespace"] != project:
         raise RecallError("namespace_mismatch")
@@ -3955,7 +3989,7 @@ def _serve_index(
         lines = (
             list(candidates_override)[:ask]
             if candidates_override is not None
-            else recall_index(query, ask, environ)
+            else recall_index(query, ask, environ, lex=rerank)
         )
         candidates = list(lines)
         if diagnostic is not None:
@@ -3988,7 +4022,10 @@ def _serve_index(
                     # and sent no cosine, so its order is kept.
                     note = ":rerank_off:keyword"
                 elif rerank:
-                    bm25 = BM25([md.tokens for md in corpus])
+                    # NOBLIVION-157. The store sent the BM25 values: no index is built here,
+                    # and the corpus tokens are never read. An older store sent none.
+                    from_store = bool(lines) and all(ln.store_lex is not None for ln in lines)
+                    bm25 = None if from_store else BM25([md.tokens for md in corpus])
                     lines, joined = rerank_index(lines, query, corpus, by_name, bm25)
                     note = f":joined{joined}of{len(lines)}"
             except (OSError, ValueError, ZeroDivisionError) as exc:

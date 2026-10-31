@@ -8,6 +8,14 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- The recall hook no longer builds a keyword index on every prompt (NOBLIVION-157). The store keeps the
+  sub-token words of every file in a second shared index and answers the two BM25 values of the re-rank
+  (`lex`, asked for with `lex=1` on the index route) for the rows it returns; the hook uses them and the
+  re-ranked order, the fused scores and the join count are the same. The corpus cache keeps no tokens any
+  more (cache format 4); an older store that sends no values makes the hook read the tokens from the files
+  as before. On the scale fixture at 20,000 notes, with the biggest project of 4,445 notes, the hook
+  process takes 264 ms at p50 and 269 ms at p95 (before: 731 ms and 784 ms at a busier host); the corpus
+  load is 42 ms (was 318 ms) and the 293 ms BM25 build is gone. The store process peaks at 828 MB.
 - Note hygiene: a replaced note leaves the rows (NOBLIVION-156). A note with `supersedes: <note name>` in
   its front matter withdraws the named note of the same memory folder at index time, by the path of
   `status: superseded` (the row is archived and the file stays; the next scan brings it back when the line

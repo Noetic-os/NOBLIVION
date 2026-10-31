@@ -19,6 +19,7 @@ import math
 import re
 from collections import Counter
 from collections.abc import Sequence
+from functools import lru_cache
 
 K1 = 1.5
 B = 0.75
@@ -60,16 +61,23 @@ def tokenize(text: str) -> list[str]:
     return [t for t in _TOKEN_SPLIT_RE.split(text.lower()) if len(t) >= 2]
 
 
+@lru_cache(maxsize=262144)
+def _with_parts(token: str) -> tuple[str, ...]:
+    """``token`` and, when it splits on ``_ / . -`` into two or more parts of two or more
+    characters, those parts. Cached: a store of 20,000 notes cuts the same 100,000 words over
+    and over, and the cache turns the split of a word into one lookup."""
+    parts = [p for p in _SUB_TOKEN_SPLIT_RE.split(token) if len(p) >= 2]
+    return (token, *parts) if len(parts) > 1 else (token,)
+
+
 def tokenize_sub(text: str) -> list[str]:
     """``tokenize``, plus the parts of a token that splits on ``_ / . -`` into
     two or more parts of two or more characters. The hook re-rank of the
-    reference implementation used it; the store leg uses ``tokenize``."""
+    reference implementation used it; the store leg uses ``tokenize``. The store
+    answers the hook re-rank with it (NOBLIVION-157)."""
     out: list[str] = []
     for token in tokenize(text):
-        out.append(token)
-        parts = [p for p in _SUB_TOKEN_SPLIT_RE.split(token) if len(p) >= 2]
-        if len(parts) > 1:
-            out.extend(parts)
+        out.extend(_with_parts(token))
     return out
 
 

@@ -312,6 +312,7 @@ class Store:
         session_id: str = "",
         target: str = "",
         gate: bool = False,
+        lex: bool = False,
     ) -> ranking.RankResult | None:
         """Rank for a read route; None on an internal fault (logged, no text).
         ``gate`` is the keyword relevance gate of the prompt index (NOBLIVION-153)."""
@@ -331,6 +332,7 @@ class Store:
                     include_mined=include_mined,
                     target=target,
                     gate=gate,
+                    lex=lex,
                 )
                 # Shared roots have their own use controls. Filter against
                 # live state even when the ranker's snapshot is warm.

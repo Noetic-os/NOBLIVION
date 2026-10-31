@@ -238,6 +238,9 @@ def index_row(hit: Hit, trust: Mapping[int, tuple[float, int]] | None, prior_min
         "chunk": row.chunk_index if row.chunk_id is not None else None,
         "heading": row.heading if row.chunk_id is not None else None,
     }
+    if hit.lex is not None:
+        # NOBLIVION-157: the values of the hook re-rank (every query word, informative words).
+        item["lex"] = [hit.lex[0], hit.lex[1]]
     if row.source_type == db.SOURCE_MINED:
         # NOBLIVION-105: a mined row has no memory file to join, so the answer carries its
         # category and its rule and apply lines. The error recall hook reads them.
@@ -722,6 +725,7 @@ class Handler(BaseHTTPRequestHandler):
             session_id=first(params, "session_id"),
             target=first(params, "target")[:MAX_Q_CHARS],
             gate=True,
+            lex=first(params, "lex").strip() == "1",
         )
         trust = None
         if result is not None and store.store_settings.trust_ranking in ("shadow", "on"):

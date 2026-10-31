@@ -73,7 +73,7 @@ def _no_live_files(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def daemon(monkeypatch):
-    def fake(query, k, environ=None, root=None, include_mined=False):
+    def fake(query, k, environ=None, root=None, include_mined=False, lex=False):
         return [
             hook.IndexLine(
                 rank=i,

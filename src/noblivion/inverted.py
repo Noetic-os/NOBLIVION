@@ -57,20 +57,24 @@ class InvertedIndex:
     def add(self, tokens: Sequence[str]) -> int:
         """Add one unit. Returns its slot."""
         slot = len(self.dl)
-        terms = array("I")
-        freqs = array("I")
-        for word, freq in Counter(tokens).items():
-            tid = self.vocab.get(word)
+        counts = Counter(tokens)
+        vocab = self.vocab
+        post_slot = self.post_slot
+        post_tf = self.post_tf
+        ids: list[int] = []
+        for word, freq in counts.items():
+            tid = vocab.get(word)
             if tid is None:
                 tid = len(self.words)
-                self.vocab[word] = tid
+                vocab[word] = tid
                 self.words.append(word)
-                self.post_slot.append(array("I"))
-                self.post_tf.append(array("I"))
-            self.post_slot[tid].append(slot)
-            self.post_tf[tid].append(freq)
-            terms.append(tid)
-            freqs.append(freq)
+                post_slot.append(array("I"))
+                post_tf.append(array("I"))
+            post_slot[tid].append(slot)
+            post_tf[tid].append(freq)
+            ids.append(tid)
+        terms = array("I", ids)
+        freqs = array("I", counts.values())
         self.dl.append(len(tokens))
         self.alive.append(1)
         self.fterm.append(terms)
@@ -280,6 +284,12 @@ class PoolView:
             if d and (word not in bm25.STOP_WORDS or d * bm25.STOP_WORD_RARE_SHARE_DIV <= n):
                 out.add(word)
         return out
+
+    def is_common(self, word: str) -> bool:
+        """True when the pool holds ``word`` and its idf is negative before the replacement:
+        the word is in more than half of the units (``bm25.BM25`` calls these ``negative``)."""
+        d = self.df[word]
+        return bool(d) and (math.log(self.n - d + 0.5) - math.log(d + 0.5)) < 0
 
     def matches(self, query_tokens: Sequence[str]) -> list[bool]:
         """One flag per unit: True when it holds a real term of the query."""

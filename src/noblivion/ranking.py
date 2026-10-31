@@ -104,6 +104,10 @@ class Hit:
     score: float | None  # weighted cosine, 4 places; None when the row has no cosine
     fusion_score: float  # 6 places
     bm25: float
+    # NOBLIVION-157. The file-level sub-token BM25 of the hook re-rank, over the pool's files:
+    # (value for every query word, value for the words that are not in more than half of the
+    # files). Only when the caller asks (``lex``); None otherwise.
+    lex: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -336,6 +340,7 @@ class _Pool:
     view: inverted.PoolView
     n_files: int
     stamp: int  # the content revision of the snapshot that the units were taken from
+    fview: inverted.PoolView | None = None  # the files of the pool, in the file index
 
 
 @dataclass
@@ -345,6 +350,10 @@ class _Snapshot:
     rows: dict[int, PoolRow] = field(default_factory=dict)
     units: dict[int, tuple[PoolRow, ...]] = field(default_factory=dict)  # memory_id -> units
     index: inverted.InvertedIndex | None = None
+    # The file-level index (one unit per row, sub-token words) for the hook re-rank, and the slot
+    # of each row in it.
+    findex: inverted.InvertedIndex | None = None
+    fslots: dict[int, int] = field(default_factory=dict)
     vectors: dict[int, bytes] = field(default_factory=dict)  # chunk id -> float32 blob
     dims: dict[int, int] = field(default_factory=dict)
     pools: dict = field(default_factory=dict)  # pool key -> _Pool
@@ -402,6 +411,8 @@ class RankIndex:
                     rows=old.rows,
                     units=old.units,
                     index=old.index,
+                    findex=old.findex,
+                    fslots=old.fslots,
                     pools=old.pools,
                 )
 
@@ -454,6 +465,7 @@ class RankIndex:
                 self._apply_changes(conn, old, new, changed_rows, live_ids, fresh)
             else:
                 new.rows, new.units, new.index = old.rows, old.units, old.index
+                new.findex, new.fslots = old.findex, old.fslots
                 new.pools = old.pools  # the index stays: no content change
             if model is not None and vector_rev > old.vector_rev:
                 changed_vectors = conn.execute(
@@ -481,13 +493,21 @@ class RankIndex:
         changed_ids = {int(r["id"]) for r in changed_rows}
         if fresh:
             idx = inverted.InvertedIndex()
+            fidx = inverted.InvertedIndex()
+            fslots: dict[int, int] = {}
             rows: dict[int, PoolRow] = {}
             units: dict[int, tuple[PoolRow, ...]] = {}
             new.pools = {}
-            self._add_rows(conn, idx, changed_rows, live_ids, rows, units)
+            self._add_rows(conn, idx, fidx, fslots, changed_rows, live_ids, rows, units)
         else:
             idx = old.index  # type: ignore[assignment]
+            fidx = old.findex  # type: ignore[assignment]
             with self._ilock:
+                fslots = {mid: s for mid, s in old.fslots.items() if mid in live_ids}
+                for mid, slot in old.fslots.items():
+                    if mid in changed_ids or mid not in live_ids:
+                        fidx.remove(slot)
+                        fslots.pop(mid, None)
                 units = {mid: u for mid, u in old.units.items() if mid in live_ids}
                 for mid, gone in old.units.items():
                     if mid in changed_ids or mid not in live_ids:
@@ -499,14 +519,17 @@ class RankIndex:
                     for mid, row in old.rows.items()
                     if mid in live_ids and mid not in changed_ids
                 }
-                self._add_rows(conn, idx, changed_rows, live_ids, rows, units)
+                self._add_rows(conn, idx, fidx, fslots, changed_rows, live_ids, rows, units)
                 new.pools = old.pools
         new.rows, new.units, new.index = rows, units, idx
+        new.findex, new.fslots = fidx, fslots
 
     @staticmethod
     def _add_rows(
         conn: sqlite3.Connection,
         idx: inverted.InvertedIndex,
+        fidx: inverted.InvertedIndex,
+        fslots: dict[int, int],
         changed_rows: list,
         live_ids: set[int],
         rows: dict[int, PoolRow],
@@ -542,6 +565,12 @@ class RankIndex:
                     index_text=r["index_text"],
                 )
                 rows[mid] = row
+                # The file as the hook reads it: the sub-token words of the text, and those of
+                # the rule, apply and trigger lines again (INDEX_FIELDS_REPEAT).
+                fslots[mid] = fidx.add(
+                    bm25.tokenize_sub(row.content)
+                    + bm25.tokenize_sub(row.index_text) * INDEX_FIELDS_REPEAT
+                )
                 found = chunks.get(mid)
                 if found:
                     # The marker line (the file path) is part of the keyword text of every chunk
@@ -629,17 +658,21 @@ class RankIndex:
         # row that has no chunk. The units of a row stay together, in chunk order.
         units = [u for r in rows for u in snap.units[r.id]]
         slots = [u.slot for u in units]
+        fslots = [snap.fslots[r.id] for r in rows]
         if cached is not None:
             # A content change: only the units that entered or left the pool touch its counts.
             cached.view.sync(slots)
+            assert cached.fview is not None
+            cached.fview.sync(fslots)
             self.pool_syncs += 1
-            view = cached.view
+            view, fview = cached.view, cached.fview
         else:
             view = inverted.PoolView(snap.index or inverted.InvertedIndex(), slots)
+            fview = inverted.PoolView(snap.findex or inverted.InvertedIndex(), fslots)
             self.bm25_builds += 1
             if len(snap.pools) >= _CACHE_MAX:
                 snap.pools.clear()
-        snap.pools[key] = _Pool(units, view, len(rows), snap.content_rev)
+        snap.pools[key] = _Pool(units, view, len(rows), snap.content_rev, fview)
         return units, view, len(rows)
 
     def _cosines(
@@ -687,6 +720,7 @@ class RankIndex:
         include_mined: bool = False,
         target: str = "",
         gate: bool = False,
+        lex: bool = False,
     ) -> RankResult:
         """Rank the pool of section 8.1 for ``query``. No database access.
 
@@ -707,6 +741,7 @@ class RankIndex:
                 include_mined=include_mined,
                 target=target,
                 gate=gate,
+                lex=lex,
             )
 
     def _rank(
@@ -721,6 +756,7 @@ class RankIndex:
         include_mined: bool,
         target: str,
         gate: bool,
+        lex: bool,
     ) -> RankResult:
         snap = self._snap
         key = self.pool_key(project, root, shared_roots, include_mined)
@@ -747,7 +783,31 @@ class RankIndex:
         # Rank every unit, then keep the best unit of each file (NOBLIVION-103).
         ranked = rank_pool(units, scores, cosines, len(units), matched)
         collapsed = collapse_to_files(ranked, units, cosines, top_k, n_files)
-        return keyword_gate(collapsed, index, tokens, named) if gate else collapsed
+        answer = keyword_gate(collapsed, index, tokens, named) if gate else collapsed
+        if lex and answer.hits:
+            answer = self._with_lex(snap, key, answer, query)
+        return answer
+
+    @staticmethod
+    def _with_lex(snap: _Snapshot, key: tuple, ranked: RankResult, query: str) -> RankResult:
+        """Give each hit the two values of the hook re-rank (NOBLIVION-157): the BM25 of the
+        sub-token words of the query over the files of the pool, and the same over the words
+        that are not in more than half of the files. Equal to what the hook computed itself."""
+        entry = snap.pools[key]
+        fview = entry.fview
+        assert fview is not None
+        words = bm25.tokenize_sub(query)
+        informative = [w for w in words if not fview.is_common(w)]
+        every = fview.scores(words)
+        shared = fview.scores(informative) if informative else None
+        hits = []
+        for hit in ranked.hits:
+            i = fview.pos.get(snap.fslots.get(hit.row.id, -1))
+            if i is None:
+                hits.append(hit)
+                continue
+            hits.append(replace(hit, lex=(every[i], shared[i] if shared is not None else 0.0)))
+        return RankResult(ranked.mode, hits, ranked.pool_size)
 
 
 class Ranker:
@@ -782,6 +842,7 @@ class Ranker:
         include_mined: bool = False,
         target: str = "",
         gate: bool = False,
+        lex: bool = False,
     ) -> RankResult:
         model_id = self.embedding.model_id if self.embedding is not None else None
         if np is None:
@@ -801,4 +862,5 @@ class Ranker:
             include_mined=include_mined,
             target=target,
             gate=gate,
+            lex=lex,
         )

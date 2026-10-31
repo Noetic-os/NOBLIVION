@@ -231,7 +231,8 @@ class MemoryFile:
         "kind",
         "description",
         "body",
-        "tokens",
+        "_tokens",
+        "src",
         "rule",
         "apply_block",
         "own",
@@ -247,19 +248,24 @@ class MemoryFile:
         kind: str,
         description: str,
         body: str,
-        tokens: List[str],
+        tokens: Optional[List[str]],
         rule: str = "",
         apply_block: str = "",
         scope: str = "",
         triggers: Sequence[str] = (),
         stamp: float = 0.0,
+        src: str = "",
     ):
         self.rel_path = rel_path
         self.name = name
         self.kind = kind
         self.description = description
         self.body = body
-        self.tokens = tokens
+        # NOBLIVION-157. None when the file came from the cache or was read for its fields: the
+        # store computes the BM25 over these words now, so they are read from ``src`` only when
+        # an older store sent no BM25 values.
+        self._tokens = tokens
+        self.src = src
         # W5 writes these two into the frontmatter of the ANNOTATED corpus only.
         # Both are "" for the un-annotated corpus arms A and D read, so a file
         # that has never been annotated is not a different object here.
@@ -276,6 +282,17 @@ class MemoryFile:
         # NOBLIVION-156. When the file was last written, in seconds: its ``modified:`` line,
         # else its modification time. 0.0 when unknown. The older-row mark reads it.
         self.stamp = stamp
+
+    @property
+    def tokens(self) -> List[str]:
+        """The sub-token words P1h scores. Read from the file on first use when the corpus
+        was built without them."""
+        if self._tokens is None:
+            again = (
+                _read_memory_file(self.src, self.rel_path, with_tokens=True) if self.src else None
+            )
+            self._tokens = again._tokens if again is not None and again._tokens is not None else []
+        return self._tokens
 
     @property
     def dropped(self) -> bool:
@@ -622,8 +639,10 @@ def _stamp_of(meta: Mapping[str, Any], mtime: float) -> float:
     return mtime
 
 
-def _read_memory_file(path: str, base: str) -> Optional[MemoryFile]:
-    """One memory file as the hook reads it, or None for an empty file."""
+def _read_memory_file(path: str, base: str, with_tokens: bool = False) -> Optional[MemoryFile]:
+    """One memory file as the hook reads it, or None for an empty file. The sub-token words
+    are made only with ``with_tokens`` (NOBLIVION-157); the file is read again for them when
+    they are asked for."""
     with open(path, "rb") as fh:
         raw = fh.read()
         mtime = os.fstat(fh.fileno()).st_mtime
@@ -642,13 +661,18 @@ def _read_memory_file(path: str, base: str) -> Optional[MemoryFile]:
         kind=frontmatter_kind(base, meta),
         description=description,
         body=body,
-        tokens=tokens_sub(build_memory_content(name, description, base, body))
-        + tokens_sub(index_fields_text(meta, text)) * INDEX_FIELDS_REPEAT,
+        tokens=(
+            tokens_sub(build_memory_content(name, description, base, body))
+            + tokens_sub(index_fields_text(meta, text)) * INDEX_FIELDS_REPEAT
+            if with_tokens
+            else None
+        ),
         rule=rule,
         apply_block=apply_block,
         scope=(scope_v if isinstance(scope_v, str) else "").strip().lower(),
         triggers=read_trigger_items(text, keep_kind=True),
         stamp=_stamp_of(meta, mtime),
+        src=path,
     )
 
 
@@ -660,7 +684,7 @@ def _read_memory_file(path: str, base: str) -> Optional[MemoryFile]:
 # a token holds only ``a-z0-9_.-/`` and the split of one string is much cheaper than the decode of
 # a list of 400 strings.
 CACHE_BODY_CHARS = 200
-_CACHE_FORMAT = 3
+_CACHE_FORMAT = 4
 # The inputs of the parse, so a change of the tokenizer or of the weight drops every entry.
 _CACHE_SIGNATURE = repr(
     (
@@ -704,7 +728,7 @@ def _save_corpus_cache(path: str, files: Dict[str, Any]) -> None:
             os.remove(tmp)
 
 
-def _file_from_cache(base: str, row: Any) -> Optional[MemoryFile]:
+def _file_from_cache(base: str, row: Any, src: str = "") -> Optional[MemoryFile]:
     """A ``MemoryFile`` from a cache row, or None when the row has not the expected shape."""
     if not (isinstance(row, list) and len(row) == 12):
         return None
@@ -723,12 +747,13 @@ def _file_from_cache(base: str, row: Any) -> Optional[MemoryFile]:
         kind,
         description,
         body,
-        tokens.split(),
+        tokens.split() or None,  # the cache keeps none (NOBLIVION-157): read from ``src`` if asked
         rule,
         apply_block,
         scope,
         triggers,
         float(stamp),
+        src=src,
     )
 
 
@@ -779,7 +804,7 @@ def load_memory_corpus(folder: str, cache_path: Optional[str] = None) -> List[Me
             if len(row) == 2:
                 kept[key] = row
                 continue
-            md = _file_from_cache(base, row)
+            md = _file_from_cache(base, row, path)
         if md is None:
             changed = True
             md = _read_memory_file(path, base)
@@ -793,7 +818,7 @@ def load_memory_corpus(folder: str, cache_path: Optional[str] = None) -> List[Me
                 md.body[:CACHE_BODY_CHARS],
                 md.rule,
                 md.apply_block,
-                " ".join(md.tokens),
+                "",  # no tokens: the store computes the BM25 values (NOBLIVION-157)
                 md.scope,
                 list(md.triggers),
                 md.stamp,
