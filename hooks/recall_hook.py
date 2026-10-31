@@ -2434,6 +2434,45 @@ _TASK_FILE_PRIVATE_DIRS = frozenset(
 _TASK_FILE_USED = False
 
 
+# NOBLIVION-164. A rule for landing work (worktree, push, pull request, merge, the full test
+# suite) is not a prompt row unless the prompt names a landing action. The guard shows the rule
+# at the command (a note with scope ``tool`` and landing command triggers). A prompt that says
+# "merge", "push", "pull request", "release" or "run the test suite" keeps the rows, because that
+# task needs the lesson before the command, and the guard comes after the first wrong step.
+# The log note ``:landing_dropN`` counts the rows left out.
+GUARD_ONLY_LANDING_ENV = "NOBLIVION_RECALL_GUARD_ONLY_LANDING"
+GUARD_ONLY_LANDING_KEY = "recall.guard_only_landing"
+GUARD_ONLY_LANDING_DEFAULT = True
+
+
+def guard_only_landing(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """NOBLIVION-164. True when a landing rule is a prompt row only for a prompt that names a
+    landing action. On by default; the config key is ``recall.guard_only_landing``."""
+    env = os.environ if environ is None else environ
+    return bool(
+        _sibling_module("hook_config").switch(
+            GUARD_ONLY_LANDING_ENV, GUARD_ONLY_LANDING_DEFAULT, env, GUARD_ONLY_LANDING_KEY
+        )
+    )
+
+
+def drop_landing_index(
+    lines: Sequence[IndexLine], by_name: Mapping[str, MemoryFile], query: str
+) -> Tuple[List[IndexLine], int]:
+    """NOBLIVION-164. The rows without the landing rules, in the order given, and how many rows
+    were dropped. Nothing is dropped when ``query`` names a landing action. A row with no local
+    file stays: nothing says it is a landing rule."""
+    if _CORPUS.prompt_names_landing(query):
+        return list(lines), 0
+    kept = []
+    for ln in lines:
+        md = file_of(ln, by_name)
+        if md is not None and _CORPUS.landing_note(md.scope, md.triggers):
+            continue
+        kept.append(ln)
+    return kept, len(lines) - len(kept)
+
+
 def task_file_on(environ: Optional[Mapping[str, str]] = None) -> bool:
     """``NOBLIVION_RECALL_TASK_FILE`` / ``recall.task_file``: on unless off."""
     env = os.environ if environ is None else environ
@@ -3884,6 +3923,13 @@ def _serve_index(
         lines, unruled = drop_unruled_index(lines)
         trace("missing_rule_or_apply", lines)
         note += f":rules_drop{unruled}"
+    if by_name and guard_only_landing(environ):
+        # NOBLIVION-164. After the admission and before the cut to k, so the next row
+        # takes the place of a landing rule that the guard shows at the command.
+        lines, landing = drop_landing_index(lines, by_name, query)
+        trace("landing_rule", lines)
+        if landing:
+            note += f":landing_drop{landing}"
     k_shown = min(k, row_cap) if row_cap > 0 else k
     hub_names: Set[str] = set()
     hub_candidates: List[str] = []

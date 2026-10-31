@@ -170,6 +170,19 @@ rows of a call:
   on (`NOBLIVION_GUARD_WEAK_SHARE` is not `0`), because the grading is what
   keeps these triggers quiet.
 
+A rule for landing work (a note with scope `tool` whose command triggers are mostly `git push`,
+`git worktree`, `git merge`, `gh pr`, a merge script or a full test suite run) is acted on here
+and not in the prompt (`NOBLIVION_RECALL_GUARD_ONLY_LANDING`, config key
+`recall.guard_only_landing`, on by default). The prompt shows such a row only when it names a landing
+action. At a landing action (`git push`, `git worktree add`, `git merge`, `gh pr create`, `gh pr
+merge`, `gh pr edit`, `gh pr ready`, or a program with `merge` in its name) the landing notes whose
+landing trigger fires are strong rows: they need no evidence in the call, because `gh pr` and `git
+push` are shared by many notes and the grading above would keep the row away from the one command
+where it is needed. The limits stay: 3 rows per call, one show per note and agent in a session,
+the session budget. A read (`gh pr view`, `git worktree list`) gives no such row. Replay of the
+1,451 landing commands in 33 sessions against the guard table of the home project: a landing note was
+shown at 615 of them before, and at 1,126 after.
+
 For every plain trigger, `python -m X`, `python3 -m X` and `<path to
 python> -m X` also count as `X`. A trigger `pytest` fires on `python3 -m
 pytest -v`. Turn both changes off with `NOBLIVION_GUARD_EVERYDAY_TRIGGERS=0`

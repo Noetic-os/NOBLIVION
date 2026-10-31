@@ -81,7 +81,7 @@ _SWITCH_KEYS = frozenset(
     "embedding.allow_download embedding.allow_remote "
     "embedding.remote_include_mined trust.events trust.citation_use "
     "trust.correction_contradict trust.behaviour_use recall.rules_only recall.task_file "
-    "recall.own_rows miner.enabled "
+    "recall.own_rows recall.guard_only_landing miner.enabled "
     "guard.rewrite guard.ask guard.act_shadow guard.everyday_triggers guard.quarantine".split()
 )
 _CHOICES = {
@@ -125,6 +125,7 @@ ENV_KEYS = {
     "NOBLIVION_RECALL_TASK_FILE": "recall.task_file",
     "NOBLIVION_RECALL_OWN_ROWS": "recall.own_rows",
     "NOBLIVION_RECALL_SHARED_ROOT_MARGIN": "recall.shared_root_margin",
+    "NOBLIVION_RECALL_GUARD_ONLY_LANDING": "recall.guard_only_landing",
     "NOBLIVION_RECALL_PROMPT_ROWS": "recall.prompt_rows",
     "NOBLIVION_RECALL_HUB_DAYS": "recall.hub_days",
     "NOBLIVION_RECALL_HUB_ROWS": "recall.hub_rows",

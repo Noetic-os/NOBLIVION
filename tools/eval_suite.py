@@ -544,7 +544,9 @@ class Store:
     def _env(self, env: Mapping[str, str]) -> dict[str, str]:
         return dict(env, PYTHONPATH=str(self.src))
 
-    def index(self, env: Mapping[str, str]) -> None:
+    def index(self, env: Mapping[str, str]) -> bool:
+        """Index the corpus. False when the seed database has an older schema: the
+        store migrates it at its start, and the caller indexes again after that."""
         run = subprocess.run(
             # An explicit --db: the index makes the database of a run with no seed.
             [self.python, "-m", "noblivion", "index", "--json", "--db", str(self.data / DB_NAME)],
@@ -553,8 +555,11 @@ class Store:
             text=True,
             timeout=self.wait_s,
         )
+        if run.returncode == 3 and "older than" in run.stderr:
+            return False
         if run.returncode not in (0, 1):
             raise RuntimeError(f"noblivion index exited {run.returncode}")
+        return True
 
     def start(self, env: Mapping[str, str]) -> dict:
         (self.data / "store.json").unlink(missing_ok=True)
@@ -1197,8 +1202,11 @@ class Suite:
         self.store = Store(
             self.data, self.store_python(), self.plugin / "src", self.args.store_wait
         )
-        self.store.index(self.env)
+        indexed = self.store.index(self.env)
         self.health = self.store.start(self.env)
+        if not indexed:
+            self.store.index(self.env)
+            self.health = self.store.wait_ready()
 
     def memory_of(self, slug: str) -> Path:
         return self.projects / slug / "memory"

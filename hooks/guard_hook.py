@@ -373,11 +373,19 @@ def _load(name: str):
 
 
 _GT = None
+_CO = None
 _MF = None
 _MT = None
 _RW = None
 _PT = None
 _GQ = None
+
+
+def _co():
+    global _CO
+    if _CO is None:
+        _CO = _load("corpus")
+    return _CO
 
 
 def _mf():
@@ -427,6 +435,52 @@ def _proc_table():
 # NOBLIVION-155: where a rule fires, and the quarantine of an overridden rule
 # --------------------------------------------------------------------------
 QUARANTINE_WEIGHT = 1000  # a quarantined rule leads the rows: it would have denied
+
+# NOBLIVION-164. A rule for landing work is not a prompt row unless the prompt names the
+# action (``recall.guard_only_landing``), so the guard is where the model reads it. At a landing
+# action (a push, a new worktree, a merge, a pull request created or merged) the landing notes
+# whose trigger fires are strong rows, not weak ones that need evidence in the call: most
+# landing triggers (``gh pr``, ``git push``) are shared by several notes, so the grading would
+# keep the row away from the one command where it is needed. The limits stay: at most
+# ``MAX_ROWS`` rows, once per memory and agent, inside the session budget.
+LANDING_ENV = "NOBLIVION_RECALL_GUARD_ONLY_LANDING"
+LANDING_KEY = "recall.guard_only_landing"
+LANDING_BOOST = 50  # added to the weight of the trigger: a landing row leads at a landing action
+
+
+def landing_first_on(env: Mapping[str, str]) -> bool:
+    """The switch of the prompt hook that takes landing rules out of the prompt rows."""
+    return _switch(env, LANDING_ENV, LANDING_KEY, True)
+
+
+def landing_first(
+    command: str,
+    cands: List[Tuple[int, str, Dict[str, object]]],
+    everyday: List[Tuple[int, str, Dict[str, object]]],
+    python_m: bool,
+) -> Tuple[
+    List[Tuple[int, str, Dict[str, object]]],
+    List[Tuple[int, str, Dict[str, object]]],
+    List[Tuple[int, str, Dict[str, object]]],
+]:
+    """``(cands, everyday, landing)``: at a landing action, the candidates that are landing notes
+    fired by a landing command trigger, as strong candidates, and the other candidates as they
+    were. With no landing action in ``command`` nothing moves."""
+    co = _co()
+    mine = [
+        c
+        for c in cands + everyday
+        if co.landing_note(str(c[2].get("scope") or ""), c[2].get("triggers") or [])
+        and co.landing_command(c[1])
+    ]
+    if not mine or not any(co.landing_action(f) for f in _command_variants(command, python_m)):
+        return cands, everyday, []
+    ids = {id(c) for c in mine}
+    return (
+        [c for c in cands if id(c) not in ids],
+        [c for c in everyday if id(c) not in ids],
+        [(w + LANDING_BOOST, t, e) for w, t, e in mine],
+    )
 
 
 def scope_dirs(
@@ -2125,6 +2179,7 @@ def decide(
         _settled(pending)  # only the credential guard denies these tools
     file_q: Optional[Tuple[str, str]] = None
     everyday: List[Tuple[int, str, Dict[str, object]]] = []
+    landing: List[Tuple[int, str, Dict[str, object]]] = []  # NOBLIVION-164
     quar: List[Dict[str, object]] = []
     quar_cands: List[Tuple[float, str, Dict[str, object]]] = []
     if tool not in BASH_TOOLS and _file_tools_on(env):
@@ -2167,6 +2222,11 @@ def decide(
                 everyday = []
         cands = [c for c in cands if in_scope(c[2], sdirs)]
         everyday = [c for c in everyday if in_scope(c[2], sdirs)]
+        if not hits and (cands or everyday) and landing_first_on(env):
+            try:
+                cands, everyday, landing = landing_first(command, cands, everyday, py_m)
+            except Exception:  # noqa: BLE001 - no landing rows, the rows before NOBLIVION-164
+                landing = []
         query, subject = command, "command"
         label_q, label_s = query, subject
     elif tool in READ_TOOLS and file_q is not None:
@@ -2190,7 +2250,7 @@ def decide(
         if not hits and table.get("label_index")
         else []
     )
-    if not hits and not cands and not everyday and not labs and not quar_cands:
+    if not hits and not cands and not everyday and not labs and not quar_cands and not landing:
         return Decision()
     rule_only: Dict[str, str] = {}
     everyday_ids: List[str] = []
@@ -2235,6 +2295,8 @@ def decide(
                 everyday_ids = [str(e.get("id", "")) for _w, _t, e in erows]
             except Exception:  # noqa: BLE001 - no everyday rows
                 everyday_ids = []
+        if landing:  # NOBLIVION-164: strong rows at a landing action
+            cands = landing + cands
         if quar_cands:  # NOBLIVION-155: the rows of the rules that do not deny now
             have = {str(c[2].get("id", "")) for c in quar_cands}
             cands = [c for c in cands if str(c[2].get("id", "")) not in have] + quar_cands

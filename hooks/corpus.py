@@ -234,6 +234,8 @@ class MemoryFile:
         "rule",
         "apply_block",
         "own",
+        "scope",
+        "triggers",
     )
 
     def __init__(
@@ -246,6 +248,8 @@ class MemoryFile:
         tokens: List[str],
         rule: str = "",
         apply_block: str = "",
+        scope: str = "",
+        triggers: Sequence[str] = (),
     ):
         self.rel_path = rel_path
         self.name = name
@@ -262,6 +266,10 @@ class MemoryFile:
         # session loader (``load_session_corpus``). False for a file of the user-wide
         # folder or of a shared root, and for a file read on its own.
         self.own = False
+        # NOBLIVION-164. The ``scope:`` value and the ``triggers:`` items as written
+        # (with their ``glob:``, ``tool:`` and ``phrase:`` prefixes), for ``landing_note``.
+        self.scope = scope
+        self.triggers = tuple(triggers)
 
     @property
     def dropped(self) -> bool:
@@ -421,9 +429,10 @@ _TRIGGER_ITEM_RE = re.compile(r"^[ \t]+-[ \t]+(.*)$")
 _TRIGGER_KIND_RE = re.compile(r"^(?:glob|tool|phrase):[ \t]*", re.I)
 
 
-def read_trigger_items(text: str) -> List[str]:
+def read_trigger_items(text: str, keep_kind: bool = False) -> List[str]:
     """The items of ``triggers:`` in a file's frontmatter, as a ``[a, b]`` line or as ``- item``
-    lines, without the kind prefix (``glob:``, ``tool:``, ``phrase:``). ``[]`` when none."""
+    lines, without the kind prefix (``glob:``, ``tool:``, ``phrase:``) unless ``keep_kind``.
+    ``[]`` when none."""
     lines = text.split("\n")
     if not lines or lines[0].strip() != "---":
         return []
@@ -453,7 +462,10 @@ def read_trigger_items(text: str) -> List[str]:
                     break
         if raw:
             break
-    items = [_TRIGGER_KIND_RE.sub("", _unquote_frontmatter(r.strip())) for r in raw]
+    if keep_kind:
+        items = [_unquote_frontmatter(r.strip()) for r in raw]
+    else:
+        items = [_TRIGGER_KIND_RE.sub("", _unquote_frontmatter(r.strip())) for r in raw]
     return [item for item in items if item]
 
 
@@ -463,6 +475,77 @@ def index_fields_text(meta: Mapping[str, Any], text: str) -> str:
     rule, apply_block = read_rule_apply(meta)
     parts = [rule.strip(), apply_block.strip(), " ".join(read_trigger_items(text))]
     return "\n".join(p for p in parts if p)[:INDEX_FIELDS_MAX_CHARS]
+
+
+# NOBLIVION-164. Rules for landing work (worktree, push, pull request, merge, the full test
+# suite) are acted on at the command, where the guard shows them. At the prompt they cost
+# tokens in every later call of a task that never lands code, and the model follows them
+# (a worktree, a push, a pull request) whether the task needs it or not.
+_KIND_PREFIXES = ("glob:", "tool:", "phrase:")
+_LANDING_PREFIXES = (
+    ("git", "push"),
+    ("git", "worktree"),
+    ("git", "merge"),
+    ("gh", "pr"),
+    ("pytest", "full"),
+)
+_WORD_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+# The prompt names the landing action. Then the task needs the rule and it stays a prompt row.
+_LANDING_PROMPT_RE = re.compile(
+    r"\b(?:merg(?:e|es|ed|ing|eable)|push(?:es|ed|ing)?|pull[- ]?requests?|prs?|worktrees?"
+    r"|rebas(?:e|es|ed|ing)|releas(?:e|es|ed|ing)|deploy(?:s|ed|ing|ment|ments)?"
+    r"|(?:full|whole)[- ](?:test[- ])?suite|test[- ]suite|pytest)\b",
+    re.I,
+)
+
+
+def landing_command(trigger: str) -> bool:
+    """True when a command trigger is a landing command: ``git push``, ``git worktree``,
+    ``git merge``, ``gh pr`` (any subcommand), a merge script (a word ``merge`` in the
+    command) or a full test suite run."""
+    words = trigger.lower().split()
+    if len(words) >= 2 and (words[0], words[1]) in _LANDING_PREFIXES:
+        return True
+    return "merge" in _WORD_SPLIT_RE.split(" ".join(words))
+
+
+_ACTION_PREFIXES = (
+    ("git", "push"),
+    ("git", "worktree", "add"),
+    ("git", "merge"),
+    ("gh", "pr", "create"),
+    ("gh", "pr", "merge"),
+    ("gh", "pr", "edit"),
+    ("gh", "pr", "ready"),
+)
+
+
+def landing_action(form: str) -> bool:
+    """True when one form of a command (a shell segment without its wrappers) lands work: a
+    push, a new worktree, a merge, a pull request created, merged, edited or marked ready, or a
+    merge script (its program name holds the word ``merge``). A read (`gh pr view`,
+    `git worktree list`) is not a landing action."""
+    words = form.lower().split()
+    for prefix in _ACTION_PREFIXES:
+        if tuple(words[: len(prefix)]) == prefix:
+            return True
+    return bool(words) and "merge" in _WORD_SPLIT_RE.split(words[0])
+
+
+def landing_note(scope: str, triggers: Sequence[str]) -> bool:
+    """True for a note that is acted on at a landing command: scope ``tool`` and at least half
+    of its command triggers (not ``glob:``, ``tool:`` or ``phrase:``) are landing commands."""
+    if (scope or "").strip().lower() != "tool":
+        return False
+    commands = [t for t in triggers if t and not t.lower().startswith(_KIND_PREFIXES)]
+    landing = [t for t in commands if landing_command(t)]
+    return bool(landing) and 2 * len(landing) >= len(commands)
+
+
+def prompt_names_landing(text: str) -> bool:
+    """True when the prompt names a landing action (merge, push, pull request, worktree, release,
+    deploy, rebase, the test suite)."""
+    return _LANDING_PROMPT_RE.search(text or "") is not None
 
 
 def tokens_daemon(text: str) -> List[str]:
@@ -529,6 +612,7 @@ def _read_memory_file(path: str, base: str) -> Optional[MemoryFile]:
     desc_v = meta.get("description")
     description = (desc_v if isinstance(desc_v, str) else "").strip()
     rule, apply_block = read_rule_apply(meta)
+    scope_v = meta.get("scope")
     return MemoryFile(
         rel_path=base,
         name=name,
@@ -539,6 +623,8 @@ def _read_memory_file(path: str, base: str) -> Optional[MemoryFile]:
         + tokens_sub(index_fields_text(meta, text)) * INDEX_FIELDS_REPEAT,
         rule=rule,
         apply_block=apply_block,
+        scope=(scope_v if isinstance(scope_v, str) else "").strip().lower(),
+        triggers=read_trigger_items(text, keep_kind=True),
     )
 
 
@@ -550,7 +636,7 @@ def _read_memory_file(path: str, base: str) -> Optional[MemoryFile]:
 # a token holds only ``a-z0-9_.-/`` and the split of one string is much cheaper than the decode of
 # a list of 400 strings.
 CACHE_BODY_CHARS = 200
-_CACHE_FORMAT = 1
+_CACHE_FORMAT = 2
 # The inputs of the parse, so a change of the tokenizer or of the weight drops every entry.
 _CACHE_SIGNATURE = repr(
     (
@@ -596,14 +682,18 @@ def _save_corpus_cache(path: str, files: Dict[str, Any]) -> None:
 
 def _file_from_cache(base: str, row: Any) -> Optional[MemoryFile]:
     """A ``MemoryFile`` from a cache row, or None when the row has not the expected shape."""
-    if not (isinstance(row, list) and len(row) == 9):
+    if not (isinstance(row, list) and len(row) == 11):
         return None
-    name, kind, description, body, rule, apply_block, tokens = row[2:]
+    name, kind, description, body, rule, apply_block, tokens, scope, triggers = row[2:]
     if not all(isinstance(x, str) for x in (name, kind, description, body, rule, apply_block)):
         return None
-    if not isinstance(tokens, str):
+    if not (isinstance(tokens, str) and isinstance(scope, str)):
         return None
-    return MemoryFile(base, name, kind, description, body, tokens.split(), rule, apply_block)
+    if not (isinstance(triggers, list) and all(isinstance(t, str) for t in triggers)):
+        return None
+    return MemoryFile(
+        base, name, kind, description, body, tokens.split(), rule, apply_block, scope, triggers
+    )
 
 
 def load_memory_corpus(folder: str, cache_path: Optional[str] = None) -> List[MemoryFile]:
@@ -668,6 +758,8 @@ def load_memory_corpus(folder: str, cache_path: Optional[str] = None) -> List[Me
                 md.rule,
                 md.apply_block,
                 " ".join(md.tokens),
+                md.scope,
+                list(md.triggers),
             ]
         kept[key] = row
         out.append(md)

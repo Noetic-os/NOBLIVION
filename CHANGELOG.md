@@ -8,6 +8,20 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Landing rules are acted on at the command, not in the prompt (NOBLIVION-164). A note for landing work
+  (scope `tool`, and at least half of its command triggers are `git push`, `git worktree`, `git merge`,
+  `gh pr`, a merge script or a full test suite run) is no prompt row unless the prompt names a landing action
+  (merge, push, pull request, `PR`, worktree, rebase, release, deploy, the test suite). A task that does not
+  land code no longer reads a rule that sends the model to a worktree, a push and a pull request, and the
+  model no longer follows it. The guard shows the note at the landing action (`git push`, `git worktree add`,
+  `git merge`, `gh pr create|merge|edit|ready`, a merge script) as a strong row that needs no evidence in the
+  call: `gh pr` and `git push` are shared by many notes, so the grading kept the row away from that command.
+  Off with `NOBLIVION_RECALL_GUARD_ONLY_LANDING=0` (`recall.guard_only_landing`). The memory corpus cache
+  holds `scope` and `triggers` now (cache format 2: the cache is rebuilt once). `tools/eval_suite.py` indexes
+  a seed database of an older schema after the store has migrated it. Replay of 1,451 landing commands of 33
+  sessions: a landing note was shown at 615 before and at 1,126 after. In the transcripts of the two bench
+  campaigns, a run whose prompt does not name a landing action made 11.8 process calls with NOBLIVION and 6.1
+  with stock memory (26 and 28 runs); a run whose prompt names one made 5.7 and 6.8 (6 and 4 runs).
 - Guard precision (NOBLIVION-155). Four changes. (a) A deny rule with 3 or more overrides and an
   override rate of 50% or more in 14 days (counted from the `deny` and `override` lines of the guard
   log) shows as a row only; the guard log gets a `quarantined` line and the session-start line names the

@@ -293,7 +293,8 @@ def test_budget_spent_memory_is_listed_when_another_denies(env):
 
 # 3. rows ------------------------------------------------------------------
 def test_rows_on_trigger_without_violation(env):
-    env = ungraded(env)
+    # Push notes: the landing-first rule (NOBLIVION-164) is off, so the test holds the grading.
+    env = dict(ungraded(env), NOBLIVION_RECALL_GUARD_ONLY_LANDING="0")
     out = call(env, bash("git push github main"))
     assert "permissionDecision" not in out
     ctx = out["additionalContext"]
@@ -1834,6 +1835,7 @@ def test_a_generic_trigger_stays_weak_when_its_holders_are_removed(env):
 
 
 def test_a_specific_trigger_is_strong_unless_a_crowd_holds_it(env):
+    env = dict(env, NOBLIVION_RECALL_GUARD_ONLY_LANDING="0")  # a merge script: see NOBLIVION-164
     for n, rows in ((3, 3), (6, 0)):
         Path(env["NOBLIVION_GUARD_TABLE"]).write_text(
             json.dumps({"entries": FILLER + _holders(n, "python3 tools/safe_merge_gate.py")})
