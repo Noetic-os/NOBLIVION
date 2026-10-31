@@ -63,6 +63,20 @@ The result includes explicit coverage and scoring limitations. It fails with
 exit status 2 when the root, database, schema, installed hook, or time budget
 cannot be inspected. Memory use disabled for the scope returns status 1.
 
+### Hub notes
+
+A note that the prompt hook shows in more than half of the sessions of the last days costs its
+characters on every prompt. In `MEMORY.md` it costs them once per session. List these notes:
+
+```sh
+python -m noblivion explain --hubs [--json]
+```
+
+The command reads the hub counts of the hook (`hub-stats.json`) and nothing else. It needs no
+prompt, writes nothing and never edits `MEMORY.md` or another index: moving a note there is your
+choice. Unlike a recall explanation, its output names the notes. With fewer than 10 sessions in
+the window, or with `recall.hub_days` set to 0, it lists none and says why.
+
 For scores from an **already running** store, opt in explicitly:
 
 ```sh

@@ -250,6 +250,63 @@ def explain(query, *, folder=None, namespace=None, root=None, live=False, second
         return trace
 
 
+def hub_notes(*, folder=None, env=None, now=None):
+    """The hub notes of the prompt hook: notes shown in more than half of the sessions of the
+    window (NOBLIVION-114). A hub row costs its characters on every prompt; in ``MEMORY.md`` it
+    costs them once per session, so a hub is a candidate for that index. This reports and never
+    edits the index. It reads ``hub-stats.json`` only and writes nothing."""
+    env = dict(os.environ if env is None else env)
+    if folder is not None:
+        env["NOBLIVION_DATA_DIR"] = str(folder)
+    folder = config.data_dir(env)
+    hook = hook_module(folder)
+    stats = hook._sibling_module("hub_stats")
+    span = stats.window_days(env)
+    base = {
+        "status": "ok",
+        "source": "hub_stats",
+        "window_days": span,
+        "min_sessions": stats.MIN_SESSIONS,
+        "hub_share": stats.HUB_SHARE,
+        "note_names_in_output": True,
+        "action": "Review these notes by hand. This command never edits MEMORY.md or any index.",
+        "candidates": [],
+    }
+    if span <= 0:
+        return {**base, "reason": "Hub counting is off (recall.hub_days is 0).", "sessions": 0}
+    cache = hook.cache_dir(env)
+    sessions, counts = stats.window(stats.load_days(cache), span, now)
+    base["sessions"] = sessions
+    if sessions < stats.MIN_SESSIONS:
+        return {**base, "reason": f"Fewer than {stats.MIN_SESSIONS} sessions in the window."}
+    names, _ = stats.hubs(cache, span, now)
+    base["candidates"] = [
+        {"note": name, "sessions": counts[name], "share": round(counts[name] / sessions, 3)}
+        for name in sorted(names, key=lambda n: (-counts[n], n))
+    ]
+    return base
+
+
+def print_hubs(result, as_json):
+    if as_json:
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    lines = [
+        "Hub notes, candidates for MEMORY.md: "
+        f"{len(result['candidates'])} in {result['sessions']} sessions "
+        f"of the last {result['window_days']} days",
+        result["action"],
+    ]
+    if result.get("reason"):
+        lines.append(result["reason"])
+    lines += [
+        f"{row['note']}: shown in {row['sessions']} sessions ({row['share']})"
+        for row in result["candidates"]
+    ]
+    print("\n".join(lines))
+    return 0
+
+
 _MISSING_VALUE = re.compile(r"^argument (--[a-z-]+): expected one argument$")
 
 
@@ -287,7 +344,7 @@ def join_root(argv):
 
 def main(argv=None):
     parser = Parser(description=__doc__)
-    parser.add_argument("prompt")
+    parser.add_argument("prompt", nargs="?")
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--namespace")
     parser.add_argument("--root")
@@ -301,8 +358,20 @@ def main(argv=None):
             "its configured embedding provider; never starts a store"
         ),
     )
+    parser.add_argument(
+        "--hubs",
+        action="store_true",
+        help=(
+            "list the notes the prompt hook shows in most sessions, as candidates for "
+            "MEMORY.md; reads the hub counts only and edits no index (no prompt needed)"
+        ),
+    )
     try:
         args = parser.parse_args(join_root(sys.argv[1:] if argv is None else argv))
+        if args.hubs:
+            return print_hubs(hub_notes(folder=args.data_dir), args.json)
+        if args.prompt is None:
+            raise Unavailable("Invalid diagnostic arguments: the prompt is missing; use --help.")
         result = explain(
             args.prompt,
             folder=args.data_dir,
