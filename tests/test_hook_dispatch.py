@@ -52,17 +52,27 @@ def _commands(event: str) -> list[tuple[str | None, dict[str, Any]]]:
     return [(g.get("matcher"), h) for g in _hooks()[event] for h in g["hooks"]]
 
 
+WARM_GUARD = '[ -e "${NOBLIVION_DATA_DIR:-${CLAUDE_PLUGIN_DATA}}/warm-prompt-hooks" ] || '
+
+
+def _command_hooks(event: str) -> list[tuple[str | None, dict[str, Any]]]:
+    return [(m, h) for m, h in _commands(event) if h.get("type", "command") == "command"]
+
+
 def _script(command: str) -> str:
     return re.search(r"hooks/([a-z_]+\.py)", command).group(1)
 
 
 @pytest.mark.parametrize("event", sorted(dispatch.PLAN))
 def test_hooks_json_has_one_sync_dispatcher_command_per_planned_event(event):
-    sync = [(m, h) for m, h in _commands(event) if not h.get("async")]
+    sync = [(m, h) for m, h in _command_hooks(event) if not h.get("async")]
     assert len(sync) == 1, sync
     matcher, handler = sync[0]
     assert matcher is None
-    assert handler["command"] == f'python3 "${{CLAUDE_PLUGIN_ROOT}}/hooks/dispatch.py" {event}'
+    # NOBLIVION-162 step 2: the prompt command steps aside when the warm hook is on
+    guard = WARM_GUARD if event == "UserPromptSubmit" else ""
+    run = f'python3 "${{CLAUDE_PLUGIN_ROOT}}/hooks/dispatch.py" {event}'
+    assert handler["command"] == guard + run
     assert handler["timeout"] == dispatch.timeout_of(event) <= 60
 
 
@@ -126,7 +136,7 @@ def test_processes_started_per_event():
 
     def count(event: str, source: str | None = None) -> tuple[int, int]:
         sync = asyn = 0
-        for matcher, handler in _commands(event):
+        for matcher, handler in _command_hooks(event):
             if source is not None and matcher and not re.fullmatch(matcher, source):
                 continue
             if handler.get("async"):

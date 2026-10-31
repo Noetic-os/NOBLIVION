@@ -29,6 +29,13 @@ Rules, each pinned by ``tests/test_hook_dispatch.py``:
   ``matcher`` column of ``PLAN``, with the full-match rule of Claude Code. An event without the
   field runs the modules that have no matcher.
 
+Warm path (NOBLIVION-162, step 2, opt-in). ``run_forked`` runs ``run_event`` and ``combine`` in a
+forked child of a long-lived process and returns the same ``(exit code, stdout, stderr)``. The MCP
+server of the plugin calls it for the ``mcp_tool`` hook of ``UserPromptSubmit``, so a prompt starts no
+Python process. The child loads the modules fresh, so no state passes from one prompt to the next, as
+with one process per prompt. The file ``warm-prompt-hooks`` in the data dir switches it on (``warm_on``);
+without the file the command hook runs and the tool answers nothing.
+
 ``--raw`` prints every part (module, exit code, stdout, stderr, milliseconds) as JSON, for the tests
 and for the timing tool. Standard library only.
 """
@@ -39,6 +46,7 @@ import importlib.util
 import json
 import os
 import re
+import select
 import signal
 import sys
 import time
@@ -327,6 +335,113 @@ def combine(parts: Sequence[Part], event_name: str) -> Tuple[int, str, str]:
             doc = None
         items.append(doc if isinstance(doc, dict) else text)
     return 0, json.dumps(_merge_docs(items, event_name)) + "\n", stderr
+
+
+WARM_FLAG = "warm-prompt-hooks"
+WARM_EVENT = "UserPromptSubmit"
+# The event fields the warm hook passes (``input`` of the ``mcp_tool`` hook in hooks.json). The
+# modules of the prompt event read these and no others.
+WARM_FIELDS = (
+    "hook_event_name",
+    "session_id",
+    "transcript_path",
+    "cwd",
+    "prompt",
+    "permission_mode",
+)
+
+
+def warm_flag(environ: Optional[Dict[str, str]] = None) -> Path:
+    """The flag file of the warm path: in the data dir, as ``hook_config.data_dir`` names it."""
+    return _load("hook_config").data_dir(environ) / WARM_FLAG
+
+
+def warm_on(environ: Optional[Dict[str, str]] = None) -> bool:
+    try:
+        return warm_flag(environ).is_file()
+    except Exception:  # noqa: BLE001 - a fault reads as off: the command hook runs
+        return False
+
+
+def warm_event(args: Dict[str, Any]) -> str:
+    """The event JSON from the ``input`` fields of the ``mcp_tool`` hook. A field the event did not
+    have arrives as an empty text (Claude Code puts "" for a missing ``${path}``) and is left out."""
+    event = {k: v for k, v in args.items() if k in WARM_FIELDS and isinstance(v, str) and v != ""}
+    event.setdefault("hook_event_name", WARM_EVENT)
+    return json.dumps(event)
+
+
+def _forget_modules() -> None:
+    """Drop the hook modules this process loaded, so the child execs them fresh, as a new process."""
+    _LOADED.clear()
+    for path in HOOKS_DIR.glob("*.py"):
+        if path.stem != Path(__file__).stem:
+            sys.modules.pop(path.stem, None)
+
+
+def run_forked(
+    event_name: str, event_text: str, environ: Optional[Dict[str, str]] = None
+) -> Tuple[int, str, str]:
+    """``run_event`` and ``combine`` in a forked child; the child's answer comes back over a pipe.
+    ``environ``, when given, is the environment of the child. The modules never change the parent. A
+    child that dies or overruns gives exit 1 and the reason on stderr, so the caller fails open. No
+    ``fork`` on this platform: the same."""
+    if not hasattr(os, "fork"):
+        return 1, "", "dispatch: no fork on this platform\n"
+    limit = timeout_of(event_name)
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:  # noqa: BLE001
+            pass
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # child: never return into the caller
+        status = 1
+        try:
+            os.close(read_fd)
+            # The server speaks JSON-RPC on fd 0 and 1: nothing a module starts may read or write there.
+            null = os.open(os.devnull, os.O_RDWR)
+            os.dup2(null, 0)
+            os.dup2(null, 1)
+            _forget_modules()
+            if environ is not None:
+                os.environ.clear()
+                os.environ.update(environ)
+            code, stdout, stderr = combine(run_event(event_name, event_text), event_name)
+            data = json.dumps({"code": code, "stdout": stdout, "stderr": stderr}).encode("utf-8")
+            with os.fdopen(write_fd, "wb") as pipe:
+                pipe.write(data)
+            status = 0
+        finally:
+            os._exit(status)
+    os.close(write_fd)
+    chunks: List[bytes] = []
+    end = time.monotonic() + limit
+    try:
+        while True:
+            left = end - time.monotonic()
+            if left <= 0:
+                os.kill(pid, signal.SIGKILL)
+                return 1, "", "dispatch: child ran out of time\n"
+            ready, _, _ = select.select([read_fd], [], [], left)
+            if not ready:
+                continue
+            block = os.read(read_fd, 65536)
+            if not block:
+                break
+            chunks.append(block)
+    finally:
+        os.close(read_fd)
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+    try:
+        doc = json.loads(b"".join(chunks).decode("utf-8"))
+        return int(doc["code"]), str(doc["stdout"]), str(doc["stderr"])
+    except (ValueError, KeyError, TypeError):
+        return 1, "", "dispatch: child gave no answer\n"
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

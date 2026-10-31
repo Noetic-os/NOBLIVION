@@ -231,7 +231,7 @@ def test_the_plugin_matcher_selects_the_recall_tool_only():
     groups = [
         g
         for g in doc["hooks"]["PreToolUse"]
-        if any("mcp_session_hook.py" in h["command"] for h in g["hooks"])
+        if any("mcp_session_hook.py" in h.get("command", "") for h in g["hooks"])
     ]
     assert len(groups) == 1
     matcher = groups[0]["matcher"]

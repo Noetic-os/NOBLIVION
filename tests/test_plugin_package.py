@@ -73,8 +73,13 @@ SESSION_START_SOURCES = {"startup", "resume", "clear", "compact", "fork"}
 PRE_COMPACT_TRIGGERS = {"manual", "auto"}
 TOOL_NAMES = {"Bash", "Read", "Grep", "Glob", "Edit", "Write", "MultiEdit", "Agent", "Task"}
 NUDGE_MCP_MATCHER = "mcp__.+__([Cc]reate|[Aa]dd).*([Ii]ssue|[Tt]icket|[Cc]omment).*"
+# NOBLIVION-162 step 2: the prompt command may start with the test of the warm-hook flag file.
+WARM_GUARD = (
+    r'(?:\[ -e "\$\{NOBLIVION_DATA_DIR:-\$\{CLAUDE_PLUGIN_DATA\}\}/warm-prompt-hooks" \] \|\| )?'
+)
 HOOK_COMMAND = re.compile(
-    r'python3 "\$\{CLAUDE_PLUGIN_ROOT\}/hooks/([a-z_]+\.py)"((?: --[a-z-]+)*(?: [A-Z][A-Za-z]+)?)'
+    WARM_GUARD
+    + r'python3 "\$\{CLAUDE_PLUGIN_ROOT\}/hooks/([a-z_]+\.py)"((?: --[a-z-]+)*(?: [A-Z][A-Za-z]+)?)'
 )
 
 # The bindings of the reference install (event, matcher, hook, args): the
@@ -120,6 +125,8 @@ def _bindings() -> list[tuple[str, str, str, str]]:
     for event, groups in _load(HOOKS_JSON)["hooks"].items():
         for group in groups:
             for handler in group["hooks"]:
+                if handler["type"] == "mcp_tool":  # NOBLIVION-162 step 2; see the test of it below
+                    continue
                 m = HOOK_COMMAND.fullmatch(handler["command"])
                 assert m, handler["command"]
                 matcher = group.get("matcher", "")
@@ -178,8 +185,12 @@ def test_hooks_json_shape():
                     assert parts <= TOOL_NAMES or matcher.startswith("mcp__"), matcher
             assert isinstance(group["hooks"], list) and group["hooks"]
             for handler in group["hooks"]:
-                assert set(handler) <= {"type", "command", "timeout", "async", "if"}
-                assert handler["type"] == "command"
+                if handler["type"] == "mcp_tool":
+                    assert set(handler) == {"type", "server", "tool", "input", "timeout"}
+                    assert event == "UserPromptSubmit"
+                else:
+                    assert set(handler) <= {"type", "command", "timeout", "async", "if"}
+                    assert handler["type"] == "command"
                 assert handler.get("async", True) is True
                 assert isinstance(handler["timeout"], int) and 0 < handler["timeout"] <= 60
 
@@ -234,7 +245,16 @@ VAR_REF = re.compile(r"\$\{([^}]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 EXPANDED = {
     "mcp.command": {"CLAUDE_PLUGIN_ROOT"},
     "mcp.args": {"CLAUDE_PLUGIN_ROOT"},
-    "hook.command": {"CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA", "CLAUDE_PROJECT_DIR"},
+    "hook.command": {
+        "CLAUDE_PLUGIN_ROOT",
+        "CLAUDE_PLUGIN_DATA",
+        "CLAUDE_PROJECT_DIR",
+        # The shell expands this one, in the flag test of the prompt command (the pattern reads the
+        # nested reference up to its first closing brace).
+        "NOBLIVION_DATA_DIR:-${CLAUDE_PLUGIN_DATA",
+    },
+    # The hook runner fills an mcp_tool input from the event JSON (NOBLIVION-162 step 2).
+    "hook.input": set(dispatch.WARM_FIELDS),
 }
 
 
@@ -414,7 +434,11 @@ def test_hook_commands_parse_as_shell_words():
     for event, groups in _load(HOOKS_JSON)["hooks"].items():
         for group in groups:
             for handler in group["hooks"]:
+                if handler["type"] != "command":
+                    continue
                 words = shlex.split(handler["command"])
+                if words[:1] == ["["]:  # the flag test of the warm prompt hook
+                    words = words[words.index("||") + 1 :]
                 assert words[0] == "python3", (event, words)
 
 
@@ -440,7 +464,7 @@ def _handlers(event, tool="", command=""):
 
 
 def _scripts(handlers):
-    return [HOOK_COMMAND.fullmatch(h["command"]).group(1) for h in handlers]
+    return [HOOK_COMMAND.fullmatch(h["command"]).group(1) for h in handlers if "command" in h]
 
 
 def _sync(handlers):
@@ -472,6 +496,9 @@ def test_the_silent_hooks_run_in_the_background():
     for event, groups in _load(HOOKS_JSON)["hooks"].items():
         for group in groups:
             for h in group["hooks"]:
+                if h["type"] == "mcp_tool":
+                    assert "async" not in h  # it answers the prompt, so Claude Code waits for it
+                    continue
                 script = _scripts([h])[0]
                 assert h.get("async", False) is (script in silent), (event, script)
 
@@ -501,7 +528,10 @@ def test_the_nudge_starts_only_for_a_merge_or_a_ticket_tool():
 def test_hook_processes_waited_for_on_the_common_events():
     """Count of foreground command starts. The review R2-F05/F13 counted 5 on a Bash call and 5
     on a prompt before NOBLIVION-149; NOBLIVION-162 runs the prompt's three modules in one."""
-    assert len(_sync(_handlers("UserPromptSubmit"))) == 1
+    # One command, and the mcp_tool hook that answers nothing unless the flag file is there.
+    prompt = _handlers("UserPromptSubmit")
+    assert [h["type"] for h in prompt] == ["command", "mcp_tool"]
+    assert len(_sync(prompt[:1])) == 1
     assert len(_sync(_handlers("PreToolUse", "Bash", "ls -la"))) == 1
     assert len(_sync(_handlers("PostToolUse", "Bash", "ls -la"))) == 1
     assert len(_sync(_handlers("PostToolUse", "Read"))) == 0

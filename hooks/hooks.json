@@ -28,7 +28,21 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatch.py\" UserPromptSubmit",
+            "command": "[ -e \"${NOBLIVION_DATA_DIR:-${CLAUDE_PLUGIN_DATA}}/warm-prompt-hooks\" ] || python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatch.py\" UserPromptSubmit",
+            "timeout": 15
+          },
+          {
+            "type": "mcp_tool",
+            "server": "plugin:noblivion:noblivion",
+            "tool": "noblivion_prompt_hook",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "transcript_path": "${transcript_path}",
+              "cwd": "${cwd}",
+              "prompt": "${prompt}",
+              "permission_mode": "${permission_mode}"
+            },
             "timeout": 15
           }
         ]

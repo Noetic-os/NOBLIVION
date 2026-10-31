@@ -39,6 +39,30 @@ All notable changes to NOBLIVION. The format follows
     The model reads the contexts of one event as one block, not as one block for each hook.
   - `tests/test_hook_dispatch.py` runs the old commands and the dispatcher on the same events (prompt,
     each session source, each compact trigger) and compares exit code and stdout of every module.
+- The prompt hook can run with no new Python process (NOBLIVION-162, step 2 of 2), off by default. Create
+  the file `warm-prompt-hooks` in the data dir and `hooks.json` hands the prompt to an `mcp_tool` hook: the
+  MCP server of the plugin, already running, forks a child that runs `dispatch.py UserPromptSubmit` and
+  returns its answer as the hook output (the tool `noblivion_prompt_hook`, listed only while the file is
+  there). The prompt command in `hooks.json` now starts with a shell test of that file and steps aside when
+  it is there; without the file nothing changes, and the `mcp_tool` hook answers an empty text. Remove the
+  file to go back. Measured on a scratch HOME with a store of 1,191 notes (40 interleaved runs of both
+  paths, the hooks of the event started side by side): the wait of a prompt 155 ms to 122 ms at the
+  median, CPU of a prompt 77 ms to 47 ms, Python processes started by a prompt 1 to 0. The rows are the
+  same: 108 recorded prompts give the same bytes through both paths (the store time in the
+  header masked), and `tests/test_hook_warm_prompt.py` holds the cases. Rules:
+  - A store that is down or slow ends the prompt with no rows and no error, as for the command. A fault in
+    the child, or a module that exits 2, gives a tool error, which Claude Code treats as a non-blocking
+    error: a warm hook never blocks a prompt. The deny paths (`guard_hook.py` with the credential guard)
+    stay command hooks, because a failed `mcp_tool` or `http` hook lets the call go ahead before Claude
+    Code 2.1.295.
+  - The child loads the hook modules fresh and leaves the server as it was, so no state passes from one
+    prompt to the next; the rows already shown stay in the session files, as before. A platform without
+    `fork` gets no rows from the warm hook: leave the file out there.
+  - `type: "http"` is not used: it needs the port and the token of the store in `hooks.json`, and the
+    token is a file (the port changes at each start) that Claude Code cannot put into a header.
+  - Not checked in a live Claude Code session (no model call was made): that Claude Code fills the
+    `input` fields from the prompt event and finds the tool in the server of the plugin as
+    `plugin:noblivion:noblivion`. Both follow its documentation and the strings of the installed 2.1.261.
 - Note hygiene: a replaced note leaves the rows (NOBLIVION-156). A note with `supersedes: <note name>` in
   its front matter withdraws the named note of the same memory folder at index time, by the path of
   `status: superseded` (the row is archived and the file stays; the next scan brings it back when the line

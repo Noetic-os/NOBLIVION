@@ -833,6 +833,76 @@ def _tool_error(message: str) -> Dict[str, Any]:
     return {"content": [{"type": "text", "text": f"{TOOL_NAME}: {message}"}], "isError": True}
 
 
+# NOBLIVION-162, step 2. The ``mcp_tool`` hook of ``UserPromptSubmit`` in hooks.json calls this tool, so
+# a prompt starts no Python process: the hook modules run in a forked child of this server
+# (``hooks/dispatch.py run_forked``). It is on only when the file ``warm-prompt-hooks`` is in the data
+# dir; the command hook of the same event skips itself then. Off, the call answers an empty text, which
+# Claude Code reads as no output. The tool is listed only when it is on; the model has no use for it.
+PROMPT_HOOK_NAME = "noblivion_prompt_hook"
+PROMPT_HOOK_SCHEMA: Dict[str, Any] = {
+    "name": PROMPT_HOOK_NAME,
+    "description": "Internal: the prompt hook of the plugin calls it. Do not call it.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            key: {"type": "string"}
+            for key in (
+                "hook_event_name",
+                "session_id",
+                "transcript_path",
+                "cwd",
+                "prompt",
+                "permission_mode",
+            )
+        },
+    },
+}
+
+
+def _load_dispatch():
+    """Import ``hooks/dispatch.py`` by path (the module that ``hooks.json`` runs as a command)."""
+    name = "dispatch"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, _HOOKS / f"{name}.py")
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {name}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def prompt_hook_on(environ: Optional[Mapping[str, str]] = None) -> bool:
+    try:
+        return bool(_load_dispatch().warm_on(dict(os.environ if environ is None else environ)))
+    except Exception:  # noqa: BLE001 - off: the command hook runs
+        return False
+
+
+def noblivion_prompt_hook(
+    args: Dict[str, Any], environ: Optional[Mapping[str, str]] = None
+) -> Dict[str, Any]:
+    """The answer of ``dispatch.py UserPromptSubmit`` for the event fields in ``args``. A fault gives
+    ``isError``, which Claude Code treats as a non-blocking error: the prompt goes on with no rows."""
+    if not prompt_hook_on(environ):
+        return {"content": [{"type": "text", "text": ""}], "isError": False}
+    try:
+        dispatch = _load_dispatch()
+        code, stdout, stderr = dispatch.run_forked(
+            dispatch.WARM_EVENT,
+            dispatch.warm_event(args),
+            None if environ is None else dict(environ),
+        )
+    except Exception as exc:  # noqa: BLE001 - fail open
+        text = f"prompt hook failed: {type(exc).__name__}"
+        return {"content": [{"type": "text", "text": text}], "isError": True}
+    if code != 0:
+        text = "prompt hook failed (exit %d): %s" % (code, stderr.strip()[:300])
+        return {"content": [{"type": "text", "text": text}], "isError": True}
+    return {"content": [{"type": "text", "text": stdout}], "isError": False}
+
+
 # ── JSON-RPC ────────────────────────────────────────────────────────────────
 
 
@@ -893,13 +963,18 @@ def handle(message: Any, environ: Optional[Dict[str, str]] = None) -> Optional[D
     if method == "ping":
         return _result(req_id, {})
     if method == "tools/list":
-        return _result(req_id, {"tools": [tool_schema(environ), REMEMBER_SCHEMA]})
+        tools = [tool_schema(environ), REMEMBER_SCHEMA]
+        if prompt_hook_on(environ):
+            tools.append(PROMPT_HOOK_SCHEMA)
+        return _result(req_id, {"tools": tools})
     if method == "tools/call":
         name = params.get("name")
         raw_args = params.get("arguments")
         args: Dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
         if name == REMEMBER_NAME:
             return _result(req_id, noblivion_remember(args, environ))
+        if name == PROMPT_HOOK_NAME:
+            return _result(req_id, noblivion_prompt_hook(args, environ))
         if name != TOOL_NAME:
             return _error(req_id, -32602, f"Unknown tool: {name}")
         return _result(

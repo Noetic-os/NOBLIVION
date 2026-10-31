@@ -292,7 +292,8 @@ def _hook_commands() -> list[tuple[str, str, str]]:
         for group in groups:
             first = group.get("matcher", "").split("|")[0]
             for hook in group["hooks"]:
-                out.append((event, first, hook["command"]))
+                if hook["type"] == "command":  # the mcp_tool hook starts no process
+                    out.append((event, first, hook["command"]))
     return out
 
 

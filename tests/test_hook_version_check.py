@@ -177,6 +177,6 @@ def test_hook_is_registered_for_session_start_only():
         for event, groups in doc.items()
         for g in groups
         for h in g["hooks"]
-        if "hooks/version_check.py" in h["command"]
+        if "hooks/version_check.py" in h.get("command", "")
     }
     assert where == {"SessionStart"}
