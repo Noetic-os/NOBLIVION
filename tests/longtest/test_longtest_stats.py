@@ -6,6 +6,8 @@ from __future__ import annotations
 import math
 import random
 
+import longtest_path  # noqa: F401 - puts tools on the path
+
 from longtest import stats
 
 

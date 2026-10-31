@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import longtest_path  # noqa: F401 - puts tools on the path
 import pytest
 
 from longtest import fixtures, replay

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import longtest_path  # noqa: F401 - puts tools on the path
+
 from longtest import stocksim
 
 

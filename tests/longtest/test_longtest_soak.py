@@ -9,6 +9,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+import longtest_path  # noqa: F401 - puts tools on the path
 import pytest
 
 from longtest import soak

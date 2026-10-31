@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 
+import longtest_path  # noqa: F401 - puts tools on the path
 import pytest
 
 from longtest import config, report, scheduler
