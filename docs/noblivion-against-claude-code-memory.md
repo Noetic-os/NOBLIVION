@@ -76,7 +76,7 @@ Claude Code and Codex start the same one-shot scripts. Only the recall paths cal
 
 ### Process model
 
-- A hook is a one-shot python3 process. Claude Code starts one per event, writes JSON on its stdin and reads its stdout. Each hook has a time budget from hooks.json.
+- A hook is a one-shot python3 process. Claude Code starts one per command of an event, writes JSON on its stdin and reads its stdout. Each hook has a time budget from hooks.json. For SessionStart, UserPromptSubmit and PreCompact the command is `hooks/dispatch.py`, which runs the modules of the event one after the other in that one process and prints one merged answer. The guard (the deny path) and the background hooks stay their own commands.
 - Guards, stop checks, label rows and the session line never call the store. They read local guard tables, one JSON file per project, rebuilt at session start.
 - The MCP server lives for the length of a session and speaks JSON-RPC over stdio. It imports the recall hook for the HTTP call and the rendering, so both channels rank and print the same way.
 - The store is one process per OS user. The SessionStart hook starts it detached and waits a few seconds. A file lock lets only one run; a second exits at once. It serves HTTP on 127.0.0.1 on a port chosen at start, proves itself to each client with an HMAC answer on a nonce, then requires a Bearer token from a protected file. A jobs thread scans the memory folders, embeds new rows and runs maintenance; an optional learning thread runs only when learning is configured. The store exits after 30 idle minutes.

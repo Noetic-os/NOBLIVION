@@ -16,6 +16,29 @@ All notable changes to NOBLIVION. The format follows
   as before. On the scale fixture at 20,000 notes, with the biggest project of 4,445 notes, the hook
   process takes 264 ms at p50 and 269 ms at p95 (before: 731 ms and 784 ms at a busier host); the corpus
   load is 42 ms (was 318 ms) and the 293 ms BM25 build is gone. The store process peaks at 828 MB.
+- One hook command per event (NOBLIVION-162, step 1 of 2). `hooks/dispatch.py EVENT` runs the modules
+  of SessionStart, UserPromptSubmit and PreCompact one after the other in one Python process, and prints
+  one merged answer. `hooks.json` starts it in place of the old commands: a prompt starts 1 hook, was 3;
+  a session start 1 waited for and 1 in the background, was 6 and 1; a PreCompact 1, was 2. Measured on a
+  scratch HOME with a local fake store (30 interleaved runs of both builds, the commands of an event
+  started in parallel as Claude Code does): CPU of a prompt 107 ms to 50 ms, of a session start 146 ms to
+  55 ms; per turn of 1 prompt, 3 Bash calls and 1 stop, 14 processes to 12 and 372 ms of CPU to 317 ms.
+  The wait does not fall: the old commands ran side by side and the modules now run in turn (a prompt
+  49 ms to 51 ms), so this step saves CPU and process starts, not time. Rules:
+  - The deny paths stay their own command hooks: `guard_hook.py` with the credential guard is not in the
+    dispatcher, so a deny and a fault there are those of one process. The background hooks
+    (`memory_sync_hook`, `trust_flush`, `version_check`) and the Stop check stay their own commands too,
+    because Claude Code would wait for them inside the dispatcher.
+  - A module runs as its own process would: its own stdin, `sys.argv`, environment and working
+    directory, and a time limit of the old `timeout` of its hook (the dispatcher's limit is their sum, at
+    most 60 s). A module that raises, exits, runs too long or changes the environment does not change what
+    another module prints. Exit 2 stays a blocking error; any other non-zero code drops the stdout of that
+    module, as Claude Code does.
+  - One module with output: its stdout passes through byte for byte. Several: the `systemMessage` and
+    `additionalContext` texts join with a line break in the old order, and plain text counts as context.
+    The model reads the contexts of one event as one block, not as one block for each hook.
+  - `tests/test_hook_dispatch.py` runs the old commands and the dispatcher on the same events (prompt,
+    each session source, each compact trigger) and compares exit code and stdout of every module.
 - Note hygiene: a replaced note leaves the rows (NOBLIVION-156). A note with `supersedes: <note name>` in
   its front matter withdraws the named note of the same memory folder at index time, by the path of
   `status: superseded` (the row is archived and the file stays; the next scan brings it back when the line

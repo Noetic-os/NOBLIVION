@@ -6,43 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/store_client.py\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard_table.py\" --rebuild",
-            "timeout": 20
-          }
-        ]
-      },
-      {
-        "matcher": "compact",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/recall_hook.py\" --reset-rows",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "startup|resume|clear|compact",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/continuity_hook.py\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "startup|resume|clear",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/trust_session_line.py\"",
-            "timeout": 5
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatch.py\" SessionStart",
+            "timeout": 60
           }
         ]
       },
@@ -56,24 +21,6 @@
             "async": true
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/learning_capture.py\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/learning_summary.py\"",
-            "timeout": 5
-          }
-        ]
       }
     ],
     "UserPromptSubmit": [
@@ -81,18 +28,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/stop_checks.py\" --mark-correction",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/learning_context.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/recall_hook.py\"",
-            "timeout": 5
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatch.py\" UserPromptSubmit",
+            "timeout": 15
           }
         ]
       }
@@ -234,21 +171,11 @@
     ],
     "PreCompact": [
       {
-        "matcher": "manual|auto",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/continuity_hook.py\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/learning_capture.py\"",
-            "timeout": 10
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatch.py\" PreCompact",
+            "timeout": 20
           }
         ]
       }

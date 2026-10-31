@@ -20,7 +20,9 @@ from pathlib import Path
 import pytest
 
 import noblivion
+from hookload import load_hook
 
+dispatch = load_hook("dispatch", "hooktest_package_dispatch")
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / ".claude-plugin" / "plugin.json"
 MARKETPLACE = ROOT / ".claude-plugin" / "marketplace.json"
@@ -72,26 +74,20 @@ PRE_COMPACT_TRIGGERS = {"manual", "auto"}
 TOOL_NAMES = {"Bash", "Read", "Grep", "Glob", "Edit", "Write", "MultiEdit", "Agent", "Task"}
 NUDGE_MCP_MATCHER = "mcp__.+__([Cc]reate|[Aa]dd).*([Ii]ssue|[Tt]icket|[Cc]omment).*"
 HOOK_COMMAND = re.compile(
-    r'python3 "\$\{CLAUDE_PLUGIN_ROOT\}/hooks/([a-z_]+\.py)"((?: --[a-z-]+)*)'
+    r'python3 "\$\{CLAUDE_PLUGIN_ROOT\}/hooks/([a-z_]+\.py)"((?: --[a-z-]+)*(?: [A-Z][A-Za-z]+)?)'
 )
 
 # The bindings of the reference install (event, matcher, hook, args): the
 # hand-installed hooks under their new names. The reference install bound no
 # trust report hook (the flush refreshes the report); store_client.py (E4) is new.
 EXPECTED = {
-    ("SessionStart", "", "learning_summary.py", ""),
-    ("SessionStart", "", "learning_capture.py", ""),  # records the fresh start (NOBLIVION-149)
-    ("UserPromptSubmit", "", "learning_context.py", ""),
-    ("PreCompact", "", "learning_capture.py", ""),
+    # NOBLIVION-162: one dispatcher command per event runs the modules of hooks/dispatch.py PLAN
+    # (tests/test_hook_dispatch.py holds that table against the old per-module commands).
+    ("SessionStart", "", "dispatch.py", " SessionStart"),
+    ("UserPromptSubmit", "", "dispatch.py", " UserPromptSubmit"),
+    ("PreCompact", "", "dispatch.py", " PreCompact"),
     ("SessionEnd", "", "learning_capture.py", ""),
-    ("SessionStart", "", "store_client.py", ""),
-    ("SessionStart", "", "guard_table.py", " --rebuild"),
-    ("SessionStart", "compact", "recall_hook.py", " --reset-rows"),
-    ("SessionStart", "startup|resume|clear|compact", "continuity_hook.py", ""),
-    ("SessionStart", "startup|resume|clear", "trust_session_line.py", ""),
-    ("SessionStart", "startup|resume|clear", "version_check.py", ""),
-    ("UserPromptSubmit", "", "stop_checks.py", " --mark-correction"),
-    ("UserPromptSubmit", "", "recall_hook.py", ""),
+    ("SessionStart", "startup|resume|clear", "version_check.py", ""),  # async
     ("PreToolUse", "Bash", "guard_hook.py", ""),
     # NOBLIVION-123, off by default. NOBLIVION-149: started only by `if` on a merge command.
     ("PreToolUse", "Bash if Bash(gh pr merge*)", "recall_nudge.py", ""),
@@ -107,7 +103,6 @@ EXPECTED = {
     ("PostToolUse", "Bash", "memory_sync_hook.py", ""),
     ("PostToolUseFailure", "Bash", "error_recall_hook.py", ""),
     ("PostToolUseFailure", "Bash", "guard_hook.py", ""),
-    ("PreCompact", "manual|auto", "continuity_hook.py", ""),
     ("SubagentStart", "", "subagent_rules_hook.py", ""),
     ("Stop", "", "stop_checks.py", ""),
     ("Stop", "", "trust_flush.py", ""),  # the trust flush (E5)
@@ -454,6 +449,13 @@ def _sync(handlers):
 
 def test_learning_capture_runs_once_for_each_session_not_for_each_event():
     where = {e for e, _, script, _ in _bindings() if script == "learning_capture.py"}
+    # NOBLIVION-162: SessionStart and PreCompact reach it through the dispatcher.
+    where |= {
+        e
+        for e, (steps, _) in dispatch.PLAN.items()
+        for s in steps
+        if s.module == "learning_capture"
+    }
     assert where == {"SessionStart", "PreCompact", "SessionEnd"}
 
 
@@ -498,8 +500,8 @@ def test_the_nudge_starts_only_for_a_merge_or_a_ticket_tool():
 
 def test_hook_processes_waited_for_on_the_common_events():
     """Count of foreground command starts. The review R2-F05/F13 counted 5 on a Bash call and 5
-    on a prompt before this change."""
-    assert len(_sync(_handlers("UserPromptSubmit"))) == 3
+    on a prompt before NOBLIVION-149; NOBLIVION-162 runs the prompt's three modules in one."""
+    assert len(_sync(_handlers("UserPromptSubmit"))) == 1
     assert len(_sync(_handlers("PreToolUse", "Bash", "ls -la"))) == 1
     assert len(_sync(_handlers("PostToolUse", "Bash", "ls -la"))) == 1
     assert len(_sync(_handlers("PostToolUse", "Read"))) == 0

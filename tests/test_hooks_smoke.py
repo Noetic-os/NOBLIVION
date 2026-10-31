@@ -75,6 +75,7 @@ def test_every_moved_module_is_present() -> None:
         "continuity_hook",
         "corpus",
         "credential_guard",
+        "dispatch",  # NOBLIVION-162
         "error_recall_hook",
         "guard_hook",
         "guard_quarantine",  # NOBLIVION-155
