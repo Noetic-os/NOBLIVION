@@ -30,7 +30,7 @@ import threading
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 
-from noblivion import bm25, db
+from noblivion import bm25, db, inverted
 
 try:  # numpy is in the optional extra noblivion[embed]
     import numpy as np
@@ -82,7 +82,9 @@ class PoolRow:
     source_type: str
     content: str
     weight: float
-    tokens: tuple[str, ...] = field(repr=False, compare=False)
+    # The words of the unit. The store keeps them in the inverted index (``slot``) and leaves
+    # this empty; only a caller that ranks a small pool of its own (``pick_chunk``) fills it.
+    tokens: tuple[str, ...] = field(default=(), repr=False, compare=False)
     is_general: bool = False
     chunk_id: int | None = None
     chunk_index: int = 0
@@ -92,15 +94,7 @@ class PoolRow:
     # NOBLIVION-105: the index answer reads these two for a mined row (rule and apply lines).
     category: str = ""
     index_text: str = field(default="", repr=False, compare=False)
-
-
-@dataclass(frozen=True)
-class _Chunk:
-    id: int
-    index: int
-    heading: str
-    text: str
-    tokens: tuple[str, ...] = field(repr=False, compare=False)
+    slot: int = field(default=-1, repr=False, compare=False)  # the unit in the inverted index
 
 
 @dataclass(frozen=True)
@@ -222,7 +216,10 @@ def label_boost(labels: Sequence[str], query_tokens: Iterable[str]) -> float:
 
 
 def keyword_gate(
-    ranked: RankResult, index: bm25.BM25, tokens: Sequence[str], named: Iterable[str]
+    ranked: RankResult,
+    index: bm25.BM25 | inverted.PoolView,
+    tokens: Sequence[str],
+    named: Iterable[str],
 ) -> RankResult:
     """The relevance gate of keyword-only mode (NOBLIVION-153). Without a cosine no floor can
     judge a row, so any prompt with a word in common got its rows. The gate keeps the rows
@@ -242,7 +239,10 @@ def keyword_gate(
         return ranked
     terms = index.real_terms(tokens)
     terms = {w for w in terms if w not in bm25.STOP_WORDS} or terms
-    shared = terms & set(top.tokens)
+    if isinstance(index, inverted.PoolView):
+        shared = {w for w in terms if index.unit_has(top.slot, w)}
+    else:
+        shared = terms & set(top.tokens)
     # A word in more than half of the units is never informative, whatever the cut.
     cap = index.n // 2
     informative = min(index.df_cut(GATE_INFORMATIVE_MASS), cap)
@@ -329,33 +329,54 @@ def pick_chunk(
 
 
 @dataclass
+class _Pool:
+    """A cached pool: its units in id order, the view over the shared index, the file count."""
+
+    units: list
+    view: inverted.PoolView
+    n_files: int
+    stamp: int  # the content revision of the snapshot that the units were taken from
+
+
+@dataclass
 class _Snapshot:
     content_rev: int = -1
     vector_rev: int = -1
     rows: dict[int, PoolRow] = field(default_factory=dict)
-    chunks: dict[int, tuple[_Chunk, ...]] = field(default_factory=dict)  # memory_id -> chunks
+    units: dict[int, tuple[PoolRow, ...]] = field(default_factory=dict)  # memory_id -> units
+    index: inverted.InvertedIndex | None = None
     vectors: dict[int, bytes] = field(default_factory=dict)  # chunk id -> float32 blob
     dims: dict[int, int] = field(default_factory=dict)
-    pools: dict = field(default_factory=dict)  # pool key -> (rows, BM25)
+    pools: dict = field(default_factory=dict)  # pool key -> _Pool
     matrices: dict = field(default_factory=dict)  # (pool key, dim) -> (positions, matrix)
 
 
+# The index is rebuilt from the database, not patched, when this share of its slots is dead and
+# at least this many are (a changed row leaves its old slots behind).
+_COMPACT_SHARE = 0.3
+_COMPACT_MIN_DEAD = 5000
+
+
 class RankIndex:
-    """Live rows, their BM25 indexes and the vector matrix of one model.
+    """Live rows, the inverted index of their units and the vector matrix of one model.
 
     ``refresh(conn)`` reads both counters. When one is higher than the loaded
     value, it reads the changed rows (``rev > loaded``) in one read
-    transaction, applies them to a copy and swaps the copy in. A lock lets one
-    reload run at a time; a search during a reload uses the old snapshot. A
-    ``vector_rev`` change keeps the BM25 indexes; only a ``content_rev``
-    change drops them.
+    transaction and applies them: a changed row takes its old units out of the
+    shared inverted index and adds new ones, and the cached pools follow by the units that
+    entered or left them (NOBLIVION-157). A lock lets one reload run at a time; a
+    search waits for the short apply step of a reload that runs and then ranks on the new
+    state. The first load, and a rebuild after many dead units, builds a new index
+    beside the old one and swaps it in.
     """
 
     def __init__(self, model_id: str | None = None) -> None:
         self._model_id = model_id
         self._snap = _Snapshot()
-        self._lock = threading.Lock()
-        self.bm25_builds = 0  # for tests and /health
+        self._lock = threading.Lock()  # one reload at a time
+        self._ilock = threading.RLock()  # the index and its pools: a reload applies, a search reads
+        self.bm25_builds = 0  # pools made from scratch; for tests and /health
+        self.pool_syncs = 0  # pools brought up to date by their changed units
         self.reloads = 0
 
     @property
@@ -373,14 +394,16 @@ class RankIndex:
             if model_id == self._model_id:
                 return
             self._model_id = model_id
-            old = self._snap
-            self._snap = _Snapshot(
-                content_rev=old.content_rev,
-                vector_rev=-1,
-                rows=old.rows,
-                chunks=old.chunks,
-                pools=old.pools,
-            )
+            with self._ilock:
+                old = self._snap
+                self._snap = _Snapshot(
+                    content_rev=old.content_rev,
+                    vector_rev=-1,
+                    rows=old.rows,
+                    units=old.units,
+                    index=old.index,
+                    pools=old.pools,
+                )
 
     def refresh(self, conn: sqlite3.Connection) -> bool:
         """Reload when a counter moved. Returns True when a reload ran."""
@@ -398,11 +421,17 @@ class RankIndex:
 
     def _reload(self, conn: sqlite3.Connection, old: _Snapshot) -> _Snapshot:
         model = self._model_id
+        index = old.index
+        # A new index beside the old one: the first load, and a rebuild when too many slots are
+        # dead. It reads every live row, so it asks for the changes since the start.
+        fresh = index is None or (
+            index.dead >= _COMPACT_MIN_DEAD and index.dead > _COMPACT_SHARE * len(index)
+        )
+        since = -1 if fresh else old.content_rev
+        changed_vectors: list = []
         with db.read_tx(conn):
             content_rev, vector_rev = db.revisions(conn)
-            changed_rows = []
-            changed_chunks: dict[int, list] = {}
-            live_ids = None
+            new = _Snapshot(content_rev=content_rev, vector_rev=vector_rev)
             if content_rev > old.content_rev:
                 changed_rows = conn.execute(
                     "SELECT m.id, m.project, m.root, m.path, m.source_type, m.category, "
@@ -412,7 +441,7 @@ class RankIndex:
                     "AND n.file_hash=m.hash AND n.status='active' AND n.scope='general' "
                     "AND n.category IN ('preference','workflow')) is_general "
                     "FROM memories m WHERE m.rev > ?",
-                    (old.content_rev,),
+                    (since,),
                 ).fetchall()
                 # A physical forget has no changed row to reload. Remove old
                 # cached rows by checking live identities in this same snapshot.
@@ -422,78 +451,126 @@ class RankIndex:
                         "SELECT id FROM memories WHERE archived_at IS NULL AND deleted_at IS NULL"
                     )
                 }
-                # All chunks of a changed row: the chunks of one row are read together.
-                ids = [int(r["id"]) for r in changed_rows if int(r["id"]) in live_ids]
-                for start in range(0, len(ids), _CHUNK_READ_BATCH):
-                    part = ids[start : start + _CHUNK_READ_BATCH]
-                    marks = ",".join("?" * len(part))
-                    for c in conn.execute(
-                        "SELECT parent_id, id, chunk_index, heading, text, search_text "
-                        f"FROM memory_chunks WHERE parent_id IN ({marks}) "
-                        "ORDER BY parent_id, chunk_index",
-                        part,
-                    ):
-                        changed_chunks.setdefault(int(c["parent_id"]), []).append(c)
-            changed_vectors = []
+                self._apply_changes(conn, old, new, changed_rows, live_ids, fresh)
+            else:
+                new.rows, new.units, new.index = old.rows, old.units, old.index
+                new.pools = old.pools  # the index stays: no content change
             if model is not None and vector_rev > old.vector_rev:
                 changed_vectors = conn.execute(
                     "SELECT chunk_id, dim, blob FROM chunk_vectors WHERE model = ? AND rev > ?",
                     (model, old.vector_rev),
                 ).fetchall()
-        new = _Snapshot(content_rev=content_rev, vector_rev=vector_rev)
-        if content_rev > old.content_rev:
-            rows = {mid: row for mid, row in old.rows.items() if mid in live_ids}
-            field_tokens: dict[int, tuple[str, ...]] = {}
-            for r in changed_rows:
-                if r["archived_at"] is None and r["deleted_at"] is None:
-                    field_tokens[int(r["id"])] = (
-                        tuple(bm25.tokenize(r["index_text"])) * INDEX_FIELDS_REPEAT
-                    )
-                    rows[int(r["id"])] = PoolRow(
-                        id=int(r["id"]),
-                        project=r["project"],
-                        root=r["root"],
-                        path=r["path"],
-                        source_type=r["source_type"],
-                        content=r["content"],
-                        weight=float(r["weight"]),
-                        tokens=tuple(bm25.tokenize(r["content"])) + field_tokens[int(r["id"])],
-                        is_general=bool(r["is_general"]),
-                        labels=parse_labels(r["labels"]),
-                        category=r["category"],
-                        index_text=r["index_text"],
+        with self._ilock:
+            self._finish(new, old, changed_vectors, content_rev)
+            self._snap = new
+        return new
+
+    def _apply_changes(
+        self,
+        conn: sqlite3.Connection,
+        old: _Snapshot,
+        new: _Snapshot,
+        changed_rows: list,
+        live_ids: set[int],
+        fresh: bool,
+    ) -> None:
+        """Take the changed rows into the index and into ``new``. The rows are cut into words
+        and added one batch at a time, so the words of the whole store are never in memory
+        together. A fresh index is built beside the old one, with no lock; a patch of the
+        old index holds the lock, and its work is the changed rows only."""
+        changed_ids = {int(r["id"]) for r in changed_rows}
+        if fresh:
+            idx = inverted.InvertedIndex()
+            rows: dict[int, PoolRow] = {}
+            units: dict[int, tuple[PoolRow, ...]] = {}
+            new.pools = {}
+            self._add_rows(conn, idx, changed_rows, live_ids, rows, units)
+        else:
+            idx = old.index  # type: ignore[assignment]
+            with self._ilock:
+                units = {mid: u for mid, u in old.units.items() if mid in live_ids}
+                for mid, gone in old.units.items():
+                    if mid in changed_ids or mid not in live_ids:
+                        for u in gone:
+                            idx.remove(u.slot)
+                        units.pop(mid, None)
+                rows = {
+                    mid: row
+                    for mid, row in old.rows.items()
+                    if mid in live_ids and mid not in changed_ids
+                }
+                self._add_rows(conn, idx, changed_rows, live_ids, rows, units)
+                new.pools = old.pools
+        new.rows, new.units, new.index = rows, units, idx
+
+    @staticmethod
+    def _add_rows(
+        conn: sqlite3.Connection,
+        idx: inverted.InvertedIndex,
+        changed_rows: list,
+        live_ids: set[int],
+        rows: dict[int, PoolRow],
+        units: dict[int, tuple[PoolRow, ...]],
+    ) -> None:
+        live = [r for r in changed_rows if int(r["id"]) in live_ids]
+        for start in range(0, len(live), _CHUNK_READ_BATCH):
+            part = live[start : start + _CHUNK_READ_BATCH]
+            # All chunks of a changed row: the chunks of one row are read together.
+            chunks: dict[int, list] = {}
+            marks = ",".join("?" * len(part))
+            for c in conn.execute(
+                "SELECT parent_id, id, chunk_index, heading, text, search_text "
+                f"FROM memory_chunks WHERE parent_id IN ({marks}) "
+                "ORDER BY parent_id, chunk_index",
+                [int(r["id"]) for r in part],
+            ):
+                chunks.setdefault(int(c["parent_id"]), []).append(c)
+            for r in part:
+                mid = int(r["id"])
+                field_tokens = bm25.tokenize(r["index_text"]) * INDEX_FIELDS_REPEAT
+                row = PoolRow(
+                    id=mid,
+                    project=r["project"],
+                    root=r["root"],
+                    path=r["path"],
+                    source_type=r["source_type"],
+                    content=r["content"],
+                    weight=float(r["weight"]),
+                    is_general=bool(r["is_general"]),
+                    labels=parse_labels(r["labels"]),
+                    category=r["category"],
+                    index_text=r["index_text"],
+                )
+                rows[mid] = row
+                found = chunks.get(mid)
+                if found:
+                    # The marker line (the file path) is part of the keyword text of every chunk
+                    # of its file, as it was part of the keyword text of the file row.
+                    marker = _MARKER_LINE_RE.search(row.content)
+                    path_tokens = bm25.tokenize(marker.group(0)) if marker else []
+                    units[mid] = tuple(
+                        replace(
+                            row,
+                            chunk_id=int(c["id"]),
+                            chunk_index=int(c["chunk_index"]),
+                            heading=c["heading"],
+                            chunk_text=c["text"],
+                            slot=idx.add(
+                                bm25.tokenize(c["search_text"]) + path_tokens + field_tokens
+                            ),
+                        )
+                        for c in found
                     )
                 else:
-                    rows.pop(int(r["id"]), None)
-            new.rows = rows
-            # A changed row takes the chunks read above. A row that changed and has no
-            # chunk row (a writer that skipped them) is one unit of its own.
-            changed_ids = {int(r["id"]) for r in changed_rows}
-            chunks = {
-                mid: found
-                for mid, found in old.chunks.items()
-                if mid in rows and mid not in changed_ids
-            }
-            for mid, found in changed_chunks.items():
-                # The marker line (the file path) is part of the keyword text of every chunk
-                # of its file, as it was part of the keyword text of the file row.
-                marker = _MARKER_LINE_RE.search(rows[mid].content)
-                path_tokens = tuple(bm25.tokenize(marker.group(0))) if marker else ()
-                chunks[mid] = tuple(
-                    _Chunk(
-                        int(c["id"]),
-                        int(c["chunk_index"]),
-                        c["heading"],
-                        c["text"],
-                        tuple(bm25.tokenize(c["search_text"])) + path_tokens + field_tokens[mid],
+                    # A row that changed and has no chunk row (a writer that skipped them) is
+                    # one unit of its own.
+                    units[mid] = (
+                        replace(row, slot=idx.add(bm25.tokenize(row.content) + field_tokens)),
                     )
-                    for c in found
-                )
-            new.chunks = chunks
-        else:
-            new.rows = old.rows
-            new.chunks = old.chunks
-            new.pools = old.pools  # BM25 stays: no content change
+
+    def _finish(
+        self, new: _Snapshot, old: _Snapshot, changed_vectors: list, content_rev: int
+    ) -> None:
         if changed_vectors:
             new.vectors = dict(old.vectors)
             new.dims = dict(old.dims)
@@ -505,10 +582,11 @@ class RankIndex:
             if content_rev == old.content_rev:
                 new.matrices = old.matrices
         if content_rev > old.content_rev:
-            live_chunks = {c.id for found in new.chunks.values() for c in found}
+            live_chunks = {
+                u.chunk_id for found in new.units.values() for u in found if u.chunk_id is not None
+            }
             new.vectors = {k: v for k, v in new.vectors.items() if k in live_chunks}
             new.dims = {k: v for k, v in new.dims.items() if k in live_chunks}
-        return new
 
     # -- pools ----------------------------------------------------------------
 
@@ -520,10 +598,12 @@ class RankIndex:
             return (project, None, None, bool(include_mined))
         return (project, root, tuple(sorted(set(shared_roots) - {root})), bool(include_mined))
 
-    def _pool(self, snap: _Snapshot, key: tuple) -> tuple[list[PoolRow], bm25.BM25, int]:
+    def _pool(self, snap: _Snapshot, key: tuple) -> tuple[list[PoolRow], inverted.PoolView, int]:
         cached = snap.pools.get(key)
-        if cached is not None:
-            return cached
+        if cached is not None and snap.index is not None and cached.view.index is not snap.index:
+            cached = None  # a view made before the first load
+        if cached is not None and cached.stamp == snap.content_rev:
+            return cached.units, cached.view, cached.n_files
         project, root, shared, include_mined = key
         # The imported rows (``db.IMPORT_ROOT``) belong to no project
         # folder, so every session searches them, like a shared root.
@@ -547,29 +627,20 @@ class RankIndex:
         rows.sort(key=lambda r: r.id)
         # One unit per chunk (BM25 and cosine are per chunk), or one unit for a
         # row that has no chunk. The units of a row stay together, in chunk order.
-        units: list[PoolRow] = []
-        for r in rows:
-            found = snap.chunks.get(r.id)
-            if not found:
-                units.append(r)
-                continue
-            units.extend(
-                replace(
-                    r,
-                    tokens=c.tokens,
-                    chunk_id=c.id,
-                    chunk_index=c.index,
-                    heading=c.heading,
-                    chunk_text=c.text,
-                )
-                for c in found
-            )
-        built = (units, bm25.BM25([u.tokens for u in units]), len(rows))
-        self.bm25_builds += 1
-        if len(snap.pools) >= _CACHE_MAX:
-            snap.pools.clear()
-        snap.pools[key] = built
-        return built
+        units = [u for r in rows for u in snap.units[r.id]]
+        slots = [u.slot for u in units]
+        if cached is not None:
+            # A content change: only the units that entered or left the pool touch its counts.
+            cached.view.sync(slots)
+            self.pool_syncs += 1
+            view = cached.view
+        else:
+            view = inverted.PoolView(snap.index or inverted.InvertedIndex(), slots)
+            self.bm25_builds += 1
+            if len(snap.pools) >= _CACHE_MAX:
+                snap.pools.clear()
+        snap.pools[key] = _Pool(units, view, len(rows), snap.content_rev)
+        return units, view, len(rows)
 
     def _cosines(
         self, snap: _Snapshot, key: tuple, rows: Sequence[PoolRow], query_vector: Sequence[float]
@@ -625,6 +696,32 @@ class RankIndex:
         label boost only, never in the keyword score (NOBLIVION-104). ``gate`` applies the keyword
         gate (``keyword_gate``) to a keyword-only answer; the prompt index asks for it.
         """
+        with self._ilock:
+            return self._rank(
+                query,
+                project=project,
+                top_k=top_k,
+                query_vector=query_vector,
+                root=root,
+                shared_roots=shared_roots,
+                include_mined=include_mined,
+                target=target,
+                gate=gate,
+            )
+
+    def _rank(
+        self,
+        query: str,
+        *,
+        project: str,
+        top_k: int,
+        query_vector: Sequence[float] | None,
+        root: str | None,
+        shared_roots: Iterable[str],
+        include_mined: bool,
+        target: str,
+        gate: bool,
+    ) -> RankResult:
         snap = self._snap
         key = self.pool_key(project, root, shared_roots, include_mined)
         units, index, n_files = self._pool(snap, key)

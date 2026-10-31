@@ -321,7 +321,7 @@ def test_a_vector_of_a_removed_chunk_is_dropped_from_the_index(conn):
     change_memory(conn, ids["long"], "Short now.")
     ranker.search(conn, "signing key", project="claude_code", top_k=3)
     snap = ranker.index._snap
-    live = {c.id for chunks in snap.chunks.values() for c in chunks}
+    live = {u.chunk_id for units in snap.units.values() for u in units}
     assert set(snap.vectors) <= live
 
 

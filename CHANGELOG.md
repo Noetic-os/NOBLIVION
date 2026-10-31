@@ -23,6 +23,16 @@ All notable changes to NOBLIVION. The format follows
   its words as keyword text. The scale fixture writes the 20 older and newer pairs of test C21 apart from
   the scales (`supersede/`). The corpus cache file format changes (one more column), so each hook rebuilds
   its cache once.
+- The store keeps one inverted index for all pools (NOBLIVION-157). Before, it kept every word of every
+  note as its own string, twice, and built a keyword index for each pool again after any change. Now a word is
+  one entry in a shared term table, a unit keeps its term counts, and a pool is a filter over the same
+  postings with its own document frequencies, so a score is the score of the pool alone, as before. A changed
+  note takes its own units out and puts new ones in; a cached pool follows by the units that entered or left
+  it. On the scale fixture at 20,000 notes the store process peaks at 721 MB (was 1,768 MB). Scores equal
+  `bm25.BM25` over the same pool (tests compare to 1e-9 and the order exactly). New:
+  `tools/eval/profile_recall_scale.py`, which times the store, `Ranker.search` and the recall hook on the
+  scale fixture. The hook still builds its own keyword index per prompt; moving that into the store is the
+  next step of this ticket.
 - Guard rules keep firing outside the repository their remedy names (NOBLIVION-173, amends NOBLIVION-155
   part b). The repository a note names now comes from its `violates` regex and its triggers only. A path in
   the rule, the apply text or the examples is the remedy, not the place of the hazard, and scoped the rule

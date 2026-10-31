@@ -144,10 +144,10 @@ def test_the_index_text_counts_in_every_chunk(conn):
     assert chunks > 3
     ranker = ranking.Ranker(None)
     ranker.index.refresh(conn)
-    units, _, _ = ranker.index._pool(
+    units, view, _ = ranker.index._pool(
         ranker.index._snap, ranker.index.pool_key("claude_code", None, (), False)
     )
-    assert all(u.tokens.count("quokka") == ranking.INDEX_FIELDS_REPEAT for u in units)
+    assert all(view.index.term_freq(u.slot, "quokka") == ranking.INDEX_FIELDS_REPEAT for u in units)
     assert ids(search(conn, "quokka")) == [mid]
 
 

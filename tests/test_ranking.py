@@ -339,7 +339,7 @@ def test_reload_on_revision_change_from_another_connection(conn, tmp_path):
     assert index.rank("giraffe", project="claude_code", top_k=5).hits == []
 
 
-def test_a_vector_change_does_not_rebuild_bm25(conn):
+def test_a_vector_change_does_not_touch_the_pools_and_a_content_change_syncs_them(conn):
     add_memory(conn, "a", "alpha beta")
     embedder = FakeEmbedder()
     index = ranking.RankIndex(embedder.model_id)
@@ -354,7 +354,9 @@ def test_a_vector_change_does_not_rebuild_bm25(conn):
     add_memory(conn, "b", "beta gamma")
     index.refresh(conn)
     index.rank("alpha", project="claude_code", top_k=5)
-    assert index.bm25_builds == 2
+    # NOBLIVION-157: the pool is not built again. The new unit enters its counts.
+    assert index.bm25_builds == 1
+    assert index.pool_syncs == 1
 
 
 # -- Ranker: hybrid, keyword fallback, re-embed ----------------------------------------
