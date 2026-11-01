@@ -327,14 +327,15 @@ def test_json_files_parse_and_hold_no_comment_lines():
 def test_claude_plugin_validate(tmp_path):
     for target in (ROOT, PLUGIN):
         proc = subprocess.run(
-            ["claude", "plugin", "validate", str(target)],
+            ["claude", "plugin", "validate", "--strict", str(target)],
             capture_output=True,
             text=True,
             timeout=60,
             check=False,
         )
+        # Strict mode rejects schema warnings without confusing optional catalog
+        # listing advice (such as a missing icon) with manifest validation.
         assert proc.returncode == 0, proc.stdout + proc.stderr
-        assert "warning" not in proc.stdout.lower(), proc.stdout
 
 
 # ── default config ──────────────────────────────────────────────────────────
