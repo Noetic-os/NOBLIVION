@@ -1,5 +1,8 @@
 {
   "name": "noblivion",
+  "metadata": {
+    "description": "The NOBLIVION plugin: local memory recall for Claude Code."
+  },
   "owner": {
     "name": "NOBLIVION contributors"
   },
