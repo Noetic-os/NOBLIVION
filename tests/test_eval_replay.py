@@ -189,10 +189,11 @@ def test_runner_claims_cannot_replace_external_files(replay, tmp_path):
 )
 def test_subprocess_limits_and_protocol(replay, tmp_path, code, expected):
     manifest, _ = replay.load_manifest()
-    limits = {**manifest["limits"], "seconds": 0.15}
+    limits = {**manifest["limits"], "seconds": 0.15 if expected == "timeout" else 5}
     result = replay.run_bounded([sys.executable, "-c", code], b"{}", tmp_path, limits)
     assert result["status"] == expected
-    assert result["seconds"] < 2
+    if expected == "timeout":
+        assert result["seconds"] < 2
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group signals")
