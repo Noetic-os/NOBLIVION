@@ -61,8 +61,10 @@ def attach_job(
 ) -> str:
     """Give the new sources (seq low..high) to the session's pending job, or make one.
 
-    ids = (project, root, session, client, batch_id). A pending job that no worker has
-    started takes the new sources into its range while it stays within JOB_CHARS.
+    ids = (project, root, session, client, batch_id). A pending job with no attempts,
+    checkpoints, extraction receipts or budget charges takes new sources into its
+    range while it stays within JOB_CHARS. Deferral can reset the attempt counter,
+    so the counter alone does not establish that a job is unstarted.
     Otherwise a new job starts, with the newest earlier sources of the session as context.
     ``added_chars`` is the size of the new sources.
     """
@@ -72,8 +74,11 @@ def attach_job(
         "JOIN learning_job_ranges r ON r.job_id=j.id "
         "WHERE j.project=? AND j.root=? AND j.session_id=? AND r.source_client=? "
         "AND j.kind='extract' AND j.status='pending' AND j.attempts=0 "
+        "AND j.progress IN (?,?) "
+        "AND NOT EXISTS (SELECT 1 FROM learning_extraction_pages p WHERE p.job_id=j.id) "
+        "AND NOT EXISTS (SELECT 1 FROM learning_budget b WHERE b.job_id=j.id) "
         "ORDER BY j.created_at DESC LIMIT 1",
-        (project, root, session, client),
+        (project, root, session, client, "{}", '{"next_window":0,"decisions":[]}'),
     ).fetchone()
     if open_job and (
         conn.execute(
@@ -155,7 +160,9 @@ def prune(
 ) -> dict[str, int]:
     """Drop work and data the learner no longer needs. The caller holds the write lock.
 
-    - A pending extract job inactive for ``pending_days`` is cancelled.
+    - A pending extract job with no new capture for ``pending_days`` is cancelled.
+      Job creation and the newest eligible source capture set this age. Worker
+      retries, checkpoints and deferrals do not extend capture retention.
     - A done, cancelled or exhausted extract job older than ``retention_days`` loses its source
       links, its budget rows and its extraction pages. The job row goes too unless a
       decision names it.
@@ -180,8 +187,14 @@ def prune(
     counts["pending_cancelled"] = conn.execute(
         "UPDATE learning_jobs SET status='cancelled',last_error='pruned',lease_token=NULL,"
         "lease_owner=NULL,lease_until=NULL,updated_at=? "
-        "WHERE kind='extract' AND status='pending' AND updated_at<?",
-        (now, late),
+        "WHERE kind='extract' AND status='pending' AND created_at<? "
+        "AND NOT EXISTS (SELECT 1 FROM learning_job_ranges r "
+        "JOIN learning_sources s ON " + _IN_RANGE + " "
+        "WHERE r.job_id=learning_jobs.id AND s.status='eligible' AND s.created_at>=?) "
+        "AND NOT EXISTS (SELECT 1 FROM learning_job_sources l "
+        "JOIN learning_sources s ON s.id=l.source_id "
+        "WHERE l.job_id=learning_jobs.id AND s.status='eligible' AND s.created_at>=?)",
+        (now, late, late, late),
     ).rowcount
     dead = (
         "SELECT id FROM learning_jobs WHERE kind='extract' "

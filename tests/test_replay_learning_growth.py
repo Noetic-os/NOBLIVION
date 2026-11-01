@@ -50,3 +50,48 @@ def test_retention_reaches_steady_state_and_preserves_recall_and_evidence():
     assert retention["pruned_totals"]["sources"] > 0
     assert retention["steady_state"]["measured_days"] >= 7
     assert retention["steady_state"]["max_daily_growth_bytes"] < 1_000_000
+
+
+def test_retention_stays_bounded_when_worker_repeatedly_defers_every_pending_job(monkeypatch):
+    from contextlib import nullcontext
+
+    from noblivion import db, learning_ranges
+    from noblivion.learning import LearningLedger
+
+    prune = learning_ranges.prune
+    held = []
+
+    def prune_after_worker_holds(conn, **kwargs):
+        ledger = LearningLedger(conn)
+        # The replay calls this hook under its write lock. Reuse that fixture
+        # transaction for the real claim/defer transitions instead of nesting BEGIN.
+        with monkeypatch.context() as scoped:
+            scoped.setattr(db, "write_tx", lambda connection: nullcontext(connection))
+            while job := ledger.claim("replay-worker"):
+                held.append(job["id"])
+                ledger.defer(
+                    job["id"], job["lease_token"], error="BudgetExceeded", retry_delay=3600
+                )
+        return prune(conn, **kwargs)
+
+    monkeypatch.setattr(learning_ranges, "prune", prune_after_worker_holds)
+    result = tool.run(
+        ROOT,
+        "session-points",
+        sessions=2,
+        tools=12,
+        compactions=1,
+        seed=7,
+        days=11,
+        pending_days=1,
+        retention_days=1,
+    )
+    retention = result["retention"]
+    assert len(held) > 22
+    assert retention["pruned_totals"]["pending_cancelled"] > 0
+    assert retention["pruned_totals"]["jobs"] > 0
+    assert retention["steady_state"]["measured_days"] >= 7
+    assert retention["steady_state"]["max_daily_growth_bytes"] < 1_000_000
+    assert retention["recall_and_evidence_unchanged"] and retention["retained_source"]
+    assert retention["recall_hits"] == 1
+    assert result["jobs"] < 12 and result["sources"] < 150
