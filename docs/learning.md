@@ -193,12 +193,12 @@ a job. Resume the session or scope, or retry it, to continue.
 
 Capture is cheap to start and bounded in size (NOBLIVION-143):
 
-- Claude Code sessions are captured at session start, at each compaction and at session end.
-  The hook ignores every other event, so a settings file from an older release cannot start a
-  capture per tool call.
-- A session has at most one pending extraction job. A later batch of the same session joins that
-  job until it holds about 200,000 characters or a worker has started it. Then a new job starts,
-  with the newest earlier sources of the session as context.
+- Claude Code and Codex sessions are captured at session start, at each compaction and at session
+  end. Other Codex events only track scope entry, so entering a different scope cannot capture
+  earlier work from another scope. They do not read the transcript or start delivery.
+- Later batches extend the session's unstarted extraction job until it holds about 200,000
+  characters or a worker has started it. Then a new bounded job starts, with the newest earlier
+  sources as context. This preserves late evidence; it is not a lifetime one-job limit.
 - A job names its sources as a range of per-session sequence numbers (`learning_sources.seq`, the
   `learning_job_ranges` table), not as one row per source. A source stored by an older release
   keeps its `learning_job_sources` rows.
@@ -208,16 +208,22 @@ Capture is cheap to start and bounded in size (NOBLIVION-143):
 
 Pruning deletes data, so it is off until you ask. Run `noblivion learning prune` to count what it
 would drop (nothing is changed), and add `--apply` to drop it. It cancels pending extraction jobs
-older than `--pending-days` (14), drops the source links, budget rows and extraction pages of
-cancelled or exhausted jobs older than `--retention-days` (14), and drops old eligible sources
-that no note, claim, draft or live job uses. Excluded and forgotten sources stay, because their
-hash blocks the same text. To run it hourly in the store worker, add
+whose latest update is older than `--pending-days` (14), drops expired source links, budget rows and
+extraction pages of terminal jobs after `--retention-days` (14), and drops old eligible sources that no
+note, claim, draft, conflict or live job uses. Audit-linked job rows and batch receipts remain.
+Excluded and forgotten sources stay, because their hash blocks the same text. To run it hourly
+in the store worker, add
 `"prune": {"enabled": true, "pending_days": 14, "retention_days": 14}` to `learning.json`.
 A job pruned this way cannot be retried.
 
 To measure the rows and bytes a release leaves for a number of simulated sessions, run
 `python tools/replay_learning_growth.py --events session-points`. It makes made-up transcripts
 in a temporary folder and never opens a live store.
+
+Add `--days 22 --pending-days 7 --retention-days 7` for a multi-day retention replay.
+The report separates initial growth from steady-state growth, logs pruning counts and checks
+retained accepted evidence and recall. It uses no model and cannot establish production learning
+yield. Receipt metadata continues to grow; retention does not promise a fixed database file size.
 
 `noblivion learning status --project <namespace> --root <root>` lists up to
 20 open conflicts and their total count. Run `noblivion learning inspect

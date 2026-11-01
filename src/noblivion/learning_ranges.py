@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Range links, one job per session, and pruning for the learner tables (NOBLIVION-143).
+"""Bounded range jobs and pruning for the learner tables.
 
 A capture job names the sources it reads as a range of per-session sequence numbers
 (``learning_sources.seq``), so one job is one small row instead of one row per source.
