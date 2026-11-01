@@ -477,3 +477,152 @@ def test_database_files_have_range_tables(ledger):
     names = {r[0] for r in ledger.conn.execute("SELECT name FROM sqlite_schema")}
     assert {"learning_job_ranges", "learning_sources_seq"} <= names
     assert json.loads(json.dumps(ledger.prune(dry_run=True)))
+
+
+def use_legacy_links(ledger, job_id):
+    sources = ledger._job_sources(job_id)
+    ledger.conn.execute("DELETE FROM learning_job_ranges WHERE job_id=?", (job_id,))
+    for ordinal, source in enumerate(sources):
+        ledger.conn.execute(
+            "INSERT INTO learning_job_sources VALUES (?,?,?)", (job_id, source["id"], ordinal)
+        )
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["range", "legacy"])
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "BudgetExceeded",
+        "ContextDependencyDeferred",
+        "Provider:length",
+        "ScopeNotEnabled",
+        "SemanticSnapshotChanged",
+        "Provider:transport",
+    ],
+)
+def test_worker_holds_do_not_extend_capture_retention(ledger, legacy, reason):
+    job_id = ledger.capture_batch(batch(1))["job_id"]
+    if legacy:
+        use_legacy_links(ledger, job_id)
+    age(ledger, 30)
+    for _ in range(3):
+        ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE id=?", (job_id,))
+        claimed = ledger.claim("active-worker")
+        assert claimed["id"] == job_id
+        if reason == "Provider:transport":
+            ledger.fail(job_id, claimed["lease_token"], reason)
+        else:
+            ledger.defer(job_id, claimed["lease_token"], error=reason)
+    held = ledger.conn.execute(
+        "SELECT status,updated_at FROM learning_jobs WHERE id=?", (job_id,)
+    ).fetchone()
+    assert held["status"] == "pending" and held["updated_at"] > time.time() - 60
+    counts = ledger.prune(pending_days=7, retention_days=14)
+    assert counts["pending_cancelled"] == 1
+    assert ledger.conn.execute(
+        "SELECT status,last_error FROM learning_jobs WHERE id=?", (job_id,)
+    ).fetchone()[:] == ("cancelled", "pruned")
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["range", "legacy"])
+def test_new_source_capture_preserves_old_held_job(ledger, legacy):
+    job_id = ledger.capture_batch(batch(1))["job_id"]
+    age(ledger, 30)
+    # An unstarted pending range receives a real late capture before the worker
+    # acquires it. Explicit links represent the equivalent historical layout.
+    assert ledger.capture_batch(batch(2))["job_id"] == job_id
+    if legacy:
+        use_legacy_links(ledger, job_id)
+    claimed = ledger.claim("active-worker")
+    ledger.defer(job_id, claimed["lease_token"], error="ContextDependencyDeferred")
+    assert ledger.prune(pending_days=7, retention_days=14)["pending_cancelled"] == 0
+    assert [source["id"] for source in ledger._job_sources(job_id)] == [
+        "source-s1-1",
+        "source-s1-2",
+    ]
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["range", "legacy"])
+def test_old_capture_with_current_lease_is_not_pruned(ledger, legacy):
+    job_id = ledger.capture_batch(batch(1))["job_id"]
+    if legacy:
+        use_legacy_links(ledger, job_id)
+    age(ledger, 30)
+    claimed = ledger.claim("active-worker")
+    assert not any(ledger.prune(pending_days=7, retention_days=14).values())
+    row = ledger.conn.execute(
+        "SELECT status,lease_token FROM learning_jobs WHERE id=?", (job_id,)
+    ).fetchone()
+    assert row["status"] == "leased" and row["lease_token"] == claimed["lease_token"]
+    assert len(ledger._job_sources(job_id)) == 1
+
+
+def test_recent_capture_in_another_session_does_not_refresh_old_range(ledger):
+    old = ledger.capture_batch(batch(1, "old"))["job_id"]
+    age(ledger, 30)
+    recent = ledger.capture_batch(batch(1, "recent"))["job_id"]
+    assert ledger.prune(pending_days=7, retention_days=14)["pending_cancelled"] == 1
+    states = dict(ledger.conn.execute("SELECT id,status FROM learning_jobs"))
+    assert states[old] == "cancelled" and states[recent] == "pending"
+
+
+def test_late_capture_rolls_over_checkpointed_budget_hold_without_changing_receipts(ledger):
+    from noblivion.learning import BudgetLimits
+    from noblivion.learning_worker import LearningWorker, WorkerSettings
+
+    class NoCalls:
+        def estimate_cost(self, tokens):
+            return 0.0
+
+        def complete(self, *args, **kwargs):
+            raise AssertionError("budget denied calls must not reach a provider")
+
+    first = ledger.capture_batch(batch(1))["job_id"]
+    worker = LearningWorker(ledger, NoCalls(), WorkerSettings(), BudgetLimits(max_calls=0))
+    assert worker.run_once()["error"] == "BudgetExceeded"
+    frozen = ledger.conn.execute(
+        "SELECT progress FROM learning_jobs WHERE id=?", (first,)
+    ).fetchone()[0]
+    assert json.loads(frozen)["fingerprint"]
+    second = ledger.capture_batch(batch(2))["job_id"]
+    assert second != first
+    assert [source["id"] for source in ledger._job_sources(first)] == ["source-s1-1"]
+    assert [source["id"] for source in ledger._job_sources(second)] == [
+        "source-s1-1",
+        "source-s1-2",
+    ]
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE id=?", (first,))
+    result = worker.run_once()
+    assert result["job_id"] == first and result["error"] == "BudgetExceeded"
+    row = ledger.conn.execute(
+        "SELECT status,progress FROM learning_jobs WHERE id=?", (first,)
+    ).fetchone()
+    assert row["status"] == "pending" and row["progress"] == frozen
+
+
+@pytest.mark.parametrize("audit", ["budget", "page"])
+def test_late_capture_preserves_started_job_even_when_progress_is_empty(ledger, audit):
+    from noblivion.learning import BudgetLimits
+
+    first = ledger.capture_batch(batch(1))["job_id"]
+    job = ledger.claim("worker")
+    if audit == "budget":
+        ledger.reserve(
+            first,
+            job["lease_token"],
+            limits=BudgetLimits(),
+            estimated_tokens=1,
+            estimated_seconds=1,
+            estimated_cost=0,
+        )
+    else:
+        ledger.conn.execute(
+            "INSERT INTO learning_extraction_pages VALUES (?,0,0,'frozen','[]','[]',"
+            "'no_lesson','',?)",
+            (first, time.time()),
+        )
+    ledger.defer(first, job["lease_token"], error="BudgetExceeded")
+    second = ledger.capture_batch(batch(2))["job_id"]
+    assert second != first
+    assert [source["id"] for source in ledger._job_sources(first)] == ["source-s1-1"]
+    assert ledger._job_sources(second)[-1]["id"] == "source-s1-2"
