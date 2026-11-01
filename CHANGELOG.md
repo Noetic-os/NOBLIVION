@@ -8,6 +8,9 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Memory fetches and expanded top hits wrap long lines instead of clipping their tails. Output
+  remains bounded and sanitized, and a top hit that exceeds the body limits is labelled partial.
+
 ## 0.1.19 - 2026-10-31
 
 - Zero-token replay against 0.1.18, on one stored input set (gate 0 and the replay suite, no model

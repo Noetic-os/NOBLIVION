@@ -166,6 +166,23 @@ def test_a_query_with_a_clearly_leading_hit_returns_its_full_text(store, env):
     assert text.index("TOP HIT IN FULL") > text.index("feedback_next")  # after the hit lines
 
 
+def test_a_leading_hit_preserves_a_long_paragraph(store, env):
+    body = "Paragraph context. " * 34 + "The final required detail is intact."
+    text = _text(_query(store, env, [_entry("feedback_long", body)], [0.9]))
+    full = text.split("TOP HIT IN FULL: feedback_long\n", 1)[1]
+    assert body in full.replace("\n", "")
+    assert "The final required detail is intact." in full
+    assert hook.BLOCK_CUT_MARK not in full
+
+
+def test_a_truncated_leading_hit_is_labelled_partial(store, env):
+    text = _text(_query(store, env, [_entry("feedback_long", "word " * 2000)], [0.9]))
+    assert "TOP HIT IN FULL" not in text
+    partial = text.split("TOP HIT (PARTIAL): feedback_long\n", 1)[1]
+    assert partial.endswith(hook.BLOCK_CUT_MARK)
+    assert len(partial) <= hook.FETCH_MAX_CHARS
+
+
 def test_a_query_without_a_leading_hit_returns_lines_only(store, env):
     entries = [_entry("feedback_lead", LONG), _entry("feedback_next", "other")]
     text = _text(_query(store, env, entries, [0.86, 0.83]))

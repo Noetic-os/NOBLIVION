@@ -173,6 +173,7 @@ import re
 import socket
 import stat
 import sys
+import textwrap
 import threading
 import time
 import urllib.parse
@@ -1480,40 +1481,41 @@ def neutral_block(
 
     ``_neutral`` exists for one line and collapses every newline into a space,
     which would turn a fetched memory file into one unreadable paragraph. This
-    runs the same rules per line and keeps the line breaks, so the text stays
-    readable while ``<`` and ``>`` are still folded (a memory cannot close the
-    block Claude Code wraps this in) and control, format and hidden characters
-    are still removed.
+    runs the same rules per line and wraps long sanitized lines without dropping
+    text. ``<`` and ``>`` are still folded (a memory cannot close the block
+    Claude Code wraps this in), and control, format and hidden characters are
+    still removed.
 
     Bounded on three axes, because the body is the first thing on this path that
     is not already a short field: characters per line, number of lines, and total
     characters. A cut only ever drops text, so it cannot make the block less
     inert. A truncated block ends with a marker, so the reader knows it was cut.
     """
-    raw_lines = str(text or "").splitlines()
     out: List[str] = []
     used = 0
-    # Review round 2 on #2222: the markers used to be appended AFTER the limits
-    # were applied, so each of the three bounds could be passed by the length of
-    # its own marker. Room is reserved for them instead, so a hostile body cannot
-    # exceed any of the three, marker included.
+    # Keep the existing line width and reserve room for the block cut marker,
+    # so the marker itself cannot take a hostile body past the output limits.
     body_line_max = max(1, line_max - len(LINE_CUT_MARK))
     body_max_lines = max(1, max_lines - 1)  # one line kept for BLOCK_CUT_MARK
     body_total_max = max(1, total_max - len(BLOCK_CUT_MARK) - 1)
-    cut = len(raw_lines) > body_max_lines
-    for raw in raw_lines[:body_max_lines]:
-        line = _neutral(raw, body_line_max)
-        # A cut that leaves no trace is the dangerous kind: one 50,000-character
-        # line would come back as 400 characters that read like the whole memory.
-        if len(line) >= body_line_max and len(_collapse(raw)) > len(line):
-            line += LINE_CUT_MARK
-        if used + len(line) + 1 > body_total_max:
-            cut = True
-            break
-        out.append(line)
-        used += len(line) + 1
-    if cut:
-        out.append(BLOCK_CUT_MARK)
+    for raw in str(text or "").splitlines():
+        # Sanitize before wrapping: normalization can expand characters, and a
+        # limit passed to _neutral would discard the tail before it can wrap.
+        # Wrap only what can still fit, plus one character to force a cut marker
+        # when this line exceeds the remaining budget.
+        lines = textwrap.wrap(
+            _neutral(raw)[: body_total_max - used + 1],
+            width=body_line_max,
+            replace_whitespace=False,
+            drop_whitespace=False,
+            break_on_hyphens=False,
+        ) or [""]
+        for line in lines:
+            if len(out) >= body_max_lines or used + len(line) + 1 > body_total_max:
+                out.append(BLOCK_CUT_MARK)
+                return "\n".join(out)
+            out.append(line)
+            used += len(line) + 1
     return "\n".join(out)
 
 
