@@ -53,6 +53,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -135,10 +136,9 @@ FETCH_LIST_MAX = 5
 TOOL_SCHEMA: Dict[str, Any] = {
     "name": TOOL_NAME,
     "description": (
-        "Search NOBLIVION memory: one line per hit, and the full text of a clearly leading "
-        "top hit. Call it before you write 'cannot verify', merge, restart a shared service, "
-        "or file a ticket. Pass fetch_id (one id or a list) instead of query to read "
-        "memories in full."
+        "Search NOBLIVION memory: one line per hit, a clear leader in full. Recall before "
+        "'cannot verify', merge, restart a shared service, or file a ticket. Use fetch_id "
+        "instead of query for full notes."
     ),
     "inputSchema": {
         "type": "object",
@@ -161,21 +161,21 @@ TOOL_SCHEMA: Dict[str, Any] = {
                         "maxItems": FETCH_LIST_MAX,
                     },
                 ],
-                "description": "Memory id, or a list of ids, from a row. Use instead of query.",
+                "description": "Row id or ids, instead of query.",
             },
             "chunk": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "With one fetch_id: a section number from the section list.",
+                "description": "Section number with one fetch_id.",
             },
             "section": {
                 "type": "string",
-                "description": "With one fetch_id: words that name a section.",
+                "description": "Section words with one fetch_id.",
             },
             "include_mined": {
                 "type": "boolean",
                 "default": False,
-                "description": "Also list rows mined from past transcripts (lower trust).",
+                "description": "Include lower-trust transcript rows.",
             },
             "read_capability": {"type": "string", "description": RESERVED},
             "session_key": {"type": "string", "description": RESERVED},
@@ -193,14 +193,23 @@ TOOL_SCHEMA: Dict[str, Any] = {
 REMEMBER_SCHEMA: Dict[str, Any] = {
     "name": REMEMBER_NAME,
     "description": (
-        "Save one verified, durable project lesson. Call noblivion_recall first, so you do "
-        "not duplicate a note. Supply evidence. Do not save secrets, guesses, transcripts "
-        "or chatter."
+        "Save a verified, durable project lesson with evidence. Call noblivion_recall first "
+        "to avoid duplicates. Never save secrets, guesses, transcripts or chatter."
     ),
     "inputSchema": {
         "type": "object",
         "properties": {
-            name: {"type": "string"} for name in ("title", "rule", "apply", "body", "evidence")
+            **{name: {"type": "string"} for name in ("title", "rule", "apply", "body", "evidence")},
+            "supersedes": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 255},
+                "minItems": 1,
+                "maxItems": 8,
+                "description": (
+                    "Exact existing filenames in this folder, with or without .md. "
+                    "Replaces them after indexing."
+                ),
+            },
         },
         "required": ["title", "rule", "apply", "body", "evidence"],
         "additionalProperties": False,
@@ -233,6 +242,43 @@ def _redactor():
     return mod
 
 
+def _remember_supersedes(raw: Any, folder: Path, own_stem: str, redactor: Any) -> list[str]:
+    """Validate exact local source identities before any write; never echo them on error."""
+    if not isinstance(raw, list) or not 1 <= len(raw) <= 8:
+        raise ValueError("invalid supersedes list")
+    stems = []
+    for item in raw:
+        if not isinstance(item, str):
+            raise ValueError("invalid supersedes item")
+        stem = item[:-3] if item.endswith(".md") else item
+        if (
+            not 1 <= len(stem) <= 252
+            or re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*", stem) is None
+            or stem == own_stem
+            or stem in stems
+        ):
+            raise ValueError("invalid supersedes identity")
+        clean = redactor.redact_at_rest(stem)
+        if clean == redactor.REDACTION_FAILED_TOKEN or clean != stem:
+            raise ValueError("unsafe supersedes identity")
+        stems.append(stem)
+    # Exact spelling matters even on a case-insensitive filesystem: the indexer
+    # matches stored paths, not filesystem aliases. Do not read target contents.
+    names = {entry.name for entry in folder.iterdir()}
+    for stem in stems:
+        target = folder / (stem + ".md")
+        if (
+            target.name not in names
+            or target.is_symlink()
+            or not target.is_file()
+            or target.resolve().parent != folder
+        ):
+            raise ValueError("invalid supersedes target")
+    # Keep the extension so the indexer's one-suffix removal also preserves
+    # unusual but valid names such as old.md.md (whose stem is old.md).
+    return [stem + ".md" for stem in sorted(stems)]
+
+
 def noblivion_remember(
     args: Dict[str, Any], environ: Optional[Dict[str, str]] = None
 ) -> Dict[str, Any]:
@@ -261,8 +307,15 @@ def noblivion_remember(
         folder, session_dir = resolved, True
     else:
         return _tool_error("NOBLIVION_MEMORY_DIR must name the shared memory folder")
-    if not isinstance(args, dict) or set(args) != set(REMEMBER_SCHEMA["inputSchema"]["required"]):
-        return _tool_error("title, rule, apply, body, and evidence are required; no other fields")
+    schema = REMEMBER_SCHEMA["inputSchema"]
+    if (
+        not isinstance(args, dict)
+        or not set(schema["required"]) <= set(args)
+        or not set(args) <= set(schema["properties"])
+    ):
+        return _tool_error(
+            "title, rule, apply, body, and evidence are required; only supersedes is optional"
+        )
     caps = {"title": 160, "rule": 400, "apply": 1200, "body": 6000, "evidence": 1500}
     try:
         redactor = _redactor()
@@ -277,6 +330,17 @@ def noblivion_remember(
             values[name] = clean
     except Exception as exc:  # noqa: BLE001 - fail closed before any file write
         return _tool_error(f"note validation failed ({type(exc).__name__})")
+    ident = hashlib.sha256(values["title"].encode("utf-8")).hexdigest()[:16]
+    stem = f"reference_{source}_{ident}"
+    supersedes = None
+    if "supersedes" in args:
+        try:
+            supersedes = _remember_supersedes(args["supersedes"], folder.resolve(), stem, redactor)
+        except Exception:  # noqa: BLE001 - identifiers and redactor errors may contain secrets
+            return _tool_error(
+                "supersedes must name 1 to 8 distinct, safe, existing notes in this memory "
+                "folder, with exact spelling; no paths, symlinks or self-reference"
+            )
     if session_dir:
         try:
             folder.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -284,8 +348,7 @@ def noblivion_remember(
             return _tool_error(f"memory folder create failed ({type(exc).__name__})")
         if not folder.is_dir():
             return _tool_error("the session's memory folder is not a folder")
-    ident = hashlib.sha256(values["title"].encode("utf-8")).hexdigest()[:16]
-    path = folder.resolve() / f"reference_{source}_{ident}.md"
+    path = folder.resolve() / (stem + ".md")
     front = {
         "name": f"reference-{source}-{ident}",
         "description": values["title"],
@@ -296,6 +359,8 @@ def noblivion_remember(
         "apply": values["apply"],
         "scope": "always",
     }
+    if supersedes is not None:
+        front["supersedes"] = supersedes
     content = "---\n" + "".join(
         f"{key}: {json.dumps(value, ensure_ascii=False)}\n" for key, value in front.items()
     )

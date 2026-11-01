@@ -8,6 +8,10 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Explicit memory saves accept optional `supersedes` filenames for existing notes in the
+  same memory folder. The normal indexer archives their rows after the new note is saved;
+  source files remain unchanged. Invalid or unsafe targets are rejected before writing.
+
 ## 0.1.20 - 2026-11-01
 
 - The remote Codex bridge has an explicit read-only health command for scope, versions,

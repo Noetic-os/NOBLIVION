@@ -277,6 +277,33 @@ handle it (NOBLIVION-156):
 - `noblivion doctor --duplicates` lists note pairs at a cosine of 0.92 or more, from local
   vectors, with no paid call (see `docs/diagnostics.md`).
 
+An explicit `noblivion_remember` save can also name the notes it replaces:
+
+```json
+{
+  "title": "The upload limit is now 200 units",
+  "rule": "Use the 200-unit upload limit.",
+  "apply": "Check upload sizes against the current limit.",
+  "body": "The verified service change replaces the previous 100-unit limit.",
+  "evidence": "The service specification and its boundary test both confirm 200 units.",
+  "supersedes": ["reference_old_limit.md"]
+}
+```
+
+Recall and read the old note first. Supply its exact source filename in the configured
+memory folder, with or without the final `.md`, rather than its display title or database
+id. The optional list accepts 1 to 8 existing regular files. Spelling is case-sensitive;
+paths, symlinks, duplicate targets, the new note itself and identifiers containing secrets
+are rejected before saving. Targets in another memory folder cannot be named.
+
+Use a distinct title for a correction. Repeating the same save and target set is safe;
+changing the targets of an already-saved title requires the existing direct edit path.
+Omitting `supersedes` keeps the ordinary save behavior. Saving writes the new note and
+schedules the normal indexer. It does not edit the old files or mean that their rows are
+already archived. After indexing, ordinary recall filters the archived rows as described
+above. The link identifies a source filename, not a particular content revision; the save
+does not compare revisions or infer which statement is correct.
+
 `phrase:` items in `triggers:` are never needed. Recall keeps their words as keyword text.
 
 ### Rules only prompt path
