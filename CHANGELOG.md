@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.20 - 2026-11-01
+
 - The remote Codex bridge has an explicit read-only health command for scope, versions,
   local controls and capture counts. Unknown acknowledgement and chat-control state stay
   explicit. Doctor checks remote routing and recall matchers without running SSH commands.
