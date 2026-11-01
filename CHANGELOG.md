@@ -8,6 +8,14 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Learning now isolates unsafe or oversized existing notes and defers claims whose
+  reconciliation depends on withheld statements. Safe statements and evidence remain
+  usable; hidden correction evidence produces a visible deferred conflict.
+- Learning reports distinct provider failures and measured call durations separately
+  from reserved budgets. Output-limit responses hold an identical request without
+  exhausting retries. A reviewed change to model, reasoning mode or output limit can
+  resume the held request while preserving validated pages and budget charges.
+
 ## 0.1.19 - 2026-10-31
 
 - Zero-token replay against 0.1.18, on one stored input set (gate 0 and the replay suite, no model

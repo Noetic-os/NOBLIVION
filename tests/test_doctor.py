@@ -65,6 +65,37 @@ def test_healthy_fixed_contract(installed):
     assert "health-canary" not in json.dumps(result)
 
 
+def test_database_size_and_pending_age_are_reported_without_content(installed):
+    database = installed[0] / config.DB_FILE
+    old = time.time() - 15 * 86400
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "INSERT INTO learning_batches VALUES ('b','hash','private','root','s',0,?)", (old,)
+        )
+        conn.execute(
+            "INSERT INTO learning_jobs (id,batch_id,project,root,session_id,created_at,updated_at) "
+            "VALUES ('j','b','private','root','s',?,?)",
+            (old, old),
+        )
+    result = report(installed)
+    size = result["checks"]["database_size"]
+    assert size["status"] == "pass" and str(database.stat().st_size) in size["message"]
+    jobs = result["checks"]["learning_jobs"]
+    assert jobs["status"] == "warn"
+    assert "pending=1" in jobs["message"] and "inactivity days=15.0" in jobs["message"]
+    assert "private" not in jobs["message"]
+
+
+def test_active_wal_size_is_visible_without_claiming_current_job_counts(installed):
+    database = installed[0] / config.DB_FILE
+    wal = database.with_name(database.name + "-wal")
+    wal.write_bytes(b"busy")
+    result = report(installed)
+    assert "WAL bytes: 4" in result["checks"]["database_size"]["message"]
+    assert result["checks"]["learning_jobs"]["status"] == "unavailable"
+    assert wal.read_bytes() == b"busy"
+
+
 @pytest.mark.parametrize(
     "name,key,mode",
     [

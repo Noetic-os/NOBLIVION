@@ -669,6 +669,7 @@ class LearningLedger:
         actual_tokens: int | None = None,
         actual_seconds: float | None = None,
         actual_cost: float | None = None,
+        uncertain: bool = False,
     ) -> None:
         """Never refund an uncertain reservation; count overruns when measured."""
         values = [
@@ -688,12 +689,13 @@ class LearningLedger:
             if not row:
                 raise LearningError("unknown reservation")
             self.conn.execute(
-                "UPDATE learning_budget SET tokens=?,seconds=?,cost=?,status='settled',"
+                "UPDATE learning_budget SET tokens=?,seconds=?,cost=?,status=?,"
                 "updated_at=? WHERE id=?",
                 (
                     max(row["tokens"], int(values[0] or 0)),
                     max(row["seconds"], values[1] or 0),
                     max(row["cost"], values[2] or 0),
+                    "uncertain" if uncertain else "settled",
                     time.time(),
                     reservation_id,
                 ),
@@ -916,13 +918,9 @@ class LearningLedger:
                     break
             candidates.append((relevance, compact))
         candidates.sort(key=lambda item: (-item[0], item[1]["note_id"]))
-        notes, size = [], 0
-        for _, note in candidates[:limit]:
-            length = len(_json(note))
-            if size + length <= 18000:
-                notes.append(note)
-                size += length
-        return notes
+        # The worker must record every size/secret exclusion as a dependency.
+        # Silently dropping candidates here could hide a correction.
+        return [note for _, note in candidates[:limit]]
 
     def _note(self, row: sqlite3.Row) -> dict[str, Any]:
         note = dict(row)
@@ -1950,6 +1948,10 @@ class LearningLedger:
             return "budget", row["updated_at"], False
         if error == "ScopeNotEnabled":
             return "scope not enabled", row["updated_at"], False
+        if error.startswith("Context"):
+            return "context dependency", row["updated_at"], False
+        if error == "Provider:length":
+            return "provider output limit; identical call held", row["updated_at"], False
         if error:
             return "provider error: " + error[:120], row["updated_at"], False
         if row["next_attempt"] > now:
@@ -2019,6 +2021,59 @@ class LearningLedger:
             )
         return {"total": len(jobs), "stale": stale, "jobs": jobs[:limit]}
 
+    def diagnostics(self, project=None, root=None):
+        """Safe failure counts and measured usage, separate from reserved budgets."""
+        where, params = [], []
+        for name, value in (("project", project), ("root", root)):
+            if value is not None:
+                where.append(name + "=?")
+                params.append(value)
+        clause = " WHERE " + " AND ".join(where) if where else ""
+        reasons, context = {}, {}
+        actual = {"calls": 0, "seconds": 0.0, "tokens": 0, "reasons": {}}
+        outcomes = {"committed": 0, "deferred": 0, "failed": 0}
+        for row in self.conn.execute(
+            "SELECT id,status,last_error,progress FROM learning_jobs" + clause, params
+        ):
+            error = str(row["last_error"] or "")
+            if error:
+                code = error.split(": ", 1)[0]
+                if code.startswith("ValidationError"):
+                    code = "Validation:schema"
+                reasons[code] = reasons.get(code, 0) + 1
+            if row["status"] == "exhausted":
+                outcomes["failed"] += 1
+            elif row["status"] == "pending" and error:
+                outcomes["deferred"] += 1
+            progress = json.loads(row["progress"])
+            metrics = progress.get("provider_metrics", {})
+            for key in ("calls", "seconds", "tokens"):
+                actual[key] += metrics.get(key, 0)
+            for reason, count in metrics.get("reasons", {}).items():
+                actual["reasons"][reason] = actual["reasons"].get(reason, 0) + count
+            for item in progress.get("context_exclusions", []) + progress.get(
+                "semantic_exclusions", []
+            ):
+                reason = item["reason"]
+                context[reason] = context.get(reason, 0) + 1
+        outcomes["committed"] = self.conn.execute(
+            "SELECT count(*) FROM learning_decisions WHERE action IN ('add','update','supersede') "
+            "AND job_id IN (SELECT id FROM learning_jobs" + clause + ")",
+            params,
+        ).fetchone()[0]
+        outcomes["deferred_claims"] = self.conn.execute(
+            "SELECT count(*) FROM learning_decisions WHERE action='conflict' "
+            "AND json_extract(detail,'$.decision.reason')='ContextEvidenceDeferred' "
+            "AND job_id IN (SELECT id FROM learning_jobs" + clause + ")",
+            params,
+        ).fetchone()[0]
+        return {
+            "failure_reasons": reasons,
+            "context_rejections": context,
+            "provider_actual": actual,
+            "outcomes": outcomes,
+        }
+
     def status(self, project: str | None = None, root: str | None = None) -> dict[str, Any]:
         where, params = "", []
         if project is not None:
@@ -2030,6 +2085,7 @@ class LearningLedger:
         from .learning_pages import coverage
 
         return {
+            **self.diagnostics(project, root),
             "consolidation": derivative_status(self, project, root),
             "coverage": coverage(self.conn),
             "conflicts": self._conflict_status(project, root),

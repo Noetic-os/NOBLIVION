@@ -93,11 +93,19 @@ def test_a_started_job_is_not_changed_and_the_next_job_reads_context(ledger):
 
 def test_a_job_that_would_pass_the_size_limit_starts_a_new_job(ledger, monkeypatch):
     monkeypatch.setattr(learning_ranges, "JOB_CHARS", 100)
+    monkeypatch.setattr(learning_ranges, "CONTEXT_BYTES", 100)
     first = ledger.capture_batch(batch(1, text="a" * 60))["job_id"]
     same = ledger.capture_batch(batch(2, text="b" * 30))["job_id"]
     other = ledger.capture_batch(batch(3, text="c" * 60))["job_id"]
     assert same == first and other != first
     assert count(ledger, "learning_job_ranges") == 2
+    assigned = [ledger._job_sources(job) for job in (first, other)]
+    assert {source["id"] for sources in assigned for source in sources} == {
+        "source-s1-1",
+        "source-s1-2",
+        "source-s1-3",
+    }
+    assert all(sum(len(source["content"]) for source in sources) <= 100 for sources in assigned)
 
 
 def test_evidence_inside_the_range_is_accepted_and_outside_is_refused(ledger):
@@ -175,6 +183,103 @@ def test_prune_keeps_a_recent_pending_job_and_its_sources(ledger):
     counts = ledger.prune()
     assert not any(counts.values())
     assert len(ledger._job_sources(job)) == 1
+
+
+def test_late_sources_keep_an_old_pending_job_live(ledger):
+    job = ledger.capture_batch(batch(1))["job_id"]
+    age(ledger, 30)
+    assert ledger.capture_batch(batch(2))["job_id"] == job
+    counts = ledger.prune(pending_days=14, retention_days=14)
+    assert counts["pending_cancelled"] == counts["sources"] == 0
+    assert [s["id"] for s in ledger._job_sources(job)] == ["source-s1-1", "source-s1-2"]
+
+
+def test_completed_work_releases_old_pages_links_and_unused_sources(ledger):
+    job = ledger.capture_batch(batch(1))["job_id"]
+    leased = ledger.claim("worker")
+    ledger.finish(job, leased["lease_token"], [])
+    ledger.conn.execute(
+        "INSERT INTO learning_extraction_pages VALUES (?,0,0,'fingerprint','[]','[]',"
+        "'no_lesson','',?)",
+        (job, time.time() - 30 * DAY),
+    )
+    age(ledger, 30)
+    counts = ledger.prune()
+    assert counts["jobs"] == 1
+    assert counts["links"] == counts["extraction_pages"] == 1
+    assert counts["sources"] == 1
+    # Keep the receipt: retransmitting an acknowledged batch must not recreate work.
+    assert ledger.capture_batch(batch(1))["duplicate"] is True
+    assert count(ledger, "learning_sources") == count(ledger, "learning_jobs") == 0
+
+
+def test_pruned_sources_do_not_reuse_sequence_numbers_in_a_retained_job(ledger):
+    job = ledger.capture_batch(batch(1))["job_id"]
+    ledger.capture_batch(batch(2))
+    leased = ledger.claim("worker")
+    ledger.finish(job, leased["lease_token"], [])
+    ledger.conn.execute("UPDATE learning_sources SET created_at=created_at-?", (30 * DAY,))
+    assert ledger.prune()["sources"] == 2
+    # The recent completed job still has its range, but must not acquire new evidence.
+    other = ledger.capture_batch(batch(3))["job_id"]
+    assert other != job
+    assert [s["id"] for s in ledger._job_sources(other)] == ["source-s1-3"]
+    assert ledger._job_sources(job) == []
+
+
+def test_prune_preserves_conflict_evidence_after_terminal_links_are_removed(ledger):
+    payload = batch(1)
+    ledger.capture_batch(payload)
+    ledger.capture_batch(batch(2))
+    leased = ledger.claim("worker")
+    record = payload["records"][0]
+    ledger.finish(
+        leased["id"],
+        leased["lease_token"],
+        [
+            {
+                "action": "conflict",
+                "reason": "ContextEvidenceDeferred",
+                "statement": record["content"],
+                "evidence": [
+                    {
+                        "source_id": record["source_id"],
+                        "source_hash": record["source_hash"],
+                        "start": 0,
+                        "end": len(record["content"]),
+                        "quote": record["content"],
+                    }
+                ],
+            }
+        ],
+    )
+    conflict_id = ledger.conn.execute("SELECT id FROM learning_decisions").fetchone()[0]
+    assert count(ledger, "learning_evidence") == count(ledger, "learning_claim_supports") == 0
+    age(ledger, 30)
+    counts = ledger.prune()
+    assert counts["links"] == counts["sources"] == 1
+    conflict = ledger.inspect(f"conflict:{conflict_id}", project=PROJECT, root=SCOPE)
+    assert conflict["state"] == "open" and not conflict["evidence_unavailable"]
+    assert conflict["proposed_statement"] == record["content"]
+    assert [item["source_id"] for item in conflict["evidence"]] == [record["source_id"]]
+
+
+def test_malformed_conflict_references_do_not_block_retention(ledger):
+    job = ledger.capture_batch(batch(1))["job_id"]
+    leased = ledger.claim("worker")
+    ledger.finish(
+        job,
+        leased["lease_token"],
+        [
+            {
+                "action": "conflict",
+                "reason": "inspection required",
+                "evidence": ["plain text", 4, None, {}, {"source_id": None}],
+            }
+        ],
+    )
+    age(ledger, 30)
+    assert ledger.prune()["sources"] == 1
 
 
 def test_prune_keeps_a_source_that_a_live_job_reads_and_a_source_that_backs_a_note(ledger):

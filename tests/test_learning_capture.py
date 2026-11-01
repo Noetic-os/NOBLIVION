@@ -554,6 +554,31 @@ def hooked(cfg, monkeypatch):
     return cfg
 
 
+def test_codex_reads_and_delivers_only_at_session_points(cfg, tmp_path, monkeypatch):
+    wakes = []
+    monkeypatch.setattr(capture, "wake", lambda scoped: wakes.append(scoped["recall_root"]))
+    path = tmp_path / "native.jsonl"
+    capture.capture_hook(cfg, event(cfg, transcript_path=str(path)))
+    write_rows(path, [message("Keep progress updates brief.")])
+    for name in ("UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "Stop"):
+        assert capture.capture_hook(cfg, event(cfg, name, transcript_path=str(path))) == {
+            "status": "ignored"
+        }
+    assert scope_records(cfg) == []
+    assert len(wakes) == 1
+    assert (
+        capture.capture_hook(cfg, event(cfg, "PreCompact", transcript_path=str(path)))["chunks"]
+        == 1
+    )
+    write_rows(path, [message("Include the validation result.")])
+    assert (
+        capture.capture_hook(cfg, event(cfg, "SessionEnd", transcript_path=str(path)))["chunks"]
+        == 1
+    )
+    assert scope_records(cfg) == ["Keep progress updates brief.", "Include the validation result."]
+    assert len(wakes) == 3
+
+
 def elsewhere(cfg, name="elsewhere"):
     return str(Path(cfg["state_dir"]).parent / name)
 
@@ -578,9 +603,12 @@ def test_session_from_an_unmapped_folder_is_captured_once_it_enters_a_mapped_sco
     assert capture.capture_hook(cfg, start) == {"status": "disabled"}
     # The first event in the mapped scope is not a SessionStart.
     entered = event(cfg, "UserPromptSubmit", transcript_path=str(path))
-    assert capture.capture_hook(cfg, entered)["status"] == "captured"
+    assert capture.capture_hook(cfg, entered)["status"] == "ignored"
     write_rows(path, [message("Said in the mapped folder.")])
-    assert capture.capture_hook(cfg, event(cfg, "Stop", transcript_path=str(path)))["chunks"] == 1
+    assert (
+        capture.capture_hook(cfg, event(cfg, "SessionEnd", transcript_path=str(path)))["chunks"]
+        == 1
+    )
     # Only what happened in the mapped scope enters it, never the earlier folder.
     assert scope_records(cfg) == ["Said in the mapped folder."]
 
@@ -617,9 +645,9 @@ def test_each_mapped_scope_decides_on_its_own_first_event(hooked, tmp_path):
     capture.capture_hook(cfg, event(cfg, transcript_path=str(path)))
     assert scope_records(cfg) == ["First scope evidence."]
     entered = event(cfg, "UserPromptSubmit", cwd=second["workspace"], transcript_path=str(path))
-    assert capture.capture_hook(cfg, entered)["status"] == "captured"
+    assert capture.capture_hook(cfg, entered)["status"] == "ignored"
     write_rows(path, [message("Second scope evidence.")])
-    stop = event(cfg, "Stop", cwd=second["workspace"], transcript_path=str(path))
+    stop = event(cfg, "SessionEnd", cwd=second["workspace"], transcript_path=str(path))
     assert capture.capture_hook(cfg, stop)["chunks"] == 1
     spool = capture.Spool(capture.scoped_config(cfg, {"cwd": second["workspace"]}))
     assert [r["content"] for r in records(spool)] == ["Second scope evidence."]

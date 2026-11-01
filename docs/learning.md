@@ -53,6 +53,56 @@ The store namespace must match `project`. A malformed configuration disables
 learning with an error in the store log. It never supplies permissive defaults.
 Existing accepted memories remain available when contribution is disabled.
 
+For a reasoning model that fills the output limit before returning JSON, configure
+both limits together. For example, add this object beside `provider` and `budget`:
+
+```json
+"worker": {"max_output_tokens": 8192, "timeout_seconds": 180}
+```
+
+The hard limits are 8,192 output tokens and 300 seconds per call. The worker
+extends its lease before the call to cover the configured timeout plus 30 seconds.
+Check the existing time and token budgets before selecting larger limits: a
+180-second reservation still consumes 180 seconds even when the call finishes
+sooner. The example daily time budget above therefore permits one such call;
+a job needing several calls can wait for the next budget window. The provider
+also supports `"reasoning_effort": "none"`. Measure that setting with the selected
+local model before using it. Neither example enables a remote or paid provider.
+
+### Context and output deferrals
+
+Existing notes are checked separately. A safe statement stays available when an
+unsafe title or evidence quote can be removed. Safe evidence references remain
+in the diagnostic metadata. If the statement itself is unsafe or exceeds the
+context budget, the worker records its identity, revision and exclusion reason
+without storing or submitting its body. A claim that could depend on that hidden
+statement waits for the dependency to be resolved. A title or keyword mismatch
+alone does not prove that hidden material is unrelated. Corrections whose old
+evidence is withheld become visible conflicts; they never replace the old note.
+All provider inputs still pass the complete secret check.
+
+A `Provider:length` result holds the exact request. Automatic attempts with the
+same request remain deferred and make no model call. Changing only the timeout
+does not release this hold. After reviewing the cause, change the output limit,
+model or reasoning mode in the explicit worker configuration, then let the
+pending job resume. The worker retains completed extraction pages and all budget
+charges. Source, window, coverage, scope and budget policy changes cannot use
+this recovery path. Do not reset exhausted historical jobs as part of this step.
+
+Learning status includes `failure_reasons`, `context_rejections`, `outcomes`, and
+`provider_actual`. Provider reasons are `length`, `incomplete`, `empty`, `timeout`,
+`transport`, and `invalid`. Schema and budget failures have separate counts.
+`provider_actual` totals measured calls, seconds and reported tokens from retained
+jobs, including failed calls. Unknown usage is not reported as a measurement.
+The existing `budget` totals remain conservative reservations, including unknown
+usage after a crash or transport failure. `outcomes` separates committed decisions,
+deferred jobs, exhausted failures and corrections deferred as visible conflicts.
+
+Before enabling paused learning, verify provider readiness and budgets, capture
+cadence and retention, and one bounded capture-to-accepted-note-to-recall path.
+Use normal existing context for that check. Clean fixture yield does not prove
+useful production yield when existing notes still require dependency deferral.
+
 ## Enable clients
 
 Codex uses its adapter configuration. Claude uses `learning-client.json` in

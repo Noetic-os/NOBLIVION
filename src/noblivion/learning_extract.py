@@ -402,7 +402,9 @@ def validate_response(raw: str, sources: list[dict], existing_notes=()) -> list[
             # Old provenance comes only from the stored snapshot, never model
             # reconstruction. New source quotes below remain strictly checked.
             if not previous.get("evidence"):
-                raise ValidationError("previous correction evidence unavailable")
+                if not previous.get("evidence_withheld"):
+                    raise ValidationError("previous correction evidence unavailable")
+                result.update(action="conflict", reason="ContextEvidenceDeferred")
             current_refs = correction["current_evidence"]
             # Some providers emit a singleton object for this redundant field.
             # Normalize only the container; every source/quote is still checked.
@@ -414,6 +416,8 @@ def validate_response(raw: str, sources: list[dict], existing_notes=()) -> list[
             result["correction"] = dict(
                 correction, previous_evidence=previous["evidence"], current_evidence=current
             )
+            if result["action"] == "conflict":
+                result.pop("correction", None)
         elif "correction" in candidate and not cross_root_correction:
             raise ValidationError("unexpected correction")
         if category == "proven_fix":

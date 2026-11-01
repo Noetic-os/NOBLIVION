@@ -507,7 +507,7 @@ class Spool:
                 )
         return records
 
-    def capture(self, event: dict, client: str = "codex") -> dict:
+    def capture(self, event: dict, client: str = "codex", *, observe_only: bool = False) -> dict:
         session = str(event.get("session_id") or "")
         if not session:
             return {"status": "disabled"}
@@ -545,6 +545,11 @@ class Spool:
             if not row["eligible"]:
                 self.conn.commit()
                 return {"status": "not_new_session"}
+            if observe_only:
+                # Observe a scope entry before its next capture point, without
+                # reading transcript text or queuing a batch on every prompt.
+                self.conn.commit()
+                return {"status": "ignored"}
             if path is not None and path.is_file():
                 cursor = self.conn.execute(
                     "SELECT offset FROM cursors WHERE session_id=? AND path_id=?",
@@ -775,7 +780,7 @@ def wake(cfg: dict) -> None:
     )
 
 
-# A Claude Code session is captured at these events only. The transcript holds every
+# A session is captured at these events only. The transcript holds every
 # turn, so one read at a compaction or at the end sees all of it (NOBLIVION-143). A
 # settings file from an older release can still call the hook on every tool event.
 CLAUDE_CAPTURE_EVENTS = frozenset({"SessionStart", "PreCompact", "SessionEnd"})
@@ -789,7 +794,8 @@ def capture_hook(cfg: dict, event: dict, client: str = "codex") -> dict:
     if contributes:
         with contextlib.suppress(OSError, sqlite3.Error):
             note_fresh_start(cfg, event)
-    if client == "claude" and event.get("hook_event_name") not in CLAUDE_CAPTURE_EVENTS:
+    capture_point = event.get("hook_event_name") in CLAUDE_CAPTURE_EVENTS
+    if client == "claude" and not capture_point:
         return {"status": "ignored"}
     scoped = scoped_config(cfg, event)
     if scoped is None:
@@ -799,10 +805,10 @@ def capture_hook(cfg: dict, event: dict, client: str = "codex") -> dict:
         return {"status": "disabled"}
     spool = Spool(scoped)
     try:
-        result = spool.capture(event, client)
+        result = spool.capture(event, client, observe_only=not capture_point)
     finally:
         spool.close()
-    if enabled:
+    if enabled and capture_point:
         wake(scoped)
     return result
 

@@ -3,8 +3,9 @@
 
 A capture job names the sources it reads as a range of per-session sequence numbers
 (``learning_sources.seq``), so one job is one small row instead of one row per source.
-A session has at most one pending job: later batches extend its range. Pruning drops
-stale pending jobs, the links of finished-with-error jobs and old sources that no
+A session extends its newest unstarted pending job up to the size limit. Started jobs
+keep their immutable range; late sources or a full range require another bounded job.
+Pruning drops stale pending jobs, terminal job links and old sources that no
 note, claim or live job needs. A forgotten or excluded source stays, because its hash
 blocks the same text from coming back.
 """
@@ -33,9 +34,11 @@ _IN_RANGE = (
 def next_seq(conn, project: str, root: str, session: str, client: str) -> int:
     """The highest sequence number stored for this session and client."""
     return conn.execute(
-        "SELECT coalesce(max(seq),0) FROM learning_sources "
-        "WHERE project=? AND root=? AND session_id=? AND source_client=?",
-        (project, root, session, client),
+        "SELECT coalesce(max(seq),0) FROM (SELECT seq FROM learning_sources "
+        "WHERE project=? AND root=? AND session_id=? AND source_client=? "
+        "UNION ALL SELECT last_seq FROM learning_job_ranges "
+        "WHERE project=? AND root=? AND session_id=? AND source_client=?)",
+        (project, root, session, client, project, root, session, client),
     ).fetchone()[0]
 
 
@@ -152,27 +155,37 @@ def prune(
 ) -> dict[str, int]:
     """Drop work and data the learner no longer needs. The caller holds the write lock.
 
-    - A pending extract job older than ``pending_days`` is cancelled.
-    - A cancelled or exhausted extract job older than ``retention_days`` loses its source
+    - A pending extract job inactive for ``pending_days`` is cancelled.
+    - A done, cancelled or exhausted extract job older than ``retention_days`` loses its source
       links, its budget rows and its extraction pages. The job row goes too unless a
       decision names it.
     - An eligible source older than ``retention_days`` goes when no note, claim, draft or
-      live job uses it.
+      live job uses it. Conflict decisions also pin their cited sources: inspection
+      revalidates those citations against the source text.
     """
     now = time.time() if now is None else now
     late, old = now - pending_days * 86400, now - retention_days * 86400
     counts = dict.fromkeys(
-        ("pending_cancelled", "links", "jobs", "budget_rows", "sources", "source_bytes"), 0
+        (
+            "pending_cancelled",
+            "links",
+            "jobs",
+            "extraction_pages",
+            "budget_rows",
+            "sources",
+            "source_bytes",
+        ),
+        0,
     )
     counts["pending_cancelled"] = conn.execute(
         "UPDATE learning_jobs SET status='cancelled',last_error='pruned',lease_token=NULL,"
         "lease_owner=NULL,lease_until=NULL,updated_at=? "
-        "WHERE kind='extract' AND status='pending' AND created_at<?",
+        "WHERE kind='extract' AND status='pending' AND updated_at<?",
         (now, late),
     ).rowcount
     dead = (
         "SELECT id FROM learning_jobs WHERE kind='extract' "
-        "AND status IN ('cancelled','exhausted') AND updated_at<?"
+        "AND status IN ('done','cancelled','exhausted') AND updated_at<?"
     )
     counts["links"] = (
         conn.execute(
@@ -182,7 +195,9 @@ def prune(
             "DELETE FROM learning_job_ranges WHERE job_id IN (" + dead + ")", (old,)
         ).rowcount
     )
-    conn.execute("DELETE FROM learning_extraction_pages WHERE job_id IN (" + dead + ")", (old,))
+    counts["extraction_pages"] = conn.execute(
+        "DELETE FROM learning_extraction_pages WHERE job_id IN (" + dead + ")", (old,)
+    ).rowcount
     counts["budget_rows"] = conn.execute(
         "DELETE FROM learning_budget WHERE created_at<? AND job_id IN (" + dead + ")",
         (old, old),
@@ -200,6 +215,12 @@ def prune(
         "AND NOT EXISTS (SELECT 1 FROM learning_job_sources l WHERE l.source_id=s.id) "
         "AND NOT EXISTS (SELECT 1 FROM learning_claim_supports c WHERE c.source_id=s.id) "
         "AND NOT EXISTS (SELECT 1 FROM learning_draft_supports d WHERE d.source_id=s.id) "
+        # Build the uncorrelated set once, not a JSON scan for each source. A
+        # malformed reference must neither fail pruning nor put NULL in NOT IN.
+        "AND s.id NOT IN (SELECT source_id FROM ("
+        "SELECT json_extract(CASE WHEN e.type='object' THEN e.value END,'$.source_id') "
+        "AS source_id FROM learning_decisions d,json_each(d.detail,'$.decision.evidence') e "
+        "WHERE d.action='conflict') WHERE typeof(source_id)='text') "
         "AND NOT EXISTS (SELECT 1 FROM learning_job_ranges r JOIN learning_jobs j "
         "ON j.id=r.job_id WHERE j.status IN ('pending','leased') AND " + _IN_RANGE + ")"
     )

@@ -42,6 +42,8 @@ CHECK_KEYS = (
     "health",
     "database_schema",
     "database_foreign_keys",
+    "database_size",
+    "learning_jobs",
     "filesystem",
     "config_syntax",
     "config_unknown_keys",
@@ -500,8 +502,30 @@ def _schema_present(conn: sqlite3.Connection) -> bool:
     return True
 
 
-def _database(path: Path, timeout: float) -> tuple[tuple[str, str], tuple[str, str]]:
+def _database_size(path: Path) -> tuple[str, str]:
+    """File sizes remain observable while the store has an active WAL."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise OSError
+        main = path.stat().st_size
+        wal = path.with_name(path.name + "-wal")
+        if wal.is_symlink():
+            raise OSError
+        wal_bytes = wal.stat().st_size if wal.exists() else 0
+        return (
+            "pass",
+            f"Database bytes: {main}; WAL bytes: {wal_bytes}; total bytes: {main + wal_bytes}.",
+        )
+    except OSError:
+        return "unavailable", "Database file sizes are unavailable."
+
+
+def _database(
+    path: Path, timeout: float, *, metrics: dict | None = None
+) -> tuple[tuple[str, str], tuple[str, str]]:
     unavailable = ("unavailable", "Database inspection is unavailable.")
+    if metrics is not None:
+        metrics["learning_jobs"] = unavailable
     if not path.is_file() or path.is_symlink():
         return unavailable, unavailable
     try:
@@ -539,6 +563,26 @@ def _database(path: Path, timeout: float) -> tuple[tuple[str, str], tuple[str, s
                 )
             except sqlite3.Error:
                 foreign = unavailable
+            jobs = unavailable
+            try:
+                counts = dict(
+                    conn.execute("SELECT status,count(*) FROM learning_jobs GROUP BY status")
+                )
+                oldest = conn.execute(
+                    "SELECT min(updated_at) FROM learning_jobs WHERE status='pending'"
+                ).fetchone()[0]
+                age = max(0.0, (time.time() - oldest) / 86400) if oldest is not None else 0.0
+                jobs = (
+                    "warn" if age > 14 else "pass",
+                    "Learning jobs: "
+                    + ", ".join(
+                        f"{state}={counts.get(state, 0)}"
+                        for state in ("pending", "leased", "done", "exhausted", "cancelled")
+                    )
+                    + f"; oldest pending inactivity days={age:.1f}.",
+                )
+            except sqlite3.Error:
+                pass
             after = path.stat()
             if (
                 (before.st_ino, before.st_size, before.st_mtime_ns)
@@ -547,6 +591,8 @@ def _database(path: Path, timeout: float) -> tuple[tuple[str, str], tuple[str, s
                 or (journal.exists() and journal.stat().st_size)
             ):
                 return (("unavailable", "Database changed during read-only inspection."),) * 2
+            if metrics is not None:
+                metrics["learning_jobs"] = jobs
             return schema, foreign
         finally:
             conn.close()
@@ -858,9 +904,12 @@ def diagnose(
         )
     put("current_root", root_result)
     put("health", _health(folder, timeout))
-    schema, foreign = _database(folder / config.DB_FILE, timeout)
+    metrics = {}
+    schema, foreign = _database(folder / config.DB_FILE, timeout, metrics=metrics)
     put("database_schema", schema)
     put("database_foreign_keys", foreign)
+    put("database_size", _database_size(folder / config.DB_FILE))
+    put("learning_jobs", metrics["learning_jobs"])
     hooks, codex_cfg = _codex(env)
     put("codex_hooks", hooks)
     put("codex_config", codex_cfg)

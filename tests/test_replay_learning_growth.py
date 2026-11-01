@@ -28,3 +28,25 @@ def test_every_event_makes_more_jobs_than_session_points_at_the_same_ledger():
     # The ledger merges a session into one job either way; the spool sends fewer batches.
     assert every["jobs"] == points["jobs"] == 2
     assert every["sources"] >= points["sources"]
+
+
+def test_retention_reaches_steady_state_and_preserves_recall_and_evidence():
+    result = tool.run(
+        ROOT,
+        "session-points",
+        sessions=2,
+        tools=12,
+        compactions=1,
+        seed=7,
+        days=11,
+        pending_days=1,
+        retention_days=1,
+    )
+    retention = result["retention"]
+    assert retention["recall_and_evidence_unchanged"]
+    assert retention["retained_source"] and retention["recall_hits"] == 1
+    assert retention["pruned_totals"]["pending_cancelled"] > 0
+    assert retention["pruned_totals"]["links"] > 0
+    assert retention["pruned_totals"]["sources"] > 0
+    assert retention["steady_state"]["measured_days"] >= 7
+    assert retention["steady_state"]["max_daily_growth_bytes"] < 1_000_000

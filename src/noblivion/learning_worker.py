@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass
 from threading import Event, Timer
 
 from .learning import BudgetExceeded, LeaseLost, SemanticSnapshotChanged
+from .learning_context import dependent_decisions, isolate_notes
 from .learning_extract import (
     EXTRACTION_SCHEMA,
     SEMANTIC_PROMPT,
@@ -48,7 +49,17 @@ _FORMAT_RETRY = (
 
 
 class ProviderError(RuntimeError):
-    """Safe provider failure; no source text or HTTP response is included."""
+    """Allowlisted diagnosis; never retain an HTTP body or exception message."""
+
+    def __init__(self, reason="transport", *, tokens=None):
+        allowed = {"incomplete", "length", "empty", "timeout", "transport", "invalid"}
+        self.reason = reason if reason in allowed else "transport"
+        self.tokens = tokens if type(tokens) is int and tokens >= 0 else None
+        super().__init__("provider output incomplete" if reason == "length" else self.reason)
+
+
+class DependencyDeferred(RuntimeError):
+    """A hidden existing statement may change a proposed write."""
 
 
 @dataclass(frozen=True)
@@ -109,7 +120,7 @@ class ProviderResponse:
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise ProviderError("provider redirects are forbidden")
+        raise ProviderError("transport")
 
 
 class _DeadlineConnection(http.client.HTTPConnection):
@@ -242,7 +253,7 @@ class OpenAICompatibleProvider:
                 chunks, size = [], 0
                 while True:
                     if time.monotonic() >= deadline:
-                        raise ProviderError("provider wall time exhausted")
+                        raise ProviderError("timeout")
                     # read1 returns after one underlying read, so a trickling
                     # local server cannot reset the wall clock indefinitely.
                     remaining = max(0.001, deadline - time.monotonic())
@@ -256,27 +267,48 @@ class OpenAICompatibleProvider:
                         break
                     size += len(chunk)
                     if size > 524288:
-                        raise ProviderError("provider response too large")
+                        raise ProviderError("invalid")
                     chunks.append(chunk)
                 raw = json.loads(b"".join(chunks))
         except (OSError, ValueError, urllib.error.URLError, http.client.HTTPException) as exc:
-            raise ProviderError("local provider request failed") from exc
+            timed_out = (
+                time.monotonic() >= deadline
+                or isinstance(exc, TimeoutError)
+                or isinstance(getattr(exc, "reason", None), TimeoutError)
+            )
+            reason = (
+                "timeout"
+                if timed_out
+                else "invalid"
+                if isinstance(exc, ValueError)
+                else "transport"
+            )
+            raise ProviderError(reason) from exc
         finally:
             for conn in getattr(request, "learning_connections", ()):
                 conn.cancel_deadline()
         try:
             choice = raw["choices"][0]
-            if choice["finish_reason"] != "stop":
-                raise ProviderError("provider output incomplete")
+            finish = choice["finish_reason"]
+            usage = raw.get("usage", {})
+            tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+            invalid_usage = not isinstance(usage, dict) or (
+                tokens is not None and (type(tokens) is not int or tokens < 0)
+            )
+            if finish == "length":
+                raise ProviderError("length", tokens=None if invalid_usage else tokens)
+            if invalid_usage:
+                raise ProviderError("invalid")
+            if finish != "stop":
+                raise ProviderError("incomplete", tokens=tokens)
             content = choice["message"]["content"]
-            if not isinstance(content, str) or not content.strip():
-                raise ProviderError("provider output empty")
-            tokens = raw.get("usage", {}).get("total_tokens")
-            if tokens is not None and (type(tokens) is not int or tokens < 0):
-                raise ProviderError("invalid provider usage")
+            if not isinstance(content, str):
+                raise ProviderError("invalid", tokens=tokens)
+            if not content.strip():
+                raise ProviderError("empty", tokens=tokens)
             return ProviderResponse(content, tokens)
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ProviderError("invalid provider response") from exc
+        except (KeyError, IndexError, TypeError, AttributeError) as exc:
+            raise ProviderError("invalid") from exc
 
 
 class LearningWorker:
@@ -341,7 +373,8 @@ class LearningWorker:
                     json.dumps(self._configuration(), sort_keys=True).encode()
                 ).hexdigest()
                 if state.get("worker_fingerprint") not in {None, frozen}:
-                    raise ValidationError("derivation worker configuration changed")
+                    if not self._output_recovery(state):
+                        raise ValidationError("derivation worker configuration changed")
                 state["worker_fingerprint"] = frozen
                 self.ledger.checkpoint(ident, lease, state)
                 job["progress"] = state
@@ -353,36 +386,63 @@ class LearningWorker:
                 overlap=min(cfg.overlap_chars, cfg.window_chars // 4),
                 max_windows=cfg.max_windows,
             )
-            fingerprint = hashlib.sha256(
-                json.dumps(
-                    {
-                        "sources": [(s["id"], s["sha256"]) for s in sources],
-                        "windows": windows,
-                        "configuration": self._configuration(),
-                    },
-                    sort_keys=True,
-                    ensure_ascii=False,
-                ).encode()
-            ).hexdigest()
+
+            def input_fingerprint(configuration):
+                return hashlib.sha256(
+                    json.dumps(
+                        {
+                            "sources": [(s["id"], s["sha256"]) for s in sources],
+                            "windows": windows,
+                            "configuration": configuration,
+                        },
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    ).encode()
+                ).hexdigest()
+
+            execution = input_fingerprint(self._configuration())
             progress = job.get("progress") or {}
-            if progress.get("fingerprint") not in {None, fingerprint}:
-                raise ValidationError("window configuration changed during a job")
+            frozen = progress.get("execution_fingerprint", progress.get("fingerprint"))
+            if frozen not in {None, execution}:
+                if (
+                    not self._output_recovery(state)
+                    or input_fingerprint(
+                        state.get("execution_configuration", state.get("call_configuration"))
+                    )
+                    != frozen
+                ):
+                    raise ValidationError("window configuration changed during a job")
+            # Receipts keep their immutable identity across an explicit, safe
+            # output-limit recovery. Source/window/policy changes still fail.
+            fingerprint = progress.get("fingerprint", execution)
+            state["execution_fingerprint"] = execution
+            state["execution_configuration"] = self._configuration()
             existing = progress.get("existing_notes")
-            if existing is None:
-                existing = self.ledger.reconciliation_context(
-                    job["project"],
-                    job["root"],
-                    query=" ".join(s["content"] for s in sources),
-                    limit=12,
+            exclusions = progress.get("context_exclusions", [])
+            if existing is None or progress.get("dependency_deferred"):
+                existing, exclusions = isolate_notes(
+                    self.ledger.reconciliation_context(
+                        job["project"],
+                        job["root"],
+                        query=" ".join(s["content"] for s in sources),
+                        limit=12,
+                    ),
+                    max_chars=cfg.max_existing_chars,
                 )
+                # The source receipts remain valid. A changed dependency requires
+                # a fresh comparison against the complete current revision set.
+                state.pop("semantic", None)
             context = json.dumps(existing, ensure_ascii=False, separators=(",", ":"))
             if len(context) > cfg.max_existing_chars or contains_secret(context):
-                raise ValidationError("existing context cannot be submitted safely within limits")
+                raise ValidationError("unsafe durable reconciliation context")
             start_window = progress.get("next_window", 0)
             if type(start_window) is not int or not 0 <= start_window <= len(windows):
                 raise ValidationError("invalid durable window progress")
-            state = dict(
-                progress, fingerprint=fingerprint, next_window=start_window, existing_notes=existing
+            state.update(
+                fingerprint=fingerprint,
+                next_window=start_window,
+                existing_notes=existing,
+                context_exclusions=exclusions,
             )
             self.ledger.checkpoint(ident, lease, state)
             pages = ExtractionPages(self.ledger, job, state, fingerprint)
@@ -410,12 +470,38 @@ class LearningWorker:
                 if key in unique and unique[key] != decision:
                     raise ValidationError("inconsistent window decisions")
                 unique[key] = decision
-            reconciled = self._semantic(job, list(unique.values()), existing, state)
+            decisions = list(unique.values())
+            dependent = dependent_decisions(decisions, exclusions)
+            if dependent:
+                state["deferred_decisions"] = dependent
+                raise DependencyDeferred()
+            reconciled = self._semantic(job, decisions, existing, state)
+            state.pop("dependency_deferred", None)
+            state.pop("deferred_decisions", None)
+            self.ledger.checkpoint(ident, lease, state)
             if cfg.enable_consolidation:
                 result = self.ledger.finish(ident, lease, reconciled, enqueue_consolidation=True)
             else:
                 result = self.ledger.finish(ident, lease, reconciled)
             return {"status": "done", "job_id": ident, "results": result}
+        except DependencyDeferred:
+            state["dependency_deferred"] = True
+            self.ledger.checkpoint(ident, lease, state)
+            self.ledger.defer(ident, lease, retry_delay=3600, error="ContextDependencyDeferred")
+            return {"status": "deferred", "job_id": ident, "error": "ContextDependencyDeferred"}
+        except ProviderError as exc:
+            reason = "Provider:" + exc.reason
+            if exc.reason == "length":
+                self.ledger.defer(ident, lease, retry_delay=3600, error=reason)
+                return {"status": "deferred", "job_id": ident, "error": reason}
+            self.ledger.fail(
+                ident,
+                lease,
+                reason,
+                retry_delay=min(cfg.retry_delay * 2 ** max(0, job["attempts"] - 1), 3600),
+                max_attempts=cfg.max_attempts,
+            )
+            return {"status": "failed", "job_id": ident, "error": reason, "permanent": False}
         except SemanticSnapshotChanged:
             # Preserve page receipts; only the comparison snapshot is stale.
             state.pop("semantic", None)
@@ -447,6 +533,23 @@ class LearningWorker:
                 permanent=permanent,
             )
             return {"status": "failed", "job_id": ident, "error": reason, "permanent": permanent}
+
+    def _output_recovery(self, state):
+        """Only a recorded length result permits a reviewed provider-limit change."""
+        previous = state.get("call_configuration")
+        if not state.get("output_limit_hold") or not isinstance(previous, dict):
+            return False
+        current = self._configuration()
+
+        def policy(configuration):
+            frozen = json.loads(json.dumps(configuration))
+            frozen.pop("model", None)
+            frozen.pop("reasoning_effort", None)
+            for key in ("max_output_tokens", "timeout_seconds"):
+                frozen["settings"].pop(key, None)
+            return frozen
+
+        return policy(previous) == policy(current)
 
     def _configuration(self):
         return {
@@ -598,7 +701,7 @@ class LearningWorker:
         """
         repair = state.get("format_repair")
         if repair is None:
-            response = self._call(job, messages, response_schema=schema)
+            response = self._call(job, messages, state=state, response_schema=schema)
             try:
                 return validate(response.content)
             except ResponseFormatError:
@@ -616,7 +719,7 @@ class LearningWorker:
             if repair["calls"] != 1 or not isinstance(repair["accepted"], list):
                 raise ValidationError("invalid durable accepted retry")
             return repair["accepted"]
-        if repair["calls"]:
+        if repair["calls"] and not state.get("output_limit_hold"):
             raise ValidationError("format retry already consumed")
 
         def consume():
@@ -625,7 +728,9 @@ class LearningWorker:
 
         retry_messages = [dict(message) for message in messages]
         retry_messages[0]["content"] += _FORMAT_RETRY
-        response = self._call(job, retry_messages, response_schema=schema, before_provider=consume)
+        response = self._call(
+            job, retry_messages, state=state, response_schema=schema, before_provider=consume
+        )
         try:
             accepted = validate(response.content)
         except ResponseFormatError as exc:
@@ -635,11 +740,36 @@ class LearningWorker:
         return accepted
 
     def _call(
-        self, job: dict, messages: list[dict], *, response_schema=None, before_provider=None
+        self,
+        job: dict,
+        messages: list[dict],
+        *,
+        state: dict,
+        response_schema=None,
+        before_provider=None,
     ) -> ProviderResponse:
         """One reservation per extraction or semantic call, including retries."""
         cfg = self.settings
-        tokens = len(json.dumps(messages, ensure_ascii=False).encode()) + cfg.max_output_tokens
+        submitted = json.dumps(messages, ensure_ascii=False)
+        if contains_secret(submitted):
+            raise ValidationError("unsafe final provider context")
+        call_key = hashlib.sha256(
+            json.dumps(
+                [
+                    messages,
+                    response_schema,
+                    {
+                        key: self._configuration()[key]
+                        for key in ("provider_type", "endpoint", "model", "reasoning_effort")
+                    },
+                    cfg.max_output_tokens,
+                ],
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        if state.get("output_limit_hold") == call_key:
+            raise ProviderError("length")
+        tokens = len(submitted.encode()) + cfg.max_output_tokens
         if response_schema is not None:
             tokens += len(json.dumps(response_schema).encode())
         cost = self.provider.estimate_cost(tokens)
@@ -651,24 +781,53 @@ class LearningWorker:
             estimated_seconds=cfg.timeout_seconds,
             estimated_cost=cost,
         )
+        state["call_configuration"] = self._configuration()
+        state.pop("output_limit_hold", None)
+        self.ledger.checkpoint(job["id"], job["lease_token"], state)
         if before_provider is not None:
             before_provider()
         started = time.monotonic()
-        response = self.provider.complete(
-            messages,
-            max_tokens=cfg.max_output_tokens,
-            timeout=cfg.timeout_seconds,
-            response_schema=response_schema,
-        )
-        elapsed = time.monotonic() - started
-        self.ledger.settle(
-            reservation["id"],
-            actual_tokens=response.tokens,
-            actual_seconds=elapsed,
-            actual_cost=cost,
-        )
-        if elapsed > cfg.timeout_seconds:
-            raise ProviderError("provider wall time exhausted")
+        response, failure = None, None
+        try:
+            response = self.provider.complete(
+                messages,
+                max_tokens=cfg.max_output_tokens,
+                timeout=cfg.timeout_seconds,
+                response_schema=response_schema,
+            )
+            if time.monotonic() - started > cfg.timeout_seconds:
+                raise ProviderError("timeout", tokens=response.tokens)
+        except ProviderError as exc:
+            failure = exc
+            if exc.reason == "length":
+                state["output_limit_hold"] = call_key
+            raise
+        except Exception:
+            failure = ProviderError("transport")
+            raise failure from None
+        finally:
+            elapsed = max(0.0, time.monotonic() - started)
+            usage = response.tokens if response is not None else getattr(failure, "tokens", None)
+            metrics = state.setdefault(
+                "provider_metrics", {"calls": 0, "seconds": 0.0, "tokens": 0, "reasons": {}}
+            )
+            metrics["calls"] += 1
+            metrics["seconds"] += elapsed
+            metrics["tokens"] += usage or 0
+            reason = failure.reason if failure else "success"
+            metrics["reasons"][reason] = metrics["reasons"].get(reason, 0) + 1
+            # Preserve a known output-limit hold even if settlement fails.
+            self.ledger.checkpoint(job["id"], job["lease_token"], state)
+            # Measured durations are independent of conservative reservations.
+            # Unknown failed usage stays uncertain, never refunded. Measured
+            # time overruns still count when token usage is unavailable.
+            self.ledger.settle(
+                reservation["id"],
+                actual_tokens=usage,
+                actual_seconds=elapsed,
+                actual_cost=cost,
+                uncertain=failure is not None and usage is None,
+            )
         return response
 
     def _semantic(
@@ -689,13 +848,30 @@ class LearningWorker:
             )
             snapshot = sorted([[n["note_id"], n["revision"]] for n in managed])
             notes = [
-                {key: n[key] for key in ("note_id", "revision", "statement", "scope")}
+                {
+                    key: n[key]
+                    for key in ("note_id", "revision", "statement", "scope", "read_only")
+                    if key in n
+                }
                 for n in managed
             ]
             present = {n["note_id"] for n in notes}
             notes.extend(n for n in context if n.get("read_only") and n["note_id"] not in present)
-            if contains_secret(json.dumps(notes)):
-                raise ValidationError("unsafe semantic context")
+            # Each semantic target gets a bound; never truncate the revision
+            # snapshot to the subset whose bodies were safe to submit.
+            safe_notes, exclusions = [], []
+            for note in notes:
+                kept, rejected = isolate_notes(
+                    [note], max_chars=min(self.settings.max_existing_chars, 16000) - 2400
+                )
+                safe_notes.extend(kept)
+                exclusions.extend(rejected)
+            notes = safe_notes
+            state["semantic_exclusions"] = exclusions
+            dependent = dependent_decisions(decisions, exclusions)
+            if dependent:
+                state["deferred_decisions"] = dependent
+                raise DependencyDeferred()
             stage = {
                 "notes": notes,
                 "snapshot": snapshot,

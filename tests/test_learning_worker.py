@@ -112,10 +112,12 @@ def test_reservation_precedes_each_retry_and_no_source_ack_on_failure():
         "claim",
         "reserve",
         "provider",
+        "settle",
         "fail",
         "claim",
         "reserve",
         "provider",
+        "settle",
         "fail",
     ]
     assert ledger.failure["retry_delay"] == 60
