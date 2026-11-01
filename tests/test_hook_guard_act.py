@@ -402,7 +402,9 @@ def test_a_bad_rewrite_is_dropped_alone_and_the_deny_stays(tmp_path):
     path.write_text(text)
     table = gt.build(folder)
     (e,) = table["entries"]
-    assert e["violates"] == LOG_V and "rewrite" not in e and "on_violation" not in e
+    assert e["violates"] == LOG_V and "rewrite" not in e and "on_violation" not in e, table[
+        "skipped"
+    ]
     kinds = {k for r in table["skipped"] for k in r if k in ("rewrite", "on_violation")}
     assert kinds == {"rewrite", "on_violation"}
     assert "rewrite or on_violation fields are skipped" in gt.skipped_line(table)

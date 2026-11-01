@@ -327,19 +327,29 @@ def test_health_reports_mismatch_and_missing_versions(cfg, monkeypatch, remote, 
     assert "credential-canary" not in json.dumps(out)
 
 
-def test_health_reads_spool_without_creating_or_changing_files(cfg):
+@pytest.mark.parametrize("empty_wal", [False, True])
+def test_health_reads_spool_without_creating_or_changing_files(cfg, empty_wal):
     capture = bridge.module(ROOT / "codex/capture.py", "_health_capture")
     spool = capture.Spool(cfg)
     with spool.conn:
         spool.conn.execute("INSERT INTO batches VALUES ('b','private-body',1,2,0,'private-error')")
     spool.close()
     path = capture.spool_folder(cfg) / "capture.sqlite3"
-    before = path.read_bytes()
+    if empty_wal:
+        path.with_name(path.name + "-wal").touch()
+
+    def snapshot():
+        return {
+            str(p.relative_to(path.parent)): p.read_bytes()
+            for p in path.parent.rglob("*")
+            if p.is_file()
+        }
+
+    before = snapshot()
     result = bridge.spool_health(capture, cfg)
     assert result["pending"] == result["failed_delivery"] == 1
     assert "private" not in json.dumps(result)
-    assert path.read_bytes() == before
-    assert not path.with_name(path.name + "-wal").exists()
+    assert snapshot() == before
 
 
 @pytest.mark.parametrize("valid_proof", [True, False])
