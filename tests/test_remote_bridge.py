@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -232,3 +233,165 @@ def test_gateway_cli_mcp_rejects_unidentified_read_before_store_access(cfg, tmp_
     )
     assert result.returncode == 0, result.stderr
     assert "native recall routing unavailable" in result.stdout
+
+
+def remote_health(**changes):
+    return {
+        "schema_version": 1,
+        "scope": {"status": "mapped"},
+        "gateway": {"version": bridge.release(ROOT), "source_consistent": True},
+        "store": {"version": bridge.release(ROOT), "authenticated": True},
+        "learning": {"enabled": False, "scope_configured": True},
+        **changes,
+    }
+
+
+def test_health_is_scoped_redacted_and_honest_about_unknowns(cfg, monkeypatch):
+    calls = []
+    answer = remote_health(secret="credential-canary")
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        assert "input" not in kwargs
+        return SimpleNamespace(returncode=0, stdout=json.dumps(answer))
+
+    monkeypatch.setattr(bridge.subprocess, "run", run)
+    out = bridge.health(cfg, cfg["project_mappings"][0]["workspace"])
+    assert out["status"] == "partial" and out["versions_match"] is True
+    assert out["local_controls"] == {
+        "use": True,
+        "contribute": True,
+        "scope_paused": False,
+        "session_controls": "unavailable",
+    }
+    assert out["scope"] == {"status": "mapped", "namespace": "test", "root": "demo"}
+    assert out["learning"]["enabled"] is False
+    assert out["learning"]["effective_paused"] == "unavailable"
+    assert out["capture"]["last_acknowledgement"] == "unavailable"
+    assert calls[0][:-1] == cfg["gateway_argv"] + ["health"]
+    assert gateway.mcp_config(cfg, calls[0][-1])["recall_root"] == "demo"
+    assert "credential-canary" not in json.dumps(out)
+    assert not Path(cfg["state_dir"]).exists()
+
+
+def test_health_unmapped_scope_never_runs_transport(cfg, monkeypatch):
+    monkeypatch.setattr(bridge.subprocess, "run", lambda *a, **kw: pytest.fail("transport"))
+    assert bridge.health(cfg, "/unmapped")["reason"] == "workspace_unmapped"
+
+
+def test_health_source_mismatch_does_not_import_another_checkout(cfg, monkeypatch):
+    cfg["repo_root"] = "/different/release"
+    monkeypatch.setattr(bridge, "module", lambda *a, **kw: pytest.fail("imported wrong release"))
+    monkeypatch.setattr(gateway, "module", lambda *a, **kw: pytest.fail("imported wrong release"))
+    assert bridge.health(cfg, "/unmapped")["reason"] == "client_source_mismatch"
+    assert gateway.health(cfg, "ignored")["gateway"]["source_consistent"] is False
+
+
+def test_health_cli_returns_structured_unmapped_reason(cfg, tmp_path):
+    path = tmp_path / "client.json"
+    path.write_text(json.dumps(cfg))
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "codex/remote_bridge.py"), "--config", str(path), "health"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["reason"] == "workspace_unmapped"
+
+
+@pytest.mark.parametrize(
+    "remote,reason",
+    [
+        (
+            remote_health(store={"version": "0.0.1", "authenticated": True}),
+            "release_or_source_mismatch",
+        ),
+        (
+            remote_health(store={"version": "credential-canary", "authenticated": True}),
+            "store_or_version_unverified",
+        ),
+        (remote_health(scope={"status": "mismatch"}), "gateway_scope_mismatch"),
+    ],
+)
+def test_health_reports_mismatch_and_missing_versions(cfg, monkeypatch, remote, reason):
+    monkeypatch.setattr(
+        bridge.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(returncode=0, stdout=json.dumps(remote)),
+    )
+    out = bridge.health(cfg, cfg["project_mappings"][0]["workspace"])
+    assert out["reason"] == reason and out["status"] != "healthy"
+    assert "credential-canary" not in json.dumps(out)
+
+
+def test_health_reads_spool_without_creating_or_changing_files(cfg):
+    capture = bridge.module(ROOT / "codex/capture.py", "_health_capture")
+    spool = capture.Spool(cfg)
+    with spool.conn:
+        spool.conn.execute("INSERT INTO batches VALUES ('b','private-body',1,2,0,'private-error')")
+    spool.close()
+    path = capture.spool_folder(cfg) / "capture.sqlite3"
+    before = path.read_bytes()
+    result = bridge.spool_health(capture, cfg)
+    assert result["pending"] == result["failed_delivery"] == 1
+    assert "private" not in json.dumps(result)
+    assert path.read_bytes() == before
+    assert not path.with_name(path.name + "-wal").exists()
+
+
+@pytest.mark.parametrize("valid_proof", [True, False])
+def test_gateway_health_proves_store_without_starting_it(cfg, monkeypatch, valid_proof):
+    data = Path(cfg["data_dir"])
+    data.mkdir()
+    token = "a" * 64
+    (data / "token").write_text(token)
+    (data / "store.json").write_text(json.dumps({"port": 12345}))
+    (data / "learning.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "provider": {"key": "credential-canary"},
+                "scopes": [{"project": "test", "root": "demo"}],
+            }
+        )
+    )
+    store = bridge.module(ROOT / "hooks/store_client.py", "_health_store_test")
+    monkeypatch.setattr(store, "request_start", lambda *a, **kw: pytest.fail("autostart"))
+    calls = []
+
+    def get(url, credential, timeout):
+        calls.append(credential)
+        nonce = parse_qs(urlsplit(url).query).get("nonce", [None])[0]
+        if nonce:
+            assert credential == ""
+            return {"proof": store.health_proof(token, nonce) if valid_proof else "wrong"}
+        assert credential == token
+        return {"version": bridge.release(ROOT), "private": "credential-canary"}
+
+    original = gateway.module
+    monkeypatch.setattr(
+        gateway,
+        "module",
+        lambda path, name: (
+            store
+            if path.name == "store_client.py"
+            else SimpleNamespace(http_get_json=get)
+            if path.name == "recall_hook.py"
+            else original(path, name)
+        ),
+    )
+    context = bridge.mcp_context(cfg, cfg["project_mappings"][0]["workspace"])
+    out = gateway.health(cfg, context)
+    assert out["store"]["authenticated"] is valid_proof
+    assert len(calls) == (2 if valid_proof else 1)
+    assert out["learning"] == {"enabled": True, "scope_configured": True}
+    assert "credential-canary" not in json.dumps(out)
+
+
+def test_gateway_health_refuses_mismatched_scope_before_probing(cfg, monkeypatch):
+    context = encode({"cwd": "/unmapped", "namespace": "test", "root": "demo"})
+    out = gateway.health(cfg, context)
+    assert out["scope"]["status"] == "mismatch" and "store" not in out

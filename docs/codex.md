@@ -179,6 +179,52 @@ access and its durable spool. The gateway accepts only mapped capture scopes
 and does not create a second remote transcript capture spool. Capability values
 are removed before local capture, remote journaling and delivery.
 
+### Check a remote installation
+
+From an explicitly mapped workspace, run:
+
+```sh
+python3 /absolute/client/NOBLIVION/codex/remote_bridge.py \
+  --config /absolute/client/remote-client.json health
+```
+
+This explicit command runs the configured gateway argument list in `health` mode.
+The gateway checks the same workspace, namespace and root as MCP startup. It proves
+the existing store's identity before requesting its version. It does not start a
+store, capture a transcript, drain a spool, change controls or call a model.
+
+The JSON reports client, gateway and store versions, source-path agreement, whether
+the workspace is mapped, local scope use/contribution, and pending/failed spool
+counts when a read without side effects is possible. It also reports the remote
+learning configuration's enabled flag and whether that scope is configured.
+These flags do not prove that a worker is running or ready.
+
+The result remains `partial` when the known versions agree: this command has no
+native chat identity, so effective chat controls and store pause are unavailable.
+The spool deletes acknowledged batches, so the last delivery acknowledgement is
+also unavailable. Zero pending batches does not prove acceptance or indexing.
+An active spool journal makes its counts unavailable; a missing version or failed
+store proof cannot produce a healthy result. Mismatched versions or source paths
+are reported explicitly. No credential, transcript or complete configuration is
+printed.
+
+| Client bridge | Gateway | Running store | Support |
+| --- | --- | --- | --- |
+| Release V | Same release V | Same release V | Supported routing combination; verify native hooks separately. |
+| Different releases | Any | Any | Not verified; align releases before claiming compatibility. |
+| Unknown version | Any | Any | Unavailable; inspect the selected installation. |
+
+`noblivion doctor` checks required hook events, the recall matcher, MCP arguments,
+required-capability mode for a direct connection, and remote hook/MCP path agreement.
+It reports the mapped or unmapped workspace and local source version without running
+configured SSH commands. Remote runtime versions and native hook trust therefore
+remain a warning until checked explicitly. Doctor does not attest native trust.
+
+After changing hook commands, review and trust them again in Codex. Reload the MCP
+connection and start a new chat so the native process uses the updated command and
+PreToolUse route. Verify recall from that chat, including an opted-out chat test.
+The health command alone does not establish that an existing chat reloaded its hooks.
+
 The installer reads the store's `namespace` from its shared `config.json`
 by default. If Claude Code sets `NOBLIVION_PROJECT` in its environment to
 a different value, give that value to the Codex installer with

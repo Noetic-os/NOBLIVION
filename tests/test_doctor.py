@@ -311,7 +311,11 @@ def test_codex_hook_entries_and_redaction(installed):
         for event in events
     }
     (home / "hooks.json").write_text(json.dumps({"hooks": hooks}))
-    (home / "config.toml").write_text('[mcp_servers.noblivion]\nsecret="canary"\n')
+    (home / "config.toml").write_text(
+        '[mcp_servers.noblivion]\nsecret="canary"\ncommand="python3"\n'
+        'args=["/x/mcp/recall_mcp.py"]\n'
+        'env={NOBLIVION_MCP_REQUIRE_CAPABILITY="1"}\n'
+    )
     result = report(installed)
     assert result["checks"]["codex_hooks"]["status"] == "pass"
     assert result["checks"]["codex_config"]["status"] == "pass"
@@ -322,6 +326,106 @@ def test_codex_hook_entries_and_redaction(installed):
     assert check(installed, "codex_hooks") == "warn"
     (home / "hooks.json").write_text('{"hooks":[]}')
     assert check(installed, "codex_hooks") == "fail"
+
+
+def test_remote_bridge_static_routes_mapping_and_matcher(installed, tmp_path, monkeypatch):
+    _, env = installed
+    home = Path(env["CODEX_HOME"])
+    source = tmp_path / "release"
+    script = source / "codex" / "remote_bridge.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("raise RuntimeError('must never execute')")
+    (source / ".claude-plugin").mkdir()
+    (source / ".claude-plugin/plugin.json").write_text('{"version":"1.2.3"}')
+    client = home / "remote.json"
+    client.write_text(
+        json.dumps(
+            {
+                "repo_root": str(source),
+                "gateway_argv": ["must-never-execute", "credential-canary"],
+                "project_mappings": [
+                    {"workspace": str(tmp_path), "namespace": "test", "root": "demo"}
+                ],
+            }
+        )
+    )
+    events = (
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "PreCompact",
+        "SubagentStart",
+        "Stop",
+        "SessionEnd",
+    )
+    hooks = {
+        event: [
+            {
+                "matcher": ".*",
+                "hooks": [
+                    {"type": "command", "command": f'python3 "{script}" --config "{client}" hook'}
+                ],
+            }
+        ]
+        for event in events
+    }
+    (home / "hooks.json").write_text(json.dumps({"hooks": hooks}))
+    (home / "config.toml").write_text(
+        '[mcp_servers.noblivion]\ncommand="python3"\nargs='
+        + json.dumps([str(script), "--config", str(client), "mcp"])
+        + "\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        doctor.subprocess, "run", lambda *a, **kw: pytest.fail("executed transport")
+    )
+    result = report(installed)
+    assert result["checks"]["codex_hooks"]["status"] == "pass"
+    message = result["checks"]["codex_config"]["message"]
+    assert "1.2.3" in message and "workspace mapped" in message
+    assert result["checks"]["codex_config"]["status"] == "warn"
+    assert "credential-canary" not in json.dumps(result)
+    hooks["PreToolUse"][0]["matcher"] = "Read|Bash"
+    (home / "hooks.json").write_text(json.dumps({"hooks": hooks}))
+    assert check(installed, "codex_hooks") == "warn"
+    hooks["PreToolUse"][0]["matcher"] = "mcp__noblivion__noblivion_recall"
+    hooks["SessionEnd"][0]["hooks"][0]["command"] = f'python3 "{script}" hook'
+    (home / "hooks.json").write_text(json.dumps({"hooks": hooks}))
+    assert "configurations differ" in report(installed)["checks"]["codex_config"]["message"]
+
+
+def test_direct_mcp_without_required_capability_is_not_reported_ready(installed):
+    home = Path(installed[1]["CODEX_HOME"])
+    (home / "config.toml").write_text(
+        '[mcp_servers.noblivion]\ncommand="python3"\nargs=["/x/mcp/recall_mcp.py"]\n'
+    )
+    assert check(installed, "codex_config") == "warn"
+
+
+def test_disabled_mcp_is_reported(installed):
+    home = Path(installed[1]["CODEX_HOME"])
+    (home / "config.toml").write_text("[mcp_servers.noblivion]\nenabled=false\n")
+    assert "disabled" in report(installed)["checks"]["codex_config"]["message"]
+
+
+def test_generated_server_table_is_read_on_python_without_tomllib(monkeypatch):
+    import builtins
+
+    original = builtins.__import__
+
+    def importing(name, *args, **kwargs):
+        if name == "tomllib":
+            raise ImportError("fixture")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", importing)
+    result = doctor._codex_server(
+        '[mcp_servers.noblivion]\ncommand="python3"\nargs=["/release/mcp/recall_mcp.py"]\n'
+        'env={NOBLIVION_MCP_REQUIRE_CAPABILITY="1"}\n'
+    )
+    assert result["args"] == ["/release/mcp/recall_mcp.py"]
+    assert result["env"]["NOBLIVION_MCP_REQUIRE_CAPABILITY"] == "1"
 
 
 @pytest.mark.parametrize("args", [["--timeout", "nan"], ["--timeout", "5"], ["--secret-canary"]])

@@ -17,7 +17,50 @@ import re
 import sys
 from pathlib import Path
 
-from remote_bridge import MAX_INPUT, module
+from remote_bridge import MAX_INPUT, module, read_json, source_health, version
+
+
+def health(cfg: dict, encoded: str) -> dict:
+    result = {"schema_version": 1, "gateway": source_health(cfg)}
+    if not result["gateway"]["source_consistent"]:
+        return {**result, "scope": {"status": "unverified"}}
+    try:
+        selected = mcp_config(cfg, encoded)
+    except ValueError:
+        return {**result, "scope": {"status": "mismatch"}}
+    result["scope"] = {"status": "mapped"}
+    result["store"] = {"authenticated": False, "version": None}
+    result["learning"] = {"enabled": None, "scope_configured": None}
+    base = Path(selected["repo_root"])
+    try:
+        store = module(base / "hooks/store_client.py", "_gateway_store")
+        recall = module(base / "hooks/recall_hook.py", "_gateway_recall")
+        env = {"NOBLIVION_DATA_DIR": selected["data_dir"]}
+        url, token = store.connect(
+            env, lambda url, budget: recall.http_get_json(url, "", budget), 2
+        )
+        reply = recall.http_get_json(url + "/health", token, 2)
+        result["store"] = {"authenticated": True, "version": version(reply.get("version"))}
+    except Exception:  # noqa: BLE001 - report unavailable, never start or repair the store
+        pass
+    try:
+        path = Path(selected["data_dir"]) / "learning.json"
+        settings = read_json(path) if path.exists() else {"enabled": False, "scopes": []}
+        enabled, scopes = settings.get("enabled", False), settings.get("scopes", [])
+        if type(enabled) is not bool or not isinstance(scopes, list):
+            raise ValueError("invalid learning settings")
+        result["learning"] = {
+            "enabled": enabled,
+            "scope_configured": any(
+                isinstance(scope, dict)
+                and (scope.get("project"), scope.get("root"))
+                == (selected["namespace"], selected["recall_root"])
+                for scope in scopes
+            ),
+        }
+    except (OSError, ValueError):
+        pass
+    return result
 
 
 def activate_env(cfg: dict) -> None:
@@ -107,12 +150,15 @@ def receive(cfg: dict, body: dict) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=str(Path(__file__).with_name("remote-server.json")))
-    parser.add_argument("mode", choices=("hook", "mcp", "receive"))
+    parser.add_argument("mode", choices=("hook", "mcp", "receive", "health"))
     parser.add_argument("context", nargs="?")
     args = parser.parse_args()
     try:
         cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
         base = Path(cfg["repo_root"])
+        if args.mode == "health":
+            print(json.dumps(health(cfg, args.context or "")))
+            return 0
         if args.mode == "mcp":
             activate_env(mcp_config(cfg, args.context or ""))
             os.execv(sys.executable, [sys.executable, str(base / "mcp/recall_mcp.py")])

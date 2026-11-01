@@ -627,8 +627,85 @@ def _health(folder: Path, timeout: float) -> tuple[str, str]:
     return "warn", "Store health could not be authenticated; store was not started."
 
 
+def _codex_server(text: str) -> dict | None:
+    """Parse the server table, with a conservative generated-format fallback on 3.10."""
+    try:
+        import tomllib
+    except ImportError:
+        table = re.search(
+            r'(?ms)^\s*\[mcp_servers\.(?:noblivion|"noblivion")\]\s*\n(.*?)(?=^\s*\[|\Z)', text
+        )
+        if not table:
+            return None
+        if re.search(r"(?m)^\s*enabled\s*=\s*false\s*(?:#.*)?$", table[1]):
+            return {"enabled": False}
+        args = re.search(r"(?ms)^\s*args\s*=\s*(\[.*?\])", table[1])
+        command = re.search(r'(?m)^\s*command\s*=\s*("[^\n]+")\s*$', table[1])
+        if not args or not command:
+            raise ValueError("unsupported server format") from None
+        return {
+            "args": json.loads(args[1]),
+            "command": json.loads(command[1]),
+            "env": {"NOBLIVION_MCP_REQUIRE_CAPABILITY": "1"}
+            if re.search(r'NOBLIVION_MCP_REQUIRE_CAPABILITY\s*=\s*"1"', table[1])
+            else {},
+        }
+    parsed = tomllib.loads(text)
+    return parsed.get("mcp_servers", {}).get("noblivion")
+
+
+def _codex_remote(script: Path, args: list[str], routes: set) -> tuple[str, str]:
+    if not script.is_file():
+        return "warn", "Configured remote bridge script is missing."
+    tail = args[1:]
+    if tail == ["mcp"]:
+        client = script.with_name("remote-client.json")
+    elif len(tail) == 3 and tail[0] == "--config" and tail[-1] == "mcp":
+        client = Path(tail[1]).expanduser()
+    else:
+        return "warn", "Remote MCP arguments do not match the shipped bridge."
+    if not client.is_absolute() or routes != {(script.resolve(), client.resolve())}:
+        return "warn", "Remote hook and MCP paths or client configurations differ."
+    cfg = _json_file(client)
+    source = Path(cfg.get("repo_root", "")).expanduser()
+    if not source.is_absolute() or source.resolve() != script.resolve().parents[1]:
+        return "warn", "Remote bridge path differs from its configured source checkout."
+    version = _json_file(source / ".claude-plugin/plugin.json").get("version")
+    if (
+        not isinstance(version, str)
+        or len(version) > 64
+        or not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][\w.-]+)?", version)
+    ):
+        return "warn", "Remote bridge source version is unavailable."
+    mappings = cfg.get("project_mappings", [])
+    if not isinstance(mappings, list) or len(mappings) > MAX_ITEMS:
+        raise ValueError("invalid project mappings")
+    cwd = os.path.normpath(str(Path.cwd()))
+    mapped = any(
+        isinstance(m, dict)
+        and isinstance(m.get("workspace"), str)
+        and os.path.isabs(m["workspace"])
+        and m.get("root")
+        and m.get("namespace")
+        and (
+            cwd == os.path.normpath(m["workspace"])
+            or cwd.startswith(os.path.normpath(m["workspace"]).rstrip(os.sep) + os.sep)
+        )
+        for m in mappings
+    )
+    scope = "mapped" if mapped else "unmapped"
+    return "warn", (
+        f"Remote bridge source version {version}; current workspace {scope}. "
+        "Paths agree; gateway/store versions and native hook trust need explicit health "
+        "and reload checks."
+    )
+
+
 def _codex(env: Mapping[str, str]) -> tuple[tuple[str, str], tuple[str, str]]:
+    import shlex
+
     home = Path(env.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
+    routes = set()
     try:
         doc = _json_file(home / "hooks.json")
         hooks = doc.get("hooks")
@@ -655,10 +732,37 @@ def _codex(env: Mapping[str, str]) -> tuple[tuple[str, str], tuple[str, str]]:
                     if not isinstance(hook, dict):
                         raise ValueError("invalid hook")
                     command = hook.get("command", "")
-                    if isinstance(command, str) and (
-                        "/codex/adapter.py" in command or "/codex/remote_bridge.py" in command
+                    if not isinstance(command, str) or hook.get("type", "command") != "command":
+                        continue
+                    words = shlex.split(command)
+                    scripts = [
+                        w
+                        for w in words
+                        if w.endswith(("/codex/adapter.py", "/codex/remote_bridge.py"))
+                    ]
+                    if not scripts:
+                        continue
+                    script = Path(scripts[0]).expanduser()
+                    if script.name == "remote_bridge.py":
+                        tail = words[words.index(scripts[0]) + 1 :]
+                        if tail == ["hook"]:
+                            client = script.with_name("remote-client.json")
+                        elif len(tail) == 3 and tail[0] == "--config" and tail[-1] == "hook":
+                            client = Path(tail[1]).expanduser()
+                        else:
+                            continue
+                        routes.add((script.resolve(), client.resolve()))
+                    matcher = group.get("matcher")
+                    if (
+                        event == "PreToolUse"
+                        and matcher not in (None, "", "*", ".*")
+                        and (
+                            not isinstance(matcher, str)
+                            or "mcp__noblivion__noblivion_recall" not in matcher.split("|")
+                        )
                     ):
-                        present.add(event)
+                        continue
+                    present.add(event)
         hook_result = (
             ("pass", "Required Codex memory hook entries are present.")
             if all(e in present for e in events)
@@ -670,17 +774,42 @@ def _codex(env: Mapping[str, str]) -> tuple[tuple[str, str], tuple[str, str]]:
         hook_result = "fail", "Codex hook file cannot be read safely or has invalid structure."
     try:
         text = read_bytes(home / "config.toml").decode("utf-8")
-        # Python 3.10 has no stdlib TOML parser. Do not mistake readability for
-        # syntax validation; this check reports only readability and integration.
-        integration = "[mcp_servers.noblivion]" in text or '[mcp_servers."noblivion"]' in text
-        cfg_result = (
-            ("pass", "Codex configuration is readable and names the memory server.")
-            if integration
-            else ("not_configured", "Codex configuration does not name the memory server.")
-        )
+        server = _codex_server(text)
+        if server is None:
+            cfg_result = "not_configured", "Codex configuration does not name the memory server."
+        elif isinstance(server, dict) and server.get("enabled") is False:
+            cfg_result = "warn", "Codex memory server is disabled in its configuration."
+        elif (
+            not isinstance(server, dict)
+            or not isinstance(server.get("args"), list)
+            or not server["args"]
+        ):
+            cfg_result = "warn", "Codex memory server command or arguments are incomplete."
+        else:
+            args = server["args"]
+            if not all(isinstance(arg, str) for arg in args) or not isinstance(
+                server.get("command"), str
+            ):
+                raise ValueError("invalid server arguments")
+            script = Path(args[0]).expanduser()
+            if not re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", Path(server["command"]).name):
+                cfg_result = "warn", "Codex memory server launcher cannot be verified statically."
+            elif script.name == "remote_bridge.py" and script.is_absolute():
+                cfg_result = _codex_remote(script, args, routes)
+            elif (
+                script.name == "recall_mcp.py"
+                and script.is_absolute()
+                and server.get("env", {}).get("NOBLIVION_MCP_REQUIRE_CAPABILITY") == "1"
+            ):
+                cfg_result = "pass", "Codex memory server uses required-capability mode."
+            else:
+                cfg_result = (
+                    "warn",
+                    "Codex memory server routing or required-capability mode is unverified.",
+                )
     except FileNotFoundError:
         cfg_result = "not_configured", "Codex configuration file is absent."
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError, AttributeError):
         cfg_result = "fail", "Codex configuration cannot be read safely."
     return hook_result, cfg_result
 
