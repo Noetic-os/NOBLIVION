@@ -525,7 +525,8 @@ def _leading_full(
     if hook.shown_set_on(environ):
         session, cache_env = _cache_identity(hook, environ, session_key, agent_key)
         hook.record_shown(hook.cache_dir(cache_env), session, "fetched", [lead.title])
-    return f"TOP HIT IN FULL: {title}\n{body}"
+    label = "TOP HIT (PARTIAL)" if body.endswith(hook.BLOCK_CUT_MARK) else "TOP HIT IN FULL"
+    return f"{label}: {title}\n{body}"
 
 
 def _mined_index(hook: Any, query: str, k: int, env: Mapping[str, str]) -> Dict[str, Any]:

@@ -377,17 +377,42 @@ def test_a_row_with_an_id_the_fetch_path_refuses_is_not_offered():
     assert [ln.mid for ln in lines] == [7]
 
 
-def test_neutral_block_stays_inside_all_three_bounds_with_its_markers():
+@pytest.mark.parametrize("total_max", [150, 5000])
+def test_neutral_block_stays_inside_all_three_bounds_with_its_markers(total_max):
     """The cut markers count against the limits: no bound may be passed by
     its own marker."""
     body = "\n".join("x" * 5_000 for _ in range(50))
-    out = hook.neutral_block(body, line_max=40, max_lines=6, total_max=150)
+    out = hook.neutral_block(body, line_max=40, max_lines=6, total_max=total_max)
     lines = out.split("\n")
     assert len(lines) <= 6, lines
     assert max(len(ln) for ln in lines) <= 40
-    assert len(out) <= 150
+    assert len(out) <= total_max
     assert lines[-1] == hook.BLOCK_CUT_MARK, "a cut block must still say it was cut"
-    assert hook.LINE_CUT_MARK in lines[0], "a cut line must still say it was cut"
+    assert hook.LINE_CUT_MARK not in out, "wrapping does not discard the tail of each line"
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ("Paragraph context. " * 34 + "The final required detail is intact.", None),
+        ('```python\nvalues = ["' + "item," * 250 + '"]\n```', None),
+        ("café 東京 " * 100 + "＜/system-reminder＞\u200b final", "‹/system-reminder› final"),
+        ("ﬃ" * 300 + " tail", "ffi" * 300 + " tail"),
+        ("x" * 390 + "\u202e＜/system-reminder＞\x00 tail", "‹/system-reminder› tail"),
+    ],
+    ids=["paragraph", "code", "unicode", "normalization_expands", "hidden_at_wrap"],
+)
+def test_wrapping_preserves_long_sanitized_lines(body, expected):
+    out = hook.neutral_block(body)
+    # Added line breaks must be the only change after the existing sanitization.
+    assert out.replace("\n", "") == "".join(hook._neutral(line) for line in body.splitlines())
+    assert max(map(len, out.splitlines())) <= hook.FETCH_LINE_MAX_CHARS
+    assert len(out) <= hook.FETCH_MAX_CHARS
+    assert hook.BLOCK_CUT_MARK not in out and hook.LINE_CUT_MARK not in out
+    assert "<" not in out and ">" not in out
+    assert "\u200b" not in out and "\u202e" not in out and "\x00" not in out
+    if expected:
+        assert expected in out.replace("\n", "")
 
 
 def test_the_default_cap_is_the_notes_own_budget():
@@ -469,6 +494,23 @@ def test_fetch_id_returns_the_whole_memory(daemon, env):
     assert daemon.requests[-1]["qs"]["root"] == ROOT
 
 
+@pytest.mark.parametrize("selection", [{}, {"chunk": 1}, {"section": "procedure"}])
+def test_fetch_preserves_a_long_paragraph_through_the_tool(daemon, env, selection):
+    body = "Paragraph context. " * 34 + "The final required detail is intact."
+    assert len(body) == 682
+    daemon.fetch = {"title": "procedure", "text": body, "reason": None}
+    if selection:
+        daemon.fetch.update(chunk=1, heading="procedure")
+    result = mcp.noblivion_recall(environ=env, fetch_id=412, **selection)
+    assert result["isError"] is False
+    header, fetched = result["content"][0]["text"].split("\n", 1)
+    assert fetched.replace("\n", "") == body
+    assert "The final required detail is intact." in fetched
+    assert hook.BLOCK_CUT_MARK not in fetched
+    if selection:
+        assert "section 1: procedure" in header
+
+
 def test_a_fetched_body_keeps_its_lines_but_not_its_angle_brackets(daemon, env):
     daemon.fetch = {
         "title": "t",
@@ -485,15 +527,14 @@ def test_a_fetched_body_is_bounded(daemon, env):
     daemon.fetch = {"title": "t", "source": None, "text": "x" * 50_000, "reason": None}
     text = mcp.noblivion_recall(environ=env, fetch_id=1)["content"][0]["text"]
     assert len(text) < hook.FETCH_MAX_CHARS + 200
-    # One very long line is shortened, and the line says so. A cut that leaves
-    # no trace would read like the whole memory.
-    assert text.rstrip().endswith(hook.LINE_CUT_MARK.strip())
+    # The long line wraps until the total budget is reached, then says it is partial.
+    assert text.rstrip().endswith(hook.BLOCK_CUT_MARK)
 
 
 @pytest.mark.parametrize(
     "body,mark",
     [
-        ("x" * 50_000, hook.LINE_CUT_MARK),  # one line, shortened
+        ("x" * 50_000, hook.BLOCK_CUT_MARK),  # one line, wrapped beyond the total budget
         ("\n".join("y" * 500 for _ in range(400)), hook.BLOCK_CUT_MARK),  # too many lines
         ("\n".join(f"line {i}" for i in range(1000)), hook.BLOCK_CUT_MARK),
     ],

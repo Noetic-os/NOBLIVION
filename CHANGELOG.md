@@ -15,6 +15,12 @@ All notable changes to NOBLIVION. The format follows
   from reserved budgets. Output-limit responses hold an identical request without
   exhausting retries. A reviewed change to model, reasoning mode or output limit can
   resume the held request while preserving validated pages and budget charges.
+- Codex capture runs at session points. Retention preserves late sources and conflict evidence
+  while removing expired work; diagnostics report database size and job counts.
+- Put the marketplace description in its supported metadata field so the Claude plugin validator accepts the package.
+
+- Memory fetches and expanded top hits wrap long lines instead of clipping their tails. Output
+  remains bounded and sanitized, and a top hit that exceeds the body limits is labelled partial.
 
 ## 0.1.19 - 2026-10-31
 

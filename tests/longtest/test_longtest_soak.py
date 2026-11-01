@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import longtest_path  # noqa: F401 - puts tools on the path
@@ -39,13 +39,18 @@ class Handler(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def client(tmp_path):
-    server = HTTPServer(("127.0.0.1", 0), Handler)
+    class BurstServer(ThreadingHTTPServer):
+        # The fixture must accept the 20 simultaneous clients exercised below.
+        request_queue_size = 32
+
+    server = BurstServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     (tmp_path / "store.json").write_text(json.dumps({"port": server.server_address[1]}))
     (tmp_path / "token").write_text("tok\n")
     Handler.notes = set()
     yield soak.StoreClient(tmp_path)
     server.shutdown()
+    server.server_close()
 
 
 def test_query_load_records_status_and_ms(client):
