@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Remove an unsupported marketplace field so the Claude plugin validator accepts the package.
+
 - Memory fetches and expanded top hits wrap long lines instead of clipping their tails. Output
   remains bounded and sanitized, and a top hit that exceeds the body limits is labelled partial.
 
