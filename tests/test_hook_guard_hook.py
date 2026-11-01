@@ -2394,8 +2394,9 @@ def test_a_busy_rebuild_lock_keeps_the_previous_deny_table_in_force(folder_env):
     assert _denied(env, "git stash pop")
     _rulefile(mem, "feedback_no_stash_drop", "drop")
     gt = gh._gt()
+    # Check busy-lock behavior under the production budget, not a 100 ms timing race.
     with gt.rebuild_lock(gt.table_path(mem, env)):
-        doc = _main_doc(env, "git stash pop", time_limit=0.1)
+        doc = _main_doc(env, "git stash pop", time_limit=gh.TIME_LIMIT_S)
     assert doc["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "systemMessage" not in doc
     assert _denied(env, "git stash drop")
@@ -2405,8 +2406,9 @@ def test_a_busy_rebuild_lock_with_no_table_reports_unchecked_rules(folder_env):
     env, mem = folder_env
     _rulefile(mem, "feedback_no_stash_pop")
     gt = gh._gt()
+    # The missing-table message is the contract; timeout behavior has separate tests.
     with gt.rebuild_lock(gt.table_path(mem, env)):
-        doc = _main_doc(env, "git stash pop", time_limit=0.1)
+        doc = _main_doc(env, "git stash pop", time_limit=gh.TIME_LIMIT_S)
     assert "another call is building" in doc["systemMessage"]
     assert "no deny rule is checked" in doc["systemMessage"]
 
