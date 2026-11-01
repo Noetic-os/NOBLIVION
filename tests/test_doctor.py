@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 import os
@@ -314,7 +315,9 @@ def test_codex_hook_entries_and_redaction(installed):
     )
     result = report(installed)
     assert result["checks"]["codex_hooks"]["status"] == "pass"
-    assert result["checks"]["codex_config"]["status"] == "pass"
+    # Python 3.10 can inspect routing but cannot verify TOML capability settings.
+    expected = "pass" if importlib.util.find_spec("tomllib") is not None else "warn"
+    assert result["checks"]["codex_config"]["status"] == expected
     assert "canary" not in json.dumps(result)
     assert "/hidden" not in json.dumps(result)
     del hooks["Stop"]
