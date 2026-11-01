@@ -632,6 +632,10 @@ def _codex_server(text: str) -> dict | None:
     try:
         import tomllib
     except ImportError:
+        # A table-looking line inside a multiline string is not configuration.
+        # This fallback only reads the shipped generated command/argument layout.
+        if '"""' in text or "'''" in text:
+            raise ValueError("unsupported server format") from None
         table = re.search(
             r'(?ms)^\s*\[mcp_servers\.(?:noblivion|"noblivion")\]\s*\n(.*?)(?=^\s*\[|\Z)', text
         )
@@ -639,16 +643,15 @@ def _codex_server(text: str) -> dict | None:
             return None
         if re.search(r"(?m)^\s*enabled\s*=\s*false\s*(?:#.*)?$", table[1]):
             return {"enabled": False}
-        args = re.search(r"(?ms)^\s*args\s*=\s*(\[.*?\])", table[1])
+        args = re.search(r"(?ms)^\s*args\s*=\s*(\[.*?\])[ \t]*(?:#.*)?$", table[1])
         command = re.search(r'(?m)^\s*command\s*=\s*("[^\n]+")\s*$', table[1])
         if not args or not command:
             raise ValueError("unsupported server format") from None
         return {
             "args": json.loads(args[1]),
             "command": json.loads(command[1]),
-            "env": {"NOBLIVION_MCP_REQUIRE_CAPABILITY": "1"}
-            if re.search(r'NOBLIVION_MCP_REQUIRE_CAPABILITY\s*=\s*"1"', table[1])
-            else {},
+            # Do not infer security settings from text without a TOML parser.
+            "env": {},
         }
     parsed = tomllib.loads(text)
     return parsed.get("mcp_servers", {}).get("noblivion")
@@ -734,24 +737,37 @@ def _codex(env: Mapping[str, str]) -> tuple[tuple[str, str], tuple[str, str]]:
                     command = hook.get("command", "")
                     if not isinstance(command, str) or hook.get("type", "command") != "command":
                         continue
-                    words = shlex.split(command)
-                    scripts = [
-                        w
-                        for w in words
-                        if w.endswith(("/codex/adapter.py", "/codex/remote_bridge.py"))
-                    ]
-                    if not scripts:
+                    # Static validation supports one literal Python invocation.
+                    # Shell wrappers, expansion and command composition are unverified.
+                    if re.search(r"[$`|&;<>()*?\[\]\n\r]", command):
                         continue
-                    script = Path(scripts[0]).expanduser()
+                    words = shlex.split(command)
+                    if (
+                        len(words) < 2
+                        or not re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", Path(words[0]).name)
+                        or not words[1].endswith(("/codex/adapter.py", "/codex/remote_bridge.py"))
+                    ):
+                        continue
+                    script = Path(words[1]).expanduser()
+                    if not script.is_absolute():
+                        continue
+                    tail = words[2:]
                     if script.name == "remote_bridge.py":
-                        tail = words[words.index(scripts[0]) + 1 :]
                         if tail == ["hook"]:
                             client = script.with_name("remote-client.json")
                         elif len(tail) == 3 and tail[0] == "--config" and tail[-1] == "hook":
                             client = Path(tail[1]).expanduser()
                         else:
                             continue
+                        if not client.is_absolute():
+                            continue
                         routes.add((script.resolve(), client.resolve()))
+                    elif (
+                        len(tail) != 2
+                        or tail[0] != "--config"
+                        or not Path(tail[1]).expanduser().is_absolute()
+                    ):
+                        continue
                     matcher = group.get("matcher")
                     if (
                         event == "PreToolUse"

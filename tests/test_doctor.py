@@ -302,11 +302,7 @@ def test_codex_hook_entries_and_redaction(installed):
     )
     hooks = {
         event: [
-            {
-                "hooks": [
-                    {"command": "TOKEN=canary python /x/codex/adapter.py --config /x/private.json"}
-                ]
-            }
+            {"hooks": [{"command": "python /x/codex/adapter.py --config /x/private-canary.json"}]}
         ]
         for event in events
     }
@@ -403,6 +399,51 @@ def test_direct_mcp_without_required_capability_is_not_reported_ready(installed)
     assert check(installed, "codex_config") == "warn"
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo /release/codex/remote_bridge.py hook",
+        "false; python3 /release/codex/remote_bridge.py hook",
+        "python3 -c /release/codex/remote_bridge.py hook",
+        "python3 /release/codex/adapter.py --config /release/client.json; echo done",
+    ],
+)
+def test_hook_path_in_non_python_command_is_not_verified(installed, command):
+    home = Path(installed[1]["CODEX_HOME"])
+    events = (
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "PreCompact",
+        "SubagentStart",
+        "Stop",
+        "SessionEnd",
+    )
+    hooks = {event: [{"hooks": [{"command": command}]}] for event in events}
+    (home / "hooks.json").write_text(json.dumps({"hooks": hooks}))
+    assert check(installed, "codex_hooks") == "warn"
+
+
+def test_python_without_tomllib_does_not_trust_commented_capability(installed, monkeypatch):
+    import builtins
+
+    original = builtins.__import__
+
+    def importing(name, *args, **kwargs):
+        if name == "tomllib":
+            raise ImportError("fixture")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", importing)
+    home = Path(installed[1]["CODEX_HOME"])
+    (home / "config.toml").write_text(
+        '[mcp_servers.noblivion]\ncommand="python3"\nargs=["/x/mcp/recall_mcp.py"]\n'
+        '# NOBLIVION_MCP_REQUIRE_CAPABILITY="1"\n'
+    )
+    assert check(installed, "codex_config") == "warn"
+
+
 def test_disabled_mcp_is_reported(installed):
     home = Path(installed[1]["CODEX_HOME"])
     (home / "config.toml").write_text("[mcp_servers.noblivion]\nenabled=false\n")
@@ -425,7 +466,12 @@ def test_generated_server_table_is_read_on_python_without_tomllib(monkeypatch):
         'env={NOBLIVION_MCP_REQUIRE_CAPABILITY="1"}\n'
     )
     assert result["args"] == ["/release/mcp/recall_mcp.py"]
-    assert result["env"]["NOBLIVION_MCP_REQUIRE_CAPABILITY"] == "1"
+    assert result["env"] == {}  # No security-setting claims without a TOML parser.
+    with pytest.raises(ValueError, match="unsupported server format"):
+        doctor._codex_server(
+            'description="""\n[mcp_servers.noblivion]\ncommand="python3"\n'
+            'args=["/release/mcp/recall_mcp.py"]\n"""\n'
+        )
 
 
 @pytest.mark.parametrize("args", [["--timeout", "nan"], ["--timeout", "5"], ["--secret-canary"]])
