@@ -58,9 +58,11 @@ class Params:
     calibration_runs: int = 32
     # limits of the run
     min_free_gb: float = 50.0
-    # Plan section 9 said 2.5 GB. Measured in the pilot: 2.93 GB, because a 20,000-note store
-    # is 0.43 GB of database and four of them are kept (two builds, the soak store, arm b).
-    run_folder_gb: float = 5.0
+    # Plan section 9 said 2.5 GB. Measured in the pilot: 3.0 GB of stores (a 20,000-note store
+    # is 0.43 GB of database; B0, B1, the soak store and arm b keep one each). Night 1 of the
+    # run adds the arm b stores at 5,000 and 20,000 fillers, about 2.5 GB more. Free disk (50 GB)
+    # is the guard that matters; this limit catches a run folder that grows without bound.
+    run_folder_gb: float = 8.0
     cpu_quota: str = "400%"
     memory_max: str = "12G"
     load_pause: float = 16.0
