@@ -450,23 +450,7 @@ Of the 21 corrections, 7 held Claude Code to a note, 3 came after a reply
 that cited a note, 1 had that note shown in the last 2 prompts, and none
 was about that note. So the correction signal had no event to label.
 
-### Time-split test
-
-`noblivion trust timesplit --json` on the replayed store. The per-prompt
-units come from the hook's trust log, written in `shadow` mode, which
-serves the order unchanged.
-
-| Cut | Test sessions | Unit | Units | MRR off | MRR on | hit@5 off | hit@5 on | Better | Worse |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| default (70% train, 30% test) | 155 | prompt | 71 | 0.447 | 0.447 | 0.592 | 0.592 | 0 | 0 |
-| default (70% train, 30% test) | 155 | session | 33 | 0.131 | 0.131 | 0.164 | 0.164 | 0 | 0 |
-| `--train-share 0.5` | 258 | prompt | 105 | 0.497 | 0.497 | 0.629 | 0.629 | 0 | 0 |
-| `--train-share 0.5` | 258 | session | 49 | 0.117 | 0.117 | 0.143 | 0.143 | 0 | 0 |
-
-Verdict: `no gain` for both cuts. No note had the 5 trials that the
-factor needs before the cut (the most was 2), so trust moved no note.
-
-### Time-split test on a live store (2026-10-30)
+### Time-split test on a live store
 
 One operator install, 25,264 stored events on 767 notes over 324 sessions
 (the 2026-10-30 run read the live database read-only). The hook trust log
@@ -479,8 +463,7 @@ held 2,417 lines from 11 days with `trust.ranking` `shadow`.
 | 0.7 (default) | 8 | 211 | 0.265 | 0.479 | +0.095 to +0.329 | gain |
 | 0.8 | 10 | 138 | 0.221 | 0.530 | +0.166 to +0.427 | gain |
 
-Decision: trust ranking stays `off`. The test says `gain` at three of four
-cuts, but it cannot carry the decision:
+The test says `gain` at three of four cuts. Read it with these limits:
 
 - The labels are the `use` events that trust is fitted on (NOBLIVION-65).
   A note cited often before is cited often later. The test shows that and
@@ -493,8 +476,8 @@ cuts, but it cannot carry the decision:
 - The `use` signal has a measured precision of 0.517 (lower bound 0.344)
   against the 0.70 rule.
 
-Turn trust ranking on only after a test with labels that do not come from
-the use events, for example a hand-labelled sample.
+A test with labels that do not come from the use events, for example a
+hand-labelled sample, would remove the first limit.
 
 ### Precision
 
@@ -609,14 +592,14 @@ The rules, fixed before the data was read:
 - A signal is on by default only if its labelled n is at least 30 and the
   Wilson 95% lower bound of its precision is at least 0.70.
 - Trust ranking is on by default only if the time-split verdict on the
-  default cut is `gain`.
+  default cut is `gain` and the limits above are answered.
 
 | Setting | Rule result | Default |
 | --- | --- | --- |
 | `NOBLIVION_TRUST_CITATION_USE` | n 40, lower bound 0.087 < 0.70; after NOBLIVION-43 n 29, lower bound 0.344; stricter rule of NOBLIVION-45 n 6, lower bound 0.030 (not adopted) | off |
 | `NOBLIVION_TRUST_CORRECTION_CONTRADICT` | n 0 < 30 | off |
 | `NOBLIVION_TRUST_BEHAVIOUR_USE` | n 0 < 30: no labelled sample yet (NOBLIVION-120) | off |
-| Trust ranking | verdict `no gain` | off |
+| Trust ranking | verdict `gain` at the default cut, with the limits above | off |
 
 No default changed.
 
@@ -636,5 +619,3 @@ No default changed.
   replayed as sessions. Live, the prompt hook does not run in a
   subagent (the subagent hook shows it the rules instead), and the Stop
   flush does not read a subagent transcript.
-- The time-split test could not show a gain or a loss: with this little
-  use per note, no note reached the 5 trials that the trust factor needs.

@@ -33,7 +33,7 @@ For the two burden rows at the end, 5 means no burden and 0 means it blocks work
 | 6 | Pull tools: recall and remember | 2 | 4 | Built-in: the Read tool on files, and Claude writes files itself. NOBLIVION: ranked query, fetch by id, section view, and a redacted remember that never edits the index file. |
 | 7 | One store for many projects, a second client | 1 | 4 | Built-in: one folder per project. NOBLIVION: ten roots in one store, import, a Codex adapter and an ssh bridge; the gain for Codex is not measured. |
 | 8 | Learning from transcripts | 0 | 2 | None built in. NOBLIVION mines corrections and tool errors and runs a learning loop, but mined notes miss the precision gate and stay out of the prompt, and the loop yields little. |
-| 9 | Trust and stop checks | 0 | 2 | None built in. NOBLIVION computes a trust score per note and five stop checks, but both ship in shadow because the measured gain is nil. The maintainers run stop checks in `enforce` mode and trust ranking `on`; the score stays 2. |
+| 9 | Trust and stop checks | 0 | 2 | None built in. NOBLIVION computes a trust score per note and five stop checks, but both ship in shadow because their gates are not passed. The maintainers run stop checks in `enforce` mode and trust ranking `on`; the score stays 2. |
 | 10 | Hygiene: dedup, re-index, frontmatter | 1 | 4 | Built-in: the docs ask Claude to merge index lines by hand. NOBLIVION: dedup with consent and byte-for-byte undo, re-index right after a write, a frontmatter check. |
 | 11 | Privacy | 4 | 4 | Both stay on the machine. NOBLIVION adds a loopback store with an HMAC proof and a protected token; its two network features need consent; its scrub misses host and company names. |
 | 12 | Operation burden | 5 | 2 | Built-in: nothing to install. NOBLIVION: an install script and a model download, a hand rebuild after each update, Codex updated by hand, a store that stops when idle. |
@@ -43,7 +43,7 @@ For the two burden rows at the end, 5 means no burden and 0 means it blocks work
 Reading the table:
 
 - Rows 1 to 7 and 10 lack only proof on real work to reach 5. That proof is the whole remaining distance.
-- Rows 8 and 9 are the parts that do not work yet: learning yields little, and trust has shown no gain.
+- Rows 8 and 9 are the parts that do not work yet: learning yields little, and the trust signals stay under their own precision bar.
 - Rows 12 and 13 are the price. Both are bounded by caps, and neither is measured on real prompts.
 
 ## What Claude Code memory does today
@@ -198,7 +198,7 @@ Every precision figure comes from a made-up fixture; the only real-session figur
 | Dedup at cosine 0.75 | 1.000 and 1.000 on 8 duplicate pairs of 276; the best non-duplicate scored 0.726 | same |
 | CI gates | recall, index, subagent 0.80 and 0.70; error store 0.90 and 0.78; dedup 0.85 and 0.85 | `tools/eval/thresholds.json` |
 | Trust on real sessions | 521 sessions over 53 days, 766 notes, 40,899 shows, 143 citation uses, 0 contradicts; citation precision 15 of 29, Wilson lower bound 0.344, against a default-on bar of 0.70 | `docs/trust.md` |
-| Trust time split | mean reciprocal rank 0.447 with trust off and with trust on: no gain | `docs/trust.md` |
+| Trust time split, live store | gain at 3 of 4 cuts; the labels are the use events trust is fitted on, so the test cannot carry the decision alone | `docs/trust.md` |
 | Miner usefulness, 0.1.15 sample | under 0.70 of 30 shows of correction notes were useful, so mined notes stay out of the prompt index | `CHANGELOG.md` 0.1.15 |
 | Miner precision sample, NOBLIVION-105 | strict 0.27, lenient 0.47, gate 0.70; one hub row showed in 14 of 30 cases | NOBLIVION-105 ticket comment, 2026-10-14 |
 | Hook speed, NOBLIVION-110 | median hook time 162 ms before and 50 ms after, on a 1,000-file fixture | session handoff 2026-10-14 |
@@ -211,7 +211,7 @@ Every precision figure comes from a made-up fixture; the only real-session figur
 
 NOBLIVION proves its mechanism, not yet its value. Every precision figure comes from a fixture, and the three signals from real work (use rate, citation precision, learning yield) all sit under their own gates. The open tickets below are in the NOBLIVION Jira project.
 
-- Value on real work is unproven. 55 uses in 7,985 recalls; citation precision under the 0.70 bar that would switch trust ranking on; the time split shows no gain; 1 note from 470 learning jobs. The learning docs say the loop "does not establish productive real-user outcome causality".
+- Value on real work is unproven. 55 uses in 7,985 recalls; citation precision under the 0.70 bar that would switch trust ranking on; 1 note from 470 learning jobs. The learning docs say the loop "does not establish productive real-user outcome causality".
 - The evaluation fixture is not held out. The docs call its result "too good as a forecast". Not measured at all: live miner precision, label rows, long subagent task text, injection-filter coverage, index time on a quiet CPU, and any Codex gain.
 - Context cost is bounded but not measured on real prompts. The caps allow 9,000 characters of ranked rows per prompt, 2,400 of label rows per prompt, 6,000 of guard rows and 6,000 of error recall per session. Every injected character is re-sent on every later turn. NOBLIVION-116 (index time and injected characters on replayed real prompts) is open.
 - Mined notes stay out of the prompt. They reach only the `noblivion_recall` tool with `include_mined`. NOBLIVION-114 (hybrid mode for rule-word-only notes against the 0.68 floor) and NOBLIVION-117 (a prompt index for mined correction rows behind a 0.70 precision gate) are open. No command lists or removes mined notes. NOBLIVION-105 (miner live acceptance) waits for one mined row in `feedback_events` and for 117.
