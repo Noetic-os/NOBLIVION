@@ -32,7 +32,7 @@ You need `python3` 3.10 or newer, [uv](https://docs.astral.sh/uv/) and
 | `mcp/` | the MCP server | 3.9 or newer, standard library only |
 | `src/noblivion/` | the store and the `noblivion` command | 3.10 or newer, in the store venv |
 | `tests/` | the tests | the development environment |
-| `tools/` | the gate scripts | standard library only |
+| `tools/` | the gate scripts | standard library only, except `build_pdfs.py` |
 | `docs/` | the user documentation and the design document | |
 
 The hooks run on every prompt and every tool call. Keep them fast. Do not
@@ -133,3 +133,11 @@ request.
 
 Write docs in plain English: short sentences, active voice, one idea per
 sentence, and numbered steps for procedures.
+
+Two docs also ship as PDF in `docs/`: `executive-summary` and
+`noblivion-against-claude-code-memory`. When you change their Markdown, rebuild
+both PDFs and commit them with the change:
+
+    uv run --with weasyprint --with markdown python tools/build_pdfs.py
+
+The tool needs the pango library on the system.
