@@ -141,6 +141,7 @@ for the full steps and limits.
 - [Architecture (design document)](docs/design/0001-architecture.md)
 - [Executive summary](docs/executive-summary.md): what NOBLIVION is, why it exists, the gaps it closes and its features ([PDF](docs/executive-summary.pdf))
 - [NOBLIVION against Claude Code memory](docs/noblivion-against-claude-code-memory.md): architecture, features, scores and conclusion ([PDF](docs/noblivion-against-claude-code-memory.pdf))
+- [The NOBLIVION paper](docs/noblivion-paper.md): features, differences from other memory modules, evidence and limits
 - [Contributing](CONTRIBUTING.md)
 
 ## License
