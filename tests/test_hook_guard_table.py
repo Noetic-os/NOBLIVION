@@ -1279,6 +1279,9 @@ def test_a_timed_out_batch_probe_is_killed_and_the_next_regex_runs(monkeypatch):
         # Deliberately exercise only the isolated regex child, never a tool command.
         assert "runs longer" in mf.regex_too_slow(r"(a+)+$", "a" * 100 + "!")
         assert batch.child is None
+        # The kill limit also covers child start-up, so a slow runner needs more
+        # than 0.1 s to start the next child. Only the hung probe needs 0.1 s.
+        monkeypatch.setattr(mf, "REGEX_PROBE_KILL", 30.0)
         assert mf.regex_too_slow(STASH, "git stash pop") == ""
         child = batch.child
     assert child.poll() is not None and mf._PROBE_BATCH is None
