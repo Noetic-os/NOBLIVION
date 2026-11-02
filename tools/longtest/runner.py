@@ -512,7 +512,9 @@ def real_replay(
             counts = realreplay.copy_real_corpus(live, h.config_dir)
             if level:
                 realreplay.add_distractors(
-                    fx.distractors(level, fx.shards(level)[0], level), h.config_dir
+                    fx.distractors(level, fx.shards(level)[0], level),
+                    h.config_dir,
+                    realreplay.session_project(counts),
                 )
             try:
                 h.start()

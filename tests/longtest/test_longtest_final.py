@@ -271,3 +271,21 @@ def test_a_store_that_is_not_ready_is_stopped_and_not_left_running(tmp_path, mon
     with pytest.raises(RuntimeError, match="not ready"):
         runner.replay_task(run, Fx(), "B1", 20000, 0, "py", None, None, None, 0, None, False, 900.0)
     assert stopped == [1]
+
+
+def test_fillers_go_into_the_project_of_the_session(tmp_path):
+    fill = tmp_path / "f"
+    fill.mkdir()
+    for n in ("a.md", "b.md"):
+        (fill / n).write_text(n)
+    target = tmp_path / "t"
+    stale = target / "projects" / realreplay.DISTRACTOR_PROJECT / "memory"
+    stale.mkdir(parents=True)
+    (stale / "old.md").write_text("x")
+    got = realreplay.add_distractors(sorted(fill.glob("*.md")), target, "-home-user")
+    assert got == 2 and not stale.exists()
+    assert sorted(p.name for p in (target / "projects/-home-user/memory").iterdir()) == [
+        "a.md",
+        "b.md",
+    ]
+    assert realreplay.session_project({"-a": 1, "-b": 3}) == "-b"

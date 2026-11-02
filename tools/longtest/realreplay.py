@@ -44,8 +44,14 @@ def copy_real_corpus(config_dir: Path, target_config: Path) -> dict[str, int]:
     return counts
 
 
-def add_distractors(paths: Iterable[Path], target_config: Path) -> int:
-    dest = target_config / "projects" / DISTRACTOR_PROJECT / "memory"
+def add_distractors(paths: Iterable[Path], target_config: Path, project: str) -> int:
+    """Filler notes go into the project folder of the session: a prompt is ranked against
+    its own project and the shared roots, so fillers in another project would change
+    nothing (the first pilot showed levels 0 and 1,000 with identical rows)."""
+    stale = target_config / "projects" / DISTRACTOR_PROJECT
+    if stale.is_dir():
+        shutil.rmtree(stale)
+    dest = target_config / "projects" / project / "memory"
     dest.mkdir(parents=True, exist_ok=True)
     n = 0
     for path in paths:
@@ -54,11 +60,14 @@ def add_distractors(paths: Iterable[Path], target_config: Path) -> int:
     return n
 
 
+def session_project(counts: Mapping[str, int]) -> str:
+    return max(counts, key=lambda k: (counts[k], k)) if counts else "-work-none"
+
+
 def session_cwd(counts: Mapping[str, int]) -> str:
     """The folder the prompts run in: the project with the most notes. A project folder
     name is the path with ``/`` written as ``-``, so the path comes back from the name."""
-    slug = max(counts, key=lambda k: (counts[k], k)) if counts else "-work-none"
-    return slug.replace("-", "/")
+    return session_project(counts).replace("-", "/")
 
 
 def dev_prompts(directory: Path) -> list[dict[str, Any]]:

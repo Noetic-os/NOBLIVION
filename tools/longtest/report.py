@@ -159,7 +159,7 @@ def status(
     plugin_version: Callable[[], str] | None = None,
     notify: Callable[[str], None] | None = None,
     params: Params = PARAMS,
-    plan_gb: float = 2.5,
+    plan_gb: float | None = None,
 ) -> dict[str, Any]:
     """The checks of section 13. Returns ``{"ok", "failed": [...], "checks": {...}}``.
     A failure writes ``ALERT`` in the run folder and calls ``notify``."""
@@ -198,7 +198,7 @@ def status(
         ),
         "determinism_same": not mismatch,
         "free_disk": free >= params.min_free_gb,
-        "run_folder_size": run_dir_size_gb(run_dir) <= plan_gb,
+        "run_folder_size": run_dir_size_gb(run_dir) <= (plan_gb or params.run_folder_gb),
         "plugin_version_same": plugin_version is None
         or plugin_version() == manifest.get("plugin_version"),
         "summary_written": (run_dir / "daily" / f"{day}.json").exists(),
