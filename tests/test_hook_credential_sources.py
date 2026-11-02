@@ -510,10 +510,12 @@ def test_canary_command_list(proj, cmd, want):
 def test_hostile_commands_stay_fast(proj):
     import time
 
+    # CPU time, not wall time: a shared CI runner can stall a process for a
+    # second without the check doing any work (NOBLIVION-194).
     for cmd in ("cat " + ".* " * 30_000, "cat " + "{a,b} " * 15_000, "cat " + "$a " * 30_000):
-        start = time.perf_counter()
+        start = time.process_time()
         cg.decide("Bash", {"command": cmd}, str(proj))
-        assert time.perf_counter() - start < 1.5
+        assert time.process_time() - start < 1.5
 
 
 # ------------------------------------------------------------- the replay tool
