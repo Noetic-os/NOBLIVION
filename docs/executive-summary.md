@@ -90,7 +90,7 @@ Source for the left column: the public Claude Code documentation.
 
 ## Off by default
 
-These features exist and stay off until you turn them on: background learning, the duplicate sweep, remote embeddings, the session briefing and continuity after compaction. Stop checks and trust ranking ship in shadow mode: they record what they would do and change nothing. The maintainers run both switched on (stop checks in `enforce` mode, trust ranking `on`). This is a decision of the maintainers, and the measured gain is not shown (see [trust](trust.md)). To switch on, see [configuration](configuration.md).
+These features exist and stay off until you turn them on: background learning, the duplicate sweep, remote embeddings, the session briefing and continuity after compaction. Stop checks and trust ranking ship in shadow mode: they record what they would do and change nothing. The maintainers run both switched on (stop checks in `enforce` mode, trust ranking `on`). To switch on, see [configuration](configuration.md).
 
 ## Install
 

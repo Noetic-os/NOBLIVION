@@ -269,10 +269,9 @@ traceback.
 
 Trust does not change the order of recall in the shipped default. The
 maintainers run it `on`: both `trust.ranking` and
-`NOBLIVION_RECALL_INDEX_TRUST` are `on`. The time-split test shows no gain on
-the maintainers' store, so the switch is a decision and not a result. To
-run the same test on your own store (fit on older events, then test on newer
-events), see "The time-split test" below. To go back to the default, set both
+`NOBLIVION_RECALL_INDEX_TRUST` are `on`. To run the time-split test on your
+own store (fit on older events, then test on newer events), see "The
+time-split test" below. To go back to the default, set both
 settings to `off`.
 
 Two settings change the order for you:
