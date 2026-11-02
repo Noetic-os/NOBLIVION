@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -71,7 +72,7 @@ def test_churn_measures_the_lag_of_a_new_note(client, tmp_path):
 
     def sync(path: Path) -> None:
         if path.exists():  # the store "indexes" the marker of a written note
-            Handler.notes.add(f"zqx{int(path.stem.split('_')[-1]):06d}marker")
+            Handler.notes.update(re.findall(r"zqx\w+?marker", path.read_text()))
 
     rows = soak.churn(folder, client, 1, sync, timeout_s=5)
     assert rows[0]["kind"] == "write" and rows[0]["ok"] and rows[0]["lag_s"] < 2
@@ -198,3 +199,40 @@ def test_a_slow_lag_misses_dr8_but_a_lost_write_fails_a_separate_check():
     lost = rows_for(DAYS) + [{"day": DAYS[0], "kind": "write", "ok": False, "lag_s": None}]
     got = soak.evaluate(lost)
     assert not got["checks"]["writes_searchable"] and got["failed_writes"] == 1
+
+
+def test_the_budget_is_for_steady_load_and_the_burst_tail_is_reported():
+    rows = rows_for(DAYS)
+    for i in range(20):  # an hourly burst of 20 parallel requests that queue in the store
+        rows.append(
+            {
+                "day": DAYS[0],
+                "kind": "query",
+                "ok": True,
+                "status": 200,
+                "ms": 350.0 * (i + 1),
+                "burst": True,
+            }
+        )
+    got = soak.evaluate(rows)
+    assert got["checks"]["budget_recall"] and got["burst_p95_ms"][DAYS[0]] > 6000
+    assert got["queries"] == len(DAYS) * 400 + 20
+    rows.append(
+        {"day": DAYS[0], "kind": "query", "ok": False, "status": 500, "ms": 5.0, "burst": True}
+    )
+    assert got["errors"] == 0 and soak.evaluate(rows)["errors"] == 1  # a burst error counts
+
+
+def test_a_churn_marker_is_new_after_a_restart(tmp_path):
+    seen = []
+
+    class Client:
+        def search(self, token, project, top_k):
+            seen.append(token)
+            return 200, {"rows": [token]}, 1.0
+
+    folder = tmp_path / "m"
+    folder.mkdir()
+    for _ in range(2):  # the serial starts at 1 again after a restart
+        assert soak.churn(folder, Client(), 1, lambda p: None)[0]["ok"]
+    assert len(set(seen)) == 2 and all(t.startswith("zqx000001") for t in seen)

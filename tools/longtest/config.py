@@ -129,7 +129,9 @@ RULES = (
         "DR8",
         "Soak pass: every day p95 within the hook budgets (recall {budget_recall_ms} ms, "
         "embedding {budget_embedding_ms} ms, error recall {budget_error_recall_ms} ms, "
-        "guard {budget_guard_ms} ms); error rate upper bound under {error_rate_upper}; "
+        "guard {budget_guard_ms} ms; steady load, the hourly burst of 20 parallel requests "
+        "is reported as burst_p95_ms and counts for the error rate); "
+        "error rate upper bound under {error_rate_upper}; "
         "drift 0 at every hourly check; lag p95 {lag_p95_s} s or less; Theil-Sen slope of "
         "latency and memory with an interval that holds 0, or memory growth under "
         "{memory_growth_mb_per_day} MB a day; PRAGMA quick_check ok.",

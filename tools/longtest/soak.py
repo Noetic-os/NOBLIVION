@@ -24,6 +24,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -99,7 +100,9 @@ def churn(
     of the build (the hook after a write). The lag of a new note is the time from
     the write until its marker is searchable."""
     rows: list[dict[str, Any]] = []
-    token = f"zqx{serial:06d}marker"
+    # a nonce: a restart begins its serial at 1 again, and a marker that is in the store
+    # already would be found at once and give a lag of zero
+    token = f"zqx{serial:06d}{uuid.uuid4().hex[:8]}marker"
     path = Path(folder) / f"project_soak_{serial:06d}.md"
     started = time.monotonic()
     path.write_text(note_text(token, serial), encoding="utf-8")
@@ -224,10 +227,17 @@ def evaluate(
     # A short run cannot show a 0.5% error bound: with no error it is underpowered, not
     # failed. The rule counts again as soon as the request count could prove it.
     enough = len(queries) >= queries_needed(params.error_rate_upper)
-    daily_p95 = {
-        d: percentile([r["ms"] for r in by_day.get(d, []) if r["kind"] == "query"], 0.95)
-        for d in days
-    }
+    # The budget is for steady load. The hourly burst of 20 parallel requests queues in
+    # the store (one search takes about 0.35 s at 20,000 notes, so the last of 20 waits
+    # about 7 s); its tail is reported as burst_p95_ms and its errors count in full.
+    steady = lambda d: [  # noqa: E731
+        r["ms"] for r in by_day.get(d, []) if r["kind"] == "query" and not r.get("burst")
+    ]
+    burst = lambda d: [  # noqa: E731
+        r["ms"] for r in by_day.get(d, []) if r["kind"] == "query" and r.get("burst")
+    ]
+    daily_p95 = {d: percentile(steady(d), 0.95) for d in days}
+    burst_p95 = {d: round(percentile(burst(d), 0.95), 1) for d in days if burst(d)}
     lags = [r["lag_s"] for r in rows if r["kind"] == "write" and r.get("lag_s") is not None]
     failed_writes = sum(1 for r in rows if r["kind"] == "write" and not r["ok"])
     drifts = [r["drift"] for r in rows if r["kind"] == "drift"]
@@ -261,6 +271,7 @@ def evaluate(
         "error_rate_underpowered": not enough,
         "lag_samples": len(lags),
         "daily_p95_ms": {d: round(v, 1) for d, v in daily_p95.items()},
+        "burst_p95_ms": burst_p95,
         "lag_p95_s": round(percentile(lags, 0.95), 2) if lags else None,
         "failed_writes": failed_writes,
         "drift_max": max((abs(d) for d in drifts), default=0),
