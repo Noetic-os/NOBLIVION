@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import live, realreplay, report, sandbox, soak
-from .buildrunner import Harness, Worker, store_python
+from .buildrunner import Harness, Worker, index_wait_s, store_python
 from .config import PARAMS
 from .runner import (
     Run,
@@ -25,6 +25,7 @@ from .runner import (
     real_replay,
     replay_all,
     replay_rows,
+    seed_soak_store,
 )
 from .scheduler import Job, Scheduler
 from .util import write_private
@@ -100,12 +101,14 @@ class Loop:
         live_data = Path(run.manifest["live"]["data_dir"])
         shard = fx.shards(self.soak_size)[0]
         root = run.dir / "stores" / "soak" / f"shard-{shard:02d}"
+        seed_soak_store(run, root, self.soak_size)
         self.harness = Harness(
             "B1",
             run.build_path("B1"),
             root,
             store_python(live_data),
             live_data / "models",
+            wait_s=index_wait_s(self.soak_size),
             settings=run.manifest.get("settings_env"),
         )
         self.harness.prepare(fx, self.soak_size, shard)

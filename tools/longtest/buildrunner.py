@@ -70,6 +70,18 @@ def build_version(build: Path) -> str:
     return ""
 
 
+# The 20,000-note pilot: 71,821 chunks, 47,500 of them embedded after 7,200 s with two
+# stores at once on a host at load 65, so about 0.53 s per note. One second per note is
+# the wait, which leaves a margin of 1.9; the floor holds for the small scales.
+INDEX_S_PER_NOTE = 1.0
+
+
+def index_wait_s(notes: int, floor: float = 900.0) -> float:
+    """How long a store may take to index and embed ``notes`` notes before the run
+    calls it stuck. The wait comes from the measured build time, not from a guess."""
+    return max(float(floor), INDEX_S_PER_NOTE * float(notes))
+
+
 class Harness:
     """A store of one build on one shard of one scale."""
 

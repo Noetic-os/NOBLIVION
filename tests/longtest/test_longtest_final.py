@@ -211,3 +211,36 @@ def test_a_run_does_not_start_without_a_frozen_copy_and_a_passed_pilot(tmp_path)
     run = run_folder(tmp_path)
     with pytest.raises(SystemExit, match="may not start"):
         cli.cmd_run(type("A", (), {"run_dir": str(run.dir), "soak_size": 30, "max_seconds": 1})())
+
+
+def test_index_wait_comes_from_the_measured_build_time():
+    from longtest import buildrunner
+
+    assert buildrunner.index_wait_s(30) == 900.0  # the floor holds for small scales
+    assert buildrunner.index_wait_s(5000) == 5000.0
+    # measured: 20,629 notes took about 10,900 s with two stores on a host at load 65
+    assert buildrunner.index_wait_s(20000) >= 1.8 * 0.53 * 20629 * 0.99
+    assert buildrunner.index_wait_s(20000, floor=30000) == 30000.0
+
+
+def test_soak_store_is_seeded_from_the_kept_replay_store_once(tmp_path, monkeypatch):
+    run = run_folder(tmp_path)
+
+    class Fx:
+        def shards(self, size):
+            return [0]
+
+    monkeypatch.setattr(runner.Run, "fixture", lambda self: Fx())
+    source = runner.shard_root(run, "B1", 20000, 0)
+    data = source / "home/.claude/plugins/data/noblivion-noblivion"
+    data.mkdir(parents=True)
+    (data / "noblivion.db").write_text("db")
+    (data / "store.json").write_text("{}")
+    (source / "guard-state").mkdir()
+    soak = run.dir / "stores" / "soak" / "shard-00"
+    assert runner.seed_soak_store(run, soak, 20000)
+    copy = soak / "home/.claude/plugins/data/noblivion-noblivion"
+    assert (copy / "noblivion.db").read_text() == "db" and not (copy / "store.json").exists()
+    assert (data / "noblivion.db").exists()  # the replay store stays
+    assert not runner.seed_soak_store(run, soak, 20000)  # already there: left alone
+    assert not runner.seed_soak_store(run, run.dir / "stores" / "x", 5000)  # no source

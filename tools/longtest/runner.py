@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config, fixtures, realreplay, replay, sandbox
-from .buildrunner import Harness, build_version, export_build, store_python
+from .buildrunner import Harness, build_version, export_build, index_wait_s, store_python
 from .config import SCALES
 from .fixtures import Fixture
 from .util import (
@@ -295,7 +295,7 @@ def replay_task(
         shard_root(run, build, size, shard),
         python,
         models,
-        wait_s,
+        index_wait_s(size, wait_s),
         settings=run.manifest.get("settings_env"),
     )
     h.guard_site = guard_site
@@ -447,6 +447,28 @@ def replay_all(
     return infos
 
 
+def counts_hint(config_dir: Path) -> list[int]:
+    """Notes per project folder of the real corpus, to size the wait of a store."""
+    return [len(list(f.glob("*.md"))) for f in realreplay.real_memory_folders(config_dir)]
+
+
+def seed_soak_store(run: Run, root: Path, size: int) -> bool:
+    """Start the soak store from a copy of the kept B1 replay store of the same size.
+    The notes and their vectors are the same, and a store keeps its paths relative to
+    the project folder, so a copy needs a scan, not three hours of embedding. Only when
+    the soak folder is not there yet."""
+    root = Path(root)
+    fx = run.fixture()
+    source = shard_root(run, "B1", size, fx.shards(size)[0])
+    if root.exists() and any(root.iterdir()) or not (source / "home").is_dir():
+        return False
+    reset_volatile(source)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, root, symlinks=True, dirs_exist_ok=True)
+    (root / "home/.claude/plugins/data/noblivion-noblivion/store.json").unlink(missing_ok=True)
+    return True
+
+
 def real_replay(
     run: Run,
     heldout_dir: Path,
@@ -481,7 +503,7 @@ def real_replay(
                 root,
                 python,
                 live_data / "models",
-                wait_s=wait_s,
+                wait_s=index_wait_s(sum(counts_hint(live)) + level, wait_s),
                 settings=run.manifest.get("settings_env"),
             )
             h.guard_site = guard_site
