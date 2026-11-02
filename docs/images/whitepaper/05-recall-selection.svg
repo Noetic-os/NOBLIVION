@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg
+  PUBLIC '-//W3C//DTD SVG 1.0//EN'
+  'http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd'>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<svg width="500" height="218" preserveAspectRatio="xMinYMin meet" viewBox="0 0 500 218" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+	<title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="500" height="218"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-218)" style="clip-path: url(#clip)">
+		<g transform="">
+			<rect x="12" y="130" width="24" height="35" rx="2" ry="2" style="stroke: rgb(83%,88%,88%); stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<path d="M 17,154 L 30,154 Z" style="stroke: rgb(32%,40%,45%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<rect x="43" y="150" width="24" height="35" rx="2" ry="2" style="stroke: rgb(83%,88%,88%); stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<path d="M 48,174 L 61,174 Z" style="stroke: rgb(32%,40%,45%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<rect x="74" y="120" width="24" height="35" rx="2" ry="2" style="stroke: rgb(83%,88%,88%); stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<path d="M 79,144 L 92,144 Z" style="stroke: rgb(32%,40%,45%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<rect x="105" y="144" width="24" height="35" rx="2" ry="2" style="stroke: rgb(83%,88%,88%); stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<path d="M 110,168 L 123,168 Z" style="stroke: rgb(32%,40%,45%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<rect x="136" y="113" width="24" height="35" rx="2" ry="2" style="stroke: rgb(83%,88%,88%); stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<path d="M 141,137 L 154,137 Z" style="stroke: rgb(32%,40%,45%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<rect x="18" y="73" width="24" height="35" rx="2" ry="2" style="stroke: rgb(83%,88%,88%); stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<path d="M 23,97 L 36,97 Z" style="stroke: rgb(32%,40%,45%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<rect x="52" y="48" width="24" height="35" rx="2" ry="2" style="stroke: rgb(83%,88%,88%); stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<path d="M 57,72 L 70,72 Z" style="stroke: rgb(32%,40%,45%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<rect x="89" y="67" width="24" height="35" rx="2" ry="2" style="stroke: rgb(83%,88%,88%); stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<path d="M 94,91 L 107,91 Z" style="stroke: rgb(32%,40%,45%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<rect x="124" y="40" width="24" height="35" rx="2" ry="2" style="stroke: rgb(83%,88%,88%); stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<path d="M 129,64 L 142,64 Z" style="stroke: rgb(32%,40%,45%); stroke-linecap: butt; stroke-width: 0.7;"/>
+			<text x="36.474609375" y="191" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,382) scale(1,-1)">Configured notes</text>
+			<path d="M 165,156 L 200,156 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="200 156, 193.6969 159.0448, 193.6969 152.9552" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<rect x="205" y="136" width="161" height="40" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(90%,94%,94%); fill-rule: evenodd;"/>
+			<text x="218" y="151" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 10px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,302) scale(1,-1)">1  Permitted scope</text>
+			<rect x="205" y="85" width="161" height="40" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(90%,94%,94%); fill-rule: evenodd;"/>
+			<text x="218" y="100" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 10px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,200) scale(1,-1)">2  Words + meaning</text>
+			<rect x="205" y="34" width="161" height="40" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(90%,94%,94%); fill-rule: evenodd;"/>
+			<text x="218" y="49" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 10px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,98) scale(1,-1)">3  Rank + size limits</text>
+			<path d="M 285,135 L 285,126 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="285 126, 288.0448 132.3031, 281.9552 132.3031" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<path d="M 285,84 L 285,75 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="285 75, 288.0448 81.30313, 281.9552 81.30313" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<path d="M 367,54 L 395,83 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="395 83, 388.4315 80.58039, 392.8123 76.35065" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<rect x="400" y="58" width="91" height="112" rx="7" ry="7" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 0.8; fill: rgb(100%,100%,100%); fill-rule: evenodd;"/>
+			<text x="422.073486328125" y="148" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(0%,49%,50%); stroke:none;" transform="translate(0,296) scale(1,-1)">Relevant</text>
+			<text x="425.441162109375" y="133" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(0%,49%,50%); stroke:none;" transform="translate(0,266) scale(1,-1)">context</text>
+			<path d="M 413,109 L 478,109 Z" style="stroke: rgb(83%,88%,88%); stroke-linecap: butt; stroke-width: 4;"/>
+			<path d="M 413,92 L 478,92 Z" style="stroke: rgb(83%,88%,88%); stroke-linecap: butt; stroke-width: 4;"/>
+			<path d="M 413,75 L 478,75 Z" style="stroke: rgb(83%,88%,88%); stroke-linecap: butt; stroke-width: 4;"/>
+			<text x="158.8330078125" y="11" style="font-family: Arial, Helvetica, sans-serif; font-size: 10px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,22) scale(1,-1)">Open a selected note or section for detail</text>
+		</g>
+	</g>
+</svg>

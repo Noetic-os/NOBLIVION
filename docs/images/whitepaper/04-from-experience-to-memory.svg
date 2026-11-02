@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg
+  PUBLIC '-//W3C//DTD SVG 1.0//EN'
+  'http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd'>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<svg width="500" height="218" preserveAspectRatio="xMinYMin meet" viewBox="0 0 500 218" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+	<title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="500" height="218"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-218)" style="clip-path: url(#clip)">
+		<g transform="">
+			<rect x="8" y="137" width="143" height="66" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<text x="20" y="183.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,366) scale(1,-1)">Explicit save</text>
+			<text x="20" y="161.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,322) scale(1,-1)">A reviewed lesson</text>
+			<rect x="8" y="35" width="143" height="77" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<text x="20" y="92.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,184) scale(1,-1)">Optional capture</text>
+			<text x="20" y="70.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,140) scale(1,-1)">Eligible conversation</text>
+			<rect x="181" y="35" width="139" height="77" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(90%,94%,94%); fill-rule: evenodd;"/>
+			<text x="193" y="92.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,184) scale(1,-1)">Local extraction</text>
+			<text x="193" y="70.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,140) scale(1,-1)">Candidate with evidence</text>
+			<rect x="350" y="137" width="142" height="66" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(90%,94%,94%); fill-rule: evenodd;"/>
+			<text x="362" y="183.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,366) scale(1,-1)">Save and index</text>
+			<text x="362" y="161.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,322) scale(1,-1)">Accepted memory</text>
+			<rect x="350" y="35" width="142" height="77" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(90%,94%,94%); fill-rule: evenodd;"/>
+			<text x="362" y="92.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,184) scale(1,-1)">Validate</text>
+			<text x="362" y="70.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,140) scale(1,-1)">Scope, evidence, safety</text>
+			<path d="M 151,171 L 350,171 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="350 171, 343.6969 174.0448, 343.6969 167.9552" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<text x="214.982177734375" y="184" style="font-family: Arial, Helvetica, sans-serif; font-size: 9px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,368) scale(1,-1)">save-path checks</text>
+			<path d="M 151,74 L 180,74 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="180 74, 173.6969 77.04476, 173.6969 70.95524" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<path d="M 320,74 L 349,74 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="349 74, 342.6969 77.04476, 342.6969 70.95524" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<path d="M 422,112 L 422,136 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="422 136, 418.9552 129.6969, 425.0448 129.6969" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<path d="M 350,48 L 325,14 Z" style="stroke: rgb(70%,42%,21%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="325 14, 331.1869 17.27444, 326.2809 20.88181" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(70%,42%,21%); fill-rule: evenodd;"/>
+			<text x="154.41943359374997" y="9" style="font-family: Arial, Helvetica, sans-serif; font-size: 9px;fill: rgb(70%,42%,21%); stroke:none;" transform="translate(0,18) scale(1,-1)">Defer or reject when checks do not pass</text>
+		</g>
+	</g>
+</svg>

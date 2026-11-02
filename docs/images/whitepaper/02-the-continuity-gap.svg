@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg
+  PUBLIC '-//W3C//DTD SVG 1.0//EN'
+  'http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd'>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<svg width="500" height="218" preserveAspectRatio="xMinYMin meet" viewBox="0 0 500 218" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+	<title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="500" height="218"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-218)" style="clip-path: url(#clip)">
+		<g transform="">
+			<text x="10" y="192" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,384) scale(1,-1)">A lesson is retained but not retrieved</text>
+			<rect x="10" y="113" width="143" height="62" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<text x="22" y="155.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,310) scale(1,-1)">Task A</text>
+			<text x="22" y="133.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,266) scale(1,-1)">Find the cause</text>
+			<rect x="178" y="113" width="143" height="62" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<text x="190" y="155.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,310) scale(1,-1)">A saved note</text>
+			<text x="190" y="133.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,266) scale(1,-1)">Stays out of context</text>
+			<rect x="346" y="113" width="143" height="62" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<text x="358" y="155.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,310) scale(1,-1)">Task B</text>
+			<text x="358" y="133.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,266) scale(1,-1)">Repeat discovery</text>
+			<path d="M 153,144 L 177,144 Z" style="stroke: rgb(32%,40%,45%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="177 144, 170.6969 147.0448, 170.6969 140.9552" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(32%,40%,45%); fill-rule: evenodd;"/>
+			<path d="M 321,144 L 345,144 Z" style="stroke: rgb(70%,42%,21%); stroke-linecap: butt; stroke-width: 1.5; stroke-dasharray: 4, 3;"/>
+			<polygon points="345 144, 338.6969 147.0448, 338.6969 140.9552" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(70%,42%,21%); fill-rule: evenodd;"/>
+			<text x="10" y="85" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(0%,49%,50%); stroke:none;" transform="translate(0,170) scale(1,-1)">A relevant lesson reaches the next task</text>
+			<rect x="10" y="7" width="143" height="62" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(90%,94%,94%); fill-rule: evenodd;"/>
+			<text x="22" y="49.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,98) scale(1,-1)">Task A</text>
+			<text x="22" y="27.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,54) scale(1,-1)">Verify the lesson</text>
+			<rect x="178" y="7" width="143" height="62" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(90%,94%,94%); fill-rule: evenodd;"/>
+			<text x="190" y="49.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,98) scale(1,-1)">Scoped memory</text>
+			<text x="190" y="27.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,54) scale(1,-1)">Search at task time</text>
+			<rect x="346" y="7" width="143" height="62" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(90%,94%,94%); fill-rule: evenodd;"/>
+			<text x="358" y="49.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,98) scale(1,-1)">Task B</text>
+			<text x="358" y="27.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,54) scale(1,-1)">Check and reuse</text>
+			<path d="M 153,38 L 177,38 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="177 38, 170.6969 41.04476, 170.6969 34.95524" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<path d="M 321,38 L 345,38 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="345 38, 338.6969 41.04476, 338.6969 34.95524" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+		</g>
+	</g>
+</svg>

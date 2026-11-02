@@ -139,6 +139,7 @@ for the full steps and limits.
 - [Import memories from a JSONL file](docs/import.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Architecture (design document)](docs/design/0001-architecture.md)
+- [Illustrated executive whitepaper](docs/noblivion-executive-whitepaper.md): why Noblivion exists, how it works, data flows and an adoption framework ([PDF](docs/noblivion-executive-whitepaper.pdf))
 - [Executive summary](docs/executive-summary.md): what NOBLIVION is, why it exists, the gaps it closes and its features ([PDF](docs/executive-summary.pdf))
 - [NOBLIVION against Claude Code memory](docs/noblivion-against-claude-code-memory.md): architecture, features, scores and conclusion ([PDF](docs/noblivion-against-claude-code-memory.pdf))
 - [The NOBLIVION paper](docs/noblivion-paper.md): features, differences from other memory modules, evidence and limits

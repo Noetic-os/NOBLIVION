@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg
+  PUBLIC '-//W3C//DTD SVG 1.0//EN'
+  'http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd'>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<svg width="500" height="218" preserveAspectRatio="xMinYMin meet" viewBox="0 0 500 218" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+	<title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="500" height="218"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-218)" style="clip-path: url(#clip)">
+		<g transform="">
+			<rect x="8" y="135" width="143" height="70" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<text x="20" y="185.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,370) scale(1,-1)">Shown</text>
+			<text x="20" y="163.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,326) scale(1,-1)">Exposure to a note</text>
+			<rect x="178" y="135" width="143" height="70" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<text x="190" y="185.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,370) scale(1,-1)">Used</text>
+			<text x="190" y="163.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,326) scale(1,-1)">A recorded use event</text>
+			<rect x="348" y="135" width="143" height="70" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<text x="360" y="185.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,370) scale(1,-1)">Contradicted</text>
+			<text x="360" y="163.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,326) scale(1,-1)">A recorded counter-signal</text>
+			<rect x="93" y="28" width="188" height="65" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(90%,94%,94%); fill-rule: evenodd;"/>
+			<text x="105" y="73.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,146) scale(1,-1)">Review and maintain</text>
+			<text x="105" y="51.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,102) scale(1,-1)">Inspect the evidence</text>
+			<path d="M 79,134 L 187,94 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="187 94, 182.1467 99.04439, 180.0318 93.33395" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<path d="M 249,134 L 187,94 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="187 94, 193.9471 94.8586, 190.6459 99.9756" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<path d="M 419,134 L 187,94 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="187 94, 193.7288 92.07046, 192.6942 98.07143" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<rect x="318" y="28" width="174" height="65" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(90%,94%,94%); fill-rule: evenodd;"/>
+			<text x="330" y="73.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,146) scale(1,-1)">Optional ranking</text>
+			<text x="330" y="51.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,102) scale(1,-1)">Usage-based adjustment</text>
+			<path d="M 281,60 L 317,60 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5; stroke-dasharray: 4, 3;"/>
+			<polygon points="317 60, 310.6969 63.04476, 310.6969 56.95524" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<text x="116.8896484375" y="9" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 10px;fill: rgb(70%,42%,21%); stroke:none;" transform="translate(0,18) scale(1,-1)">Correctness still needs current facts and source checks</text>
+		</g>
+	</g>
+</svg>

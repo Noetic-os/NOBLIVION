@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg
+  PUBLIC '-//W3C//DTD SVG 1.0//EN'
+  'http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd'>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<svg width="500" height="218" preserveAspectRatio="xMinYMin meet" viewBox="0 0 500 218" xmlns="http://www.w3.org/2000/svg" version="1.0" fill-rule="evenodd" xmlns:xlink="http://www.w3.org/1999/xlink">
+	<title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="500" height="218"/>
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-218)" style="clip-path: url(#clip)">
+		<g transform="">
+			<rect x="8" y="8" width="484" height="202" rx="7" ry="7" style="stroke: rgb(83%,88%,88%); stroke-linecap: butt; stroke-width: 0.8; fill: rgb(100%,100%,100%); fill-rule: evenodd;"/>
+			<text x="22" y="190" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 9px;fill: rgb(0%,49%,50%); stroke:none;" transform="translate(0,380) scale(1,-1)">STORE HOST  /  ONE OPERATING SYSTEM USER</text>
+			<rect x="23" y="101" width="125" height="67" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<text x="35" y="148.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,296) scale(1,-1)">Claude Code</text>
+			<text x="35" y="126.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,252) scale(1,-1)">Plugin + mapping</text>
+			<rect x="179" y="101" width="142" height="67" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(90%,94%,94%); fill-rule: evenodd;"/>
+			<text x="191" y="148.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,296) scale(1,-1)">Shared store</text>
+			<text x="191" y="126.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,252) scale(1,-1)">Authenticated access</text>
+			<rect x="352" y="101" width="125" height="67" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<text x="364" y="148.0" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 11px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,296) scale(1,-1)">Supported Codex</text>
+			<text x="364" y="126.0" style="font-family: Arial, Helvetica, sans-serif; font-size: 9.5px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,252) scale(1,-1)">Adapter + mapping</text>
+			<path d="M 149,136 L 178,136 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="178 136, 171.6969 139.0448, 171.6969 132.9552" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<path d="M 351,136 L 322,136 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="322 136, 328.3031 132.9552, 328.3031 139.0448" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<rect x="28" y="20" width="126" height="39" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<text x="60.43359375" y="35" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 10px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,70) scale(1,-1)">Project Atlas</text>
+			<rect x="187" y="20" width="126" height="39" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<text x="213.5986328125" y="35" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 10px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,70) scale(1,-1)">Project Beacon</text>
+			<rect x="346" y="20" width="126" height="39" rx="7" ry="7" style="stroke: none; stroke-linecap: butt; stroke-width: 0.8; fill: rgb(91%,93%,96%); fill-rule: evenodd;"/>
+			<text x="368.7119140625" y="35" style="font-family: Arial, Helvetica, sans-serif; font-weight: bold; font-size: 10px;fill: rgb(9%,21%,28%); stroke:none;" transform="translate(0,70) scale(1,-1)">Shared guidance</text>
+			<path d="M 250,101 L 250,60 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="250 60, 253.0448 66.30313, 246.9552 66.30313" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<path d="M 214,101 L 92,60 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="92 60, 98.94469 59.12177, 97.00483 64.89405" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<path d="M 286,101 L 410,60 Z" style="stroke: rgb(0%,49%,50%); stroke-linecap: butt; stroke-width: 1.5;"/>
+			<polygon points="410 60, 404.9714 64.86957, 403.0597 59.08791" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,49%,50%); fill-rule: evenodd;"/>
+			<text x="25" y="77" style="font-family: Arial, Helvetica, sans-serif; font-size: 9px;fill: rgb(32%,40%,45%); stroke:none;" transform="translate(0,154) scale(1,-1)">Memory scopes</text>
+		</g>
+	</g>
+</svg>
