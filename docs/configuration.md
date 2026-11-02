@@ -290,7 +290,7 @@ model is the default model, `BAAI/bge-small-en-v1.5`.
 | `NOBLIVION_RECALL_PROMPT_ROWS` | `recall.prompt_rows` | `5` | The most rows one prompt shows, 0 to 100. `0` means no cap. |
 | `NOBLIVION_RECALL_HUB_DAYS` | `recall.hub_days` | `14` | The window, in days (up to 30), for hub rows. `0` turns it off. A note that the hook showed in more than half of the sessions of the window is a hub. A hub row goes behind the other rows. Needs at least 10 sessions in the window. The hook counts in `<cache folder>/hub-stats.json` only when this is above 0. |
 | `NOBLIVION_RECALL_HUB_ROWS` | `recall.hub_rows` | `1` | The most hub rows one prompt shows, 0 to 100. Used only with `NOBLIVION_RECALL_HUB_DAYS`. |
-| `NOBLIVION_RECALL_INDEX_TRUST` | none | off | Stays off by default until a time-split test shows a ranking gain. `1`, `on`, `true` or `yes` multiplies each score by the trust factor. `shadow` computes the factor and logs it, but keeps the order. See [trust.md](trust.md). |
+| `NOBLIVION_RECALL_INDEX_TRUST` | none | off | Is off by default. The maintainers run `on`. Set it together with `trust.ranking` `on`. `1`, `on`, `true` or `yes` multiplies each score by the trust factor. `shadow` computes the factor and logs it, but keeps the order. See [trust.md](trust.md). |
 | `NOBLIVION_RECALL_TRUST_LOG` | none | off | `1`, `on`, `true` or `yes` makes the prompt hook write `<data dir>/cache/trust-rank.jsonl` in `shadow` mode too. In mode `on` it is always written. For the time-split test. See [trust.md](trust.md). |
 | `NOBLIVION_RECALL_TRUST_FILE` | none | unset | A fixed trust snapshot file to use instead of the store's trust values. For tests. |
 | `NOBLIVION_RECALL_TRUST_MODE` | none | unset | `b` or `c`: other ways to compute the trust factor, for evaluation. `a` has no effect now: guard rows are never a use. Unset uses the normal factor. |
@@ -446,7 +446,7 @@ See [guards.md](guards.md) for what each guard does.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_STOP_CHECK_MODE` | `stop.mode` | `shadow` | `shadow` runs the checks, logs what would have blocked and never blocks. `enforce` lets the checks block. Any other value means `shadow`. |
+| `NOBLIVION_STOP_CHECK_MODE` | `stop.mode` | `shadow` | `shadow` runs the checks, logs what would have blocked and never blocks. `enforce` lets the checks block; the maintainers run `enforce`. Any other value means `shadow`. |
 | `NOBLIVION_STOP_CHECKS` | `stop.checks` | `commit,tests,notify,deploy,lesson` | The checks that act in `enforce` mode (block, or remind, see `stop.reminders`): a comma list, or `all`, or `none`. A set but empty value means none. The config key takes a list or a comma text. |
 | `NOBLIVION_STOP_CHECK_LOG` | none | `<data dir>/stop-check-log.jsonl` | The decision log. |
 | `NOBLIVION_STOP_CHECK_STATE` | none | `<data dir>/stop-check-state` | Marker files per session. |
@@ -473,7 +473,7 @@ mode), reminded (enforce mode, a check in `stop.reminders`) and logged only (the
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
 | `NOBLIVION_TRUST_EVENTS` | `trust.events` | on (switch) | Records which notes were shown, used and contradicted. This is the usage evidence for the retire, promote and demote report. Off stops the spool and the flush. |
-| `NOBLIVION_TRUST_RANKING` | `trust.ranking` | `off` | Stays `off` by default until a time-split test (fit on older events, test on newer events) shows a ranking gain. Run `noblivion trust timesplit` to test it on your own store. `off`, `shadow` or `on`. With `shadow` or `on`, the store adds trust values to each index row. The store itself never reorders rows. With `shadow`, the prompt hook computes and logs the trust factor but never applies it. With `on`, the hook applies it when `NOBLIVION_RECALL_INDEX_TRUST` is on. |
+| `NOBLIVION_TRUST_RANKING` | `trust.ranking` | `off` | Is `off` by default. The maintainers run `on`, although the time-split test shows no gain yet (see [trust.md](trust.md)). Run `noblivion trust timesplit` to test it on your own store. `off`, `shadow` or `on`. With `shadow` or `on`, the store adds trust values to each index row. The store itself never reorders rows. With `shadow`, the prompt hook computes and logs the trust factor but never applies it. With `on`, the hook applies it when `NOBLIVION_RECALL_INDEX_TRUST` is on. |
 | `NOBLIVION_TRUST_CITATION_USE` | `trust.citation_use` | off (switch) | A reply that cites a shown note (its name, or 8 words of its rule in a row) records a `use`. Off by default: its precision on the labelled set was not high at the first run. See [trust.md](trust.md). |
 | `NOBLIVION_TRUST_BEHAVIOUR_USE` | `trust.behaviour_use` | off (switch) | A tool call after the showing that follows a shown rule records a `use` with the source `behaviour`: it runs the rule's `complies` command, fires a strong trigger, or edits a file that a `glob:` trigger names, and does not match `violates`. Off by default until a labelled sample shows enough precision. See [trust.md](trust.md). |
 | `NOBLIVION_TRUST_CORRECTION_CONTRADICT` | `trust.correction_contradict` | off (switch) | A user correction of a reply that cited a note records a `contradict` for that note. Off by default: a correction does not say whether the note was wrong, and a wrong `contradict` lowers a good note. See [trust.md](trust.md). |

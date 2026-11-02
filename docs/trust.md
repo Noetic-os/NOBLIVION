@@ -267,10 +267,13 @@ traceback.
 
 ## Trust in ranking
 
-Trust does not change the order of recall by default, and it stays off by
-default. Turn it on only after a time-split test on your own store shows a
-ranking gain: fit on older events, then test on newer events. See "The
-time-split test" below.
+Trust does not change the order of recall in the shipped default. The
+maintainers run it `on`: both `trust.ranking` and
+`NOBLIVION_RECALL_INDEX_TRUST` are `on`. The time-split test shows no gain on
+the maintainers' store, so the switch is a decision and not a result. To
+run the same test on your own store (fit on older events, then test on newer
+events), see "The time-split test" below. To go back to the default, set both
+settings to `off`.
 
 Two settings change the order for you:
 
@@ -390,8 +393,8 @@ The command reads the database and the log. It changes no setting. To
 collect the per-prompt log first, set `trust.ranking` and
 `NOBLIVION_RECALL_INDEX_TRUST` to `shadow` and `NOBLIVION_RECALL_TRUST_LOG`
 to `1` for some weeks: the hook then logs the order it would have used and
-keeps the order it shows. Turn trust
-ranking on only when your own run says `gain`.
+keeps the order it shows. The shipped
+default keeps trust ranking off until your own run says `gain`.
 
 The test prints how many "used" labels sit on notes with a factor other
 than 1. The labels are not independent of trust: a "used" note is a `use`

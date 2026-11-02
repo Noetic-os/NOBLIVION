@@ -25,13 +25,15 @@ release.
   A separate guard blocks commands that would print a git URL with a
   password or a token in it.
 - **Stop checks.** When Claude Code wants to end a turn, a hook can ask it
-  to finish open work first. By default the checks only log what they would
-  ask (shadow mode); `noblivion stop report` shows the counts.
+  to finish open work first. The shipped default is shadow mode: the checks
+  only log what they would ask. The maintainers run `enforce` mode, where a
+  check can block once per stop. `noblivion stop report` shows the counts.
 - **Usage report.** The store records when a note is shown, used or
   contradicted (a guard deny that was overridden). From this usage
   evidence, a report lists notes to retire, to promote or to demote. The
-  trust value in the report does not say whether a note is correct, and it
-  does not change the order of recall by default.
+  trust value in the report does not say whether a note is correct. Trust
+  ranking, which uses the value to reorder recall, is off in the shipped
+  default. The maintainers run it `on`.
 - **Duplicate sweep.** An optional command finds notes that say the same
   thing. A hosted model judges each pair. This is off until you turn it
   on.

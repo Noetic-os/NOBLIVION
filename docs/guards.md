@@ -712,7 +712,10 @@ reason. A check blocks at most once per stop.
 
 The default mode is `shadow`. The checks run and the log records what would
 have blocked, but no check blocks. The checks were tuned on the sessions of
-one user, so you see first what they would do in your sessions.
+one user, so you can see first what they would do in your sessions. The
+maintainers run `enforce` (`NOBLIVION_STOP_CHECK_MODE=enforce` or `stop.mode`
+`enforce`). In that mode a false block costs one extra turn, because a check
+blocks at most once per stop. Read `noblivion stop report` for the counts.
 
 | Check | Blocks when |
 | --- | --- |

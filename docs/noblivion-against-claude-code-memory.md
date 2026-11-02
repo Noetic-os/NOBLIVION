@@ -2,7 +2,7 @@
 
 # NOBLIVION against Claude Code memory
 
-Written 2026-10-15 against NOBLIVION 0.1.15.
+Written 2026-10-15 against NOBLIVION 0.1.15. Settings in use since 2026-11-02: stop checks in `enforce` mode and trust ranking `on` (maintainer decision; the shipped defaults stay `shadow` and `off`).
 
 ## Verdict
 
@@ -33,7 +33,7 @@ For the two burden rows at the end, 5 means no burden and 0 means it blocks work
 | 6 | Pull tools: recall and remember | 2 | 4 | Built-in: the Read tool on files, and Claude writes files itself. NOBLIVION: ranked query, fetch by id, section view, and a redacted remember that never edits the index file. |
 | 7 | One store for many projects, a second client | 1 | 4 | Built-in: one folder per project. NOBLIVION: ten roots in one store, import, a Codex adapter and an ssh bridge; the gain for Codex is not measured. |
 | 8 | Learning from transcripts | 0 | 2 | None built in. NOBLIVION mines corrections and tool errors and runs a learning loop, but mined notes miss the precision gate and stay out of the prompt, and the loop yields little. |
-| 9 | Trust and stop checks | 0 | 2 | None built in. NOBLIVION computes a trust score per note and five stop checks, but both run in shadow because the measured gain is nil. |
+| 9 | Trust and stop checks | 0 | 2 | None built in. NOBLIVION computes a trust score per note and five stop checks, but both ship in shadow because the measured gain is nil. The maintainers run stop checks in `enforce` mode and trust ranking `on`; the score stays 2 because no gain is shown. |
 | 10 | Hygiene: dedup, re-index, frontmatter | 1 | 4 | Built-in: the docs ask Claude to merge index lines by hand. NOBLIVION: dedup with consent and byte-for-byte undo, re-index right after a write, a frontmatter check. |
 | 11 | Privacy | 4 | 4 | Both stay on the machine. NOBLIVION adds a loopback store with an HMAC proof and a protected token; its two network features need consent; its scrub misses host and company names. |
 | 12 | Operation burden | 5 | 2 | Built-in: nothing to install. NOBLIVION: an install script and a model download, a hand rebuild after each update, Codex updated by hand, a store that stops when idle. |
@@ -127,7 +127,7 @@ Every choice below trades a capability for locality, reversibility or safety. Th
 | Guards read local tables, never the store | A guard must answer in milliseconds and must not fail when the store is down | The tables are rebuilt at session start, so a new rule waits for the next session |
 | Every write path has an undo | Dedup, archive and import can be reverted byte for byte, so automation may touch the files | An undo log and archive folders that grow |
 | Learning accepts only a zero-cost local model | No bill can grow unseen; the two paid features need typed consent | Learning quality is bound to the local model; the loop has yielded little so far |
-| Trust ranking and stop checks ship in shadow until a gate passes | A feature that reorders or blocks must first show a measured gain on enough trials | Both run and log but change nothing yet |
+| Trust ranking and stop checks ship in shadow until a gate passes | A feature that reorders or blocks must first show a measured gain on enough trials | The shipped default changes nothing. The maintainers run both switched on without a passed gate, so a false block or a worse order is possible |
 | Ranking fuses keywords and meaning, one hit per file, a score floor | Keyword and meaning both count, and a prompt with no matching note gets nothing | The floor is tuned on a fixture; a note that matches only by rule words can fall under it |
 | Mined notes stay out of the prompt until a precision gate passes | Transcript mining is noisy, and a wrong rule in every prompt costs more than a missed one | Mined knowledge reaches the model only through the recall tool with an explicit flag |
 
@@ -232,8 +232,8 @@ What remains. The distance from 42 to a proven system is evidence from real work
 2. Mined notes. They miss the precision gate and stay out of the prompt. NOBLIVION-105 (miner live acceptance) waits for one mined row in the feedback events; NOBLIVION-117 is the gated prompt index for mined correction rows.
 3. Context cost. It is bounded by caps but not measured on real prompts. NOBLIVION-116 covers it too.
 
-Trust ranking and stop checks stay in shadow until their own gate passes. That needs events and time, not a work item.
+Trust ranking and stop checks ship in shadow until their own gate passes. The maintainers run both on before the gate. The gate evidence needs events and time, not a work item, and the stop report and the time-split test show whether the choice pays.
 
-Recommendation. Keep NOBLIVION on. Keep trust and stop checks in shadow. Run the NOBLIVION-116 measurement within the week. Add no feature until the use rate moves or the measurement shows that the caps must come down.
+Recommendation. Keep NOBLIVION on. Keep stop checks in `enforce` mode and trust ranking `on`, and read `noblivion stop report` and `noblivion trust timesplit` each week. Return either to its default if false blocks or a worse order show. Run the NOBLIVION-116 measurement within the week. Add no feature until the use rate moves or the measurement shows that the caps must come down.
 
 In one sentence: against the Claude Code built-in memory, NOBLIVION is the stronger system by mechanism and by safety, and by a wide margin; it has not yet shown that the mechanism pays for its context cost on real work, and that proof is the next and only step.
