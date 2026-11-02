@@ -22,14 +22,24 @@ BOOKS = (
 )
 
 CSS = """
-@page { size: A4; margin: 20mm 18mm; @bottom-center { content: counter(page); font: 9pt sans-serif; color: #666 } }
+@page {
+  size: A4; margin: 20mm 18mm;
+  @bottom-center { content: counter(page); font: 9pt sans-serif; color: #666 }
+}
 body { font: 10pt/1.45 'DejaVu Sans', sans-serif; color: #1b2530 }
-h1 { font-size: 20pt; margin: 0 0 8pt } h2 { font-size: 14pt; margin: 18pt 0 6pt } h3 { font-size: 11.5pt; margin: 12pt 0 4pt }
+h1 { font-size: 20pt; margin: 0 0 8pt }
+h2 { font-size: 14pt; margin: 18pt 0 6pt }
+h3 { font-size: 11.5pt; margin: 12pt 0 4pt }
 table { border-collapse: collapse; width: 100%; font-size: 8pt; margin: 8pt 0 }
-th, td { border: 0.5pt solid #b8c2cc; padding: 3pt 4pt; vertical-align: top; text-align: left; overflow-wrap: anywhere }
-th { background: #eef3f6; overflow-wrap: normal; word-break: normal; hyphens: none } tr { break-inside: avoid }
+th, td {
+  border: 0.5pt solid #b8c2cc; padding: 3pt 4pt;
+  vertical-align: top; text-align: left; overflow-wrap: anywhere
+}
+th { background: #eef3f6; overflow-wrap: normal; word-break: normal; hyphens: none }
+tr { break-inside: avoid }
 code { font: 8.5pt 'DejaVu Sans Mono', monospace; overflow-wrap: anywhere }
-img { max-width: 100%; height: auto } a { color: #0b6e74 }
+img { max-width: 100%; height: auto }
+a { color: #0b6e74 }
 """
 
 
