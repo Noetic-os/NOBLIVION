@@ -200,6 +200,14 @@ def latency_benchmark(
     return {"kind": "latency", **summarize_ms(ms)}
 
 
+def queries_needed(upper: float) -> int:
+    """The fewest error-free requests whose Wilson upper bound is under ``upper``."""
+    n = 1
+    while stats.wilson(0, n)[1] >= upper:
+        n += 1
+    return n
+
+
 def evaluate(
     rows: Sequence[dict[str, Any]], days: Sequence[str] | None = None, params: Params = PARAMS
 ) -> dict[str, Any]:
@@ -213,6 +221,9 @@ def evaluate(
     queries = [r for r in rows if r["kind"] == "query"]
     errors = sum(1 for r in queries if not r["ok"])
     upper = stats.wilson(errors, len(queries))[1] if queries else 1.0
+    # A short run cannot show a 0.5% error bound: with no error it is underpowered, not
+    # failed. The rule counts again as soon as the request count could prove it.
+    enough = len(queries) >= queries_needed(params.error_rate_upper)
     daily_p95 = {
         d: percentile([r["ms"] for r in by_day.get(d, []) if r["kind"] == "query"], 0.95)
         for d in days
@@ -229,11 +240,10 @@ def evaluate(
     growth = (res[-1]["rss_mb"] - res[0]["rss_mb"]) / span_days if len(res) >= 2 else 0.0
     checks = {
         "budget_recall": all(v <= params.budget_recall_ms for v in daily_p95.values()),
-        "error_rate": upper < params.error_rate_upper,
+        "error_rate": upper < params.error_rate_upper or (not enough and errors == 0),
         "drift_zero": all(d == 0 for d in drifts),
-        "lag_p95": (percentile(lags, 0.95) <= params.lag_p95_s and failed_writes == 0)
-        if (lags or failed_writes)
-        else True,
+        "lag_p95": percentile(lags, 0.95) <= params.lag_p95_s if lags else True,
+        "writes_searchable": failed_writes == 0,
         "quick_check": all(r["quick_check"] == "ok" for r in res) if res else True,
         "memory_trend": (
             mem_trend is None
@@ -248,6 +258,8 @@ def evaluate(
         "queries": len(queries),
         "errors": errors,
         "error_rate_upper": round(upper, 5),
+        "error_rate_underpowered": not enough,
+        "lag_samples": len(lags),
         "daily_p95_ms": {d: round(v, 1) for d, v in daily_p95.items()},
         "lag_p95_s": round(percentile(lags, 0.95), 2) if lags else None,
         "failed_writes": failed_writes,

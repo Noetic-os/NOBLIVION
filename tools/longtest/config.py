@@ -64,6 +64,12 @@ class Params:
     soak_load_factor: int = 10
     soak_burst: int = 20
     retention_days: int = 30
+    run_days: int = 7
+    bench_budget_s: float = 1200.0
+    # An hourly heartbeat is due every 3,500 s, so a clock that drifts by a few seconds
+    # per tick still leaves 24 lines in any 24 hours.
+    heartbeat_s: int = 3500
+    heartbeats_per_day: int = 24
     # pilot sanity (section 12, gate 3)
     sanity_pull_delivery: float = 0.95
     sanity_s2_delivery: float = 0.90

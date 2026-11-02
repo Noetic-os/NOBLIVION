@@ -191,6 +191,39 @@ records limits, hashes, each arm, actual task files and usage. The frozen
 private runner and sanitized event traces support independent review. The
 supplied public deterministic runner verifies mechanics separately.
 
+## Long-run test (tools/longtest)
+
+A zero-token program that compares a build with stock Claude Code memory and with release
+0.1.18 over seven days. It calls no model and no hosted API, opens no live path for writing
+and keeps to loopback. It never starts `claude`.
+
+    cd tools
+    python3 -m longtest.cli init   --run-dir DIR --repo REPO --b0 COMMIT --b1 COMMIT --heldout SET
+    python3 -m longtest.cli freeze --run-dir DIR   # PREREG.md, its hash, the leakage check
+    # from here on, run every command from the frozen copy: DIR/program/tools
+    python3 -m longtest.cli pilot  --run-dir DIR --sizes 30,200,1000,5000,20000 --loop-seconds 600
+    python3 -m longtest.cli units  --run-dir DIR   # writes the two unit files, starts nothing
+
+* `freeze` copies `tools/` to `DIR/program/tools` and stores the hash of the pre-registration and
+  of every program file. `run` refuses to start when either differs, when it does not run from
+  that copy, or when `pilot.json` does not say `all_gates`.
+* The pilot has seven gates (freeze and leakage; zero tokens; sanity at SMALL; every claim has a
+  recorded state; isolation; resources and the 20,000-note index time per build; arm b and the
+  new B1 pool pairs for blind labels) and a short run of the job loop. The files of that loop move
+  to `DIR/pilot-loop/`, so day 1 starts with empty series.
+* Kernel isolation is not assumed. The user service manager of a host may accept
+  `PrivateNetwork=yes` and `IPAddressDeny=any` and not apply them; the run records whether the
+  network is private (`kernel_net_isolated` in `out/sandbox.jsonl`). The socket guard, loaded in
+  every interpreter through `PYTHONPATH`, is the enforced limit, and a try is counted, not hidden.
+* The core unit ends itself after seven 24-hour periods and writes `finished`; both units have
+  `ConditionPathExists=!` on `finished` and `stop`, so neither starts again. `RuntimeMaxSec` is a
+  backstop only. Day 1 begins when the soak store is ready, not at `init`.
+* The daily check scales to the age of the run: the heartbeat rule needs 24 lines once the run is
+  a day old, and one more than its whole hours before that. The error-rate rule of the soak is
+  marked underpowered, not failed, until 765 requests could prove the bound.
+* The nightly replay and the benchmark run in a background thread inside the 01:00 to 06:00
+  window, so a night of hours does not stop the heartbeat, the load or the checks.
+
 ## Scale fixture
 
 `tools/eval/scale_fixture.py` builds synthetic memory folders at 30, 200, 1,000,

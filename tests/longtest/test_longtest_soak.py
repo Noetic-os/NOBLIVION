@@ -177,3 +177,24 @@ def test_evaluate_fails_a_bad_quick_check():
         {"day": DAYS[0], "kind": "resources", "quick_check": "row 3 missing", "rss_mb": 500.0}
     )
     assert not soak.evaluate(rows)["checks"]["quick_check"]
+
+
+def test_a_short_run_is_underpowered_not_failed_on_the_error_rate():
+    short = [r for r in rows_for(DAYS[:1]) if r["kind"] != "query"] + [
+        {"day": DAYS[0], "kind": "query", "ok": True, "status": 200, "ms": 20.0} for _ in range(10)
+    ]
+    got = soak.evaluate(short)
+    assert got["checks"]["error_rate"] and got["error_rate_underpowered"]
+    assert got["pass"], got["checks"]
+    bad = short + [{"day": DAYS[0], "kind": "query", "ok": False, "status": 500, "ms": 5.0}]
+    assert not soak.evaluate(bad)["checks"]["error_rate"]  # one error is a failure at any size
+    assert soak.queries_needed(0.005) == 765
+    assert not soak.evaluate(rows_for(DAYS))["error_rate_underpowered"]
+
+
+def test_a_slow_lag_misses_dr8_but_a_lost_write_fails_a_separate_check():
+    slow = soak.evaluate(rows_for(DAYS, lag=23.0))
+    assert not slow["checks"]["lag_p95"] and slow["checks"]["writes_searchable"]
+    lost = rows_for(DAYS) + [{"day": DAYS[0], "kind": "write", "ok": False, "lag_s": None}]
+    got = soak.evaluate(lost)
+    assert not got["checks"]["writes_searchable"] and got["failed_writes"] == 1

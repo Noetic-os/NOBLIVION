@@ -176,7 +176,7 @@ def test_units_carry_the_limits_and_install_nothing(tmp_path):
         "MemoryMax=12G",
         "TasksMax=64",
         "UMask=0077",
-        "RuntimeMaxSec=7d 2h",
+        "RuntimeMaxSec=7d 6h",
         "UnsetEnvironment=ANTHROPIC_API_KEY",
     ):
         assert line in core, line

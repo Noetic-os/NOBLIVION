@@ -15,11 +15,19 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import live, report, sandbox, soak
+from . import live, realreplay, report, sandbox, soak
 from .buildrunner import Harness, Worker, store_python
 from .config import PARAMS
-from .runner import Run, determinism_hash, replay_all, replay_rows
-from .scheduler import Scheduler
+from .runner import (
+    Run,
+    bench_kept_store,
+    determinism_hash,
+    real_replay,
+    replay_all,
+    replay_rows,
+)
+from .scheduler import Job, Scheduler
+from .util import write_private
 
 
 class Loop:
@@ -39,7 +47,6 @@ class Loop:
         self.sched = Scheduler(run.dir, self.now, params=params)
         self.replay_parallel = replay_parallel
         manifest = run.manifest
-        self.start = dt.datetime.fromisoformat(manifest["created"])
         self.live = live.Live(
             Path(manifest["live"]["config_dir"]),
             Path(manifest["live"]["data_dir"]),
@@ -62,8 +69,24 @@ class Loop:
 
     # -- setup ---------------------------------------------------------------------
 
+    def started(self) -> dt.datetime | None:
+        """When day 1 began: the moment the soak store was ready, kept in the state
+        file so that a restart resumes the same clock. Not the time of ``init``."""
+        text = self.sched.state.get("started")
+        return dt.datetime.fromisoformat(text) if text else None
+
     def day(self) -> int:
-        return (self.now().date() - self.start.astimezone(self.now().tzinfo).date()).days + 1
+        """The run day, in whole 24-hour periods from the start. The heavy window opens
+        once per 24 hours, so every period holds exactly one night."""
+        began = self.started()
+        if began is None:
+            return 1
+        return int((self.now() - began).total_seconds() // 86400) + 1
+
+    def over(self) -> bool:
+        began = self.started()
+        end = began + dt.timedelta(days=self.params.run_days) if began else None
+        return end is not None and self.now() >= end
 
     def setup(self) -> None:
         run, fx = self.run, self.run.fixture()
@@ -72,6 +95,8 @@ class Loop:
             raise SystemExit(f"start check failed: {check}")
         self.guard.install()
         self.sockets.install()
+        self.log = run.dir / "private" / "external_connects.log"
+        self.log_base = sandbox.count_refused(self.log)  # tries before this run began
         live_data = Path(run.manifest["live"]["data_dir"])
         shard = fx.shards(self.soak_size)[0]
         root = run.dir / "stores" / "soak" / f"shard-{shard:02d}"
@@ -90,6 +115,20 @@ class Loop:
         self.base = soak.baseline(self.client, self.folders)
         self.worker = Worker(self.harness)
         self.texts = [fx.prompt_of(q) for q in fx.queries_for(self.soak_size, ["V3"])][:60]
+        if self.started() is None:
+            self.sched.state["started"] = self.now().isoformat(timespec="seconds")
+            self.sched.save()
+        self.run.append(
+            "sandbox",
+            {
+                **self.stamp(),
+                "kernel_net_isolated": sandbox.net_isolated(),
+                "external_connects": 0,
+                "claude_processes": 0,
+                "refused_opens": 0,
+                "refused_writes": 0,
+            },
+        )
 
     def teardown(self) -> None:
         if self.worker:
@@ -175,7 +214,9 @@ class Loop:
             "sandbox",
             {
                 **self.stamp(),
-                "external_connects": self.sockets.refused,
+                "external_connects": self.sockets.refused
+                + sandbox.count_refused(self.log)
+                - self.log_base,
                 "claude_processes": sandbox.claude_processes(os.getpid()),
                 "refused_opens": self.guard.refused_reads,
                 "refused_writes": self.guard.refused_writes,
@@ -183,6 +224,9 @@ class Loop:
         )
 
     def latency_bench(self) -> None:
+        """The nightly benchmark, 20 minutes at most: the prompt hook of B0 and of B1 at
+        every size from 1,000 notes, on the stores that the replay keeps; and the soak
+        store as it is, so that its row carries the churn."""
         assert self.worker
         cwd = "/work/" + self.folders[0].parent.name.replace("-work-", "", 1)
         counter = {"n": 0}
@@ -193,8 +237,16 @@ class Loop:
                 "ms"
             ]
 
-        row = soak.latency_benchmark(call, self.texts, n=100, budget_s=1200)
-        self.run.append("latency", {**self.stamp(), **row, "size": self.soak_size, "build": "B1"})
+        sizes = [s for s in self.run.manifest["sizes"] if s >= 1000]
+        budget = self.params.bench_budget_s
+        each = budget / (1 + 2 * len(sizes))
+        row = soak.latency_benchmark(call, self.texts, n=100, budget_s=each)
+        self.run.append("latency", {**self.stamp(), **row, "size": self.soak_size, "build": "soak"})
+        for size in sizes:
+            for build in ("B0", "B1"):
+                got = bench_kept_store(self.run, build, size, each)
+                if got:
+                    self.run.append("latency", {**self.stamp(), **got})
 
     def replay_nightly(self) -> None:
         """Day 1 and day 7: every scale. Days 2 to 6: SMALL and MEDIUM-1 again, and the
@@ -211,7 +263,19 @@ class Loop:
             day=day,
             parallel=self.replay_parallel,
             python=store_python(Path(self.run.manifest["live"]["data_dir"])),
+            guard_site=self.run.dir / "private" / "guard-site",
         )
+        heldout = self.run.manifest.get("heldout")
+        if heldout:  # arm b: the real prompts, on the real corpus and its fillers
+            levels = [lv for lv in realreplay.LEVELS if lv == 0 or lv in sizes]
+            levels = levels if day in (1, 7) else levels[:2]
+            real_replay(
+                self.run,
+                Path(heldout),
+                levels,
+                day,
+                guard_site=self.run.dir / "private" / "guard-site",
+            )
         rows = replay_rows(self.run, day)
         for size in sizes:
             if size <= 200:
@@ -239,13 +303,67 @@ class Loop:
         try:
             self.setup()
             while not self.sched.stopped() and (end is None or time.monotonic() < end):
-                self.sched.run_due(self.handlers())
+                if self.over():
+                    self.finish()
+                    break
+                self.sched.run_due(self.handlers(), background=True)
                 self.sleep(tick_s)
         finally:
             self.teardown()
+
+    def finish(self) -> None:
+        """Day 7 is over: let a running night end, write the last daily summary and
+        the checks, and leave a ``finished`` file. The unit then ends with status 0 and
+        does not start again."""
+        self.sched.wait()
+        self.heartbeat()
+        self.daily_summary()
+        write_private(self.run.dir / "finished", self.now().isoformat(timespec="seconds") + "\n")
 
 
 def sandbox_program() -> list[Path]:
     from .util import TOOLS
 
     return sorted((TOOLS / "longtest").glob("*.py"))
+
+
+class LocalNet:
+    """The localhost unit: the token-free ``/health`` probe of the live store, every
+    15 minutes. It reads ``store.json`` for the port and nothing else of the live
+    folder. It ends when the core unit has finished or a ``stop`` file exists. Arm e
+    (the local model) is not started here: it needs decision D9 and its own switch."""
+
+    JOBS = (Job("health_probe", 900),)
+
+    def __init__(
+        self,
+        run: Run,
+        now: Callable[[], dt.datetime] | None = None,
+        free_gb: Callable[[Path], float] | None = None,
+    ) -> None:
+        self.run = run
+        self.now = now or (lambda: dt.datetime.now().astimezone())
+        self.sched = Scheduler(
+            run.dir, self.now, free_gb=free_gb, jobs=self.JOBS, state_file="state-localnet.json"
+        )
+        self.data = Path(run.manifest["live"]["data_dir"])
+
+    def probe(self) -> None:
+        body = live.probe_health(self.data)
+        self.run.append(
+            "health",
+            {
+                "ts": self.now().isoformat(timespec="seconds"),
+                "day": self.now().date().isoformat(),
+                "up": body is not None,
+                "ok": bool(body and body.get("ok", True)),
+            },
+        )
+
+    def run_forever(self, max_seconds: float | None = None, tick_s: float = 30.0) -> None:
+        end = time.monotonic() + max_seconds if max_seconds else None
+        while not self.sched.stopped() and not (self.run.dir / "finished").exists():
+            if end is not None and time.monotonic() >= end:
+                break
+            self.sched.run_due({"health_probe": self.probe})
+            time.sleep(tick_s)

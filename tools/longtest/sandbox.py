@@ -327,6 +327,16 @@ def start_check(
     return findings
 
 
+def net_isolated(sys_net: Path = Path("/sys/class/net")) -> bool:
+    """True when the process sees no network device but loopback: the unit setting
+    ``PrivateNetwork`` took effect. A user service manager may accept the setting and
+    ignore it; the run records this value and relies on the socket guard either way."""
+    try:
+        return sorted(p.name for p in Path(sys_net).iterdir()) == ["lo"]
+    except OSError:
+        return False
+
+
 # -- the units ------------------------------------------------------------------------
 
 
@@ -373,12 +383,15 @@ TasksMax=64
 WorkingDirectory={run_dir}
 """
     net = "PrivateNetwork=yes\n" if private_network else ""
+    ends = f"{params.run_days}d 6h"  # the loop ends itself after run_days; this is a backstop
+    gate = f"ConditionPathExists=!{run_dir}/finished\nConditionPathExists=!{run_dir}/stop\n"
     core = f"""[Unit]
 Description=NOBLIVION long-run test, core (no network)
-
+{gate}
 {common}Type=simple
 Restart=on-failure
-RuntimeMaxSec=7d 2h
+RestartSec=60
+RuntimeMaxSec={ends}
 {net}ExecStart={python} -m longtest.cli run --run-dir {run_dir}
 
 [Install]
@@ -386,10 +399,11 @@ WantedBy=default.target
 """
     local = f"""[Unit]
 Description=NOBLIVION long-run test, localhost work only
-
+{gate}
 {common}Type=simple
 Restart=on-failure
-RuntimeMaxSec=7d 2h
+RestartSec=60
+RuntimeMaxSec={ends}
 IPAddressDeny=any
 IPAddressAllow=127.0.0.0/8
 ExecStart={python} -m longtest.cli localnet --run-dir {run_dir}

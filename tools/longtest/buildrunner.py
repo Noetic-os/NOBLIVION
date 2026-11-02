@@ -127,13 +127,21 @@ class Harness:
 
     def prepare(self, fx: Fixture, size: int, shard: int) -> list[Path]:
         folders = copy_shard(fx, size, shard, self.config_dir)
+        self.write_config()
+        return folders
+
+    def prepare_empty(self) -> None:
+        """A harness with the config and the models and no notes yet (arm b copies the
+        real corpus in)."""
+        self.write_config()
+
+    def write_config(self) -> None:
         config = json.loads(
             (self.build / "config" / "config.default.json").read_text(encoding="utf-8")
         )
         write_private(self.data / "config.json", json.dumps(config, indent=1) + "\n")
         if self.models and Path(self.models).is_dir() and not (self.data / "models").exists():
             shutil.copytree(self.models, self.data / "models", symlinks=True)
-        return folders
 
     def start(self, index: bool = True) -> dict[str, Any]:
         import time

@@ -101,7 +101,7 @@ def test_daily_summary_job_runs_once_after_0630(tmp_path):
 # -- status -------------------------------------------------------------------------
 
 
-def make_run(tmp_path, now, beats=24, sandbox_rows=None):
+def make_run(tmp_path, now, beats=24, sandbox_rows=None, old_first=False):
     run = tmp_path / "run"
     (run / "out").mkdir(parents=True)
     (run / "daily").mkdir()
@@ -111,6 +111,10 @@ def make_run(tmp_path, now, beats=24, sandbox_rows=None):
         append_jsonl(
             run / "out" / "heartbeat.jsonl",
             {"ts": (now - dt.timedelta(hours=i, minutes=1)).isoformat()},
+        )
+    if old_first:  # a run that began days ago: the whole day is due
+        append_jsonl(
+            run / "out" / "heartbeat.jsonl", {"ts": (now - dt.timedelta(days=3)).isoformat()}
         )
     for row in sandbox_rows or [
         {"external_connects": 0, "claude_processes": 0, "refused_opens": 0, "refused_writes": 0}
@@ -135,7 +139,7 @@ def test_status_passes_a_healthy_day(tmp_path):
 @pytest.mark.parametrize(
     "name,setup",
     [
-        ("heartbeats_24", dict(beats=20)),
+        ("heartbeats_24", dict(beats=20, old_first=True)),
         ("no_external_connects", dict(sandbox_rows=[{"external_connects": 1}])),
         ("no_claude_process", dict(sandbox_rows=[{"claude_processes": 1}])),
         ("no_refused_open", dict(sandbox_rows=[{"refused_writes": 1}])),
@@ -148,6 +152,79 @@ def test_status_fails_one_item_and_alerts(tmp_path, name, setup):
     got = check(run, now, notify=sent.append)
     assert not got["ok"] and got["failed"] == [name]
     assert (run / "ALERT").exists() and sent and name in sent[0]
+
+
+def test_heartbeat_gate_scales_with_the_age_of_the_run(tmp_path):
+    now = at(6, 30, day=2)
+    young = make_run(tmp_path, now, beats=3)  # a run of two and a half hours
+    assert check(young, now)["checks"]["heartbeats_24"]
+    quiet = tmp_path / "q"
+    quiet.mkdir()
+    ts = [now - dt.timedelta(hours=h) for h in (30, 29, 28)]  # then nothing for 28 hours
+    assert report.heartbeats_needed(ts, now) == 24
+    assert report.heartbeats_needed([], now) == 1
+    assert report.heartbeats_needed([now - dt.timedelta(minutes=5)], now) == 1
+    assert report.heartbeats_needed([now - dt.timedelta(hours=5, minutes=1)], now) == 6
+
+
+def test_hourly_job_leaves_24_lines_in_any_day():
+    job = next(j for j in scheduler.JOBS if j.name == "heartbeat")
+    drift = 8  # seconds lost per tick and handler
+    assert 86400 // (job.every_s + drift) >= 24
+
+
+def test_nightly_job_runs_once_per_night_even_after_a_late_night(tmp_path):
+    clock = {"t": at(1, 5)}
+    s = scheduler.Scheduler(
+        tmp_path, now=lambda: clock["t"], loadavg=lambda: 1.0, free_gb=lambda p: 500.0
+    )
+    job = next(j for j in s.due() if j.name == "replay_nightly")
+    clock["t"] = at(5, 50)
+    s.mark(job, True)  # the night ended late
+    clock["t"] = at(1, 30, day=2)  # next night: less than 24 h after the last end
+    assert "replay_nightly" in {j.name for j in s.due()}
+    clock["t"] = at(23, 0)  # the same evening: not due again
+    assert "replay_nightly" not in {j.name for j in s.due()}
+
+
+def test_heavy_job_runs_in_the_background_and_light_jobs_go_on(tmp_path):
+    import threading
+
+    gate = threading.Event()
+    clock = {"t": at(2)}
+    s = scheduler.Scheduler(
+        tmp_path, now=lambda: clock["t"], loadavg=lambda: 1.0, free_gb=lambda p: 500.0
+    )
+    seen = []
+    handlers = {j.name: (lambda n=j.name: seen.append(n)) for j in scheduler.JOBS}
+    handlers["replay_nightly"] = lambda: (seen.append("replay"), gate.wait(5))
+    done = s.run_due(handlers, background=True)
+    assert "heartbeat" in [n for n, _ in done] and s.busy() == ["replay_nightly"]
+    clock["t"] = at(2, 30)
+    assert "replay_nightly" not in [n for n, _ in s.run_due(handlers, background=True)]
+    gate.set()
+    s.wait(10)
+    assert s.state["jobs"]["replay_nightly"]["runs"] == 1
+
+
+def test_status_reports_a_slow_lag_as_a_note_not_an_alert(tmp_path):
+    now = at(6, 30, day=2)
+    run = make_run(tmp_path, now)
+    day = now.date().isoformat()
+    rows = [
+        {"day": day, "kind": "query", "ok": True, "status": 200, "ms": 30.0},
+        {"day": day, "kind": "write", "ok": True, "lag_s": 23.0},
+        {"day": day, "kind": "drift", "drift": 0},
+    ]
+    for r in rows:
+        append_jsonl(run / "out" / "soak.jsonl", r)
+    got = check(run, now)
+    assert got["ok"], got["failed"]
+    assert got["notes"]["dr8_lag_p95_s"] == 23.0 and not got["notes"]["dr8_lag_rule_holds"]
+    append_jsonl(
+        run / "out" / "soak.jsonl", {"day": day, "kind": "write", "ok": False, "lag_s": None}
+    )
+    assert check(run, now)["failed"] == ["soak_rules"]
 
 
 def test_status_fails_a_changed_plugin_version_and_low_disk(tmp_path):

@@ -14,7 +14,9 @@ import datetime as dt
 import json
 import os
 import shutil
+import threading
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,7 +34,7 @@ class Job:
 
 
 JOBS = (
-    Job("heartbeat", 3600),
+    Job("heartbeat", PARAMS.heartbeat_s),
     Job("live_pass", 900),
     Job("soak_load", 600),
     Job("soak_churn", 900),
@@ -43,6 +45,13 @@ JOBS = (
     Job("latency_bench", 86400, heavy=True),
     Job("daily_summary", 86400, daily_at="06:30"),
 )
+
+
+def window_start(now: dt.datetime, window: str = "01:00-06:00") -> dt.datetime:
+    """The latest start of the heavy window at or before ``now``."""
+    start = dt.time.fromisoformat(window.split("-")[0])
+    at = dt.datetime.combine(now.date(), start, now.tzinfo)
+    return at if now >= at else at - dt.timedelta(days=1)
 
 
 def in_window(now: dt.datetime, window: str = "01:00-06:00") -> bool:
@@ -70,12 +79,16 @@ class Scheduler:
         free_gb: Callable[[Path], float] | None = None,
         params: Params = PARAMS,
         jobs: tuple[Job, ...] = JOBS,
+        state_file: str = "state.json",
     ) -> None:
         self.run_dir = Path(run_dir)
         self.now, self.loadavg = now, loadavg
         self.free_gb = free_gb or (lambda p: shutil.disk_usage(p).free / 1e9)
         self.params, self.jobs = params, jobs
-        self.state_path = self.run_dir / "state.json"
+        self.state_path = self.run_dir / state_file
+        self._lock = threading.RLock()
+        self._running: dict[str, Future[tuple[bool, str]]] = {}
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="heavy")
         self.state = load_state(self.state_path)
 
     def stopped(self) -> bool:
@@ -100,7 +113,12 @@ class Scheduler:
         if job.daily_at:
             at = dt.datetime.combine(now.date(), dt.time.fromisoformat(job.daily_at), now.tzinfo)
             return now >= at and (last_t is None or last_t < at)
-        return last_t is None or (now - last_t).total_seconds() >= job.every_s
+        if last_t is None:
+            return True
+        if job.heavy and job.every_s >= 86400:
+            # once per night: a night that starts late must not push the next one out
+            return last_t < window_start(now)
+        return (now - last_t).total_seconds() >= job.every_s
 
     def due(self) -> list[Job]:
         now = self.now()
@@ -113,22 +131,50 @@ class Scheduler:
         }
 
     def mark(self, job: Job, ok: bool, note: str = "") -> None:
-        entry = self.state["jobs"].setdefault(job.name, {"runs": 0, "failed": 0})
-        entry.update(last=self.now().isoformat(timespec="seconds"), ok=ok, note=note)
-        entry["runs"] += 1
-        entry["failed"] += 0 if ok else 1
-        save_state(self.state_path, self.state)
+        with self._lock:
+            entry = self.state["jobs"].setdefault(job.name, {"runs": 0, "failed": 0})
+            entry.update(last=self.now().isoformat(timespec="seconds"), ok=ok, note=note)
+            entry["runs"] += 1
+            entry["failed"] += 0 if ok else 1
+            save_state(self.state_path, self.state)
 
-    def run_due(self, handlers: Mapping[str, Callable[[], Any]]) -> list[tuple[str, bool]]:
+    def save(self) -> None:
+        with self._lock:
+            save_state(self.state_path, self.state)
+
+    def _execute(self, job: Job, handler: Callable[[], Any]) -> tuple[bool, str]:
+        try:
+            handler()
+            ok, note = True, ""
+        except Exception as exc:  # noqa: BLE001 - one job must not stop the run
+            ok, note = False, type(exc).__name__
+        self.mark(job, ok, note)
+        return ok, note
+
+    def busy(self) -> list[str]:
+        """Heavy jobs that run in the background now."""
+        self._running = {n: f for n, f in self._running.items() if not f.done()}
+        return sorted(self._running)
+
+    def wait(self, timeout: float | None = None) -> None:
+        for future in list(self._running.values()):
+            future.result(timeout)
+        self.busy()
+
+    def run_due(
+        self, handlers: Mapping[str, Callable[[], Any]], background: bool = False
+    ) -> list[tuple[str, bool]]:
         """Run every due job once. A handler that raises marks the job failed; the
-        run goes on, and the daily check reports it."""
+        run goes on, and the daily check reports it. With ``background`` a heavy job
+        runs in its own thread, so a replay of hours does not stop the heartbeat, the
+        load and the checks; one heavy job runs at a time."""
         done = []
         for job in self.due():
-            try:
-                handlers[job.name]()
-                ok, note = True, ""
-            except Exception as exc:  # noqa: BLE001 - one job must not stop the run
-                ok, note = False, type(exc).__name__
-            self.mark(job, ok, note)
-            done.append((job.name, ok))
+            if background and job.heavy:
+                if not self.busy():
+                    self._running[job.name] = self._pool.submit(
+                        self._execute, job, handlers[job.name]
+                    )
+                continue
+            done.append((job.name, self._execute(job, handlers[job.name])[0]))
         return done
