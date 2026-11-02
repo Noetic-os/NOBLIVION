@@ -303,16 +303,16 @@ def replay_task(
     reset_volatile(h.root)
     h.prepare(fx, size, shard)
     started = time.monotonic()
-    health = h.start()
-    info = {
-        "build": build,
-        "size": size,
-        "shard": shard,
-        "memories": health.get("memories"),
-        "index_s": h.timing["index_s"],
-        "ready_s": h.timing["ready_s"],
-    }
+    info: dict[str, Any] = {"build": build, "size": size, "shard": shard}
     try:
+        # the start is inside the try: a store that is not ready in time must be
+        # stopped, or it keeps embedding for hours and holds the lock of the next try
+        health = h.start()
+        info.update(
+            memories=health.get("memories"),
+            index_s=h.timing["index_s"],
+            ready_s=h.timing["ready_s"],
+        )
         rows = replay.run_shard(fx, size, shard, h, build, variants, limit)
         # The rows of a task go in together, with a marker, so a restart never meets
         # half a task: a task without a marker is run again.

@@ -244,3 +244,30 @@ def test_soak_store_is_seeded_from_the_kept_replay_store_once(tmp_path, monkeypa
     assert (data / "noblivion.db").exists()  # the replay store stays
     assert not runner.seed_soak_store(run, soak, 20000)  # already there: left alone
     assert not runner.seed_soak_store(run, run.dir / "stores" / "x", 5000)  # no source
+
+
+def test_a_store_that_is_not_ready_is_stopped_and_not_left_running(tmp_path, monkeypatch):
+    run = run_folder(tmp_path)
+    stopped = []
+
+    class Fx:
+        pass
+
+    class H:
+        def __init__(self, *a, **kw):
+            self.root = tmp_path / "root"
+            self.timing = {}
+
+        def prepare(self, *a):
+            pass
+
+        def start(self):
+            raise RuntimeError("store not ready after 900 s")
+
+        def stop(self):
+            stopped.append(1)
+
+    monkeypatch.setattr(runner, "Harness", H)
+    with pytest.raises(RuntimeError, match="not ready"):
+        runner.replay_task(run, Fx(), "B1", 20000, 0, "py", None, None, None, 0, None, False, 900.0)
+    assert stopped == [1]
