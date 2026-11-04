@@ -80,9 +80,11 @@ def write_pool_export(pairs: Sequence[Mapping[str, str]], path: Path) -> None:
     write_private(Path(path), "".join(json.dumps(p, sort_keys=True) + "\n" for p in pairs))
 
 
-def open_sealed_once(directory: Path, run_dir: Path, day: int, final_day: int = 5) -> tuple[list, dict]:
-    """The sealed split, on the last day (``final_day``) and once. The opening is written to the run folder
-    and to the set's own log, so a second call is refused."""
+def open_sealed_once(
+    directory: Path, run_dir: Path, day: int, final_day: int = 5
+) -> tuple[list, dict]:
+    """The sealed split, on the last day (``final_day``) and once. The opening is written
+    to the run folder and to the set's own log, so a second call is refused."""
     marker = Path(run_dir) / "sealed-opened.json"
     if day < final_day:
         raise SystemExit(f"the sealed split opens on day {final_day}")
