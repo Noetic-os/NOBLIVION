@@ -78,18 +78,18 @@ def test_sealed_split_is_closed_by_default(tmp_path):
         h.load_split(tmp_path, "sealed")
 
 
-def test_sealed_opens_on_day_7_once_and_is_logged(tmp_path):
+def test_sealed_opens_on_the_last_day_once_and_is_logged(tmp_path):
     make_set(tmp_path)
     run = tmp_path / "run"
     run.mkdir()
     with pytest.raises(SystemExit):
         labels.open_sealed_once(tmp_path, run, 3)
-    groups, key = labels.open_sealed_once(tmp_path, run, 7)
+    groups, key = labels.open_sealed_once(tmp_path, run, 5)
     assert [g["group"] for g in groups] == ["g3"] and "g3" in key
     assert (run / "sealed-opened.json").exists()
     assert (tmp_path / "sealed-opened.jsonl").exists()
     with pytest.raises(SystemExit):
-        labels.open_sealed_once(tmp_path, run, 7)
+        labels.open_sealed_once(tmp_path, run, 5)
 
 
 def test_pool_additions_and_merge():

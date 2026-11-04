@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The job loop of the 7-day run: handlers for the scheduler.
+"""The job loop of the long run: handlers for the scheduler.
 
 Core unit: the soak store of B1 (arm d), the live pass (arm a, files only), the
 sandbox watch, the nightly replay (arms b and c) and the daily check. The handlers
@@ -256,12 +256,12 @@ class Loop:
                     self.run.append("latency", {**self.stamp(), **got})
 
     def replay_nightly(self) -> None:
-        """Day 1 and day 7: every scale. Days 2 to 6: SMALL and MEDIUM-1 again, and the
+        """Day 1 and the last day: every scale. The days between: SMALL and MEDIUM-1 again, and the
         outcome hash of each, which must equal the hash of day 1. A failed arm does not
         skip the next arm or the hashes; its error is raised after them, so the job fails."""
         day = self.day()
         sizes = [s for s in self.run.manifest["sizes"]]
-        if 1 < day < 7:
+        if 1 < day < self.params.run_days:
             sizes = [s for s in sizes if s <= 200]
         errors: list[Exception] = []
         try:
@@ -280,7 +280,7 @@ class Loop:
         heldout = self.run.manifest.get("heldout")
         if heldout:  # arm b: the real prompts, on the real corpus and its fillers
             levels = [lv for lv in realreplay.LEVELS if lv == 0 or lv in sizes]
-            levels = levels if day in (1, 7) else levels[:2]
+            levels = levels if day in (1, self.params.run_days) else levels[:2]
             try:
                 real_replay(
                     self.run,
@@ -331,7 +331,7 @@ class Loop:
             self.teardown()
 
     def finish(self) -> None:
-        """Day 7 is over: let a running night end, write the last daily summary and
+        """The last day is over: let a running night end, write the last daily summary and
         the checks, and leave a ``finished`` file. The unit then ends with status 0 and
         does not start again."""
         self.sched.wait()

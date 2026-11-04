@@ -135,7 +135,7 @@ def test_run_day_counts_from_the_start_of_the_soak_not_from_init(tmp_path):
     lp = loop.Loop(run, 30, now=clock, sleep=lambda s: None)
     assert lp.day() == 1 and not lp.over()
     lp.sched.state["started"] = clock().isoformat()
-    for hours, day, over in ((0, 1, False), (23, 1, False), (24, 2, False), (167, 7, False)):
+    for hours, day, over in ((0, 1, False), (23, 1, False), (24, 2, False), (119, 5, False)):
         clock.t = dt.datetime(2026, 11, 3, 14, tzinfo=TZ) + dt.timedelta(hours=hours)
         assert (lp.day(), lp.over()) == (day, over)
     clock.t += dt.timedelta(hours=1)

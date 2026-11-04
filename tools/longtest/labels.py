@@ -4,7 +4,7 @@
 The set lives outside the repository. This module reads it with
 ``heldout.load_split`` and ``heldout.load_labels`` and with nothing else: it never
 opens the key files, the group file or the manifest by name. The default split is
-``dev``. The sealed split opens once, on day 7, through ``open_sealed_once``, which
+``dev``. The sealed split opens once, on the last day, through ``open_sealed_once``, which
 logs the opening; it refuses a second call.
 
 What is built here:
@@ -80,12 +80,12 @@ def write_pool_export(pairs: Sequence[Mapping[str, str]], path: Path) -> None:
     write_private(Path(path), "".join(json.dumps(p, sort_keys=True) + "\n" for p in pairs))
 
 
-def open_sealed_once(directory: Path, run_dir: Path, day: int) -> tuple[list, dict]:
-    """The sealed split, on day 7 and once. The opening is written to the run folder
+def open_sealed_once(directory: Path, run_dir: Path, day: int, final_day: int = 5) -> tuple[list, dict]:
+    """The sealed split, on the last day (``final_day``) and once. The opening is written to the run folder
     and to the set's own log, so a second call is refused."""
     marker = Path(run_dir) / "sealed-opened.json"
-    if day < 7:
-        raise SystemExit("the sealed split opens on day 7")
+    if day < final_day:
+        raise SystemExit(f"the sealed split opens on day {final_day}")
     if marker.exists():
         raise SystemExit("the sealed split was opened already")
     stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
