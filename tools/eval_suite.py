@@ -531,6 +531,21 @@ def agent_of(path: Path) -> str:
 # -- the scratch store -----------------------------------------------------------
 
 
+def tail(text: str, lines: int = 10) -> str:
+    """The last lines of a process output, on one line, for an error message."""
+    return " | ".join(line.strip() for line in text.splitlines()[-lines:] if line.strip())
+
+
+def file_tail(path: Path, lines: int = 10, size: int = 4096) -> str:
+    """``tail`` of a log file. Only the end is read: a store log grows for days."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, fh.seek(0, os.SEEK_END) - size))
+            return tail(fh.read().decode("utf-8", "replace"), lines)
+    except OSError:
+        return "(no log)"
+
+
 class Store:
     """A store process of its own, on the scratch data folder."""
 
@@ -558,7 +573,7 @@ class Store:
         if run.returncode == 3 and "older than" in run.stderr:
             return False
         if run.returncode not in (0, 1):
-            raise RuntimeError(f"noblivion index exited {run.returncode}")
+            raise RuntimeError(f"noblivion index exited {run.returncode}: {tail(run.stderr)}")
         return True
 
     def start(self, env: Mapping[str, str]) -> dict:
@@ -617,7 +632,8 @@ class Store:
         last = None
         while time.monotonic() < end:
             if self.proc is not None and self.proc.poll() is not None:
-                raise RuntimeError(f"store exited {self.proc.returncode}")
+                log = self.data / "suite-store.out"
+                raise RuntimeError(f"store exited {self.proc.returncode}: {file_tail(log)}")
             health = self.health()
             if health and health.get("index_state") == "idle":
                 embedding = health.get("embedding") or {}

@@ -400,7 +400,8 @@ def replay_all(
     guard_site: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Arms b and c over the synthetic lessons: every build and every shard, plus the
-    stock arms. Rows go to ``out/replay.jsonl``; returns one info row per task."""
+    stock arms. Rows go to ``out/replay.jsonl``; returns one info row per task. A task
+    that fails does not stop the others: one ``RuntimeError`` at the end names each."""
     fx = run.fixture()
     live_data = Path(run.manifest["live"]["data_dir"])
     python = python or store_python(live_data)
@@ -442,8 +443,18 @@ def replay_all(
             )
             for b, s, sh in jobs
         ]
-        for f in futures:
-            infos.append(f.result())
+        failed = []
+        for job, f in zip(jobs, futures, strict=True):
+            try:
+                infos.append(f.result())
+            except Exception as exc:  # noqa: BLE001 - the other tasks still count
+                failed.append((job, exc))
+    if failed:
+        names = ", ".join(f"{b} size {s} shard {sh}" for (b, s, sh), _ in failed)
+        why = "; ".join(f"{b}/{s}/{sh}: {type(e).__name__}: {e}" for (b, s, sh), e in failed)
+        raise RuntimeError(
+            f"{len(failed)} of {len(jobs)} replay tasks failed ({names}): {why}"
+        ) from failed[0][1]
     return infos
 
 

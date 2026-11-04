@@ -359,13 +359,35 @@ def make_bin(folder: Path) -> Path:
     return folder
 
 
+def tasks_max(cpus: int | None = None) -> int:
+    """The task limit of the units: each store has an embedding thread pool of one thread
+    per CPU, so a fixed 64 failed thread starts on a 32-CPU host. It still stops a fork bomb."""
+    return max(1024, 32 * (cpus or os.cpu_count() or 1))
+
+
+def unit_word(text: str) -> str:
+    """``text`` as one word of an ``ExecStart`` line: double quotes with C escapes, and
+    ``%`` and ``$`` doubled, because systemd expands specifiers and variables."""
+    if any(ord(c) < 32 for c in text):
+        raise ValueError("a unit word may not hold a control character")
+    text = text.replace("\\", "\\\\").replace('"', '\\"')
+    return '"' + text.replace("%", "%%").replace("$", "$$") + '"'
+
+
 def render_units(
-    run_dir: Path, python: str, tools_dir: Path, params=PARAMS, private_network: bool = True
+    run_dir: Path,
+    python: str,
+    tools_dir: Path,
+    params=PARAMS,
+    private_network: bool = True,
+    notify_cmd: str = "",
 ) -> dict[str, str]:
     """The text of the two systemd user units. Nothing is written or started.
     ``private_network=False`` leaves ``PrivateNetwork`` out for a host whose user
     manager cannot set up a network namespace; the socket guard that the units put on
-    ``PYTHONPATH`` (``write_guard_site``) then keeps the core unit off the network."""
+    ``PYTHONPATH`` (``write_guard_site``) then keeps the core unit off the network.
+    ``notify_cmd`` goes on the ``run`` line as ``--notify-cmd``: the command that hears
+    of an alert."""
     unset = " ".join(DENY_EXACT[:4] + ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"))
     common = f"""[Service]
 Environment=PATH={run_dir}/bin
@@ -379,10 +401,11 @@ CPUWeight=10
 CPUQuota={params.cpu_quota}
 IOSchedulingClass=idle
 MemoryMax={params.memory_max}
-TasksMax=64
+TasksMax={tasks_max()}
 WorkingDirectory={run_dir}
 """
     net = "PrivateNetwork=yes\n" if private_network else ""
+    notify = f" --notify-cmd {unit_word(notify_cmd)}" if notify_cmd else ""
     ends = f"{params.run_days}d 6h"  # the loop ends itself after run_days; this is a backstop
     gate = f"ConditionPathExists=!{run_dir}/finished\nConditionPathExists=!{run_dir}/stop\n"
     core = f"""[Unit]
@@ -392,7 +415,7 @@ Description=NOBLIVION long-run test, core (no network)
 Restart=on-failure
 RestartSec=60
 RuntimeMaxSec={ends}
-{net}ExecStart={python} -m longtest.cli run --run-dir {run_dir}
+{net}ExecStart={python} -m longtest.cli run --run-dir {run_dir}{notify}
 
 [Install]
 WantedBy=default.target

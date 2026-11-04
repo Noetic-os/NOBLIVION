@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import shlex
+import shutil
+import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -253,32 +257,40 @@ class Loop:
 
     def replay_nightly(self) -> None:
         """Day 1 and day 7: every scale. Days 2 to 6: SMALL and MEDIUM-1 again, and the
-        outcome hash of each, which must equal the hash of day 1."""
+        outcome hash of each, which must equal the hash of day 1. A failed arm does not
+        skip the next arm or the hashes; its error is raised after them, so the job fails."""
         day = self.day()
         sizes = [s for s in self.run.manifest["sizes"]]
         if 1 < day < 7:
             sizes = [s for s in sizes if s <= 200]
-        replay_all(
-            self.run,
-            sizes,
-            None,
-            None,
-            day=day,
-            parallel=self.replay_parallel,
-            python=store_python(Path(self.run.manifest["live"]["data_dir"])),
-            guard_site=self.run.dir / "private" / "guard-site",
-        )
+        errors: list[Exception] = []
+        try:
+            replay_all(
+                self.run,
+                sizes,
+                None,
+                None,
+                day=day,
+                parallel=self.replay_parallel,
+                python=store_python(Path(self.run.manifest["live"]["data_dir"])),
+                guard_site=self.run.dir / "private" / "guard-site",
+            )
+        except Exception as exc:  # noqa: BLE001 - raised again below
+            errors.append(exc)
         heldout = self.run.manifest.get("heldout")
         if heldout:  # arm b: the real prompts, on the real corpus and its fillers
             levels = [lv for lv in realreplay.LEVELS if lv == 0 or lv in sizes]
             levels = levels if day in (1, 7) else levels[:2]
-            real_replay(
-                self.run,
-                Path(heldout),
-                levels,
-                day,
-                guard_site=self.run.dir / "private" / "guard-site",
-            )
+            try:
+                real_replay(
+                    self.run,
+                    Path(heldout),
+                    levels,
+                    day,
+                    guard_site=self.run.dir / "private" / "guard-site",
+                )
+            except Exception as exc:  # noqa: BLE001 - raised again below
+                errors.append(exc)
         rows = replay_rows(self.run, day)
         for size in sizes:
             if size <= 200:
@@ -292,6 +304,10 @@ class Loop:
                         "hash": determinism_hash(rows, size),
                     },
                 )
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise RuntimeError("; ".join(f"{type(e).__name__}: {e}" for e in errors))
 
     def daily_summary(self) -> None:
         path = report.daily_summary(self.run.dir, self.now())
@@ -322,6 +338,24 @@ class Loop:
         self.heartbeat()
         self.daily_summary()
         write_private(self.run.dir / "finished", self.now().isoformat(timespec="seconds") + "\n")
+
+
+def command_notifier(command: str, timeout_s: float = 30.0) -> Callable[[str], None]:
+    """``notify`` of the loop: runs ``command`` with the alert text as its last argument,
+    without a shell. A failure is written to stderr (the journal of the unit) and the run
+    goes on. The core unit has no network and a PATH of three tools: give an absolute
+    path to a program that hands the text on without the network."""
+    argv = shlex.split(command)
+    if not argv or shutil.which(argv[0]) is None:
+        raise SystemExit(f"notify command not found: {command!r}")
+
+    def notify(text: str) -> None:
+        try:
+            subprocess.run([*argv, text], stdin=subprocess.DEVNULL, timeout=timeout_s, check=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"notify command failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    return notify
 
 
 def sandbox_program() -> list[Path]:

@@ -174,7 +174,7 @@ def test_units_carry_the_limits_and_install_nothing(tmp_path):
         "CPUQuota=400%",
         "IOSchedulingClass=idle",
         "MemoryMax=12G",
-        "TasksMax=64",
+        f"TasksMax={sandbox.tasks_max()}",
         "UMask=0077",
         "RuntimeMaxSec=7d 6h",
         "UnsetEnvironment=ANTHROPIC_API_KEY",
@@ -190,6 +190,26 @@ def test_units_carry_the_limits_and_install_nothing(tmp_path):
     assert "ExecStart=/usr/bin/python3 -m longtest.cli run" in plain["nob-longtest.service"]
     assert f"PATH={tmp_path}/bin" in core
     assert not list(tmp_path.iterdir())
+
+
+def test_task_limit_is_sized_to_the_cpus():
+    """Each store has a thread pool of one thread per CPU: 64 tasks failed on 32 CPUs."""
+    assert sandbox.tasks_max(32) == 1024
+    assert sandbox.tasks_max(64) == 2048
+    assert sandbox.tasks_max(1) == 1024
+
+
+def test_notify_command_goes_on_the_run_line_as_one_word(tmp_path):
+    plain = sandbox.render_units(tmp_path, "/usr/bin/python3", Path("/opt/tools"))
+    assert "--notify-cmd" not in "".join(plain.values())
+    units = sandbox.render_units(
+        tmp_path, "/usr/bin/python3", Path("/opt/tools"), notify_cmd='/opt/say --to "a b" 5%$x'
+    )
+    core = units["nob-longtest.service"]
+    assert f'run --run-dir {tmp_path} --notify-cmd "/opt/say --to \\"a b\\" 5%%$$x"\n' in core
+    assert "--notify-cmd" not in units["nob-longtest-localnet.service"]
+    with pytest.raises(ValueError):
+        sandbox.unit_word("a\nb")
 
 
 def test_process_table_falls_back_to_ps_without_proc(tmp_path):

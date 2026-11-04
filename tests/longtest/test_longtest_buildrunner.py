@@ -98,6 +98,41 @@ def test_worker_writes_nothing_outside_the_harness(tmp_path):
     assert all(str(tmp_path / "root") in str(p) for p in new)
 
 
+def test_a_dead_worker_names_its_exit_code_and_its_log(tmp_path, monkeypatch):
+    dying = tmp_path / "dying.py"
+    dying.write_text(
+        "import sys\nsys.stderr.write('PosixThread\\nResource temporarily unavailable\\n')\n"
+        "sys.exit(134)\n"
+    )
+    monkeypatch.setattr(buildrunner, "WORKER", dying)
+    h = buildrunner.Harness("B1", tmp_path / "b1", tmp_path / "root", sys.executable, None)
+    with pytest.raises(RuntimeError, match=r"exited 134: PosixThread \| Resource temporarily"):
+        buildrunner.Worker(h)
+    assert oct((h.root / "worker.err").stat().st_mode & 0o777) == "0o600"
+
+
+def test_a_store_that_exits_names_the_end_of_its_log(tmp_path):
+    st = buildrunner.suite()
+    log = tmp_path / "suite-store.out"
+    log.write_text("".join(f"line {i}\n" for i in range(5000)) + "terminate called\n")
+    store = st.Store(tmp_path, sys.executable, tmp_path, 5.0)
+    store.proc = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
+    store.proc.wait()
+    with pytest.raises(RuntimeError, match=r"store exited 3: line 4991 \|.*\| terminate called$"):
+        store.wait_ready()
+    assert st.file_tail(tmp_path / "absent") == "(no log)"
+
+
+def test_a_failed_index_names_the_end_of_its_stderr(tmp_path):
+    src = tmp_path / "src" / "noblivion"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text("")
+    (src / "__main__.py").write_text("import sys\nsys.stderr.write('disk full\\n')\nsys.exit(2)\n")
+    store = buildrunner.suite().Store(tmp_path, sys.executable, tmp_path / "src", 30.0)
+    with pytest.raises(RuntimeError, match="noblivion index exited 2: disk full"):
+        store.index({})
+
+
 def test_snapshot_and_changed_files(tmp_path):
     (tmp_path / "a").write_text("1")
     before = runner.snapshot_tree(tmp_path)

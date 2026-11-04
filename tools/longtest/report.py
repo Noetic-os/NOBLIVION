@@ -17,6 +17,7 @@ from typing import Any
 
 from . import stats
 from .config import PARAMS, SCALES, Params
+from .scheduler import window_start
 from .util import json_text, read_jsonl, sha256_file, write_private
 
 PRIMARY_CLAIMS = ("C1", "C3")
@@ -151,6 +152,15 @@ def heartbeats_needed(
     return max(1, min(params.heartbeats_per_day, 1 + hours))
 
 
+def night_day(started: str | None, now: dt.datetime) -> int:
+    """The run day of the last night, counted as ``Loop.day`` counts: the day that holds
+    the start of the latest heavy window. 0 before the first night of the run."""
+    if not started:
+        return 0
+    began = dt.datetime.fromisoformat(started)
+    return max(0, int((window_start(now) - began).total_seconds() // 86400) + 1)
+
+
 def status(
     run_dir: Path,
     now: dt.datetime,
@@ -183,6 +193,10 @@ def status(
         for r in det
         if r["day"] > 1 and first.get((r["scale"], r["part"]), r["hash"]) != r["hash"]
     ]
+    # No row to compare is no proof: from the second night on, day 1 and a later day
+    # must both have a row.
+    compared = bool(first) and any(r["day"] > 1 for r in det)
+    unmeasured = night_day(state.get("started"), now) >= 2 and not compared
     free = (free_gb or (lambda p: shutil.disk_usage(p).free / 1e9))(run_dir)
     day = now.date().isoformat()
     failed_jobs = [
@@ -196,7 +210,7 @@ def status(
         "no_refused_open": all(
             r.get("refused_opens", 0) == 0 and r.get("refused_writes", 0) == 0 for r in sandbox
         ),
-        "determinism_same": not mismatch,
+        "determinism_same": not mismatch and not unmeasured,
         "free_disk": free >= params.min_free_gb,
         "run_folder_size": run_dir_size_gb(run_dir) <= (plan_gb or params.run_folder_gb),
         "plugin_version_same": plugin_version is None

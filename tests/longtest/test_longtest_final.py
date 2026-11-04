@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import shlex
+import sys
 from pathlib import Path
 
 import longtest_path  # noqa: F401 - puts tools on the path
@@ -289,3 +291,104 @@ def test_fillers_go_into_the_project_of_the_session(tmp_path):
         "b.md",
     ]
     assert realreplay.session_project({"-a": 1, "-b": 3}) == "-b"
+
+
+def test_one_failed_replay_task_does_not_hide_the_others(tmp_path, monkeypatch):
+    run = run_folder(tmp_path)
+
+    class Fx:
+        def shards(self, size):
+            return [0, 1]
+
+        def shard_dir(self, size, shard):
+            return tmp_path
+
+    monkeypatch.setattr(runner.Run, "fixture", lambda self: Fx())
+    monkeypatch.setattr(runner.replay, "run_stock", lambda *a: [])
+    ran = []
+
+    def task(run, fx, build, size, shard, *rest):
+        ran.append((build, shard))
+        if (build, shard) in (("B0", 1), ("B1", 0)):
+            raise RuntimeError(f"store exited -6: {build}")
+        return {}
+
+    monkeypatch.setattr(runner, "replay_task", task)
+    with pytest.raises(RuntimeError) as err:
+        runner.replay_all(run, [30], None, None, python="py", models=tmp_path)
+    assert sorted(ran) == [("B0", 0), ("B0", 1), ("B1", 0), ("B1", 1)]
+    text = str(err.value)
+    assert text.startswith("2 of 4 replay tasks failed (B1 size 30 shard 0, B0 size 30 shard 1)")
+    assert "store exited -6: B0" in text and "store exited -6: B1" in text
+
+
+def test_a_failed_replay_still_runs_arm_b_and_writes_the_hashes(tmp_path, monkeypatch):
+    run = run_folder(tmp_path)
+    run.save_manifest({**run.manifest, "sizes": [30, 200], "heldout": str(tmp_path / "h")})
+    lp = loop.Loop(run, 30, now=Clock(dt.datetime(2026, 11, 3, 2, tzinfo=TZ)))
+    arm_b = []
+
+    def replay_all(*a, **kw):
+        raise RuntimeError("replay failed")
+
+    monkeypatch.setattr(loop, "replay_all", replay_all)
+    monkeypatch.setattr(loop, "real_replay", lambda *a, **kw: arm_b.append(1))
+    with pytest.raises(RuntimeError, match="^replay failed$"):
+        lp.replay_nightly()
+    assert arm_b == [1]
+    rows = [json.loads(line) for line in (run.out / "determinism.jsonl").read_text().splitlines()]
+    assert [r["scale"] for r in rows] == [30, 200]
+
+    def real_replay(*a, **kw):
+        raise ValueError("arm b failed")
+
+    monkeypatch.setattr(loop, "real_replay", real_replay)
+    with pytest.raises(RuntimeError, match="replay failed; ValueError: arm b failed"):
+        lp.replay_nightly()
+    assert len((run.out / "determinism.jsonl").read_text().splitlines()) == 4
+
+
+def say_script(tmp_path):
+    script = tmp_path / "say.py"
+    script.write_text("import sys\nopen(sys.argv[1], 'a').write(sys.argv[-1])\n")
+    return f"{shlex.quote(sys.executable)} {script} {tmp_path / 'said'}"
+
+
+def test_notify_command_gets_the_alert_and_a_failure_is_only_logged(tmp_path, capsys):
+    notify = loop.command_notifier(say_script(tmp_path))
+    notify("long-run test: jobs_ran")
+    assert (tmp_path / "said").read_text() == "long-run test: jobs_ran"
+    py = shlex.quote(sys.executable)
+    loop.command_notifier(f"{py} -c 'raise SystemExit(4)'")("x")
+    loop.command_notifier(f"{py} -c 'import time; time.sleep(5)'", timeout_s=0.2)("x")
+    err = capsys.readouterr().err
+    assert "CalledProcessError" in err and "TimeoutExpired" in err
+    with pytest.raises(SystemExit):
+        loop.command_notifier("/no/such/program")
+
+
+def test_run_passes_the_notify_command_to_the_loop(tmp_path, monkeypatch):
+    run = run_folder(tmp_path)
+    (run.dir / "pilot.json").write_text(json.dumps({"all_gates": True}))
+    monkeypatch.setattr(cli, "verify_frozen", lambda run: [])
+    got = {}
+
+    class FakeLoop:
+        def __init__(self, run, soak_size, notify=None):
+            got["notify"] = notify
+
+        def run_forever(self, max_seconds):
+            pass
+
+    monkeypatch.setattr(loop, "Loop", FakeLoop)
+    cli.main(["run", "--run-dir", str(run.dir), "--notify-cmd", say_script(tmp_path)])
+    got["notify"]("ALERT")
+    assert (tmp_path / "said").read_text() == "ALERT"
+    cli.main(["run", "--run-dir", str(run.dir)])
+    assert got["notify"] is None
+
+
+def test_units_command_puts_the_notify_command_in_the_core_unit(tmp_path, capsys):
+    cli.main(["units", "--run-dir", str(tmp_path), "--notify-cmd", "/usr/bin/logger -t nob"])
+    core = (tmp_path / "units" / "nob-longtest.service").read_text()
+    assert '--notify-cmd "/usr/bin/logger -t nob"' in core

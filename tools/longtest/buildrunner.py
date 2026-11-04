@@ -189,25 +189,40 @@ class Worker:
         self.timeout_s = timeout_s
         env = harness.environ()
         env["PYTHONPATH"] = harness.pythonpath(TOOLS)
-        self.proc = subprocess.Popen(
-            [harness.python, str(WORKER)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            env=env,
-            text=True,
-            bufsize=1,
-            cwd=str(harness.root),
-        )
+        # The worker's stderr (a traceback, a crash of the model runtime) goes to a log,
+        # so a worker that dies can say why.
+        self.log = harness.root / "worker.err"
+        log = os.open(self.log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            self.proc = subprocess.Popen(
+                [harness.python, str(WORKER)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=log,
+                env=env,
+                text=True,
+                bufsize=1,
+                cwd=str(harness.root),
+            )
+        finally:
+            os.close(log)
         self.call("init", build=str(harness.build), config_dir=str(harness.config_dir))
 
     def call(self, op: str, **args: Any) -> dict[str, Any]:
         assert self.proc.stdin and self.proc.stdout
-        self.proc.stdin.write(json.dumps({"op": op, **args}) + "\n")
-        self.proc.stdin.flush()
-        line = self.proc.stdout.readline()
+        try:
+            self.proc.stdin.write(json.dumps({"op": op, **args}) + "\n")
+            self.proc.stdin.flush()
+            line = self.proc.stdout.readline()
+        except BrokenPipeError:
+            line = ""
         if not line:
-            raise RuntimeError(f"worker of {self.harness.name} exited {self.proc.poll()}")
+            try:
+                code = self.proc.wait(5)
+            except subprocess.TimeoutExpired:
+                code = None
+            tail = suite().file_tail(self.log)
+            raise RuntimeError(f"worker of {self.harness.name} exited {code}: {tail}")
         return json.loads(line)
 
     def close(self) -> None:

@@ -5,12 +5,13 @@
     python -m longtest.cli freeze --run-dir DIR
     python -m longtest.cli pilot  --run-dir DIR [--sizes 30,200] [--shards 2] [--limit 6]
     python -m longtest.cli run    --run-dir DIR [--soak-size 200] [--max-seconds N]
+                                  [--notify-cmd CMD]
     python -m longtest.cli status --run-dir DIR
     python -m longtest.cli stop   --run-dir DIR
     python -m longtest.cli labels baseline --heldout DIR
     python -m longtest.cli report --run-dir DIR
     python -m longtest.cli export --run-dir DIR --out DIR
-    python -m longtest.cli units  --run-dir DIR
+    python -m longtest.cli units  --run-dir DIR [--notify-cmd CMD]
 
 ``tools`` must be on ``PYTHONPATH``. ``units`` prints the text of the systemd user
 units and writes them under the run folder; it installs nothing. ``run`` starts
@@ -447,7 +448,7 @@ def cmd_bench(a: argparse.Namespace) -> int:
 
 
 def cmd_run(a: argparse.Namespace) -> int:
-    from .loop import Loop
+    from .loop import Loop, command_notifier
 
     run = Run(Path(a.run_dir))
     problems = verify_frozen(run)
@@ -456,7 +457,8 @@ def cmd_run(a: argparse.Namespace) -> int:
     pilot = run.dir / "pilot.json"
     if not pilot.exists() or not json.loads(pilot.read_text(encoding="utf-8")).get("all_gates"):
         raise SystemExit("the pilot has not passed: run `pilot` first")
-    loop = Loop(run, a.soak_size)
+    notify = command_notifier(a.notify_cmd) if a.notify_cmd else None
+    loop = Loop(run, a.soak_size, notify=notify)
     loop.run_forever(a.max_seconds)
     return 0
 
@@ -516,6 +518,7 @@ def cmd_units(a: argparse.Namespace) -> int:
         sys.executable,
         frozen if frozen.is_dir() else TOOLS,
         private_network=not a.no_private_network,
+        notify_cmd=a.notify_cmd,
     )
     target = run / "units"
     target.mkdir(mode=0o700, exist_ok=True)
@@ -523,6 +526,12 @@ def cmd_units(a: argparse.Namespace) -> int:
         write_private(target / name, text)
         print(f"# {name}\n{text}")
     return 0
+
+
+NOTIFY_HELP = (
+    "a command that hears of an alert: the text is its last argument, it runs without a "
+    "shell, and a failure is logged and ignored"
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -571,11 +580,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--run-dir", required=True)
     s.add_argument("--soak-size", type=int, default=20000)
     s.add_argument("--max-seconds", type=float, default=None)
+    s.add_argument("--notify-cmd", default="", help=NOTIFY_HELP)
     for name, fn in (("status", cmd_status), ("stop", cmd_stop), ("report", cmd_report)):
         add(name, fn).add_argument("--run-dir", required=True)
     s = add("units", cmd_units)
     s.add_argument("--run-dir", required=True)
     s.add_argument("--no-private-network", action="store_true")
+    s.add_argument("--notify-cmd", default="", help=NOTIFY_HELP)
     s = add("localnet", cmd_localnet)
     s.add_argument("--run-dir", required=True)
     s.add_argument("--max-seconds", type=float, default=None)

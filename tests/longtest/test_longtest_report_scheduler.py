@@ -79,9 +79,18 @@ def test_state_survives_a_restart_and_a_failed_job_is_marked(tmp_path):
     assert done["soak_load"] is False and done["heartbeat"] is True
     again = scheduler.Scheduler(tmp_path, **kw)
     assert again.state["jobs"]["soak_load"]["failed"] == 1
+    assert again.state["jobs"]["soak_load"]["note"] == "RuntimeError: x"
     assert again.due() == []  # nothing is due a second time
     clock["t"] = at(4)
     assert "heartbeat" in {j.name for j in again.due()}
+
+
+def test_a_long_job_note_keeps_its_head_and_its_last_log_line():
+    exc = RuntimeError("store exited -6: " + "x" * 2000 + " | Resource temporarily unavailable")
+    note = scheduler.job_note(exc)
+    assert len(note) == 500
+    assert note.startswith("RuntimeError: store exited -6: ")
+    assert note.endswith("| Resource temporarily unavailable")
 
 
 def test_daily_summary_job_runs_once_after_0630(tmp_path):
@@ -242,6 +251,41 @@ def test_status_fails_a_determinism_mismatch(tmp_path):
             run / "out" / "determinism.jsonl", {"day": day, "scale": 30, "part": "all", "hash": h}
         )
     assert check(run, now)["failed"] == ["determinism_same"]
+
+
+def started_at(run, when):
+    state = json.loads((run / "state.json").read_text())
+    (run / "state.json").write_text(json.dumps({**state, "started": when.isoformat()}))
+
+
+def test_night_day_counts_the_day_of_the_last_night():
+    assert report.night_day(None, at(6, 30, day=3)) == 0
+    assert report.night_day(at(7, 50).isoformat(), at(6, 30, day=2)) == 1
+    assert report.night_day(at(7, 50).isoformat(), at(6, 30, day=3)) == 2
+    # a run that began after 01:00: its first night is still day 1 at 25 hours
+    assert report.night_day(at(5, 0).isoformat(), at(6, 30, day=2)) == 1
+
+
+@pytest.mark.parametrize(
+    "days,ok",
+    [((), False), ((2,), False), ((1,), False), ((1, 2), True)],
+)
+def test_status_fails_determinism_with_nothing_to_compare(tmp_path, days, ok):
+    now = at(6, 30, day=3)
+    run = make_run(tmp_path, now)
+    started_at(run, at(7, 50))
+    for day in days:
+        append_jsonl(
+            run / "out" / "determinism.jsonl", {"day": day, "scale": 30, "part": "all", "hash": "a"}
+        )
+    assert check(run, now)["checks"]["determinism_same"] is ok
+
+
+def test_status_waits_for_the_second_night_before_it_needs_a_hash(tmp_path):
+    now = at(6, 30, day=2)
+    run = make_run(tmp_path, now)
+    started_at(run, at(5, 0))  # day 2 by the clock, but the last night was on day 1
+    assert check(run, now)["checks"]["determinism_same"]
 
 
 def test_status_fails_a_missing_daily_summary(tmp_path):

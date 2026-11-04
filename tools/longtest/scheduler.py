@@ -59,6 +59,16 @@ def in_window(now: dt.datetime, window: str = "01:00-06:00") -> bool:
     return start <= now.time() < end
 
 
+def job_note(exc: BaseException, limit: int = 500) -> str:
+    """``Type: message`` of a failed job, cut in the middle to ``limit`` characters: the
+    head names the error, the tail keeps the last log line that the message ends with."""
+    text = f"{type(exc).__name__}: {exc}"
+    if len(text) <= limit:
+        return text
+    head = limit // 2
+    return text[:head] + " ... " + text[-(limit - head - 5) :]
+
+
 def load_state(path: Path) -> dict[str, Any]:
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -147,7 +157,7 @@ class Scheduler:
             handler()
             ok, note = True, ""
         except Exception as exc:  # noqa: BLE001 - one job must not stop the run
-            ok, note = False, type(exc).__name__
+            ok, note = False, job_note(exc)
         self.mark(job, ok, note)
         return ok, note
 
