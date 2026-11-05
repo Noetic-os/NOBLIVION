@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Rebuild the two PDFs in ``docs/`` from their Markdown files.
+"""Rebuild the PDFs in ``docs/`` from their Markdown files.
 
 Run it with no arguments from any folder:
 
@@ -19,6 +19,7 @@ DOCS = Path(__file__).resolve().parent.parent / "docs"
 BOOKS = (
     ("executive-summary", "NOBLIVION executive summary"),
     ("noblivion-against-claude-code-memory", "NOBLIVION against Claude Code memory"),
+    ("long-run-report", "NOBLIVION long-run test report"),
 )
 
 CSS = """
