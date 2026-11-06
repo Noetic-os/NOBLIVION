@@ -14,14 +14,15 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import live, realreplay, report, sandbox, soak
+from . import growth, live, profiles, realreplay, report, sandbox, soak
 from .buildrunner import Harness, Worker, index_wait_s, store_python
-from .config import PARAMS
+from .config import WINDOW
 from .runner import (
     Run,
     bench_kept_store,
@@ -31,8 +32,31 @@ from .runner import (
     replay_rows,
     seed_soak_store,
 )
-from .scheduler import Job, Scheduler
+from .scheduler import Job, Scheduler, in_window, job_note, jobs_for
 from .util import write_private
+
+
+class Pulse:
+    """Heartbeat lines from a thread while the stores start: a restart that scans a
+    20,000-note store takes minutes, and the watchdog must not count that as a hang."""
+
+    def __init__(self, run: Run, stamp: Callable[[], dict[str, Any]], every_s: float) -> None:
+        self.run, self.stamp, self.every_s = run, stamp, every_s
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._beat, name="pulse", daemon=True)
+
+    def _beat(self) -> None:
+        while not self._stop.is_set():
+            row = self.stamp()
+            self.run.append("heartbeat", {**row, "phase": row.get("phase", "setup")})
+            self._stop.wait(self.every_s)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(5)
 
 
 class Loop:
@@ -42,16 +66,23 @@ class Loop:
         soak_size: int,
         now: Callable[[], dt.datetime] | None = None,
         sleep: Callable[[float], None] = time.sleep,
-        params=PARAMS,
+        params=None,
         notify: Callable[[str], None] | None = None,
         replay_parallel: int = 2,
+        profile: profiles.Profile | None = None,
+        jobs: tuple[Job, ...] | None = None,
     ) -> None:
-        self.run, self.soak_size, self.sleep, self.params = run, soak_size, sleep, params
+        manifest = run.manifest
+        self.profile = profile or profiles.profile_of(manifest)
+        self.params = params or self.profile.params
+        self.run, self.soak_size, self.sleep = run, soak_size, sleep
         self.notify = notify
         self.now = now or (lambda: dt.datetime.now().astimezone())
-        self.sched = Scheduler(run.dir, self.now, params=params)
+        self.sched = Scheduler(
+            run.dir, self.now, params=self.params, jobs=jobs or jobs_for(self.params)
+        )
         self.replay_parallel = replay_parallel
-        manifest = run.manifest
+        self.final_health: dict[str, Any] | None = None
         self.live = live.Live(
             Path(manifest["live"]["config_dir"]),
             Path(manifest["live"]["data_dir"]),
@@ -80,13 +111,25 @@ class Loop:
         text = self.sched.state.get("started")
         return dt.datetime.fromisoformat(text) if text else None
 
+    def first_start(self) -> dt.datetime:
+        """The start of day 1, written once. A start inside the heavy window would put
+        two nights into one day (the rest of this window, and the next night, which
+        the done markers would then skip): the start then moves to the end of the
+        window, so every day of the run holds exactly one night."""
+        now = self.now()
+        if in_window(now):
+            end = dt.time.fromisoformat(WINDOW.split("-")[1])
+            return dt.datetime.combine(now.date(), end, now.tzinfo)
+        return now
+
     def day(self) -> int:
         """The run day, in whole 24-hour periods from the start. The heavy window opens
-        once per 24 hours, so every period holds exactly one night."""
+        once per 24 hours, so every period holds exactly one night. Never below 1: a
+        start moved to the end of the window lies ahead for up to an hour."""
         began = self.started()
         if began is None:
             return 1
-        return int((self.now() - began).total_seconds() // 86400) + 1
+        return max(1, int((self.now() - began).total_seconds() // 86400) + 1)
 
     def over(self) -> bool:
         began = self.started()
@@ -123,7 +166,7 @@ class Loop:
         self.worker = Worker(self.harness)
         self.texts = [fx.prompt_of(q) for q in fx.queries_for(self.soak_size, ["V3"])][:60]
         if self.started() is None:
-            self.sched.state["started"] = self.now().isoformat(timespec="seconds")
+            self.sched.state["started"] = self.first_start().isoformat(timespec="seconds")
             self.sched.save()
         self.run.append(
             "sandbox",
@@ -141,6 +184,10 @@ class Loop:
         if self.worker:
             self.worker.close()
         if self.harness:
+            try:
+                self.final_health = self.harness.health()
+            except Exception:  # noqa: BLE001 - the store may be gone already
+                self.final_health = None
             self.harness.stop()
         self.guard.uninstall()
         self.sockets.uninstall()
@@ -245,35 +292,52 @@ class Loop:
             ]
 
         sizes = [s for s in self.run.manifest["sizes"] if s >= 1000]
+        builds = self.profile.builds
         budget = self.params.bench_budget_s
-        each = budget / (1 + 2 * len(sizes))
+        each = budget / (1 + len(builds) * len(sizes))
         row = soak.latency_benchmark(call, self.texts, n=100, budget_s=each)
         self.run.append("latency", {**self.stamp(), **row, "size": self.soak_size, "build": "soak"})
         for size in sizes:
-            for build in ("B0", "B1"):
+            for build in builds:
                 got = bench_kept_store(self.run, build, size, each)
                 if got:
                     self.run.append("latency", {**self.stamp(), **got})
 
     def replay_nightly(self) -> None:
-        """Day 1 and the last day: every scale. The days between: SMALL and MEDIUM-1 again, and the
-        outcome hash of each, which must equal the hash of day 1. A failed arm does not
-        skip the next arm or the hashes; its error is raised after them, so the job fails."""
+        """The scales of the night (``Profile.nightly_sizes``): the first run replays its
+        small scales between the first and the last day and keeps the outcome hash of
+        each, which must equal the hash of day 1; the large-project run grows each kept
+        store by the day's notes and replays every scale against it. A failed arm does
+        not skip the next arm or the hashes; its error is raised after them, so the job
+        fails and the scheduler retries it after 30 minutes."""
         day = self.day()
-        sizes = [s for s in self.run.manifest["sizes"]]
-        if 1 < day < self.params.run_days:
-            sizes = [s for s in sizes if s <= 200]
+        prof = self.profile
+        sizes = prof.nightly_sizes(day, list(self.run.manifest["sizes"]))
         errors: list[Exception] = []
+        if prof.growth_per_day:
+            for size in sizes:
+                try:
+                    growth.grow(self.run, size, day, prof.growth_per_day, now=self.now())
+                except Exception as exc:  # noqa: BLE001 - raised again below
+                    errors.append(exc)
         try:
             replay_all(
                 self.run,
                 sizes,
                 None,
                 None,
+                variants=prof.variants,
+                builds=prof.builds,
                 day=day,
                 parallel=self.replay_parallel,
                 python=store_python(Path(self.run.manifest["live"]["data_dir"])),
                 guard_site=self.run.dir / "private" / "guard-site",
+                stock_arms=prof.stock_arms,
+                stock_dir=(
+                    (lambda size, shard: growth.stock_dir(self.run, size, shard))
+                    if prof.growth_per_day
+                    else None
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - raised again below
             errors.append(exc)
@@ -293,7 +357,7 @@ class Loop:
                 errors.append(exc)
         rows = replay_rows(self.run, day)
         for size in sizes:
-            if size <= 200:
+            if prof.determinism and size <= 200:
                 self.run.append(
                     "determinism",
                     {
@@ -310,22 +374,40 @@ class Loop:
             raise RuntimeError("; ".join(f"{type(e).__name__}: {e}" for e in errors))
 
     def daily_summary(self) -> None:
+        """The daily check writes ``daily/<day>.json`` and, on a failure, ``ALERT``. It
+        never writes ``stop`` or ``pause``: only the end time in ``state.json`` ends
+        the run."""
         path = report.daily_summary(self.run.dir, self.now())
-        res = report.status(self.run.dir, self.now(), notify=self.notify)
+        res = report.status(self.run.dir, self.now(), notify=self.notify, params=self.params)
         self.run.append("status", {**self.stamp(), "ok": res["ok"], "failed": res["failed"]})
         _ = path
 
     # -- loop ----------------------------------------------------------------------
 
     def run_forever(self, max_seconds: float | None = None, tick_s: float = 5.0) -> None:
+        """The loop. Nothing raises out of a tick: a failed job or a failed tick is logged
+        to ``out/failures.jsonl`` and ``ALERT``, and the loop goes on until the end time
+        from ``state.json`` (``over``), a ``stop`` file, or ``max_seconds``. A failed
+        setup is logged and raised: the unit restarts after its ``RestartSec``."""
         end = time.monotonic() + max_seconds if max_seconds else None
+        pulse = Pulse(self.run, self.stamp, self.params.heartbeat_s)
         try:
-            self.setup()
+            pulse.start()
+            try:
+                self.setup()
+            except Exception as exc:
+                self.sched.record_failure("setup", job_note(exc))
+                raise
+            finally:
+                pulse.stop()
             while not self.sched.stopped() and (end is None or time.monotonic() < end):
-                if self.over():
-                    self.finish()
-                    break
-                self.sched.run_due(self.handlers(), background=True)
+                try:
+                    if self.over():
+                        self.finish()
+                        break
+                    self.sched.run_due(self.handlers(), background=True)
+                except Exception as exc:  # noqa: BLE001 - the loop must not end
+                    self.sched.record_failure("tick", job_note(exc))
                 self.sleep(tick_s)
         finally:
             self.teardown()
@@ -333,10 +415,22 @@ class Loop:
     def finish(self) -> None:
         """The last day is over: let a running night end, write the last daily summary and
         the checks, and leave a ``finished`` file. The unit then ends with status 0 and
-        does not start again."""
-        self.sched.wait()
-        self.heartbeat()
-        self.daily_summary()
+        does not start again. The file is written even when the last summary fails, so
+        the end is never missed. The heartbeat goes on while the last night ends, so the
+        watchdog does not take the wait for a hang."""
+        pulse = Pulse(
+            self.run, lambda: {**self.stamp(), "phase": "finish"}, self.params.heartbeat_s
+        )
+        try:
+            pulse.start()
+            self.sched.wait()
+            pulse.stop()
+            self.heartbeat()
+            self.daily_summary()
+        except Exception as exc:  # noqa: BLE001 - the end still comes
+            self.sched.record_failure("finish", job_note(exc))
+        finally:
+            pulse.stop()
         write_private(self.run.dir / "finished", self.now().isoformat(timespec="seconds") + "\n")
 
 

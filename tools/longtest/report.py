@@ -15,12 +15,13 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from . import stats
+from . import profiles, stats
 from .config import PARAMS, SCALES, Params
 from .scheduler import window_start
 from .util import json_text, read_jsonl, sha256_file, write_private
 
 PRIMARY_CLAIMS = ("C1", "C3")
+TREND_CLAIM = "C1"  # DR6 of the large project: delivery on C1, night by night
 
 
 def _size_class(size: int) -> str:
@@ -161,6 +162,126 @@ def night_day(started: str | None, now: dt.datetime) -> int:
     return max(0, int((window_start(now) - began).total_seconds() // 86400) + 1)
 
 
+def heartbeat_cadence(
+    beats: Sequence[dt.datetime], every_s: float, since: dt.datetime | None = None
+) -> dict[str, Any]:
+    """The largest gap between heartbeat lines (from ``since``), against twice the
+    interval: a loop that beats every 5 minutes never leaves a gap of 10."""
+    pts = sorted(t for t in beats if since is None or t >= since)
+    gaps = [(b - a).total_seconds() for a, b in zip(pts, pts[1:], strict=False)]
+    worst = max(gaps, default=0.0)
+    return {
+        "n": len(pts),
+        "max_gap_s": round(worst, 1),
+        "limit_s": 2 * every_s,
+        "ok": len(pts) >= 2 and worst <= 2 * every_s,
+    }
+
+
+def delivery_by_night(
+    rows: Sequence[Mapping[str, Any]], claim: str = TREND_CLAIM, build: str = "B1"
+) -> dict[int, dict[int, float]]:
+    """``size -> day -> delivery rate`` of ``build`` on ``claim``, from replay rows. Day
+    0 (the pilot) is left out."""
+    cells: dict[int, dict[int, list[bool]]] = {}
+    for r in rows:
+        if r.get("build") != build or claim not in (r.get("claims") or []) or not r.get("day"):
+            continue
+        if r.get("hit") is None:
+            continue
+        cells.setdefault(int(r["size"]), {}).setdefault(int(r["day"]), []).append(bool(r["hit"]))
+    return {
+        size: {day: round(sum(v) / len(v), 4) for day, v in sorted(days.items()) if v}
+        for size, days in sorted(cells.items())
+    }
+
+
+def delivery_trend(
+    by_night: Mapping[int, Mapping[int, float]], min_nights: int = 3
+) -> dict[str, Any]:
+    """DR6 per size: the Theil-Sen slope of delivery over the nights. ``ok`` is ``None``
+    with fewer than ``min_nights`` nights, true when the interval holds 0 or lies above."""
+    out: dict[str, Any] = {}
+    for size, days in by_night.items():
+        xs = [float(d) for d in sorted(days)]
+        ys = [days[int(x)] for x in xs]
+        if len(xs) < min_nights:
+            out[str(size)] = {"nights": len(xs), "ok": None}
+            continue
+        t = stats.theil_sen(xs, ys)
+        out[str(size)] = {
+            "nights": len(xs),
+            "slope": t["slope"],
+            "low": t["low"],
+            "high": t["high"],
+            "ok": bool(t["holds_zero"] or t["low"] > 0),
+        }
+    return out
+
+
+def verdicts_large(
+    summary: Mapping[str, Any],
+    soak: Mapping[str, Any] | None,
+    trend: Mapping[str, Any] | None,
+    params: Params = PARAMS,
+    sizes: Sequence[int] = profiles.LARGE_SIZES,
+) -> dict[str, Any]:
+    """The rules of the large-project profile (DR1, DR3, DR5, DR6) over the replay
+    summary, the soak evaluation and the night trend. What the data does not hold is
+    ``None`` (pending), never guessed."""
+    vs2 = summary["b1_vs_s2"]
+    adj = stats.holm({k: v["p"] for k, v in vs2.items()})
+    claims: dict[str, Any] = {}
+    for key, v in sorted(vs2.items()):
+        claims[key] = {
+            "b1_minus_s2": v["diff"],
+            "low": v["low"],
+            "high": v["high"],
+            "p_holm": round(adj[key], 4),
+            "dr1": bool(v["low"] > params.dr1_lower and adj[key] < params.alpha),
+            "lose": v["high"] < 0,
+        }
+    fd = summary.get("false_delivery_v5", {})
+    health = None
+    if soak is not None:
+        checks = soak["checks"]
+        health = all(checks[k] for k in ("budget_recall", "lag_p95", "drift_zero", "error_rate"))
+    scales: dict[str, Any] = {}
+    names = {v: k for k, v in SCALES.items()}
+    for size in sizes:
+        # C2 rows count a correct silence on V5 as a hit in both arms, so the paired
+        # difference B1 minus S2 on C2 is the difference in silence; not worse means
+        # its lower bound stays above the DR3 floor.
+        silence = vs2.get(f"{size}|C2")
+        dr3 = None if silence is None else silence["low"] > params.dr3_lower
+        dr6 = None if not trend or str(size) not in trend else trend[str(size)]["ok"]
+        primary = [claims[f"{size}|{c}"] for c in PRIMARY_CLAIMS if f"{size}|{c}" in claims]
+        win_core = any(p["dr1"] for p in primary)
+        lose = any(p["lose"] for p in primary) or dr3 is False
+        if not primary:
+            word = "NO DATA"
+        elif lose:
+            word = "LOSE"
+        elif win_core and dr3 and health and dr6:
+            word = "WIN"
+        elif win_core and (dr3 is None or health is None or dr6 is None):
+            word = "PENDING"
+        else:
+            word = "TIE"
+        scales[names.get(size, str(size))] = {
+            "size": size,
+            "dr1_c1": claims.get(f"{size}|C1", {}).get("dr1"),
+            "dr1_c3": claims.get(f"{size}|C3", {}).get("dr1"),
+            "dr3": dr3,
+            "false_delivery_b1": fd.get(f"{size}|V5|B1"),
+            "false_delivery_s2": fd.get(f"{size}|V5|S2"),
+            "dr5": health,
+            "dr6": dr6,
+            "verdict": word,
+        }
+    return {"claims": claims, "scales": scales, "dr5": health, "trend": trend}
+
+
 def status(
     run_dir: Path,
     now: dt.datetime,
@@ -172,14 +293,20 @@ def status(
     plan_gb: float | None = None,
 ) -> dict[str, Any]:
     """The checks of section 13. Returns ``{"ok", "failed": [...], "checks": {...}}``.
-    A failure writes ``ALERT`` in the run folder and calls ``notify``."""
+    A failure writes ``ALERT`` in the run folder and calls ``notify``. The check writes
+    nothing else: never ``stop``, never ``pause``. The determinism check is for a
+    profile whose small scales replay every night; a profile whose stores grow has
+    nothing to compare and the check is not applied."""
     run_dir = Path(run_dir)
     out = run_dir / "out"
     since = now - dt.timedelta(days=1)
     all_beats = [dt.datetime.fromisoformat(r["ts"]) for r in read_jsonl(out / "heartbeat.jsonl")]
     beats = [t for t in all_beats if t >= since]
-    needed = heartbeats_needed(all_beats, now, params)
     manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    profile = profiles.profile_of(manifest)
+    if params is PARAMS:
+        params = profile.params
+    needed = heartbeats_needed(all_beats, now, params)
     state = (
         json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
         if (run_dir / "state.json").exists()
@@ -197,6 +324,8 @@ def status(
     # must both have a row.
     compared = bool(first) and any(r["day"] > 1 for r in det)
     unmeasured = night_day(state.get("started"), now) >= 2 and not compared
+    if not profile.determinism:
+        mismatch, unmeasured = [], False
     free = (free_gb or (lambda p: shutil.disk_usage(p).free / 1e9))(run_dir)
     day = now.date().isoformat()
     failed_jobs = [

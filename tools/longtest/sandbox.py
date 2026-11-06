@@ -381,13 +381,22 @@ def render_units(
     params=PARAMS,
     private_network: bool = True,
     notify_cmd: str = "",
+    settings: Any = None,
+    watchdog: bool = False,
+    systemctl: str = "/usr/bin/systemctl",
 ) -> dict[str, str]:
-    """The text of the two systemd user units. Nothing is written or started.
+    """The text of the systemd user units. Nothing is written or started.
     ``private_network=False`` leaves ``PrivateNetwork`` out for a host whose user
     manager cannot set up a network namespace; the socket guard that the units put on
     ``PYTHONPATH`` (``write_guard_site``) then keeps the core unit off the network.
     ``notify_cmd`` goes on the ``run`` line as ``--notify-cmd``: the command that hears
-    of an alert."""
+    of an alert. ``settings`` (``profiles.UnitSettings``) is the restart policy: the
+    large-project run restarts always, after 30 s, with no start limit, with a backstop
+    of 8 days. ``watchdog`` adds the timer unit that runs ``longtest.cli watch`` every
+    5 minutes; it calls ``systemctl`` by its absolute path."""
+    from .profiles import UnitSettings
+
+    settings = settings or UnitSettings()
     unset = " ".join(DENY_EXACT[:4] + ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"))
     common = f"""[Service]
 Environment=PATH={run_dir}/bin
@@ -406,15 +415,17 @@ WorkingDirectory={run_dir}
 """
     net = "PrivateNetwork=yes\n" if private_network else ""
     notify = f" --notify-cmd {unit_word(notify_cmd)}" if notify_cmd else ""
-    ends = f"{params.run_days}d 6h"  # the loop ends itself after run_days; this is a backstop
+    # the loop ends itself after run_days; RuntimeMaxSec is a backstop
+    ends = settings.runtime_max or f"{params.run_days}d 6h"
     gate = f"ConditionPathExists=!{run_dir}/finished\nConditionPathExists=!{run_dir}/stop\n"
+    if settings.start_limit_interval_sec is not None:
+        gate += f"StartLimitIntervalSec={settings.start_limit_interval_sec}\n"
+    restart = f"Restart={settings.restart}\nRestartSec={settings.restart_sec}\n"
     core = f"""[Unit]
 Description=NOBLIVION long-run test, core (no network)
 {gate}
 {common}Type=simple
-Restart=on-failure
-RestartSec=60
-RuntimeMaxSec={ends}
+{restart}RuntimeMaxSec={ends}
 {net}ExecStart={python} -m longtest.cli run --run-dir {run_dir}{notify}
 
 [Install]
@@ -424,9 +435,7 @@ WantedBy=default.target
 Description=NOBLIVION long-run test, localhost work only
 {gate}
 {common}Type=simple
-Restart=on-failure
-RestartSec=60
-RuntimeMaxSec={ends}
+{restart}RuntimeMaxSec={ends}
 IPAddressDeny=any
 IPAddressAllow=127.0.0.0/8
 ExecStart={python} -m longtest.cli localnet --run-dir {run_dir}
@@ -434,7 +443,35 @@ ExecStart={python} -m longtest.cli localnet --run-dir {run_dir}
 [Install]
 WantedBy=default.target
 """
-    return {"nob-longtest.service": core, "nob-longtest-localnet.service": local}
+    units = {"nob-longtest.service": core, "nob-longtest-localnet.service": local}
+    if watchdog:
+        units["nob-longtest-watch.service"] = f"""[Unit]
+Description=NOBLIVION long-run test, watchdog (starts a quiet unit)
+
+[Service]
+Type=oneshot
+Environment=PATH={run_dir}/bin
+Environment=HOME=%h
+Environment=LANG=C.UTF-8
+Environment=PYTHONPATH={run_dir}/private/guard-site:{tools_dir}
+UnsetEnvironment={unset}
+UMask=0077
+IPAddressDeny=any
+WorkingDirectory={run_dir}
+ExecStart={python} -m longtest.cli watch --run-dir {run_dir} --systemctl {systemctl}
+"""
+        units["nob-longtest-watch.timer"] = """[Unit]
+Description=NOBLIVION long-run test, watchdog every 5 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00
+AccuracySec=30s
+Unit=nob-longtest-watch.service
+
+[Install]
+WantedBy=timers.target
+"""
+    return units
 
 
 # -- the guard for child processes ----------------------------------------------------

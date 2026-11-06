@@ -22,7 +22,7 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-from . import config, fixtures, realreplay, replay, sandbox
+from . import config, fixtures, profiles, realreplay, replay, sandbox
 from .buildrunner import Harness, build_version, export_build, index_wait_s, store_python
 from .config import SCALES
 from .fixtures import Fixture
@@ -87,14 +87,20 @@ def init_run(
     live_config: Path,
     live_data: Path,
     seed: int = config.SEED,
+    profile: str = profiles.DEFAULT,
 ) -> dict[str, Any]:
-    """Make the run folder, freeze both builds, generate the fixtures. Installs
-    nothing and starts nothing."""
+    """Make the run folder, freeze the builds of the profile, generate the fixtures.
+    Installs nothing and starts nothing. The large-project profile has no B0."""
+    prof = profiles.get(profile)
     run = Run(run_dir)
     for sub in ("out", "daily", "private", "stores", "builds"):
         private_dir(run.dir / sub)
     builds = {}
     for name, commit in (("B0", b0), ("B1", b1)):
+        if name not in prof.builds:
+            continue
+        if not commit:
+            raise SystemExit(f"profile {prof.name} needs a commit for {name}")
         info = export_build(repo, commit, run.build_path(name))
         info["version"] = build_version(run.build_path(name))
         builds[name] = info
@@ -106,6 +112,7 @@ def init_run(
     doc = {
         "run_id": run.dir.name,
         "created": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "profile": prof.name,
         "builds": builds,
         "seed": seed,
         "sizes": sorted(sizes),
@@ -176,7 +183,7 @@ def freeze(run: Run) -> dict[str, Any]:
     this the manifest is marked frozen; a run refuses to start if the hash differs.
     A second freeze (after a fix to a failed pilot gate) is logged in ``freezes``."""
     doc = run.manifest
-    text = config.render_prereg()
+    text = profiles.profile_of(doc).prereg()
     write_private(run.dir / "PREREG.md", text)
     fx = run.fixture()
     leak = fixtures.leakage(fx)
@@ -213,8 +220,8 @@ def verify_frozen(run: Run, tools: Path = TOOLS) -> list[str]:
         config.check_prereg(path, doc["prereg_sha256"])
     except (SystemExit, OSError) as exc:
         problems.append(f"PREREG.md: {exc}")
-    if config.prereg_hash() != doc["prereg_sha256"]:
-        problems.append("the parameters in config.py differ from PREREG.md")
+    if profiles.profile_of(doc).prereg_hash() != doc["prereg_sha256"]:
+        problems.append("the parameters of the profile differ from PREREG.md")
     copy = run.dir / "program" / "tools"
     if Path(tools).resolve() != copy.resolve():
         problems.append(f"the program runs from {tools}, not from the frozen copy")
@@ -232,6 +239,8 @@ PILOT_LOOP_FILES = (
     "out/status.jsonl",
     "out/latency.jsonl",
     "out/determinism.jsonl",
+    "out/failures.jsonl",
+    "out/watchdog.jsonl",
     "state.json",
     "ALERT",
     "finished",
@@ -301,7 +310,7 @@ def replay_task(
     h.guard_site = guard_site
     keep = keep or size >= KEEP_FROM
     reset_volatile(h.root)
-    h.prepare(fx, size, shard)
+    h.prepare(fx, size, shard)  # a kept store keeps its grown indexes (Harness.prepare)
     started = time.monotonic()
     info: dict[str, Any] = {"build": build, "size": size, "shard": shard}
     try:
@@ -315,11 +324,23 @@ def replay_task(
         )
         rows = replay.run_shard(fx, size, shard, h, build, variants, limit)
         # The rows of a task go in together, with a marker, so a restart never meets
-        # half a task: a task without a marker is run again.
+        # half a task: a task without a marker is run again. The marker keeps the
+        # store timings, so a pilot that is run again can still gate on them.
         for row in rows:
             row["day"] = day
         run.append_many("replay", rows)
-        run.append("replay-done", {"day": day, "build": build, "size": size, "shard": shard})
+        run.append(
+            "replay-done",
+            {
+                "day": day,
+                "build": build,
+                "size": size,
+                "shard": shard,
+                "memories": info["memories"],
+                "index_s": info["index_s"],
+                "ready_s": info["ready_s"],
+            },
+        )
         info["rows"] = len(rows)
         info["seconds"] = round(time.monotonic() - started, 1)
     finally:
@@ -398,10 +419,14 @@ def replay_all(
     python: str | None = None,
     models: Path | None = None,
     guard_site: Path | None = None,
+    stock_arms: Sequence[str] | None = None,
+    stock_dir: Callable[[int, int], Path] | None = None,
 ) -> list[dict[str, Any]]:
     """Arms b and c over the synthetic lessons: every build and every shard, plus the
     stock arms. Rows go to ``out/replay.jsonl``; returns one info row per task. A task
-    that fails does not stop the others: one ``RuntimeError`` at the end names each."""
+    that fails does not stop the others: one ``RuntimeError`` at the end names each.
+    ``stock_arms`` keeps only those stock rows (the large-project run keeps S2);
+    ``stock_dir(size, shard)`` names the folder stock reads (the grown store)."""
     fx = run.fixture()
     live_data = Path(run.manifest["live"]["data_dir"])
     python = python or store_python(live_data)
@@ -415,7 +440,10 @@ def replay_all(
                 if (build, size, shard) not in finished:
                     jobs.append((build, size, shard))
             if ("stock", size, shard) not in finished:
-                rows = replay.run_stock(fx, size, shard, fx.shard_dir(size, shard), variants, limit)
+                folder = stock_dir(size, shard) if stock_dir else fx.shard_dir(size, shard)
+                rows = replay.run_stock(fx, size, shard, folder, variants, limit)
+                if stock_arms is not None:
+                    rows = [r for r in rows if r["build"] in stock_arms]
                 for row in rows:
                     row["day"] = day
                 run.append_many("replay", rows)
@@ -478,6 +506,69 @@ def seed_soak_store(run: Run, root: Path, size: int) -> bool:
     shutil.copytree(source, root, symlinks=True, dirs_exist_ok=True)
     (root / "home/.claude/plugins/data/noblivion-noblivion/store.json").unlink(missing_ok=True)
     return True
+
+
+def tree_hash(root: Path) -> str:
+    """One hash over the relative names and the bytes of every file under ``root``."""
+    digest = hashlib.sha256()
+    for path in sorted(p for p in Path(root).rglob("*") if p.is_file()):
+        digest.update(str(path.relative_to(root)).encode())
+        digest.update(b"\0")
+        digest.update(sha256_file(path).encode())
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def seed_stores_from(run: Run, source: Path, sizes: Sequence[int], build: str = "B1") -> dict:
+    """Copy the kept stores of ``build`` at ``sizes`` from another run folder, so the
+    pilot scans them instead of embedding for hours. Only when the build commit is the
+    same and the fixture shard (every note) is byte for byte the same; the manifest
+    records the source and the hashes. The source is read, never written."""
+    source = Path(source)
+    src_manifest = json.loads((source / "run.json").read_text(encoding="utf-8"))
+    doc = run.manifest
+    mine, theirs = doc["builds"].get(build, {}), src_manifest.get("builds", {}).get(build, {})
+    if not mine.get("commit") or mine.get("commit") != theirs.get("commit"):
+        raise SystemExit(f"{build} differs: {mine.get('commit')} is not {theirs.get('commit')}")
+    fx = run.fixture()
+    seeded = {}
+    for size in sizes:
+        shard = fx.shards(size)[0]
+        ours = fx.shard_dir(size, shard)
+        theirs_dir = Fixture(source / "fixtures").shard_dir(size, shard)
+        ours_hash, theirs_hash = tree_hash(ours), tree_hash(theirs_dir)
+        if ours_hash != theirs_hash:
+            raise SystemExit(f"fixture shard at {size} differs from {source}: not seeded")
+        target = shard_root(run, build, size, shard)
+        src_root = shard_root(Run(source), build, size, shard)
+        if not (src_root / "home").is_dir():
+            raise SystemExit(f"{source} has no kept {build} store at {size}")
+        if target.exists() and any(target.iterdir()):
+            seeded[str(size)] = {"skipped": "store exists"}
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(
+            src_root,
+            target,
+            symlinks=True,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(*VOLATILE, "__pycache__", "pycache"),
+        )
+        reset_volatile(target)
+        (target / "home/.claude/plugins/data/noblivion-noblivion/store.json").unlink(
+            missing_ok=True
+        )
+        for name in ("worker.err", "suite-store.out"):
+            for path in target.rglob(name):
+                path.unlink(missing_ok=True)
+        seeded[str(size)] = {
+            "from": str(src_root),
+            "fixture_shard_sha256": ours_hash,
+            "commit": mine["commit"],
+        }
+    doc.setdefault("seeded_stores", {})[build] = seeded
+    run.save_manifest(doc)
+    return seeded
 
 
 def real_replay(

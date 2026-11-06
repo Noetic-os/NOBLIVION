@@ -6,6 +6,10 @@ re-run) runs only in the window 01:00 to 06:00 and waits while the load average 
 over the limit. Every job waits while free disk is under the floor or while a
 ``stop`` file exists. The state file holds the last run of each job and the offsets
 of the live files, so a restart resumes and does not read a file twice.
+
+No job raises out of the loop: a handler that fails is logged to ``out/failures.jsonl``
+and to ``ALERT``, marked failed in the state, and is due again after ``retry_s``
+(30 minutes), inside its window, until the run ends.
 """
 
 from __future__ import annotations
@@ -22,7 +26,9 @@ from pathlib import Path
 from typing import Any
 
 from .config import PARAMS, Params
-from .util import json_text, write_private
+from .util import append_jsonl, append_private, json_text, private_dir, write_private
+
+RETRY_S = 1800  # a failed job runs again after this, at the next slot of its window
 
 
 @dataclass(frozen=True)
@@ -33,18 +39,32 @@ class Job:
     daily_at: str = ""  # "06:30": once a day after this local time, instead of an interval
 
 
-JOBS = (
-    Job("heartbeat", PARAMS.heartbeat_s),
-    Job("live_pass", 900),
-    Job("soak_load", 600),
-    Job("soak_churn", 900),
-    Job("soak_drift", 3600),
-    Job("soak_resources", 3600),
-    Job("sandbox_watch", 60),
-    Job("replay_nightly", 86400, heavy=True),
-    Job("latency_bench", 86400, heavy=True),
-    Job("daily_summary", 86400, daily_at="06:30"),
-)
+def jobs_for(params: Params = PARAMS) -> tuple[Job, ...]:
+    """The job table of a run: the heartbeat interval comes from the parameters of
+    its profile (hourly in the first run, every 5 minutes in the large-project run)."""
+    return (
+        Job("heartbeat", params.heartbeat_s),
+        Job("live_pass", 900),
+        Job("soak_load", 600),
+        Job("soak_churn", 900),
+        Job("soak_drift", 3600),
+        Job("soak_resources", 3600),
+        Job("sandbox_watch", 60),
+        Job("replay_nightly", 86400, heavy=True),
+        Job("latency_bench", 86400, heavy=True),
+        Job("daily_summary", 86400, daily_at="06:30"),
+    )
+
+
+JOBS = jobs_for(PARAMS)
+
+
+def light_jobs(params: Params = PARAMS) -> tuple[Job, ...]:
+    """The jobs of the pilot loop: no night inside an hour."""
+    return tuple(j for j in jobs_for(params) if not j.heavy)
+
+
+LIGHT_JOBS = light_jobs(PARAMS)
 
 
 def window_start(now: dt.datetime, window: str = "01:00-06:00") -> dt.datetime:
@@ -88,13 +108,16 @@ class Scheduler:
         loadavg: Callable[[], float] = lambda: os.getloadavg()[0],
         free_gb: Callable[[Path], float] | None = None,
         params: Params = PARAMS,
-        jobs: tuple[Job, ...] = JOBS,
+        jobs: tuple[Job, ...] | None = None,
         state_file: str = "state.json",
+        retry_s: int = RETRY_S,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.now, self.loadavg = now, loadavg
         self.free_gb = free_gb or (lambda p: shutil.disk_usage(p).free / 1e9)
-        self.params, self.jobs = params, jobs
+        self.params = params
+        self.jobs = jobs_for(params) if jobs is None else jobs
+        self.retry_s = retry_s
         self.state_path = self.run_dir / state_file
         self._lock = threading.RLock()
         self._running: dict[str, Future[tuple[bool, str]]] = {}
@@ -118,8 +141,14 @@ class Scheduler:
         return ""
 
     def _is_due(self, job: Job, now: dt.datetime) -> bool:
-        last = self.state["jobs"].get(job.name, {}).get("last")
+        entry = self.state["jobs"].get(job.name, {})
+        last = entry.get("last")
         last_t = dt.datetime.fromisoformat(last) if last else None
+        if last_t is not None and entry.get("ok") is False:
+            # a failed job: again after the retry interval (a short job keeps its own),
+            # not at the next night or the next day; the window and the load still hold
+            wait = min(self.retry_s, job.every_s) if not job.daily_at else self.retry_s
+            return (now - last_t).total_seconds() >= wait
         if job.daily_at:
             at = dt.datetime.combine(now.date(), dt.time.fromisoformat(job.daily_at), now.tzinfo)
             return now >= at and (last_t is None or last_t < at)
@@ -152,12 +181,26 @@ class Scheduler:
         with self._lock:
             save_state(self.state_path, self.state)
 
+    def record_failure(self, name: str, note: str) -> None:
+        """One line in ``out/failures.jsonl`` and one in ``ALERT`` per failed job or
+        tick. The run goes on; the daily check and the final report read the file."""
+        with self._lock:
+            ts = self.now().isoformat(timespec="seconds")
+            runs = self.state["jobs"].get(name, {}).get("runs", 0)
+            private_dir(self.run_dir / "out")
+            append_jsonl(
+                self.run_dir / "out" / "failures.jsonl",
+                {"ts": ts, "job": name, "error": note, "attempt": runs + 1},
+            )
+            append_private(self.run_dir / "ALERT", f"{ts} {name} failed: {note[:200]}")
+
     def _execute(self, job: Job, handler: Callable[[], Any]) -> tuple[bool, str]:
         try:
             handler()
             ok, note = True, ""
-        except Exception as exc:  # noqa: BLE001 - one job must not stop the run
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 - one job must not stop the run
             ok, note = False, job_note(exc)
+            self.record_failure(job.name, note)
         self.mark(job, ok, note)
         return ok, note
 

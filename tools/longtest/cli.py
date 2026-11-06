@@ -12,10 +12,13 @@
     python -m longtest.cli report --run-dir DIR
     python -m longtest.cli export --run-dir DIR --out DIR
     python -m longtest.cli units  --run-dir DIR [--notify-cmd CMD]
+    python -m longtest.cli seed-stores --run-dir DIR --from DIR
+    python -m longtest.cli watch  --run-dir DIR
 
 ``tools`` must be on ``PYTHONPATH``. ``units`` prints the text of the systemd user
 units and writes them under the run folder; it installs nothing. ``run`` starts
-the 7-day loop and is for the operator after decision D8; ``pilot`` runs minutes.
+the loop of the run's profile (``init --profile``); ``pilot`` runs minutes, or two
+hours for the large-project profile. ``watch`` is the watchdog step of the timer.
 """
 
 from __future__ import annotations
@@ -27,7 +30,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import config, labels, replay, report, sandbox
+from . import config, growth, labels, profiles, replay, report, sandbox, watch
+from .buildrunner import index_wait_s
 from .config import CLAIMS, PARAMS, SCALES
 from .runner import (
     Run,
@@ -39,11 +43,13 @@ from .runner import (
     real_replay,
     replay_all,
     replay_rows,
+    seed_stores_from,
     snapshot_tree,
     verify_frozen,
     zero_token_gate,
 )
-from .util import TOOLS, json_text, write_private
+from .scheduler import light_jobs
+from .util import TOOLS, json_text, read_jsonl, write_private
 
 
 def parse_sizes(text: str) -> list[int]:
@@ -55,19 +61,31 @@ def parse_sizes(text: str) -> list[int]:
 
 
 def cmd_init(a: argparse.Namespace) -> int:
+    prof = profiles.get(a.profile)
+    sizes = parse_sizes(a.sizes) if a.sizes else list(prof.sizes)
     doc = init_run(
         Path(a.run_dir),
         Path(a.repo),
         a.b0,
         a.b1,
-        parse_sizes(a.sizes),
+        sizes,
         Path(a.live_config),
         Path(a.live_data),
+        profile=prof.name,
     )
     if a.heldout:
         doc["heldout"] = str(Path(a.heldout).resolve())
         Run(Path(a.run_dir)).save_manifest(doc)
-    print(json.dumps({k: doc[k] for k in ("run_id", "builds", "sizes")}, indent=1))
+    print(json.dumps({k: doc[k] for k in ("run_id", "profile", "builds", "sizes")}, indent=1))
+    return 0
+
+
+def cmd_seed_stores(a: argparse.Namespace) -> int:
+    """Copy the kept B1 stores of another run of the same build and fixture, so the
+    pilot scans them instead of embedding for hours. The source is only read."""
+    run = Run(Path(a.run_dir))
+    sizes = parse_sizes(a.sizes) if a.sizes else list(run.manifest["sizes"])
+    print(json.dumps(seed_stores_from(run, Path(a.source), sizes), indent=1, sort_keys=True))
     return 0
 
 
@@ -90,6 +108,9 @@ def cmd_pilot(a: argparse.Namespace) -> int:
     """Minutes, not days: gates 2, 3, 4 and 5 of the plan on a scratch store."""
     run = Run(Path(a.run_dir))
     manifest = run.manifest
+    if profiles.profile_of(manifest).name == profiles.LARGE.name:
+        return pilot_large(run, a)
+    a.sizes = a.sizes or "30,200"
     live_cfg, live_data = Path(manifest["live"]["config_dir"]), Path(manifest["live"]["data_dir"])
     before = live_memory_snapshot(live_cfg)
     from .buildrunner import store_python
@@ -167,6 +188,158 @@ def cmd_pilot(a: argparse.Namespace) -> int:
     return 0 if doc["all_gates"] else 1
 
 
+def pilot_large(run: Run, a: argparse.Namespace) -> int:
+    """The pilot of the large-project profile (Plan 3, item 7): two hours at 20,000
+    notes under the unit's own limits. Gates: the frozen program; zero tokens and zero
+    external connects; every store ready inside its cap; one replay shard done per
+    scale; B1 pull delivery on V1; one soak hour with a heartbeat every 5 minutes, a
+    write that became searchable, and the embedding runtime ready at the end; the live
+    memory folders untouched. A failed gate blocks the start."""
+    manifest = run.manifest
+    prof = profiles.profile_of(manifest)
+    live_cfg, live_data = Path(manifest["live"]["config_dir"]), Path(manifest["live"]["data_dir"])
+    before = live_memory_snapshot(live_cfg)
+    from .buildrunner import store_python
+
+    python = store_python(live_data)
+    gate2 = zero_token_gate(run, python)
+    log = run.dir / "private" / "external_connects.log"
+    after_probe = sandbox.count_refused(log)
+    site = run.dir / "private" / "guard-site"
+    sizes = parse_sizes(a.sizes) if a.sizes else list(manifest["sizes"])
+    infos: list[dict] = []
+    replay_error = ""
+    if not a.reuse:
+        try:
+            infos = replay_all(
+                run,
+                sizes,
+                1,
+                a.limit,
+                variants=prof.variants,
+                builds=prof.builds,
+                parallel=a.parallel,
+                day=0,
+                guard_site=site,
+                python=python,
+                wait_s=a.wait,
+                stock_arms=prof.stock_arms,
+                stock_dir=lambda size, shard: growth.stock_dir(run, size, shard),
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed task is a failed gate, not a crash
+            replay_error = f"{type(exc).__name__}: {exc}"[:500]
+    rows = [r for r in replay_rows(run, 0)]
+    summary = replay.summarize(rows)
+    after = live_memory_snapshot(live_cfg)
+    moved = changed_files(before, after)
+    stores = stores_ready_gate(run, infos, sizes, a.wait, replay_error)
+    gate3 = sanity_gate(rows, builds=prof.builds)
+    fired = channels_fired(rows)
+    gate4 = claims_gate(rows, fired, claims=prof.claims)
+    gate1 = freeze_gate(run)
+    gate2["external_connects_during_replay"] = sandbox.count_refused(log) - after_probe
+    gate2["ok"] = bool(
+        gate2["ok"]
+        and gate2["public_connect_refused"]
+        and not gate2["claude_processes"]
+        and not gate2["external_connects_during_replay"]
+    )
+    gate5 = {"live_memory_files_changed": len(moved), "ok": not moved}
+    loop_check = loop_gate(run, a, prof) if a.loop_seconds else {"ok": False, "skipped": True}
+    limits = unit_limits()
+    doc = {
+        "profile": prof.name,
+        "gate1_freeze": gate1,
+        "gate2_zero_tokens": gate2,
+        "gate3_sanity": gate3,
+        "gate4_channels_fired": fired,
+        "gate4_claims": gate4,
+        "gate5_isolation": gate5,
+        "stores_ready": stores,
+        "unit_limits": limits,
+        "loop": loop_check,
+        "tasks": infos,
+        "summary": summary,
+    }
+    doc["gates"] = {
+        "freeze": gate1["ok"],
+        "zero_tokens": gate2["ok"],
+        "under_unit_limits": limits["ok"],
+        "stores_ready": stores["ok"],
+        "replay_shard_done": stores["shards_done"],
+        "sanity": gate3["ok"],
+        "claims": gate4["ok"],
+        "isolation": gate5["ok"],
+        "soak_hour": loop_check["ok"],
+        "heartbeat_5min": bool(loop_check.get("heartbeat", {}).get("ok")),
+        "no_external_connects": bool(loop_check.get("external_connects") == 0)
+        and not gate2["external_connects_during_replay"],
+        "embedding_ready": bool(loop_check.get("embedding_ready")),
+    }
+    doc["all_gates"] = all(doc["gates"].values())
+    write_private(run.dir / "pilot.json", json_text(doc))
+    print(
+        json.dumps(
+            {"gates": doc["gates"], "stores": stores, "limits": limits, "loop": loop_check},
+            indent=1,
+        )
+    )
+    return 0 if doc["all_gates"] else 1
+
+
+def stores_ready_gate(
+    run: Run, infos: Sequence[dict], sizes: Sequence[int], wait_s: float, error: str = ""
+) -> dict:
+    """Every B1 store of the pilot was ready (index plus start) inside its cap, and
+    the replay shard of every scale has its done marker for day 0. A pilot that is run
+    again skips a task that is done; its timings then come from the day-0 marker."""
+    fx = run.fixture()
+    done = run.done(0)
+    markers = [
+        r
+        for r in read_jsonl(run.out / "replay-done.jsonl")
+        if r.get("day") == 0 and r.get("build") == "B1" and "ready_s" in r
+    ]
+    table: dict[str, dict] = {}
+    for size in sizes:
+        cap = index_wait_s(size, wait_s)
+        got = [t for t in infos if t["build"] == "B1" and t["size"] == size]
+        got = got or [m for m in markers if m["size"] == size]
+        took = max((t["index_s"] + t["ready_s"] for t in got), default=None)
+        shard = fx.shards(size)[0]
+        table[str(size)] = {
+            "cap_s": cap,
+            "ready_s": took,
+            "memories": max((t.get("memories") or 0 for t in got), default=None),
+            "ok": took is not None and took <= cap,
+            "shard_done": ("B1", size, shard) in done,
+        }
+    return {
+        "sizes": table,
+        "error": error,
+        "ok": not error and all(v["ok"] for v in table.values()),
+        "shards_done": all(v["shard_done"] for v in table.values()),
+    }
+
+
+def unit_limits(proc: Path = Path("/proc"), cgroup_root: Path = Path("/sys/fs/cgroup")) -> dict:
+    """The task and memory limits of the cgroup this process runs in: the pilot must
+    run under the unit's own limits (a transient unit or the unit itself), not under
+    the limits of a shell. ``pids.max`` of a shell scope is ``max``."""
+    out: dict = {"cgroup": "", "pids_max": None, "memory_max": None}
+    try:
+        line = (proc / "self" / "cgroup").read_text(encoding="utf-8").strip().splitlines()[-1]
+        path = line.split(":", 2)[-1]
+        out["cgroup"] = path
+        base = cgroup_root / path.lstrip("/")
+        out["pids_max"] = (base / "pids.max").read_text(encoding="utf-8").strip()
+        out["memory_max"] = (base / "memory.max").read_text(encoding="utf-8").strip()
+    except (OSError, IndexError):
+        pass
+    out["ok"] = bool(out["pids_max"] and out["pids_max"] != "max")
+    return out
+
+
 def freeze_gate(run: Run) -> dict:
     """Gate 1: frozen manifest, hash of the pre-registration, no leakage, and the
     program that runs is the frozen copy."""
@@ -183,12 +356,12 @@ def freeze_gate(run: Run) -> dict:
     }
 
 
-def claims_gate(rows: Sequence[dict], fired: dict) -> dict:
-    """Gate 4: each claim C1 to C24 has a recorded state in the pilot: fired in both
+def claims_gate(rows: Sequence[dict], fired: dict, claims: Sequence[str] = CLAIMS) -> dict:
+    """Gate 4: each claim in scope has a recorded state in the pilot: fired in both
     builds, fired in B1 only, not fired (a product result, cause I or D, not tuned
     away), or carried by another arm or marked pending with its reason."""
     table: dict[str, dict] = {}
-    for claim in CLAIMS:
+    for claim in claims:
         sel = [r for r in rows if claim in r.get("claims", []) and r["build"] in ("B0", "B1")]
         if not sel:
             note = replay.CLAIM_NOTES.get(claim, "no query in the pilot")
@@ -198,7 +371,7 @@ def claims_gate(rows: Sequence[dict], fired: dict) -> dict:
         n = sum(1 for r in sel if r["build"] == "B1")
         state = "fired" if hit["B1"] else "not fired (product result)"
         table[claim] = {"state": state, "B0": hit["B0"], "B1": hit["B1"], "n": n}
-    return {"claims": table, "ok": len(table) == len(CLAIMS)}
+    return {"claims": table, "ok": len(table) == len(claims)}
 
 
 def resources_gate(run: Run, infos: Sequence[dict], a: argparse.Namespace) -> dict:
@@ -250,34 +423,67 @@ def labels_gate(run: Run, a: argparse.Namespace) -> dict:
     return done
 
 
-def loop_gate(run: Run, a: argparse.Namespace) -> dict:
-    """The job loop for a few minutes on the soak store, then the daily check; the
-    files of this loop are moved to ``pilot-loop/`` so that day 1 starts empty."""
+def loop_gate(run: Run, a: argparse.Namespace, prof: profiles.Profile | None = None) -> dict:
+    """The job loop for a few minutes (an hour in the large-project pilot) on the soak
+    store with the light jobs only, then the daily check; the files of this loop are
+    moved to ``pilot-loop/`` so that day 1 starts empty. For the large-project profile
+    the gate also wants a heartbeat every 5 minutes with no gap over 10, a write that
+    became searchable, zero external connects, and the embedding runtime ready."""
     from .loop import Loop
 
-    loop = Loop(run, a.soak_size)
+    prof = prof or profiles.profile_of(run.manifest)
+    jobs = light_jobs(prof.params) if prof.watchdog else None
+    loop = Loop(run, a.soak_size, profile=prof, jobs=jobs)
+    began = dt.datetime.now().astimezone()
     try:
         loop.run_forever(a.loop_seconds, tick_s=2.0)
-    except SystemExit as exc:  # the start check refuses a dirty environment
-        return {"ok": False, "error": str(exc)[:300]}
+    except (SystemExit, Exception) as exc:  # noqa: BLE001 - a dirty environment or a dead store
+        archive_pilot_loop(run)
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
     result = run.dir / "pilot-loop-status.json"
     now = dt.datetime.now().astimezone()
     report.daily_summary(run.dir, now)
-    res = report.status(run.dir, now, notify=None)
+    res = report.status(run.dir, now, notify=None, params=prof.params)
     write_private(result, json_text(res))
-    rows = {p.stem: len(report.read_jsonl(p)) for p in sorted(run.out.glob("*.jsonl"))}
-    soak_rows = report.read_jsonl(run.out / "soak.jsonl")
+    rows = {p.stem: len(read_jsonl(p)) for p in sorted(run.out.glob("*.jsonl"))}
+    soak_rows = read_jsonl(run.out / "soak.jsonl")
     kinds = sorted({r["kind"] for r in soak_rows})
     first = min((r for r in soak_rows if r["kind"] == "write"), key=lambda r: r["ts"], default={})
+    beats = [dt.datetime.fromisoformat(r["ts"]) for r in read_jsonl(run.out / "heartbeat.jsonl")]
+    cadence = report.heartbeat_cadence(beats, prof.params.heartbeat_s, since=began)
+    sandbox_rows = read_jsonl(run.out / "sandbox.jsonl")
+    connects = sum(int(r.get("external_connects", 0)) for r in sandbox_rows)
+    health = loop.final_health or {}
+    embedding = health.get("embedding") or {}
+    embedding_ready = embedding.get("state") == "ready" and not embedding.get("missing_vectors")
     archive_pilot_loop(run)
-    return {
+    out = {
         "rows": rows,
         "soak_kinds": kinds,
         "lag_s": first.get("lag_s"),
+        "writes": sum(1 for r in soak_rows if r["kind"] == "write"),
+        "writes_searchable": sum(1 for r in soak_rows if r["kind"] == "write" and r.get("ok")),
+        "heartbeat": cadence,
+        "external_connects": connects,
+        "embedding_ready": bool(embedding_ready),
+        "embedding": {k: embedding.get(k) for k in ("state", "missing_vectors", "model")},
+        "memories": health.get("memories"),
         "status_failed": res["failed"],
         "status_notes": res["notes"],
         "ok": res["ok"],
     }
+    if prof.watchdog:
+        wanted = {"query", "write", "drift", "resources"}
+        out["ok"] = bool(
+            res["ok"]
+            and cadence["ok"]
+            and wanted <= set(kinds)
+            and out["writes"] > 0
+            and out["writes_searchable"] == out["writes"]
+            and connects == 0
+            and embedding_ready
+        )
+    return out
 
 
 def live_memory_snapshot(config_dir: Path) -> dict:
@@ -308,14 +514,17 @@ def _stat_one(path: Path) -> dict:
     return {str(path): (st.st_size, int(st.st_mtime_ns))}
 
 
-def sanity_gate(rows: Sequence[dict]) -> dict:
+def sanity_gate(rows: Sequence[dict], builds: Sequence[str] = ("B0", "B1")) -> dict:
     """Gate 3, at SMALL: V1 pull delivery of 0.95 or more for B0 and B1, S2 of 0.9 or
-    more. SMALL is the smallest size in the rows; at larger sizes stock is meant to fail."""
+    more. SMALL is the smallest size in the rows; at larger sizes stock is meant to fail.
+    A profile that has no small scale (``builds`` is B1 alone) gates its builds only
+    and reports S2: stock that fails at 5,000 notes is the hypothesis, not a fault."""
     out: dict = {}
     sizes = [r["size"] for r in rows if r.get("size")]
     if sizes:
         rows = [r for r in rows if r.get("size") == min(sizes)]
-    for build in ("B0", "B1", "S2"):
+    gated = list(builds) + (["S2"] if "B0" in builds else [])
+    for build in (*builds, "S2"):
         sel = [
             r
             for r in rows
@@ -329,7 +538,7 @@ def sanity_gate(rows: Sequence[dict]) -> dict:
         out[b]["delivery"] is not None
         and out[b]["delivery"]
         >= (PARAMS.sanity_s2_delivery if b == "S2" else PARAMS.sanity_pull_delivery)
-        for b in ("B0", "B1", "S2")
+        for b in gated
     )
     return out
 
@@ -469,10 +678,24 @@ def cmd_status(a: argparse.Namespace) -> int:
     run = Run(Path(a.run_dir))
     live_data = Path(run.manifest["live"]["data_dir"])
     res = report.status(
-        run.dir, dt.datetime.now().astimezone(), plugin_version=lambda: installed_version(live_data)
+        run.dir,
+        dt.datetime.now().astimezone(),
+        plugin_version=lambda: installed_version(live_data),
+        params=profiles.profile_of(run.manifest).params,
     )
     print(json.dumps(res, indent=1))
     return 0 if res["ok"] else 1
+
+
+def cmd_watch(a: argparse.Namespace) -> int:
+    """One step of the watchdog: start a unit that is inactive or failed, restart the
+    core unit when its heartbeat is stale, log each action. Exit 0 always: the timer
+    must not go into a failed state."""
+    ctl = [a.systemctl, "--user"] if a.systemctl else None
+    rows = watch.run_once(Path(a.run_dir), systemctl=ctl, stale_s=a.stale_seconds)
+    for row in rows:
+        print(json.dumps(row, sort_keys=True))
+    return 0
 
 
 def cmd_localnet(a: argparse.Namespace) -> int:
@@ -495,11 +718,34 @@ def cmd_labels(a: argparse.Namespace) -> int:
 
 
 def cmd_report(a: argparse.Namespace) -> int:
+    from . import soak
+
     run = Run(Path(a.run_dir))
-    rows = replay_rows(run)
-    summary = replay.summarize(rows)
-    summary["char_ratio"] = report.char_ratio(rows)
-    doc = report.verdicts(summary, None, None, None)
+    prof = profiles.profile_of(run.manifest)
+    rows = [r for r in replay_rows(run) if r.get("day")]  # the pilot (day 0) is not the run
+    if prof.name == profiles.LARGE.name and rows:
+        # DR1 and DR3 are judged on the last night (the grown store); the nights before
+        # feed the trend of DR6. A query replays every night, so the rows must not mix.
+        last = max(int(r["day"]) for r in rows)
+        judged = [r for r in rows if int(r["day"]) == last]
+    else:
+        judged = rows
+    summary = replay.summarize(judged)
+    summary["char_ratio"] = report.char_ratio(judged)
+    if prof.name == profiles.LARGE.name:
+        soak_rows = read_jsonl(run.out / "soak.jsonl")
+        evaluation = soak.evaluate(soak_rows, params=prof.params) if soak_rows else None
+        by_night = report.delivery_by_night(rows)
+        trend = report.delivery_trend(by_night)
+        doc = report.verdicts_large(summary, evaluation, trend, params=prof.params)
+        doc["judged_night"] = max((int(r["day"]) for r in rows), default=None)
+        doc["delivery_by_night"] = {str(k): v for k, v in by_night.items()}
+        doc["soak"] = evaluation
+        doc["growth"] = read_jsonl(run.out / "growth.jsonl")
+        doc["failures"] = len(read_jsonl(run.out / "failures.jsonl"))
+        doc["watchdog_actions"] = len(read_jsonl(run.out / "watchdog.jsonl"))
+    else:
+        doc = report.verdicts(summary, None, None, None)
     write_private(run.dir / "final_report.json", json_text({"summary": summary, "verdicts": doc}))
     print(json.dumps(doc["scales"], indent=1))
     return 0
@@ -513,12 +759,17 @@ def cmd_export(a: argparse.Namespace) -> int:
 def cmd_units(a: argparse.Namespace) -> int:
     run = Path(a.run_dir)
     frozen = run / "program" / "tools"
+    prof = profiles.profile_of(Run(run).manifest) if (run / "run.json").is_file() else None
     units = sandbox.render_units(
         run,
         sys.executable,
         frozen if frozen.is_dir() else TOOLS,
+        params=prof.params if prof else PARAMS,
         private_network=not a.no_private_network,
         notify_cmd=a.notify_cmd,
+        settings=prof.units if prof else None,
+        watchdog=bool(prof and prof.watchdog),
+        systemctl=watch.systemctl_path(),
     )
     target = run / "units"
     target.mkdir(mode=0o700, exist_ok=True)
@@ -546,9 +797,15 @@ def build_parser() -> argparse.ArgumentParser:
     s = add("init", cmd_init)
     s.add_argument("--run-dir", required=True)
     s.add_argument("--repo", required=True)
-    s.add_argument("--b0", required=True)
+    s.add_argument("--b0", default="", help="the older build; the large-project profile has none")
     s.add_argument("--b1", required=True)
-    s.add_argument("--sizes", default="30,200,1000,5000,20000")
+    s.add_argument(
+        "--profile",
+        default=profiles.DEFAULT,
+        choices=sorted(profiles.PROFILES),
+        help="what the run tests; it fixes the sizes, the builds, the claims and the rules",
+    )
+    s.add_argument("--sizes", default="", help="default: the sizes of the profile")
     s.add_argument("--heldout", default="", help="the hand-labelled real set (arm b, labels)")
     s.add_argument("--live-config", default=str(Path.home() / ".claude"))
     s.add_argument(
@@ -557,9 +814,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s = add("freeze", cmd_freeze)
     s.add_argument("--run-dir", required=True)
+    s = add("seed-stores", cmd_seed_stores)
+    s.add_argument("--run-dir", required=True)
+    s.add_argument("--from", dest="source", required=True, help="a run folder; read only")
+    s.add_argument("--sizes", default="", help="default: the sizes of the run")
+    s = add("watch", cmd_watch)
+    s.add_argument("--run-dir", required=True)
+    s.add_argument("--systemctl", default="", help="absolute path; default: found on PATH")
+    s.add_argument("--stale-seconds", type=float, default=watch.STALE_S)
     s = add("pilot", cmd_pilot)
     s.add_argument("--run-dir", required=True)
-    s.add_argument("--sizes", default="30,200")
+    s.add_argument("--sizes", default="", help="default: 30,200; the large profile: its sizes")
     s.add_argument("--shards", type=int, default=2)
     s.add_argument("--limit", type=int, default=6)
     s.add_argument("--parallel", type=int, default=2)

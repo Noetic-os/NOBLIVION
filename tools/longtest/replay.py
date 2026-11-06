@@ -71,6 +71,9 @@ PRIMARY = {
 }
 SECONDARY = {"V1": ("prompt",), "V2": ("prompt",), "V3": ("pull",)}
 STOCK_VARIANTS = ("V1", "V2", "V3", "V4", "V6")
+# A near miss (V5): stock has no score gate, so its false row is a near-miss note of
+# the lesson that it loads or opens. The row counts the same false delivery as a build.
+STOCK_NEGATIVE = ("V5",)
 NEGATIVE = ("none", "no_rows", "no_label_row")
 CLAIM_NOTES = {
     "C11": "arm d (soak)",
@@ -404,8 +407,9 @@ def run_stock(
     stocks: dict[str, Stock] = {}
     rows: list[dict[str, Any]] = []
     seen: dict[str, int] = defaultdict(int)
+    # V5 runs for stock only when a profile names it: the first run's rows stay the same.
     wanted = set(variants) if variants else set(STOCK_VARIANTS)
-    for q in fx.queries_for(size, wanted & set(STOCK_VARIANTS), shard):
+    for q in fx.queries_for(size, wanted & set(STOCK_VARIANTS + STOCK_NEGATIVE), shard):
         if limit_per_variant and seen[q["variant"]] >= limit_per_variant:
             continue
         seen[q["variant"]] += 1
@@ -413,23 +417,45 @@ def run_stock(
         if slug not in stocks:
             stocks[slug] = Stock(folders[slug]) if slug in folders else None  # type: ignore[assignment]
         stock = stocks[slug]
-        answer = fx.lessons[q["lesson"]]["answer"]
+        lesson = fx.lessons[fx.lesson_of(q)]
         prompt = fx.prompt_of(q)
         if q.get("task_file"):
             prompt += "\n" + (fx.root / q["task_file"]).read_text(encoding="utf-8")
-        got = stock.delivered(prompt, answer) if stock else {"S0": False, "S1": False, "S2": False}
+        negative = q["variant"] in STOCK_NEGATIVE
+        if negative:
+            got = stock_near_miss(stock, prompt, lesson.get("near_miss_notes", []))
+        else:
+            got = (
+                stock.delivered(prompt, lesson["answer"])
+                if stock
+                else {"S0": False, "S1": False, "S2": False}
+            )
         for level, hit in got.items():
             row = base_row(level, size, shard, q, "stock")
             row.update(
                 {
                     "ok": True,
-                    "hit": hit,
+                    "hit": (not hit) if negative else hit,
                     "claims": list(q.get("claims", [])),
                     "index_tokens": stock.index_tokens() if stock else 0,
                 }
             )
+            if negative:
+                row["fired"] = row["false_delivery"] = hit
             rows.append(row)
     return rows
+
+
+def stock_near_miss(stock: Stock | None, prompt: str, near: Sequence[str]) -> dict[str, bool]:
+    """Did each stock level put a near-miss note in front of the model: named in the
+    loaded index (S0), opened as linked or named (S1), or found by the search (S2)."""
+    if stock is None or not near:
+        return {"S0": False, "S1": False, "S2": False}
+    opened = stock.open_files(prompt)
+    s0 = any(f"({name})" in stock.index for name in near)
+    s1 = s0 or any(name in opened.named + opened.linked for name in near)
+    s2 = s1 or any(name in opened.searched for name in near)
+    return {"S0": s0, "S1": s1, "S2": s2}
 
 
 # -- analysis ---------------------------------------------------------------------

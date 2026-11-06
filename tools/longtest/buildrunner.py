@@ -138,7 +138,14 @@ class Harness:
         return os.pathsep.join(parts)
 
     def prepare(self, fx: Fixture, size: int, shard: int) -> list[Path]:
-        folders = copy_shard(fx, size, shard, self.config_dir)
+        """The shard's notes as the ``projects`` of this config dir. A kept store holds
+        them already, and its indexes may have grown since (the large-project run adds
+        notes and links every day): the fixture is not copied over it again."""
+        target = self.config_dir / "projects"
+        if target.is_dir() and any(target.glob("*/memory")):
+            folders = sorted(target.glob("*/memory"))
+        else:
+            folders = copy_shard(fx, size, shard, self.config_dir)
         self.write_config()
         return folders
 
