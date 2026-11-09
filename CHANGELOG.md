@@ -8,6 +8,9 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Turn on automatic learning for stores with an explicit scope and valid local
+  model configuration. Existing contribution controls and explicit opt-outs still apply.
+
 ## 0.1.22 - 2026-11-09
 
 - Codex journals now mask secrets identified by structured field names while preserving

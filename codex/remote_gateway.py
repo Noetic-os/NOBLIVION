@@ -32,6 +32,7 @@ def health(cfg: dict, encoded: str) -> dict:
     result["store"] = {"authenticated": False, "version": None}
     result["learning"] = {"enabled": None, "scope_configured": None}
     base = Path(selected["repo_root"])
+    reported_enabled = None
     try:
         store = module(base / "hooks/store_client.py", "_gateway_store")
         recall = module(base / "hooks/recall_hook.py", "_gateway_recall")
@@ -41,16 +42,18 @@ def health(cfg: dict, encoded: str) -> dict:
         )
         reply = recall.http_get_json(url + "/health", token, 2)
         result["store"] = {"authenticated": True, "version": version(reply.get("version"))}
+        if type(reply.get("learning_enabled")) is bool:
+            reported_enabled = reply["learning_enabled"]
     except Exception:  # noqa: BLE001 - report unavailable, never start or repair the store
         pass
     try:
         path = Path(selected["data_dir"]) / "learning.json"
         settings = read_json(path) if path.exists() else {"enabled": False, "scopes": []}
-        enabled, scopes = settings.get("enabled", False), settings.get("scopes", [])
-        if type(enabled) is not bool or not isinstance(scopes, list):
+        enabled, scopes = settings.get("enabled"), settings.get("scopes", [])
+        if ("enabled" in settings and type(enabled) is not bool) or not isinstance(scopes, list):
             raise ValueError("invalid learning settings")
         result["learning"] = {
-            "enabled": enabled,
+            "enabled": reported_enabled if reported_enabled is not None else enabled,
             "scope_configured": any(
                 isinstance(scope, dict)
                 and (scope.get("project"), scope.get("root"))

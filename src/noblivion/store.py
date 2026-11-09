@@ -425,6 +425,12 @@ class Store:
         return answer
 
     def _health_details(self) -> dict[str, object]:
+        from noblivion.learning_runtime import load_settings
+
+        try:
+            learning_enabled = load_settings(self.data_dir)["enabled"]
+        except (OSError, TypeError, ValueError):
+            learning_enabled = False
         emb = self.embedding
         model_id = emb.model_id
         memories = missing = schema_version = content_rev = vector_rev = consent = None
@@ -471,6 +477,7 @@ class Store:
             },
             "mode": self.mode(),
             "trust_ranking": self.store_settings.trust_ranking,
+            "learning_enabled": learning_enabled,
             "index_state": self.index_state,
             "index_blocked": self.index_blocked,
         }

@@ -353,7 +353,10 @@ def test_health_reads_spool_without_creating_or_changing_files(cfg, empty_wal):
 
 
 @pytest.mark.parametrize("valid_proof", [True, False])
-def test_gateway_health_proves_store_without_starting_it(cfg, monkeypatch, valid_proof):
+@pytest.mark.parametrize("reported_enabled", [None, True])
+def test_gateway_health_proves_store_without_starting_it(
+    cfg, monkeypatch, valid_proof, reported_enabled
+):
     data = Path(cfg["data_dir"])
     data.mkdir()
     token = "a" * 64
@@ -362,7 +365,7 @@ def test_gateway_health_proves_store_without_starting_it(cfg, monkeypatch, valid
     (data / "learning.json").write_text(
         json.dumps(
             {
-                "enabled": True,
+                **({"enabled": True} if reported_enabled is None else {}),
                 "provider": {"key": "credential-canary"},
                 "scopes": [{"project": "test", "root": "demo"}],
             }
@@ -379,7 +382,11 @@ def test_gateway_health_proves_store_without_starting_it(cfg, monkeypatch, valid
             assert credential == ""
             return {"proof": store.health_proof(token, nonce) if valid_proof else "wrong"}
         assert credential == token
-        return {"version": bridge.release(ROOT), "private": "credential-canary"}
+        return {
+            "version": bridge.release(ROOT),
+            "private": "credential-canary",
+            "learning_enabled": reported_enabled,
+        }
 
     original = gateway.module
     monkeypatch.setattr(
@@ -397,7 +404,8 @@ def test_gateway_health_proves_store_without_starting_it(cfg, monkeypatch, valid
     out = gateway.health(cfg, context)
     assert out["store"]["authenticated"] is valid_proof
     assert len(calls) == (2 if valid_proof else 1)
-    assert out["learning"] == {"enabled": True, "scope_configured": True}
+    enabled = True if valid_proof or reported_enabled is None else None
+    assert out["learning"] == {"enabled": enabled, "scope_configured": True}
     assert "credential-canary" not in json.dumps(out)
 
 

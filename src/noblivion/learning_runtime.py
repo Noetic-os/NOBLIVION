@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from pathlib import Path
 
@@ -43,6 +44,13 @@ def load_settings(data_dir: Path) -> dict:
         seen.add((project, root))
     value["scopes"] = scopes
     prune_options(value)
+    value["enabled"] = bool(scopes) and value.get("enabled", True)
+    if value["enabled"]:
+        try:
+            worker_options(value)
+        except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
+            log.warning("invalid learning provider or limits; learning is off")
+            value["enabled"] = False
     return value
 
 
@@ -168,17 +176,29 @@ def run(store) -> None:
         store._jobs_stop.wait(5.0)
 
 
-def run_once(ledger: LearningLedger, settings: dict):
-    """Construct an explicitly configured local worker; no provider fallback."""
+def worker_options(settings: dict):
+    """Validate the local provider and finite limits without contacting a model."""
     from noblivion.learning import BudgetLimits
-    from noblivion.learning_worker import LearningWorker, OpenAICompatibleProvider, WorkerSettings
+    from noblivion.learning_worker import OpenAICompatibleProvider, WorkerSettings
 
     provider = OpenAICompatibleProvider(**settings["provider"])
+    worker = WorkerSettings(**settings.get("worker", {}))
+    budget = BudgetLimits(**settings.get("budget", {}))
+    if budget.window_seconds <= 0 or any(
+        type(value) not in (int, float) or not math.isfinite(value) or value < 0
+        for value in vars(budget).values()
+    ):
+        raise ValueError("invalid learning budget")
+    return provider, worker, budget
+
+
+def run_once(ledger: LearningLedger, settings: dict):
+    """Construct an explicitly configured local worker; no provider fallback."""
+    from noblivion.learning_worker import LearningWorker
+
     worker = LearningWorker(
         ledger,
-        provider,
-        WorkerSettings(**settings.get("worker", {})),
-        BudgetLimits(**settings.get("budget", {})),
+        *worker_options(settings),
         allowed_scopes={(s["project"], s["root"]) for s in settings["scopes"]},
     )
     return worker.run_once()

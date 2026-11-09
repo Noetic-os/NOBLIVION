@@ -68,7 +68,6 @@ def test_capture_to_background_memory_to_independent_recall(tmp_path):
     folder = st.settings.memory_dirs[0]
     namespace, root = st.namespace, folder.parent.name
     settings = {
-        "enabled": True,
         "scopes": [{"project": namespace, "root": root, "memory_dir": str(folder)}],
         "provider": {
             "endpoint": f"http://127.0.0.1:{model.server_port}/v1",
@@ -114,6 +113,7 @@ def test_capture_to_background_memory_to_independent_recall(tmp_path):
         "transcript_path": str(transcript),
     }
     try:
+        assert run.get("/health")[1]["learning_enabled"] is True
         captured = capture.capture_hook(client, event)
         assert captured["chunks"] == 1
         query = (
