@@ -230,7 +230,7 @@ def test_alarm_during_startup_has_an_owner_for_cleanup(isolated, monkeypatch):
     def interrupted_start(which, seconds, interval=0.0):
         result = set_timer(which, seconds, interval)
         if seconds == 0.03:
-            time.sleep(0.06)  # model descheduling after arming, before start returns
+            signal.raise_signal(signal.SIGALRM)  # deliver the armed alarm before start returns
         return result
 
     monkeypatch.setattr(signal, "setitimer", interrupted_start)
