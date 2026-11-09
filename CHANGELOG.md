@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.23 - 2026-11-09
+
 - Turn on automatic learning for stores with an explicit scope and valid local
   model configuration. Existing contribution controls and explicit opt-outs still apply.
 - Keep guard deadlines effective when Python cleanup swallows an alarm; preserve nested
