@@ -177,7 +177,19 @@ import textwrap
 import threading
 import time
 import urllib.parse
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 PERSONA = "claude_code"  # the default namespace
 PROJECT_ENV = "NOBLIVION_RECALL_PROJECT"
@@ -2922,6 +2934,53 @@ def floor_index(
     return kept, sum(1 for ln in kept if ln.score is None)
 
 
+class RelevanceSelection(NamedTuple):
+    """Selected rows, the floor-stage snapshot, and counts for caller diagnostics."""
+
+    lines: List[IndexLine]
+    floor_lines: List[IndexLine]
+    rescued: int
+    unscored: int
+    shared_cut: int
+
+
+def select_relevant_index(
+    lines: Sequence[IndexLine],
+    candidates: Sequence[IndexLine],
+    *,
+    floor: float,
+    shared_ids: Set[int],
+    margin: float,
+    window: float,
+) -> RelevanceSelection:
+    """Apply rescue, the shared-root floor and the score window without side effects.
+
+    ``lines`` have passed hygiene, re-ranking and trust; ``candidates`` retain
+    the store's original order and the lexical evidence from re-ranking. Only
+    the store's first candidate may be rescued or exempt from the shared-root
+    margin, and an earlier stage's removal must never be undone.
+
+    The caller resolves keyword/model exceptions and settings before calling.
+    Returned lists are independent snapshots, with the same row objects and
+    ranks as the input. Neither input rows nor ``shared_ids`` are changed.
+    """
+    raised = set(shared_ids) if margin > 0.0 else set()
+    if candidates:
+        raised.discard(int(candidates[0].mid))
+    rescued = rescue_ids(candidates, floor) & {int(ln.mid) for ln in lines}
+    floor_lines, unscored = floor_index(lines, floor, rescued, raised, margin)
+    shared_cut = sum(
+        1
+        for ln in candidates
+        if int(ln.mid) in raised
+        and ln.score is not None
+        and floor <= ln.score < floor + margin - 1e-9
+        and int(ln.mid) not in rescued
+    )
+    selected, _cut = window_index(floor_lines, window)
+    return RelevanceSelection(selected, floor_lines, len(rescued), unscored, shared_cut)
+
+
 def own_rows(environ: Optional[Mapping[str, str]] = None) -> bool:
     """NOBLIVION-160. True when the own-project rows are on: the reserved own-root
     row, the description row and the shared-root margin. On unless
@@ -4007,40 +4066,24 @@ def _serve_index(
         # WI-6. On the ranked list and before the cut to k, so k is a cap and a
         # row under the floor gives its place to the next one that passes.
         ranked = len(lines)
-        # NOBLIVION-151. The rescue reads the BM25 value of the re-rank, so it
-        # needs the re-rank; without it nothing is rescued.
-        in_lines = {int(ln.mid) for ln in lines}
-        # NOBLIVION-160. A row of a shared root needs the floor plus the margin. The
-        # store's rank 1 is left out: the floor and the rescue above judge it, as before.
         margin = shared_root_margin(environ) if own_on else 0.0
-        raised = shared_row_ids(lines, by_name) if margin > 0.0 else set()
-        if candidates:
-            raised.discard(int(candidates[0].mid))
-        rescued = rescue_ids(candidates, floor) & in_lines
-        lines, unscored = floor_index(lines, floor, rescued, raised, margin)
-        trace("relevance_floor", lines)
-        note += f":floor{len(lines)}of{ranked}"
-        if raised:
-            cut = sum(
-                1
-                for ln in candidates
-                if int(ln.mid) in raised
-                and ln.score is not None
-                and floor <= ln.score < floor + margin - 1e-9
-                and int(ln.mid) not in rescued
-            )
-            if cut:
-                note += f":shared_cut{cut}"
-        if unscored:
-            note += f":unscored{unscored}"
-        if rescued:
-            note += f":rescue{len(rescued)}"
+        shared_ids = shared_row_ids(lines, by_name) if margin > 0.0 else set()
         window = score_window(environ)
+        selection = select_relevant_index(
+            lines, candidates, floor=floor, shared_ids=shared_ids, margin=margin, window=window
+        )
+        lines = selection.lines
+        trace("relevance_floor", selection.floor_lines)
+        note += f":floor{len(selection.floor_lines)}of{ranked}"
+        if selection.shared_cut:
+            note += f":shared_cut{selection.shared_cut}"
+        if selection.unscored:
+            note += f":unscored{selection.unscored}"
+        if selection.rescued:
+            note += f":rescue{selection.rescued}"
         if window > 0.0:
-            before_window = len(lines)
-            lines, _cut = window_index(lines, window)
             trace("score_window", lines)
-            note += f":window{len(lines)}of{before_window}"
+            note += f":window{len(lines)}of{len(selection.floor_lines)}"
     if drop_on:
         # WI-18. After the floor and before the cut to k, so a row with no rule
         # text gives its place to the next row that has some. Annotated here,
