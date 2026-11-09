@@ -239,7 +239,8 @@ def test_embedding_url_safety_without_network(installed, url, status):
 
 
 def test_health_probe_bounded_and_receives_no_extra_requests(installed, monkeypatch):
-    seen, probes, errors = [], [], []
+    seen, probes, errors, joins = [], [], [], []
+    real_join = threading.Thread.join
     started = threading.Event()
     release = threading.Event()
     finished = threading.Event()
@@ -264,7 +265,12 @@ def test_health_probe_bounded_and_receives_no_extra_requests(installed, monkeypa
         finally:
             diagnosed.set()
 
+    def join(thread, timeout=None):
+        joins.append((thread, timeout))
+        return real_join(thread, timeout)
+
     monkeypatch.setattr(launcher, "probe", probe)
+    monkeypatch.setattr(threading.Thread, "join", join)
     worker = threading.Thread(target=diagnose, daemon=True)
     worker.start()
     try:
@@ -274,6 +280,7 @@ def test_health_probe_bounded_and_receives_no_extra_requests(installed, monkeypa
         if errors:
             raise errors[0]
         assert not finished.is_set(), "health probe must still be pending"
+        assert [timeout for thread, timeout in joins if thread in probes] == [0.05]
         assert result["checks"]["health"]["status"] == "warn"
     finally:
         release.set()
