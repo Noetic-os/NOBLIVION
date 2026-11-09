@@ -192,6 +192,36 @@ def test_a_label_match_reorders_rows_that_score_close(conn):
     assert ids(search(conn, "deploy gateway gateway-ctl"))[:2] == [b, a]
 
 
+def test_label_boost_is_shared_by_all_chunks_of_each_labelled_file(conn, monkeypatch):
+    sections = "\n\n".join(
+        f"## Part {n}\n" + "Orchard pruning follows the winter calendar. " * 30 for n in range(4)
+    )
+    first = add_memory(conn, "first", sections, labels='["alpha.py"]')
+    second = add_memory(conn, "second", sections, labels='["beta.py"]')
+    plain = add_memory(conn, "plain", sections)
+    ranker = ranking.Ranker(None)
+    baseline = ranker.search(conn, "orchard pruning", project="claude_code", top_k=3)
+    assert ids(baseline) == [first, second, plain]
+    assert all(len(ranker.index._snap.units[mid]) > 1 for mid in (first, second, plain))
+    calls = []
+    label_boost = ranking.label_boost
+
+    def counted(labels, query_tokens):
+        calls.append(labels)
+        return label_boost(labels, query_tokens)
+
+    monkeypatch.setattr(ranking, "label_boost", counted)
+    result = ranker.search(
+        conn, "orchard pruning", project="claude_code", top_k=3, target="src/pkg/beta.py"
+    )
+    assert ids(result) == [second, first, plain]
+    before = {hit.row.id: hit.bm25 for hit in baseline.hits}
+    for hit in result.hits:
+        boost = ranking.LABEL_BOOST if hit.row.id == second else 0.0
+        assert hit.bm25 == pytest.approx(before[hit.row.id] + boost)
+    assert calls == [("alpha.py",), ("beta.py",)]
+
+
 def test_the_label_boost_is_bounded(conn):
     """A row with the label does not pass a row that holds one more query word and scores
     more than ``LABEL_BOOST_MAX_LABELS * LABEL_BOOST`` higher."""

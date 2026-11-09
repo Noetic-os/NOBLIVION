@@ -2121,19 +2121,12 @@ def save_last_index(
     cache: str,
     session_id: Any,
     shown: Sequence[IndexLine],
-    candidates: Sequence[IndexLine] = (),
 ) -> None:
     """Write the rows the model was just shown, for the MCP fetch to read.
 
     Only the rows that SURVIVED the cap are written, because a rank the model
     can read off the block is a rank it was shown; a row dropped by the cap was
     never on its screen and must not be fetchable by number.
-
-    ``ids`` maps the name of EVERY candidate the store returned to its id
-    (review (a) #1). Arm ET's trigger leg reads it, so a row for a memory the
-    index did not show still names a real id. It is never a source of ranks:
-    ``load_last_index`` reads ``rows`` only. It costs no request, because the
-    store already sent these ids with the candidates.
 
     Best effort, like every other write on this path: a hook that fails a prompt
     because a cache file could not be written is worse than a fetch that cannot
@@ -2145,7 +2138,6 @@ def save_last_index(
     doc = {
         "session": session_id if isinstance(session_id, str) else None,
         "rows": [{"rank": int(ln.rank), "id": int(ln.mid), "name": ln.title} for ln in shown],
-        "ids": _candidate_ids(candidates),
     }
     try:
         _make_dirs(os.path.dirname(path))
@@ -2155,47 +2147,6 @@ def save_last_index(
         os.replace(tmp, path)
     except OSError:
         pass
-
-
-def _candidate_ids(candidates: Sequence[IndexLine]) -> Dict[str, int]:
-    """Name -> id of every candidate. The first (best ranked) wins a duplicate
-    name, as in the rows; the frozen corpus has none (review (a) #8)."""
-    ids: Dict[str, int] = {}
-    for ln in candidates:
-        if ln.title and int(ln.mid) > 0:
-            ids.setdefault(ln.title, int(ln.mid))
-    return ids
-
-
-def load_last_ids(cache: str, session_id: Any) -> Dict[str, int]:
-    """Name -> id for every candidate of this session's last index, or ``{}``.
-
-    Read by arm ET's trigger leg only, for a row's id, never for a rank. The
-    shown rows are laid over the candidate map, so a name the model saw carries
-    the id it saw. Every entry is re-validated, as in ``load_last_index``, and
-    another session's file reads as empty.
-    """
-    try:
-        with open(session_read_file(cache, LAST_INDEX_NAME, session_id), encoding="utf-8") as fh:
-            doc = json.load(fh)
-    except (OSError, ValueError):
-        return {}
-    sid = _valid_sid(session_id)
-    if not isinstance(doc, dict) or not sid or _valid_sid(doc.get("session")) != sid:
-        return {}
-    out: Dict[str, int] = {}
-    raw = doc.get("ids")
-    for name, mid in raw.items() if isinstance(raw, dict) else ():
-        try:
-            value = int(str(mid).strip())
-        except (TypeError, ValueError):
-            continue
-        if isinstance(name, str) and name and value > 0:
-            out[name] = value
-    for row in load_last_index(cache, session_id):
-        if row["name"]:
-            out[row["name"]] = row["id"]
-    return out
 
 
 def load_last_index(cache: str, session_id: Any = None) -> List[Dict[str, Any]]:
@@ -4268,7 +4219,7 @@ def _serve_index(
         # the index the model was last shown. A reduced index keeps the old
         # ranks for its tiers, so the file gets the positions 1..n of the rows
         # as printed. With nothing shown the file is left as it is.
-        save_last_index(cache, sid, renumber(shown) if row_on else shown, candidates)
+        save_last_index(cache, sid, renumber(shown) if row_on else shown)
     if (
         row_on
         and chars
