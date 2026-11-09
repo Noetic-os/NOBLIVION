@@ -76,7 +76,6 @@ SRC_GUARD_DENY = "guard_deny"
 SRC_GUARD_OVERRIDE = "guard_override"
 SRC_REWRITE = "rewrite"  # NOBLIVION-122: the guard changed the command to the rule's shape
 SRC_GUARD_ASK = "guard_ask"  # NOBLIVION-122: the guard asked the user instead of a deny
-SRC_HITS = "hits"  # the replay's pre-index hit rows (exposure)
 # guard decision -> (kind, src). The decisions "rows" and "labels" are NOT
 # here on purpose: they only show a rule, so they are not a use, in any mode.
 GUARD_EVENTS = {
@@ -221,20 +220,6 @@ def index_events(mids: Iterable[Any], ts: str, src: str = SRC_INDEX) -> List[Dic
             continue
         seen.add(mid)
         out.append({"mv_id": mid, "kind": KIND_RECALL, "ts": ts, "src": src})
-    return out
-
-
-def hit_events(stems: Iterable[Any], ts: str) -> List[Dict[str, Any]]:
-    """The replay's pre-index hit rows (2026-09-22..09-30), already joined to
-    their file stems -> one ``recall`` event per file, keyed by path."""
-    out: List[Dict[str, Any]] = []
-    seen: Set[str] = set()
-    for stem in stems:
-        path = path_of_stem(stem)
-        if path is None or path in seen:
-            continue
-        seen.add(path)
-        out.append({"path": path, "kind": KIND_RECALL, "ts": ts, "src": SRC_HITS})
     return out
 
 

@@ -65,8 +65,8 @@ def test_ties_break_on_the_memory_id():
     assert [h.row.id for h in result.hits] == [4, 9]
 
 
-def test_floor_keeps_every_row_in_the_cosine_list_and_top_k_cuts():
-    # Section 8.3 step 4 never drops a row; a low cosine is still returned.
+def test_low_cosines_remain_eligible_and_top_k_limits_the_results():
+    # A low cosine remains eligible; only the requested result count limits it.
     pool = [row(1), row(2), row(3)]
     result = ranking.rank_pool(pool, [0.0, 0.0, 0.0], {0: -0.5, 1: 0.01, 2: 0.05}, top_k=5)
     assert [h.row.id for h in result.hits] == [3, 2, 1]

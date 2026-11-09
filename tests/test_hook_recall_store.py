@@ -413,8 +413,8 @@ def test_end_to_end_ranked_index_rule_rows_and_mcp_fetch(tmp_path, real_store):
     out = _run(rh, env, _prompt("release notes changelog before a deploy"))
     assert "deploy checklist" in out
     assert ":joined" in _log(env)
-    ids = rh.load_last_ids(env["NOBLIVION_RECALL_CACHE_DIR"], "s-demo-1")
-    mid = ids["deploy checklist"]
+    rows = rh.load_last_index(env["NOBLIVION_RECALL_CACHE_DIR"], "s-demo-1")
+    mid = next(row["id"] for row in rows if row["name"] == "deploy checklist")
     mcp = load_hook_mcp()
     result = mcp.noblivion_recall(environ=env, fetch_id=mid)
     assert result["isError"] is False

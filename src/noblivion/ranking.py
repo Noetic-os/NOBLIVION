@@ -38,7 +38,6 @@ except ImportError:  # pragma: no cover - exercised by a monkeypatch test
     np = None  # type: ignore[assignment]
 
 RRF_K = 60
-SEM_FLOOR = 0.2
 SCORE_DECIMALS = 4  # the weighted cosine, section 8.2
 FUSION_DECIMALS = 6  # the fused score, compared and reported at 6 places
 MODE_HYBRID = "hybrid"
@@ -177,20 +176,10 @@ def rank_pool(
     fused = {i: _q(s, FUSION_DECIMALS) for i, s in fused.items()}
     order = sorted(fused, key=lambda i: (-fused[i], pool[i].id))
 
-    floor = _q(1.0 / (RRF_K + n), FUSION_DECIMALS) if n else 0.0
-    chosen: list[tuple[int, float]] = []
-    for i in order:
-        if len(chosen) >= top_k:
-            break
-        # Kept for parity with the reference: a row in the cosine list always
-        # has a fused score of at least the floor, so this never drops a row.
-        if sem.get(i, -math.inf) < SEM_FLOOR and fused[i] < floor:
-            continue
-        chosen.append((i, fused[i]))
-    if not chosen and top_k and lists[0]:
-        best = lists[0][0]
-        chosen.append((best, sem[best]))
-    hits = [Hit(rank, pool[i], sem.get(i), f, bm[i]) for rank, (i, f) in enumerate(chosen, start=1)]
+    hits = [
+        Hit(rank, pool[i], sem.get(i), fused[i], bm[i])
+        for rank, i in enumerate(order[:top_k], start=1)
+    ]
     return RankResult(MODE_HYBRID, hits, n)
 
 
@@ -773,10 +762,10 @@ class RankIndex:
             # the score of a file. It does not make a file a keyword match: a file that holds no
             # query word stays out, as before.
             per_file: dict[int, float] = {}
-            boosts = [
-                per_file.setdefault(u.id, label_boost(u.labels, named)) if u.labels else 0.0
-                for u in units
-            ]
+            for u in units:
+                if u.labels and u.id not in per_file:
+                    per_file[u.id] = label_boost(u.labels, named)
+            boosts = [per_file.get(u.id, 0.0) for u in units]
             if any(boosts):
                 scores = [s + b for s, b in zip(scores, boosts, strict=True)]
         cosines = self._cosines(snap, key, units, query_vector) if query_vector else {}

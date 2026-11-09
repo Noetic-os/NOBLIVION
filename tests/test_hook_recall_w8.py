@@ -397,10 +397,10 @@ def test_one_session_across_the_index_and_the_fetch(tmp_path, tcorpus, monkeypat
     ]
 
 
-# ── the candidate ids ───────────────────────────────────────────────────────
+# ── the last shown index ───────────────────────────────────────────────────
 
 
-def test_the_index_writes_the_id_of_every_candidate_not_only_the_shown(tmp_path, corpus, daemon):
+def test_the_index_records_only_the_shown_rows(tmp_path, corpus, daemon):
     # Hygiene asks the store for INDEX_CANDIDATE_TOP_K rows; the cap shows three.
     env = _env(
         tmp_path,
@@ -410,47 +410,16 @@ def test_the_index_writes_the_id_of_every_candidate_not_only_the_shown(tmp_path,
     _serve(env)
     doc = json.loads(Path(hook.last_index_file(str(tmp_path / "cache"), SID)).read_text())
     assert [r["name"] for r in doc["rows"]] == ["feedback_m01", "feedback_m02", "feedback_m03"]
-    assert doc["ids"] == {f"feedback_m{i:02d}": 19000 + i for i in range(1, 13)}
     assert len(hook.load_last_index(str(tmp_path / "cache"), SID)) == 3, (
-        "the candidate map is never a source of ranks"
+        "a candidate not shown to the model is not fetchable by rank"
     )
 
 
-def test_a_memory_the_index_did_not_show_gets_its_candidate_id(tmp_path):
-    cache = str(tmp_path / "cache")
-    shown = [hook.IndexLine(rank=1, mid=19001, title="feedback_a", summary="", score=None)]
-    candidates = shown + [
-        hook.IndexLine(rank=2, mid=19002, title="feedback_b", summary="", score=None)
-    ]
-    hook.save_last_index(cache, SID, shown, candidates)
-    ids = hook.load_last_ids(cache, SID)
-    assert ids == {"feedback_a": 19001, "feedback_b": 19002}
-    assert "feedback_c_named" not in ids, "a memory no index offered has no id"
-    assert [r["id"] for r in hook.load_last_index(cache, SID)] == [19001]
-
-
-def test_a_shown_row_keeps_the_id_the_model_saw(tmp_path):
-    cache = str(tmp_path / "cache")
-    shown = [hook.IndexLine(rank=1, mid=19001, title="feedback_a", summary="", score=None)]
-    other = [hook.IndexLine(rank=1, mid=555, title="feedback_a", summary="", score=None)]
-    hook.save_last_index(cache, SID, shown, other)
-    assert hook.load_last_ids(cache, SID) == {"feedback_a": 19001}
-
-
-@pytest.mark.parametrize("ids", [None, [], "x", {"a": "no"}, {"a": 0}, {"a": -3}, {"": 5}])
-def test_a_malformed_candidate_map_gives_no_ids(tmp_path, ids):
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    (cache / hook.LAST_INDEX_NAME).write_text(json.dumps({"session": SID, "rows": [], "ids": ids}))
-    assert hook.load_last_ids(str(cache), SID) == {}
-
-
-def test_a_candidate_map_of_another_or_no_session_gives_no_ids(tmp_path):
-    cache = str(tmp_path / "cache")
-    lines = [hook.IndexLine(rank=1, mid=19001, title="feedback_a", summary="", score=None)]
-    hook.save_last_index(cache, "an-older-session", lines, lines)
-    assert hook.load_last_ids(cache, SID) == {}
-    assert hook.load_last_ids(cache, None) == {}
+def test_a_legacy_candidate_map_does_not_change_the_shown_rows(tmp_path):
+    rows = [{"rank": 1, "id": 19001, "name": "feedback_a"}]
+    legacy = {"session": SID, "rows": rows, "ids": {"feedback_a": 555, "unshown": 19002}}
+    (tmp_path / hook.LAST_INDEX_NAME).write_text(json.dumps(legacy))
+    assert hook.load_last_index(str(tmp_path), SID) == rows
 
 
 def test_a_fetch_below_the_tiers_is_not_counted_as_a_dropped_block(tmp_path, corpus, daemon):
@@ -469,14 +438,6 @@ def test_the_header_promises_no_range_when_rank_1_lost_its_block(tmp_path, corpu
     header = _serve(_env(tmp_path, corpus, **SHOWN)).splitlines()[0]
     assert hook.INDEX_RULE_HEADER_TIERS in header, "rank 2 still carries a block"
     assert not re.search(r"Rows? \d", header)
-
-
-def test_the_best_ranked_candidate_wins_a_duplicate_name():
-    lines = [
-        hook.IndexLine(rank=i, mid=mid, title="feedback_a", summary="", score=None)
-        for i, mid in ((1, 19001), (2, 19002))
-    ]
-    assert hook._candidate_ids(lines) == {"feedback_a": 19001}
 
 
 # ── NOBLIVION-103: one section of a memory ──────────────────────────────────

@@ -8,6 +8,7 @@ import argparse
 import contextlib
 import datetime as dt
 import fcntl
+import functools
 import hashlib
 import importlib.util
 import json
@@ -79,29 +80,43 @@ def environment(cfg: dict, event: dict) -> dict[str, str]:
     return env
 
 
-def _redact(cfg: dict, value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            _redact(cfg, k): "[capability removed]" if k == "read_capability" else _redact(cfg, v)
-            for k, v in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact(cfg, v) for v in value]
-    if not isinstance(value, str):
-        return value
-    path = Path(cfg["repo_root"]) / "src/noblivion/redaction.py"
+@functools.lru_cache(maxsize=8)
+def _redactor(root: Path):
+    path = root / "src/noblivion/redaction.py"
     spec = importlib.util.spec_from_file_location("noblivion_codex_redaction", path)
     if spec is None or spec.loader is None:
         raise ImportError("redaction")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    value = mod.scrub_read_capabilities(value)
-    if mod.contains_secret(value):
-        return "[REDACTED: unsafe evidence]"
-    out = mod.redact_at_rest(value)
-    if out == mod.REDACTION_FAILED_TOKEN:
-        raise ValueError("redaction failed")
-    return out
+    return mod
+
+
+def _redact(cfg: dict, value: Any) -> Any:
+    mod = _redactor(Path(cfg["repo_root"]).resolve())
+    omitted = "[REDACTED: unsafe evidence]"
+
+    def clean(item: Any) -> Any:
+        if isinstance(item, dict):
+            result = {}
+            for key, child in item.items():
+                safe_key, safe_child = clean(key), clean(child)
+                # Keep field context: an ordinary value can be a password. Clean
+                # children first so their omission markers do not erase parents.
+                context = json.dumps({safe_key: safe_child}, ensure_ascii=False)
+                result[safe_key] = omitted if mod.would_change(context) else safe_child
+            return result
+        if isinstance(item, list):
+            return [clean(child) for child in item]
+        if not isinstance(item, str):
+            return item
+        if mod.contains_secret(item):
+            return omitted
+        out = mod.redact_at_rest(item)
+        if out == mod.REDACTION_FAILED_TOKEN:
+            raise ValueError("redaction failed")
+        return out
+
+    return clean(mod.scrub_read_capabilities(value))
 
 
 def _invoke(cfg: dict, env: dict, script: str, event: dict, *args: str) -> dict:

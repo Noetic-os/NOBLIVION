@@ -184,7 +184,6 @@ def test_the_last_index_of_a_session_survives_the_index_of_another(tmp_path):
     hook.save_last_index(cache, B, [_line(19002, "b")])
     assert [r["id"] for r in hook.load_last_index(cache, A)] == [19001]
     assert [r["id"] for r in hook.load_last_index(cache, B)] == [19002]
-    assert hook.load_last_ids(cache, A) == {"a": 19001}
     assert hook.load_last_index(cache, "session-files-c") == []
 
 
