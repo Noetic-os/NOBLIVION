@@ -239,19 +239,50 @@ def test_embedding_url_safety_without_network(installed, url, status):
 
 
 def test_health_probe_bounded_and_receives_no_extra_requests(installed, monkeypatch):
-    seen = []
+    seen, probes, errors = [], [], []
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    diagnosed = threading.Event()
+    result = {}
 
     def probe(port, token, timeout):
         seen.append((port, token, timeout))
-        time.sleep(0.25)
-        return None
+        probes.append(threading.current_thread())
+        started.set()
+        try:
+            release.wait()
+            return None
+        finally:
+            finished.set()
+
+    def diagnose():
+        try:
+            result.update(report(installed, timeout=0.05))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            diagnosed.set()
 
     monkeypatch.setattr(launcher, "probe", probe)
-    started = time.monotonic()
-    result = report(installed, timeout=0.05)
-    assert time.monotonic() - started < 0.2
+    worker = threading.Thread(target=diagnose, daemon=True)
+    worker.start()
+    try:
+        # These are deadlock watchdogs, not limits on unrelated diagnostic work.
+        assert started.wait(5), "diagnosis did not start its health probe"
+        assert diagnosed.wait(5), "diagnosis waited for the blocked health probe"
+        if errors:
+            raise errors[0]
+        assert not finished.is_set(), "health probe must still be pending"
+        assert result["checks"]["health"]["status"] == "warn"
+    finally:
+        release.set()
+        worker.join(5)
+        for probe_worker in probes:
+            probe_worker.join(5)
+        assert not worker.is_alive(), "diagnostic thread did not stop"
+        assert all(not probe_worker.is_alive() for probe_worker in probes)
     assert seen == [(12345, "a" * 64, 0.05)]
-    assert result["checks"]["health"]["status"] == "warn"
 
 
 def test_bad_token_never_probes(installed, monkeypatch):
