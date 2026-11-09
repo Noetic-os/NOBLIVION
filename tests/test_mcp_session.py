@@ -16,6 +16,7 @@ Fictional data only. Every socket is on 127.0.0.1.
 
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import io
 import json
@@ -437,3 +438,173 @@ def test_the_session_corpus_fills_the_cache_once(tmp_path):
     path.unlink()
     assert len(hook.load_session_corpus(off)) == 5
     assert not path.exists()
+
+
+# -- 4. one shared cache operation for all recall roots ---------------------------------
+
+
+def _cache_io(monkeypatch, path):
+    """Record real cache opens, JSON parses and atomic replacements."""
+    calls = []
+    real_open, real_load, real_replace = builtins.open, json.load, os.replace
+
+    def opened(file, *args, **kwargs):
+        if file == str(path):
+            calls.append("read")
+        return real_open(file, *args, **kwargs)
+
+    def loaded(file, *args, **kwargs):
+        if file.name == str(path):
+            calls.append("parse")
+        return real_load(file, *args, **kwargs)
+
+    def replaced(source, target):
+        if target == str(path):
+            assert Path(source).parent == path.parent
+            calls.append("write")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(builtins, "open", opened)
+    monkeypatch.setattr(json, "load", loaded)
+    monkeypatch.setattr(os, "replace", replaced)
+    return calls
+
+
+def test_multi_root_recall_reads_and_writes_one_cache(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    folders = [tmp_path / "own", tmp_path / "global", home / ".claude/projects/-srv-shared/memory"]
+    for n, folder in enumerate(folders, 2):
+        _write_memories(folder, n)
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"recall": {"shared_roots": ["-srv-shared", "-srv-missing"]}}))
+    env = {
+        "HOME": str(home),
+        "CLAUDE_CONFIG_DIR": str(home / ".claude"),
+        "NOBLIVION_CONFIG": str(config),
+        "NOBLIVION_RECALL_CACHE_DIR": str(tmp_path / "cache"),
+        "NOBLIVION_RECALL_MEMORY_DIR": str(folders[0]),
+        "NOBLIVION_GLOBAL_MEMORY_DIR": str(folders[1]),
+    }
+    assert hook.memory_dirs(env) == list(map(str, folders))
+    path = tmp_path / "cache" / "corpus_cache.json"
+    calls = _cache_io(monkeypatch, path)
+    off = dict(env, **{hook.CORPUS_CACHE_ENV: "0"})
+
+    for phase in ("cold", "warm", "changed", "warm_again"):
+        if phase == "changed":
+            (folders[0] / "feedback_item_00.md").write_text("---\nrule: Own new rule.\n---\nbody")
+            (folders[0] / "feedback_item_01.md").unlink()  # reveal the global copy
+            (folders[1] / "feedback_item_02.md").write_text(
+                "---\nrule: Global new rule.\n---\nbody"
+            )
+            (folders[2] / "feedback_item_03.md").write_text(
+                "---\nrule: Shared new rule.\n---\nbody"
+            )
+            (folders[2] / "feedback_new.md").write_text("---\nname: new shared note\n---\nbody")
+        calls.clear()
+        got = hook.load_session_corpus(env)
+        assert (
+            calls
+            == {
+                "cold": ["read", "write"],
+                "warm": ["read", "parse"],
+                "changed": ["read", "parse", "write"],
+                "warm_again": ["read", "parse"],
+            }[phase]
+        )
+        assert all(md._tokens is None for md in got), "token loading stays lazy"
+        calls.clear()
+        plain = hook.load_session_corpus(off)
+        assert calls == [], "disabled caching does no cache I/O"
+        _same(got, plain)
+        assert [(md.src, md.own, md.scope, md.triggers, md.stamp) for md in got] == [
+            (md.src, md.own, md.scope, md.triggers, md.stamp) for md in plain
+        ]
+        by_path = {md.rel_path: md for md in got}
+        assert by_path["feedback_item_00.md"].src == str(folders[0] / "feedback_item_00.md")
+        assert by_path["feedback_item_00.md"].own
+        assert by_path["feedback_item_02.md"].src == str(folders[1] / "feedback_item_02.md")
+        assert not by_path["feedback_item_02.md"].own
+        assert by_path["feedback_item_03.md"].src == str(folders[2] / "feedback_item_03.md")
+        assert not by_path["feedback_item_03.md"].own
+        if phase in ("changed", "warm_again"):
+            assert by_path["feedback_item_01.md"].src == str(folders[1] / "feedback_item_01.md")
+            assert not by_path["feedback_item_01.md"].own
+            assert by_path["feedback_item_00.md"].rule == "Own new rule."
+            assert by_path["feedback_item_02.md"].rule == "Global new rule."
+            assert by_path["feedback_item_03.md"].rule == "Shared new rule."
+            assert "feedback_new.md" in by_path
+            assert (
+                str(folders[0]) + "\x00feedback_item_01.md"
+                not in json.loads(path.read_text())["files"]
+            )
+    doc = json.loads(path.read_text())
+    assert doc["signature"] == corpus._CACHE_SIGNATURE
+    assert all(len(row) in (2, 12) for row in doc["files"].values())
+    assert all(row[8] == "" for row in doc["files"].values() if len(row) == 12)
+    assert path.stat().st_mode & 0o077 == 0
+    assert list(path.parent.glob("*.tmp")) == []
+
+
+def test_multi_root_cache_preserves_unrequested_folders(tmp_path):
+    folders = [tmp_path / name for name in ("one", "two", "three")]
+    for folder in folders:
+        _write_memories(folder, 1)
+    cache = tmp_path / "corpus_cache.json"
+    paths = list(map(str, folders))
+    corpus.load_memory_corpora(paths, str(cache))
+    before = json.loads(cache.read_text())["files"]
+    (folders[0] / "feedback_item_00.md").unlink()
+    corpus.load_memory_corpora(paths[:1] + paths[2:], str(cache))
+    after = json.loads(cache.read_text())["files"]
+    assert after == {k: v for k, v in before.items() if k != paths[0] + "\x00feedback_item_00.md"}
+    # A supported single-root reader can still use the same combined cache.
+    _same(corpus.load_memory_corpus(paths[1], str(cache)), corpus.load_memory_corpus(paths[1]))
+
+
+@pytest.mark.parametrize("damage", ["invalid_json", "malformed_row"])
+def test_multi_root_cache_recovers_corruption_once(tmp_path, monkeypatch, damage):
+    folders = [tmp_path / "one", tmp_path / "two"]
+    for folder in folders:
+        _write_memories(folder, 2)
+    paths = list(map(str, folders))
+    cache = tmp_path / "corpus_cache.json"
+    corpus.load_memory_corpora(paths, str(cache))
+    if damage == "invalid_json":
+        cache.write_text("not JSON")
+    else:
+        doc = json.loads(cache.read_text())
+        doc["files"][paths[1] + "\x00feedback_item_00.md"][3] = 5
+        cache.write_text(json.dumps(doc))
+    calls = _cache_io(monkeypatch, cache)
+    got = corpus.load_memory_corpora(paths, str(cache))
+    assert calls == ["read", "parse", "write"]
+    for cached, plain in zip(got, corpus.load_memory_corpora(paths)):  # noqa: B905
+        _same(cached, plain)
+    calls.clear()
+    corpus.load_memory_corpora(paths, str(cache))
+    assert calls == ["read", "parse"]
+
+
+def test_multi_root_cache_skips_a_file_missing_at_stat(tmp_path, monkeypatch):
+    folders = [tmp_path / "one", tmp_path / "two"]
+    for folder in folders:
+        _write_memories(folder, 2)
+    paths = list(map(str, folders))
+    cache = tmp_path / "corpus_cache.json"
+    corpus.load_memory_corpora(paths, str(cache))
+    missing = folders[1] / "feedback_item_00.md"
+    real_listdir = os.listdir
+
+    def listdir(folder):
+        names = real_listdir(folder)
+        if folder == paths[1]:
+            missing.unlink()
+        return names
+
+    monkeypatch.setattr(os, "listdir", listdir)
+    calls = _cache_io(monkeypatch, cache)
+    got = corpus.load_memory_corpora(paths, str(cache))
+    assert calls == ["read", "parse", "write"]
+    assert [md.rel_path for md in got[1]] == ["feedback_item_01.md"]
+    assert paths[1] + "\x00feedback_item_00.md" not in json.loads(cache.read_text())["files"]

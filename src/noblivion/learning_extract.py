@@ -177,7 +177,17 @@ def validate_sources(sources: list[dict]) -> dict[str, dict]:
     return result
 
 
-def _quoted(text: str, start: int, end: int) -> bool:
+def contains_authority(text: str) -> bool:
+    """Recognize the shared authority language without exposing its pattern."""
+    return bool(_AUTHORITY.search(text))
+
+
+def contains_injection(text: str) -> bool:
+    """Recognize the shared instruction-override language."""
+    return bool(_INJECTION.search(text))
+
+
+def is_quoted_or_injected(text: str, start: int, end: int) -> bool:
     """Refuse obvious quotations, code, imported instructions and markup."""
     prefix = text[:start]
     line = text[text.rfind("\n", 0, start) + 1 : end]
@@ -188,7 +198,7 @@ def _quoted(text: str, start: int, end: int) -> bool:
         or bool(
             re.search(r"(?i)(?:quoted?|said|says|example|document|instructions)\s*:\s*$", prefix)
         )
-        or bool(_INJECTION.search(text))
+        or contains_injection(text)
         or "<INSTRUCTIONS>" in text
     )
 
@@ -212,7 +222,7 @@ def _evidence(value, sources: dict[str, dict], *, trusted: bool = False) -> list
         if start < 0 or text.find(quote, start + 1) >= 0:
             raise ValidationError("evidence must be an exact unique quote")
         end = start + len(quote)
-        if _quoted(text, start, end):
+        if is_quoted_or_injected(text, start, end):
             raise ValidationError("quoted or injected evidence")
         if trusted and any(
             item.get(k) != v
@@ -296,7 +306,7 @@ def validate_response(raw: str, sources: list[dict], existing_notes=()) -> list[
             raise ValidationError("invalid logical key")
         title = _text(candidate["title"], 160)
         statement = _text(candidate["statement"], 2000)
-        if _AUTHORITY.search(statement) or _AUTHORITY.search(title):
+        if contains_authority(statement) or contains_authority(title):
             raise ValidationError("memory cannot grant authority")
         scope = candidate["scope"]
         if scope not in {"project", "general"} or (

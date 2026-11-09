@@ -727,24 +727,30 @@ def _rebuild_locked(
     except (OSError, ValueError):
         pass
     probes_before = gt._read_probes(gt.probes_path(path))
-    left = 0.0
+    deadline = None
     try:
-        left = signal.getitimer(signal.ITIMER_REAL)[0]
-        if left > 0:  # only when ``main`` armed the alarm and its handler
-            signal.setitimer(signal.ITIMER_REAL, REBUILD_LIMIT_S)
+        if signal.getitimer(signal.ITIMER_REAL)[0] > 0:
+            deadline = _Deadline(REBUILD_LIMIT_S, pause_previous=True)
     except (ValueError, OSError, AttributeError):
-        left = 0.0
+        pass
     done = False
     try:
+        if deadline is not None and not deadline.start():
+            deadline = None
         table = gt.rebuild(folders, path, _locked=True)
         if notes is not None:
             line = gt.skipped_line(table)
             if line:
                 notes.append(line)
+        if deadline is not None and deadline.expired:
+            raise _TimeUp()
         done = True
-    except _TimeUp:
-        if left <= 0:
+    except BaseException as exc:  # noqa: BLE001 - keep timeout notices even after cleanup errors
+        if deadline is None:
             raise  # not the limit of the rebuild
+        deadline.cancel()
+        if not isinstance(exc, _TimeUp) and not deadline.expired:
+            raise
         if notes is not None:  # no alarm is set here: the file is written before the call goes on
             notes.append(REBUILD_LATE_LINE if path.is_file() else REBUILD_NONE_LINE)
             try:
@@ -758,8 +764,8 @@ def _rebuild_locked(
             except OSError:
                 pass
     finally:
-        if left > 0:
-            signal.setitimer(signal.ITIMER_REAL, left)
+        if deadline is not None:
+            deadline.close()
     if done:
         try:
             late.unlink()
@@ -2530,24 +2536,75 @@ def _with_message(out: str, message: str) -> str:
     return json.dumps({"systemMessage": message, **doc}, ensure_ascii=False)
 
 
-def _alarm(_signum, _frame):
-    raise _TimeUp()
+class _Deadline:
+    """Own one alarm, including retries if cleanup makes its exception unraisable."""
 
+    def __init__(self, seconds, *, pause_previous=False):
+        self.seconds = seconds
+        self.pause_previous = pause_previous
+        self.previous_handler = None
+        self.previous_timer = (0.0, 0.0)
+        self.started = 0.0
+        self.installed = False
+        self.active = False
+        self.expired = False
+        self.closed = False
 
-def _arm(seconds: float) -> bool:
-    try:
-        signal.signal(signal.SIGALRM, _alarm)
-        signal.setitimer(signal.ITIMER_REAL, seconds)
-        return True
-    except (ValueError, OSError, AttributeError):  # not the main thread
-        return False
+    def start(self):
+        # The caller owns this object before starting the alarm. A signal may
+        # arrive during setup, before start returns, and must still be cleaned up.
+        try:
+            self.previous_handler = signal.getsignal(signal.SIGALRM)
+            signal.signal(signal.SIGALRM, self.previous_handler)  # main-thread check
+            self.previous_timer = signal.getitimer(signal.ITIMER_REAL)
+            self.started = time.monotonic()
+            self.installed = True
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            self.active = True
+            signal.signal(signal.SIGALRM, self.alarm)
+            signal.setitimer(signal.ITIMER_REAL, self.seconds)
+            return True
+        except (ValueError, OSError, AttributeError):
+            self.close()
+            return False
 
+    def alarm(self, _signum, _frame):
+        if not self.active:
+            return
+        self.expired = True
+        # Python can swallow an exception raised inside a weakref callback.
+        # Retry until normal execution receives it; finish also checks the flag.
+        signal.setitimer(signal.ITIMER_REAL, 0.02)
+        raise _TimeUp()
 
-def _disarm() -> None:
-    try:
+    def cancel(self):
+        active, self.active = self.active, False
+        if not active:
+            return
+        # Disable retries before inspecting/cancelling the OS timer, so cleanup
+        # cannot itself be interrupted by another alarm from this deadline.
+        if self.seconds > 0 and signal.getitimer(signal.ITIMER_REAL)[0] == 0:
+            self.expired = True  # the signal may still be awaiting Python delivery
         signal.setitimer(signal.ITIMER_REAL, 0)
-    except BaseException:  # noqa: BLE001, S110 - a hook fails open; an alarm that fires here is spent
-        pass
+
+    def close(self):
+        if self.closed:
+            return
+        self.cancel()
+        self.closed = True
+        if not self.installed:
+            return
+        signal.signal(signal.SIGALRM, self.previous_handler)
+        remaining, interval = self.previous_timer
+        if remaining > 0:
+            if not self.pause_previous:
+                remaining = max(0.000001, remaining - (time.monotonic() - self.started))
+            signal.setitimer(signal.ITIMER_REAL, remaining, interval)
+
+    def finish(self):
+        self.close()
+        if self.expired:
+            raise _TimeUp()
 
 
 def main(
@@ -2570,12 +2627,14 @@ def main(
     stdout = sys.stdout if stdout is None else stdout
     sid, tool, agent = "", "", "main"
     d: Optional[Decision] = None
-    armed = False
+    armed = None
     pending = [False]  # True while this call can still be denied
     notes: List[str] = []  # a line for the user from the table rebuild (``_rebuild``)
     told = False
     try:
-        armed = _arm(time_limit)
+        armed = _Deadline(time_limit)
+        if not armed.start():
+            armed = None
         event = json.loads(stdin.read())
         if isinstance(event, dict):
             sid, tool = event.get("session_id") or "", str(event.get("tool_name") or "")
@@ -2586,15 +2645,17 @@ def main(
             )
         d = decide(event, env, pending, notes)
         if armed:
-            _disarm()
-            armed = False
+            armed.finish()
+            armed = None
         pending[0] = False
         out = _with_message(d.out, " ".join(notes)) if notes else d.out
         if out:
             stdout.write(out + "\n")
             stdout.flush()
         told = True
-        armed = _arm(time_limit)  # charge and log get their own time limit
+        armed = _Deadline(time_limit)  # charge and log get their own time limit
+        if not armed.start():
+            armed = None
         d.commit()
         if d.log or d.also:
             text = d.log_text() if d.log_text is not None else _log_text(event)
@@ -2605,16 +2666,21 @@ def main(
                 log_line(env, sid, tool, dec, dids, text, agent, **dextra)
         if any(line in (REBUILD_LATE_LINE, REBUILD_NONE_LINE) for line in notes):
             log_line(env, sid, tool, "error", [], "", agent, error="table rebuild timeout")
-    except BaseException as exc:  # noqa: BLE001 - a guard fails open
         if armed:
-            _disarm()
-            armed = False
+            armed.finish()
+            armed = None
+    except BaseException as exc:  # noqa: BLE001 - a guard fails open
+        timed_out = isinstance(exc, _TimeUp)
+        if armed:
+            armed.close()
+            timed_out = timed_out or armed.expired
+            armed = None
         if d is not None:
             try:
                 d.abort()
             except Exception:  # noqa: BLE001, S110 - a hook fails open
                 pass
-        late = pending[0] and isinstance(exc, _TimeUp)
+        late = pending[0] and timed_out
         lines = ([TIMEOUT_LINE] if late else []) + ([] if told else notes)
         if lines:
             try:
@@ -2631,11 +2697,11 @@ def main(
             [],
             "",
             agent,
-            error=("timeout" if isinstance(exc, _TimeUp) else f"{type(exc).__name__}: {exc}")[:300],
+            error=("timeout" if timed_out else f"{type(exc).__name__}: {exc}")[:300],
         )
     finally:
         if armed:
-            _disarm()
+            armed.close()
     return 0
 
 

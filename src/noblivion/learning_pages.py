@@ -104,7 +104,7 @@ class ExtractionPages:
             self.ledger.checkpoint(self.job["id"], self.job["lease_token"], self.state)
         else:
             with db.write_tx(self.conn):
-                self.ledger._lease(self.job["id"], self.job["lease_token"])
+                self.ledger.validate_lease(self.job["id"], self.job["lease_token"])
                 self.conn.execute(
                     "INSERT INTO learning_extraction_pages VALUES(?,?,?,?,?,?,?,?,?)",
                     (

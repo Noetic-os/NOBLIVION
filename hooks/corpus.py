@@ -769,65 +769,86 @@ def load_memory_corpus(folder: str, cache_path: Optional[str] = None) -> List[Me
     The returned files are the same, except that ``body`` holds only its first
     ``CACHE_BODY_CHARS`` characters when it came from the cache.
     """
+    return load_memory_corpora([folder], cache_path)[0]
+
+
+def load_memory_corpora(
+    folders: Sequence[str], cache_path: Optional[str] = None
+) -> List[List[MemoryFile]]:
+    """The corpus of each folder, in input order, with files sorted by name.
+
+    Use one cache read and at most one atomic write for all folders. Entries
+    for other folders stay in the shared cache. File parsing, lazy tokens and
+    cached body limits are the same as for ``load_memory_corpus``.
+    """
+    if not folders:
+        return []
     if cache_path is None:
-        out: List[MemoryFile] = []
+        corpora: List[List[MemoryFile]] = []
+        for folder in folders:
+            out: List[MemoryFile] = []
+            for base in sorted(os.listdir(folder)):
+                if not base.endswith(".md"):
+                    continue
+                path = os.path.join(folder, base)
+                if not os.path.isfile(path):
+                    continue
+                md = _read_memory_file(path, base)
+                if md is not None:
+                    out.append(md)
+            corpora.append(out)
+        return corpora
+    cached = _load_corpus_cache(cache_path)
+    prefixes = tuple(folder + "\x00" for folder in folders)
+    kept: Dict[str, Any] = {k: v for k, v in cached.items() if not k.startswith(prefixes)}
+    changed = False
+    corpora = []
+    for folder in folders:
+        prefix = folder + "\x00"
+        out = []
         for base in sorted(os.listdir(folder)):
             if not base.endswith(".md"):
                 continue
             path = os.path.join(folder, base)
-            if not os.path.isfile(path):
+            try:
+                st = os.stat(path)
+            except OSError:
                 continue
-            md = _read_memory_file(path, base)
-            if md is not None:
-                out.append(md)
-        return out
-    cached = _load_corpus_cache(cache_path)
-    prefix = folder + "\x00"
-    kept: Dict[str, Any] = {k: v for k, v in cached.items() if not k.startswith(prefix)}
-    changed = False
-    out = []
-    for base in sorted(os.listdir(folder)):
-        if not base.endswith(".md"):
-            continue
-        path = os.path.join(folder, base)
-        try:
-            st = os.stat(path)
-        except OSError:
-            continue
-        if not stat.S_ISREG(st.st_mode):
-            continue
-        key = prefix + base
-        stamp = [st.st_mtime_ns, st.st_size]
-        row = cached.get(key)
-        md = None
-        if isinstance(row, list) and row[:2] == stamp:
-            if len(row) == 2:
-                kept[key] = row
+            if not stat.S_ISREG(st.st_mode):
                 continue
-            md = _file_from_cache(base, row, path)
-        if md is None:
-            changed = True
-            md = _read_memory_file(path, base)
+            key = prefix + base
+            stamp = [st.st_mtime_ns, st.st_size]
+            row = cached.get(key)
+            md = None
+            if isinstance(row, list) and row[:2] == stamp:
+                if len(row) == 2:
+                    kept[key] = row
+                    continue
+                md = _file_from_cache(base, row, path)
             if md is None:
-                kept[key] = stamp
-                continue
-            row = stamp + [
-                md.name,
-                md.kind,
-                md.description,
-                md.body[:CACHE_BODY_CHARS],
-                md.rule,
-                md.apply_block,
-                "",  # no tokens: the store computes the BM25 values (NOBLIVION-157)
-                md.scope,
-                list(md.triggers),
-                md.stamp,
-            ]
-        kept[key] = row
-        out.append(md)
+                changed = True
+                md = _read_memory_file(path, base)
+                if md is None:
+                    kept[key] = stamp
+                    continue
+                row = stamp + [
+                    md.name,
+                    md.kind,
+                    md.description,
+                    md.body[:CACHE_BODY_CHARS],
+                    md.rule,
+                    md.apply_block,
+                    "",  # no tokens: the store computes the BM25 values (NOBLIVION-157)
+                    md.scope,
+                    list(md.triggers),
+                    md.stamp,
+                ]
+            kept[key] = row
+            out.append(md)
+        corpora.append(out)
     if changed or len(kept) != len(cached):  # a file was read, or a file is gone
         _save_corpus_cache(cache_path, kept)
-    return out
+    return corpora
 
 
 def corpus_by_name(corpus: Sequence[MemoryFile]) -> Dict[str, MemoryFile]:

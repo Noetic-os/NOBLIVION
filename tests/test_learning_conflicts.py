@@ -134,6 +134,11 @@ def test_cross_root_conflict_is_visible_to_both_scopes_only(ledger):
     assert detail["target_scope"]["root"] == "owner-project"
     assert detail["source_scope"]["root"] == "source-project"
     assert detail["evidence"][0]["source_id"] == "source-2"
+    assert list(ledger.iter_conflicts("test", "owner-project")) == [detail]
+    assert list(ledger.iter_conflicts("test", "source-project")) == [detail]
+    assert list(ledger.iter_conflicts("other", "owner-project")) == []
+    assert list(ledger.iter_conflicts("test", "unrelated-project")) == []
+    assert list(ledger.iter_conflicts(note_id=note["note_id"], compact=True)) == owner["items"]
 
 
 def test_status_is_bounded_and_cli_can_inspect_discovered_id(ledger, tmp_path, capsys):

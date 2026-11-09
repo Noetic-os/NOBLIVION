@@ -1627,7 +1627,8 @@ def _file_stage(
         return None
     if name in _SAFE_FILE_CMDS:
         return None
-    for word in [*w[1:], *extra]:
+    words = list(dict.fromkeys([*w[1:], *extra]))
+    for word in words:
         if not word.startswith("-") and _resolve(cwd, word) in probe.copies:
             return _file_finding(
                 probe,
@@ -1636,7 +1637,7 @@ def _file_stage(
                 f"{name} of a copy of a git config file",
             )
     cands: List[str] = []
-    for word in [*w[1:], *extra]:
+    for word in words:
         for m in _CFG_IN_WORD.finditer(word):
             cands.append(_resolve(cwd, m.group(1)))
         if word.startswith("-"):

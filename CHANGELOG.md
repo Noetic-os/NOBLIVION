@@ -10,6 +10,14 @@ All notable changes to NOBLIVION. The format follows
 
 - Turn on automatic learning for stores with an explicit scope and valid local
   model configuration. Existing contribution controls and explicit opt-outs still apply.
+- Keep guard deadlines effective when Python cleanup swallows an alarm; preserve nested
+  rebuild limits and restore signal state.
+- Inspect repeated credential-path arguments once per command stage, preserving decisions
+  while avoiding repeated filesystem work.
+- Repeated embedding backfills skip unchanged note text and hashing while retaining
+  missing-vector repair, retry, consent, model and chunker invalidation checks.
+- Multi-root recall reads and publishes the corpus cache once per load, while preserving
+  root precedence, changed-file detection and lazy token reads.
 
 ## 0.1.22 - 2026-11-09
 

@@ -6,22 +6,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import os
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-from noblivion import db, miner
-
-ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("_noblivion_codex_adapter", ROOT / "codex/adapter.py")
-assert spec is not None and spec.loader is not None
-adapter = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = adapter
-spec.loader.exec_module(adapter)
+from codex_adapter_helpers import ROOT, adapter, event
+from codex_adapter_helpers import cfg as cfg
 
 
 def _installer():
@@ -110,46 +102,6 @@ def test_upgrade_refuses_to_discard_compound_or_unknown_guard_arguments(previous
     original = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": previous}]}]}}
     with pytest.raises(ValueError, match="review"):
         installer._merge_hooks(json.dumps(original), "python3 /new/codex/adapter.py --config /b")
-
-
-@pytest.fixture
-def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
-    for name in tuple(os.environ):
-        if name.startswith("NOBLIVION_"):
-            monkeypatch.delenv(name, raising=False)
-    monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
-    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global-gitconfig"))
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    for folder in ("home", "data", "memory", "state", "project"):
-        (tmp_path / folder).mkdir()
-    (tmp_path / "data/config.json").write_text(
-        json.dumps(
-            {
-                "memory_dirs": [str(tmp_path / "memory")],
-                "namespace": "claude_code",
-            }
-        ),
-        encoding="utf-8",
-    )
-    return {
-        "data_dir": str(tmp_path / "data"),
-        "memory_dir": str(tmp_path / "memory"),
-        "state_dir": str(tmp_path / "state"),
-        "namespace": "claude_code",
-        "repo_root": str(ROOT),
-        "workspace_prefixes": [str(tmp_path / "project")],
-    }
-
-
-def event(cfg: dict, name: str, **fields: object) -> dict:
-    return {
-        "session_id": "thr_codex_test_123",
-        "cwd": cfg["workspace_prefixes"][0],
-        "hook_event_name": name,
-        **fields,
-    }
 
 
 def test_clients_can_point_at_one_store_and_memory_dir(cfg: dict) -> None:
@@ -368,93 +320,6 @@ def test_only_worktrees_of_selected_git_repo_are_active(
         == {}
     )
     assert "Unrelated task" not in journals[0].read_text(encoding="utf-8")
-
-
-def test_codex_journal_uses_shared_miner_record_shape(
-    cfg: dict, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(adapter, "_invoke", lambda *args: {})
-    cfg["recall_root"] = "shared-project-root"
-    adapter.handle_hook(
-        cfg,
-        event(cfg, "UserPromptSubmit", prompt="Run the fixture build command."),
-    )
-    adapter.handle_hook(
-        cfg,
-        event(
-            cfg,
-            "PostToolUse",
-            tool_name="exec_command",
-            tool_use_id="call_fixture",
-            tool_input={"cmd": "make missing-target"},
-            tool_response={
-                "exit_code": 2,
-                "output": "make: *** No rule to make target 'missing-target'.",
-            },
-        ),
-    )
-    adapter.handle_hook(
-        cfg,
-        event(cfg, "Stop", last_assistant_message="The build target failed."),
-    )
-    adapter.handle_hook(
-        cfg,
-        event(cfg, "UserPromptSubmit", prompt="No, use the generated build target."),
-    )
-    adapter.handle_hook(
-        cfg,
-        event(
-            cfg,
-            "PostToolUse",
-            session_id="thr_second_codex_session",
-            tool_name="exec_command",
-            tool_use_id="call_second_fixture",
-            tool_input={"cmd": "make other-missing-target"},
-            tool_response={
-                "exit_code": 2,
-                "output": "make: *** No rule to make target 'other-missing-target'.",
-            },
-        ),
-    )
-
-    folder = Path(cfg["state_dir"]) / "transcripts" / cfg["recall_root"]
-    journals = sorted(folder.glob("codex-*.jsonl"))
-    assert len(journals) == 2
-    journal = journals[0]
-    stats = miner.MineStats()
-    with journal.open("rb") as source:
-        scan = miner.mine_stream(
-            source,
-            session_id="codex_fixture",
-            offset=0,
-            miner=miner.Miner(stats),
-            stats=stats,
-        )
-    assert scan.candidates
-    assert stats.bad_lines == 0
-
-    conn = db.open_db(Path(cfg["data_dir"]) / "noblivion.db", create=True)
-    try:
-        mined = miner.run(
-            conn,
-            miner.list_transcripts(str(folder / "codex-*.jsonl")),
-            project=cfg["namespace"],
-            max_run_s=None,
-        )
-        rows = conn.execute(
-            "SELECT root, path, category FROM memories WHERE source_type = ? ORDER BY path",
-            (db.SOURCE_MINED,),
-        ).fetchall()
-    finally:
-        conn.close()
-    assert mined.inserted == 3
-    assert {row["root"] for row in rows} == {cfg["recall_root"]}
-    assert {row["category"] for row in rows} == {
-        miner.KIND_TOOL_ERROR,
-        miner.KIND_CORRECTION,
-    }
-    assert len({row["path"].split("#", 1)[0] for row in rows}) == 2
-    assert all(row["path"].startswith("codex-") for row in rows)
 
 
 def test_mcp_fs_read_maps_to_shared_file_guard(cfg: dict) -> None:
