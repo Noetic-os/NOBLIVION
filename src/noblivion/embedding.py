@@ -565,23 +565,37 @@ def needs_reembed(conn: sqlite3.Connection, embedder: Embedder) -> bool:
     )
 
 
+@dataclass
+class _BackfillProgress:
+    # One completed pass, scoped to its connection, model and consent policy.
+    # Never keep row text or an unbounded set of failed IDs in the service.
+    checkpoint: tuple[sqlite3.Connection, str, bool, int] | None = None
+
+
 def _todo(
-    conn: sqlite3.Connection, model_id: str, include_mined: bool
+    conn: sqlite3.Connection, model_id: str, include_mined: bool, after_rev: int = -1
 ) -> tuple[list[tuple[int, str, str]], int]:
     """Live rows whose vector for ``model_id`` is missing or stale."""
     todo: list[tuple[int, str, str]] = []
     skipped = 0
     with db.read_tx(conn):
+        if not include_mined:
+            skipped = int(
+                conn.execute(
+                    "SELECT count(*) FROM memories WHERE archived_at IS NULL "
+                    "AND deleted_at IS NULL AND source_type = ?",
+                    (db.SOURCE_MINED,),
+                ).fetchone()[0]
+            )
         cur = conn.execute(
-            "SELECT m.id, m.content, m.source_type, v.content_hash FROM memories m "
+            "SELECT m.id, m.content, v.content_hash FROM memories m "
             "LEFT JOIN vectors v ON v.memory_id = m.id AND v.model = ? "
-            "WHERE m.archived_at IS NULL AND m.deleted_at IS NULL ORDER BY m.id",
-            (model_id,),
+            "WHERE m.archived_at IS NULL AND m.deleted_at IS NULL "
+            "AND (? OR m.source_type <> ?) AND (m.rev > ? OR v.memory_id IS NULL) "
+            "ORDER BY m.id",
+            (model_id, include_mined, db.SOURCE_MINED, after_rev),
         )
-        for memory_id, content, source_type, have in cur.fetchall():
-            if source_type == db.SOURCE_MINED and not include_mined:
-                skipped += 1
-                continue
+        for memory_id, content, have in cur.fetchall():
             text = embed_text(content)
             if not text:
                 continue
@@ -592,7 +606,7 @@ def _todo(
 
 
 def _todo_chunks(
-    conn: sqlite3.Connection, model_id: str, include_mined: bool
+    conn: sqlite3.Connection, model_id: str, include_mined: bool, after_rev: int = -1
 ) -> tuple[list[tuple[int, str, str]], list[tuple[int, str, int, bytes]]]:
     """Chunks of live rows whose vector for ``model_id`` is missing or stale.
 
@@ -604,16 +618,16 @@ def _todo_chunks(
     copies: list[tuple[int, str, int, bytes]] = []
     with db.read_tx(conn):
         cur = conn.execute(
-            "SELECT c.id, c.search_text, m.source_type, v.content_hash, f.content_hash, f.dim, "
+            "SELECT c.id, c.search_text, v.content_hash, f.content_hash, f.dim, "
             "f.blob FROM memory_chunks c JOIN memories m ON m.id = c.parent_id "
             "LEFT JOIN chunk_vectors v ON v.chunk_id = c.id AND v.model = ? "
             "LEFT JOIN vectors f ON f.memory_id = m.id AND f.model = ? "
-            "WHERE m.archived_at IS NULL AND m.deleted_at IS NULL ORDER BY c.id",
-            (model_id, model_id),
+            "WHERE m.archived_at IS NULL AND m.deleted_at IS NULL "
+            "AND (? OR m.source_type <> ?) AND (c.rev > ? OR v.chunk_id IS NULL) "
+            "ORDER BY c.id",
+            (model_id, model_id, include_mined, db.SOURCE_MINED, after_rev),
         )
-        for chunk_id, search_text, source_type, have, file_hash, dim, blob in cur.fetchall():
-            if source_type == db.SOURCE_MINED and not include_mined:
-                continue
+        for chunk_id, search_text, have, file_hash, dim, blob in cur.fetchall():
             text = str(search_text).strip()[:MAX_EMBED_CHARS]
             if not text:
                 continue
@@ -757,6 +771,7 @@ def backfill(
     batch_size: int = BATCH_SIZE,
     include_mined: bool = True,
     finish: bool = True,
+    _progress: _BackfillProgress | None = None,
 ) -> BackfillResult:
     """Embed every live row that has no vector for this model, or a vector of
     an older text, in batches; one write transaction per batch.
@@ -768,7 +783,18 @@ def backfill(
     """
     model_id = embedder.model_id
     db.ensure_chunks(conn)  # a row with no chunk rows gets them before the pass
-    todo, skipped = _todo(conn, model_id, include_mined)
+    # The service reuses its last complete pass. All supported content writers
+    # stamp file/chunk revisions; missing vectors remain candidates regardless.
+    # A one-shot caller, new connection, model or policy starts with a full read.
+    revision = db.revisions(conn)[0] if _progress is not None else -1
+    scope = (conn, model_id, include_mined)
+    checkpoint = None if _progress is None else _progress.checkpoint
+    after_rev = (
+        checkpoint[3]
+        if checkpoint is not None and checkpoint[:3] == scope and checkpoint[3] <= revision
+        else -1
+    )
+    todo, skipped = _todo(conn, model_id, include_mined, after_rev)
     # Texts of a like length share a batch: the model pads a batch to its longest text.
     todo.sort(key=lambda item: len(item[1]))
     embedded = failed = 0
@@ -779,7 +805,7 @@ def backfill(
         failed += batch_failed + bad
     # The chunk vectors (NOBLIVION-103): the ranking reads these. The file vectors
     # above stay for the dedup and the import report.
-    chunk_todo, chunk_copies = _todo_chunks(conn, model_id, include_mined)
+    chunk_todo, chunk_copies = _todo_chunks(conn, model_id, include_mined, after_rev)
     chunk_todo.sort(key=lambda item: len(item[1]))
     chunks_embedded = _copy_vectors(conn, model_id, chunk_copies)
     chunks_failed = 0
@@ -789,6 +815,11 @@ def backfill(
         chunks_embedded += written
         chunks_failed += batch_failed + bad
     switched = finish_model_switch(conn, embedder) if finish else False
+    if _progress is not None and batch_size > 0 and not failed and not chunks_failed:
+        # A failure or interruption retains the old checkpoint, so a stale
+        # existing vector is retried too. Capture the revision BEFORE the reads:
+        # an edit during a model call must remain eligible on the next pass.
+        _progress.checkpoint = (*scope, revision)
     return BackfillResult(embedded, failed, skipped, switched, chunks_embedded, chunks_failed)
 
 
@@ -841,6 +872,7 @@ class EmbeddingService:
         self._no_consent = False  # the last failure was a missing consent
         self._unread = False  # the last consent read failed, and the log says so
         self._unread_lock = threading.Lock()
+        self._backfill_progress = _BackfillProgress()
 
     @property
     def model_id(self) -> str | None:
@@ -1001,7 +1033,7 @@ class EmbeddingService:
             return None
         kwargs.setdefault("include_mined", self.include_mined)
         try:
-            result = backfill(conn, embedder, **kwargs)  # type: ignore[arg-type]
+            result = backfill(conn, embedder, _progress=self._backfill_progress, **kwargs)  # type: ignore[arg-type]
         except ConsentRequiredError:
             self._consent_gone(embedder)
             return None
