@@ -8,6 +8,11 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Repeated embedding backfills skip unchanged note text and hashing while retaining
+  missing-vector repair, retry, consent, model and chunker invalidation checks.
+- Multi-root recall reads and publishes the corpus cache once per load, while preserving
+  root precedence, changed-file detection and lazy token reads.
+
 ## 0.1.22 - 2026-11-09
 
 - Codex journals now mask secrets identified by structured field names while preserving
