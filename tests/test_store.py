@@ -45,6 +45,7 @@ FULL_HEALTH_KEYS = TOKEN_KEYS | {
     "embedding",
     "mode",
     "trust_ranking",
+    "learning_enabled",
     "index_state",
     "index_blocked",
 }

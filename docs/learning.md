@@ -2,8 +2,10 @@
 
 # Background learning
 
-The learner turns new, eligible conversations into scoped memories. It is
-off by default. Capture, extraction, validation, storage and indexing each
+The learner turns new, eligible conversations into scoped memories. It runs
+automatically after you configure a scope and a valid local model. Set
+`"enabled": false` in the store policy to turn it off. Clients still need
+explicit permission to contribute. Capture, extraction, validation, storage and indexing each
 have durable state. A delivery receipt means that the store accepted the
 source batch. It does not mean that a memory passed validation or can be
 recalled yet.
@@ -25,7 +27,6 @@ Example, with fictional folders and an operator-selected local model:
 
 ```json
 {
-  "enabled": true,
   "scopes": [{
     "project": "claude_code",
     "root": "demo-project",

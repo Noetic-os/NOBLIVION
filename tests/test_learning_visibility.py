@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Withdrawn facts and per-session controls must survive a warm recall cache."""
 
+import json
+
 import pytest
 
 from noblivion import db, indexer, ranking, rest
@@ -63,6 +65,40 @@ def test_learning_config_fails_closed(tmp_path):
     (tmp_path / "learning.json").write_text('{"enabled":true,"scopes":[{}]}')
     with pytest.raises(ValueError):
         load_settings(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"enabled": False},
+        {"scopes": []},
+        {"provider": {}},
+        {
+            "provider": {
+                "endpoint": "https://example.invalid/v1",
+                "model": "fixture",
+                "local": True,
+                "cost_per_million_tokens": 0,
+            }
+        },
+        {"budget": {"max_seconds": float("inf")}},
+    ],
+)
+def test_learning_default_requires_a_valid_scoped_policy(tmp_path, override):
+    settings = {
+        "scopes": [
+            {"project": "claude_code", "root": "demo", "memory_dir": str(tmp_path / "demo/memory")}
+        ],
+        "provider": {
+            "endpoint": "http://127.0.0.1:11434/v1",
+            "model": "fixture",
+            "local": True,
+            "cost_per_million_tokens": 0,
+        },
+        **override,
+    }
+    (tmp_path / "learning.json").write_text(json.dumps(settings))
+    assert load_settings(tmp_path)["enabled"] is False
 
 
 @pytest.mark.parametrize("status", ["open", "closed", "parked"])
