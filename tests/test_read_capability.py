@@ -193,7 +193,7 @@ def test_strict_read_routing_does_not_disable_explicit_contribution(clients, mon
     cfg, mcp, _, _, _ = clients
     env = adapter.environment(cfg, {"session_id": "shared-mcp"})
     env.update(NOBLIVION_MCP_REQUIRE_CAPABILITY="1", NOBLIVION_SOURCE_CLIENT="codex")
-    monkeypatch.setattr(mcp.subprocess, "Popen", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mcp._NOTES.subprocess, "Popen", lambda *args, **kwargs: None)
     answer = mcp.handle(
         {
             "jsonrpc": "2.0",
