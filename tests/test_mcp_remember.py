@@ -217,7 +217,9 @@ def test_codex_remember_without_memory_dir_still_fails(
 def sync_calls(monkeypatch):
     calls = []
     mcp = _mcp()
-    monkeypatch.setattr(mcp.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(
+        mcp._NOTES.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
     return mcp, calls
 
 
@@ -403,13 +405,13 @@ def test_supersedes_keeps_concurrent_writer_and_cleans_temp_file(
     env, _, folder = memory_env
     mcp, calls = sync_calls
     (folder / "old.md").write_text("Previous source.\n")
-    link = mcp.os.link
+    link = mcp._NOTES.os.link
 
     def concurrent_writer(source, destination):
         destination.write_bytes(b"Concurrent source.\n")
         link(source, destination)
 
-    monkeypatch.setattr(mcp.os, "link", concurrent_writer)
+    monkeypatch.setattr(mcp._NOTES.os, "link", concurrent_writer)
     result = mcp.noblivion_remember({**_lesson(), "supersedes": ["old"]}, env)
     assert result["isError"] is True
     assert "concurrently" in result["content"][0]["text"]
@@ -436,7 +438,7 @@ def test_supersedes_redaction_fails_closed(memory_env, sync_calls, monkeypatch, 
     env, _, folder = memory_env
     mcp, calls = sync_calls
     (folder / "old.md").write_text("Existing source.\n")
-    redactor = mcp._redactor()
+    redactor = mcp._NOTES._redactor()
     original = redactor.redact_at_rest
 
     def redact(text):
@@ -447,7 +449,7 @@ def test_supersedes_redaction_fails_closed(memory_env, sync_calls, monkeypatch, 
         return redactor.REDACTION_FAILED_TOKEN if failure == "failed_token" else "different"
 
     monkeypatch.setattr(redactor, "redact_at_rest", redact)
-    monkeypatch.setattr(mcp, "_redactor", lambda: redactor)
+    monkeypatch.setattr(mcp._NOTES, "_redactor", lambda: redactor)
     result = mcp.noblivion_remember({**_lesson(), "supersedes": ["old"]}, env)
     assert result["isError"] is True
     assert "private redactor detail" not in json.dumps(result)

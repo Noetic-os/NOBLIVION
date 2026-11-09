@@ -586,3 +586,22 @@ def test_replay_skeleton_hides_words_that_could_be_values():
     assert (
         tool.skeleton("cat .env | grep -n KEY && ls ; env") == "cat .env | grep -n KEY && ls ; env"
     )
+
+
+@pytest.mark.parametrize("word", [".*", "{a,b}", "$a"])
+def test_duplicate_path_arguments_are_inspected_once(proj, monkeypatch, word):
+    expansions = []
+    original = cg._braces
+
+    def inspect_once(value):
+        expansions.append(value)
+        return original(value)
+
+    monkeypatch.setattr(cg, "_braces", inspect_once)
+    expected = cg.decide("Bash", {"command": "cat " + word}, str(proj))
+    unique_expansions = list(expansions)
+    assert unique_expansions
+    expansions.clear()
+    actual = cg.decide("Bash", {"command": "cat " + (word + " ") * 1_000}, str(proj))
+    assert actual == expected
+    assert expansions == unique_expansions

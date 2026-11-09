@@ -8,7 +8,6 @@ Every content mutation invalidates the old recall row before committing.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -17,11 +16,16 @@ import sqlite3
 import tempfile
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from noblivion import db, learning_ranges
+
+from .learning_values import LearningError as LearningError
+from .learning_values import SemanticSnapshotChanged as SemanticSnapshotChanged
+from .learning_values import canonical_json, text_hash, validate_safe_text, validate_text
 
 CATEGORIES = frozenset({"preference", "workflow", "fact", "decision", "proven_fix"})
 MAX_RECORDS = 256
@@ -29,16 +33,8 @@ MAX_CONTENT = 65536
 MAX_STATEMENT = 12000
 
 
-class LearningError(ValueError):
-    """Invalid input or a refused learning operation."""
-
-
 class LeaseLost(LearningError):
     """The worker no longer owns a live lease."""
-
-
-class SemanticSnapshotChanged(LearningError):
-    """Managed memories changed after semantic comparison; retry the comparison."""
 
 
 class BudgetExceeded(LearningError):
@@ -59,32 +55,8 @@ class BudgetLimits:
     max_concurrency: int = 1
 
 
-def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 def _id() -> str:
     return str(uuid.uuid4())
-
-
-def _text(value: Any, name: str, maximum: int = 512, *, empty: bool = False) -> str:
-    if not isinstance(value, str) or len(value) > maximum or (not value.strip() and not empty):
-        raise LearningError(f"invalid {name}")
-    if "\x00" in value:
-        raise LearningError(f"invalid {name}")
-    return value
-
-
-def _safe(text: str) -> None:
-    # Keep the validator authoritative at every writer, including direct CLI edits.
-    from noblivion.learning_extract import contains_secret
-
-    if contains_secret(text):
-        raise LearningError("unsafe source or memory content")
 
 
 def _number(value: Any, name: str) -> float:
@@ -160,9 +132,9 @@ class LearningLedger:
         contribute: bool | None = None,
         paused: bool | None = None,
     ) -> dict[str, bool]:
-        _text(project, "project")
-        _text(root, "root")
-        _text(session_id, "session_id", empty=True)
+        validate_text(project, "project")
+        validate_text(root, "root")
+        validate_text(session_id, "session_id", empty=True)
         for value in (use, contribute, paused):
             if value is not None and type(value) is not bool:
                 raise LearningError("controls must be booleans")
@@ -219,25 +191,25 @@ class LearningLedger:
         """
         if not isinstance(payload, dict):
             raise LearningError("capture must be an object")
-        batch_id = _text(payload.get("batch_id"), "batch_id")
-        project = _text(payload.get("namespace", payload.get("project")), "project")
-        root = _text(payload.get("root"), "root")
-        session = _text(payload.get("session_id"), "session_id")
-        client = _text(payload.get("source_client"), "source_client", 64)
+        batch_id = validate_text(payload.get("batch_id"), "batch_id")
+        project = validate_text(payload.get("namespace", payload.get("project")), "project")
+        root = validate_text(payload.get("root"), "root")
+        session = validate_text(payload.get("session_id"), "session_id")
+        client = validate_text(payload.get("source_client"), "source_client", 64)
         records = payload.get("records")
         if not isinstance(records, list) or not records or len(records) > MAX_RECORDS:
             raise LearningError("invalid capture records")
         cursor = payload.get("cursor", {})
         if not isinstance(cursor, dict):
             raise LearningError("invalid cursor")
-        path_id = _text(cursor.get("path_id", batch_id), "cursor path_id")
+        path_id = validate_text(cursor.get("path_id", batch_id), "cursor path_id")
         offset = cursor.get("offset", 0)
         if type(offset) is not int or offset < 0:
             raise LearningError("invalid cursor offset")
-        serialized = _json(payload)
+        serialized = canonical_json(payload)
         if len(serialized) > 4 * 1024 * 1024:
             raise LearningError("capture batch too large")
-        digest = _hash(serialized)
+        digest = text_hash(serialized)
         now = time.time()
         with db.write_tx(self.conn):
             receipt = self.conn.execute(
@@ -266,19 +238,19 @@ class LearningLedger:
             new_sources = 0
             seq = None
             if not skipped:
-                _safe(serialized)
+                validate_safe_text(serialized)
                 for record in records:
                     if not isinstance(record, dict):
                         raise LearningError("source must be an object")
-                    source_id = _text(record.get("source_id"), "source_id")
-                    content = _text(record.get("content"), "source content", MAX_CONTENT)
-                    sha256 = _hash(content)
+                    source_id = validate_text(record.get("source_id"), "source_id")
+                    content = validate_text(record.get("content"), "source content", MAX_CONTENT)
+                    sha256 = text_hash(content)
                     if record.get("source_hash") != sha256:
                         raise LearningError("source hash mismatch")
                     role = record.get("role")
                     if role not in {"user", "assistant", "tool", "system"}:
                         raise LearningError("invalid source role")
-                    observed_at = _text(record.get("observed_at"), "observed_at", 64)
+                    observed_at = validate_text(record.get("observed_at"), "observed_at", 64)
                     metadata = record.get("metadata", {})
                     if not isinstance(metadata, dict):
                         raise LearningError("invalid source metadata")
@@ -298,7 +270,7 @@ class LearningLedger:
                             }
                         },
                     }
-                    metadata_json = _json(metadata)
+                    metadata_json = canonical_json(metadata)
                     revoked = self.conn.execute(
                         "SELECT 1 FROM learning_sources WHERE project=? AND root=? AND sha256=? "
                         "AND status IN ('excluded','forgotten') LIMIT 1",
@@ -421,9 +393,9 @@ class LearningLedger:
         self, project: str, root: str, session_id: str = "", *, kind: str = "consolidate"
     ) -> str | None:
         """An internal immutable receipt reuses jobs/leases/budgets; no new provider path."""
-        _text(project, "project")
-        _text(root, "root")
-        _text(session_id, "session_id", empty=True)
+        validate_text(project, "project")
+        validate_text(root, "root")
+        validate_text(session_id, "session_id", empty=True)
         if kind not in {"consolidate", "draft"}:
             raise LearningError("invalid derivation kind")
         with db.write_tx(self.conn):
@@ -449,8 +421,8 @@ class LearningLedger:
                 (project, root, session_id),
             )
         ]
-        digest = _hash(
-            _json(
+        digest = text_hash(
+            canonical_json(
                 [
                     project,
                     root,
@@ -523,7 +495,7 @@ class LearningLedger:
     def claim(
         self, worker_id: str, lease_seconds: float = 120, max_attempts: int = 4
     ) -> dict[str, Any] | None:
-        _text(worker_id, "worker_id")
+        validate_text(worker_id, "worker_id")
         if lease_seconds <= 0 or max_attempts < 1:
             raise LearningError("invalid lease limits")
         now = time.time()
@@ -590,7 +562,11 @@ class LearningLedger:
             result.append(source)
         return result
 
-    def _lease(self, job_id: str, lease_token: str) -> sqlite3.Row:
+    def validate_lease(self, job_id: str, lease_token: str) -> sqlite3.Row:
+        """Read the current lease and controls without owning a transaction.
+
+        A mutating caller must validate inside its existing write transaction.
+        """
         row = self.conn.execute("SELECT * FROM learning_jobs WHERE id=?", (job_id,)).fetchone()
         if (
             not row
@@ -632,7 +608,7 @@ class LearningLedger:
             raise BudgetExceeded("invalid budget window")
         now = time.time()
         with db.write_tx(self.conn):
-            self._lease(job_id, lease_token)
+            self.validate_lease(job_id, lease_token)
             self._expire_reservations()
             used = self.conn.execute(
                 "SELECT count(*) calls,coalesce(sum(tokens),0) tokens,"
@@ -717,11 +693,11 @@ class LearningLedger:
 
         diagnostic = redact_at_rest(str(error))[:500]
         try:
-            _safe(diagnostic)
+            validate_safe_text(diagnostic)
         except LearningError:
             diagnostic = "learning validation failed"
         with db.write_tx(self.conn):
-            job = self._lease(job_id, lease_token)
+            job = self.validate_lease(job_id, lease_token)
             exhausted = permanent or job["attempts"] >= max_attempts
             self.conn.execute(
                 "UPDATE learning_jobs SET status=?,next_attempt=?,lease_token=NULL,"
@@ -739,12 +715,12 @@ class LearningLedger:
     def checkpoint(self, job_id: str, lease_token: str, progress: dict[str, Any]) -> None:
         if not isinstance(progress, dict):
             raise LearningError("invalid job progress")
-        serialized = _json(progress)
+        serialized = canonical_json(progress)
         if len(serialized) > 1024 * 1024:
             raise LearningError("job progress too large")
-        _safe(serialized)
+        validate_safe_text(serialized)
         with db.write_tx(self.conn):
-            self._lease(job_id, lease_token)
+            self.validate_lease(job_id, lease_token)
             self.conn.execute(
                 "UPDATE learning_jobs SET progress=?,updated_at=? WHERE id=?",
                 (serialized, time.time(), job_id),
@@ -759,9 +735,9 @@ class LearningLedger:
         error: str = "budget unavailable",
     ) -> None:
         """Budget denial did not make a provider call and must not exhaust retries."""
-        _safe(error)
+        validate_safe_text(error)
         with db.write_tx(self.conn):
-            self._lease(job_id, lease_token)
+            self.validate_lease(job_id, lease_token)
             self.conn.execute(
                 "UPDATE learning_jobs SET status='pending',attempts=max(0,attempts-1),"
                 "next_attempt=?,"
@@ -790,7 +766,7 @@ class LearningLedger:
             self.conn.execute(
                 "UPDATE learning_jobs SET status='pending',attempts=0,next_attempt=0,last_error='',"
                 "progress=?,updated_at=? WHERE id=? AND status='exhausted'",
-                (_json(progress), time.time(), job_id),
+                (canonical_json(progress), time.time(), job_id),
             )
 
     def current_notes(self, project: str, root: str) -> list[dict[str, Any]]:
@@ -1032,7 +1008,9 @@ class LearningLedger:
         reason = result.get("reason") or decision.get("reason") or "explicit resolution required"
         statement = decision.get("statement")
         try:
-            _safe(_json({"reason": reason, "statement": statement, "evidence": evidence}))
+            validate_safe_text(
+                canonical_json({"reason": reason, "statement": statement, "evidence": evidence})
+            )
         except LearningError:
             reason, unavailable = "proposal content unavailable", True
         if unavailable:
@@ -1066,10 +1044,25 @@ class LearningLedger:
             )
         return value
 
+    def iter_conflicts(
+        self,
+        project: str | None = None,
+        root: str | None = None,
+        *,
+        note_id: str | None = None,
+        compact: bool = False,
+    ) -> Iterator[dict[str, Any]]:
+        """Read scoped proposals with current target and evidence state.
+
+        The caller owns any transaction needed to keep the reads in one snapshot.
+        SQL rows and stored decision payloads stay private to the ledger.
+        """
+        for row in self._conflict_rows(project, root, note_id=note_id):
+            yield self._inspect_conflict(row, compact=compact)
+
     def _conflict_status(self, project: str | None, root: str | None) -> dict[str, Any]:
         pending, count = [], 0
-        for row in self._conflict_rows(project, root):
-            conflict = self._inspect_conflict(row, compact=True)
+        for conflict in self.iter_conflicts(project, root, compact=True):
             if conflict["state"] == "open":
                 count += 1
                 if len(pending) < 20:
@@ -1117,15 +1110,16 @@ class LearningLedger:
             "SELECT * FROM learning_outbox WHERE note_id=?", (note_id,)
         ).fetchone()
         note["projection"] = dict(outbox) if outbox else None
-        note["conflicts"] = [
-            self._inspect_conflict(conflict, compact=True)
-            for conflict in self._conflict_rows(note_id=note_id)
-        ]
+        note["conflicts"] = list(self.iter_conflicts(note_id=note_id, compact=True))
         return note
 
-    def _evidence(
+    def validate_evidence(
         self, evidence: Any, project: str, root: str, *, job_id: str | None = None
     ) -> list[dict[str, Any]]:
+        """Resolve eligible exact evidence without owning a transaction.
+
+        A mutating caller must validate inside its existing write transaction.
+        """
         if not isinstance(evidence, list) or not evidence or len(evidence) > 64:
             raise LearningError("memory requires bounded exact source evidence")
         validated = []
@@ -1198,7 +1192,7 @@ class LearningLedger:
                 )
                 if snapshot != current:
                     raise SemanticSnapshotChanged("managed memory snapshot changed")
-        _safe(_json(decision))
+        validate_safe_text(canonical_json(decision))
         if action in {"reject", "conflict"}:
             return dict(decision)
         target = decision.get("note_id")
@@ -1224,15 +1218,15 @@ class LearningLedger:
             ("statement", MAX_STATEMENT),
             ("observed_at", 64),
         ):
-            _text(result.get(field), field, maximum)
+            validate_text(result.get(field), field, maximum)
         if result.get("category") not in CATEGORIES or result.get("scope") not in {
             "project",
             "general",
         }:
             raise LearningError("invalid memory category or scope")
         if result.get("effective_at") is not None:
-            _text(result["effective_at"], "effective_at", 64)
-        result["evidence"] = self._evidence(
+            validate_text(result["effective_at"], "effective_at", 64)
+        result["evidence"] = self.validate_evidence(
             result.get("evidence"), job["project"], job["root"], job_id=job["id"]
         )
         statement = result["statement"]
@@ -1256,7 +1250,7 @@ class LearningLedger:
                 raise LearningError("proven fix requires before and after evidence")
             result["proof"] = {}
             for phase in ("before", "after"):
-                refs = self._evidence(
+                refs = self.validate_evidence(
                     proof.get(phase), job["project"], job["root"], job_id=job["id"]
                 )
                 if not any(ref["role"] == "tool" for ref in refs):
@@ -1275,7 +1269,7 @@ class LearningLedger:
         if not isinstance(decisions, list) or len(decisions) > 512:
             raise LearningError("invalid decision count")
         with db.write_tx(self.conn):
-            job = self._lease(job_id, lease_token)
+            job = self.validate_lease(job_id, lease_token)
             validated = [self._validate_decision(item, job) for item in decisions]
             results = [self._reconcile(item, job) for item in validated]
             self.conn.execute(
@@ -1296,7 +1290,12 @@ class LearningLedger:
             # The validated legacy target stays untouched, including its provenance.
             self.conn.execute(
                 "INSERT INTO learning_decisions(job_id,action,detail,created_at) VALUES (?,?,?,?)",
-                (job["id"], action, _json({"decision": decision, "result": result}), time.time()),
+                (
+                    job["id"],
+                    action,
+                    canonical_json({"decision": decision, "result": result}),
+                    time.time(),
+                ),
             )
             return result
         if action not in {"reject", "conflict"}:
@@ -1362,7 +1361,7 @@ class LearningLedger:
                 job["id"],
                 result.get("note_id") if self._known_note(result.get("note_id")) else None,
                 result["action"],
-                _json({"decision": decision, "result": result}),
+                canonical_json({"decision": decision, "result": result}),
                 time.time(),
             ),
         )
@@ -1408,7 +1407,7 @@ class LearningLedger:
         )
         note["path"] = f"learned-{note['note_id']}.md"
         note["evidence"] = decision["evidence"]
-        note["file_hash"] = _hash(self.render_note(note))
+        note["file_hash"] = text_hash(self.render_note(note))
         fields = (
             "note_id",
             "project",
@@ -1443,7 +1442,7 @@ class LearningLedger:
         if isinstance(correction, dict):
             for key in ("previous_evidence", "current_evidence"):
                 if key in correction:
-                    evidence.extend(self._evidence(correction[key], project, root))
+                    evidence.extend(self.validate_evidence(correction[key], project, root))
         for ref in evidence:
             self.conn.execute(
                 "INSERT OR IGNORE INTO learning_evidence VALUES (?,?,?,?,?,?,?)",
@@ -1463,7 +1462,7 @@ class LearningLedger:
                 "SELECT * FROM learning_notes WHERE note_id=?", (note["note_id"],)
             ).fetchone()
         )
-        note["file_hash"] = _hash(self.render_note(note))
+        note["file_hash"] = text_hash(self.render_note(note))
         self.conn.execute(
             "UPDATE learning_notes SET file_hash=? WHERE note_id=?",
             (note["file_hash"], note["note_id"]),
@@ -1474,7 +1473,7 @@ class LearningLedger:
         }
         self.conn.execute(
             "INSERT INTO learning_revisions VALUES (?,?,?,?,?)",
-            (note["note_id"], note["revision"], action, _json(snapshot), now),
+            (note["note_id"], note["revision"], action, canonical_json(snapshot), now),
         )
         self._queue(note["note_id"], note["revision"], "write")
         self._invalidate(note)
@@ -1514,7 +1513,7 @@ class LearningLedger:
         )
         self.conn.execute(
             "INSERT INTO learning_revisions VALUES (?,?,?,?,?)",
-            (row["note_id"], revision, status, _json({"status": status}), time.time()),
+            (row["note_id"], revision, status, canonical_json({"status": status}), time.time()),
         )
         self._queue(row["note_id"], revision, "remove")
         self._invalidate(row)
@@ -1549,7 +1548,7 @@ class LearningLedger:
                 if evidence is not None
                 else [ref for ref in previous["evidence"] if current_statement in ref["quote"]]
             )
-            references = self._evidence(references, row["project"], row["root"])
+            references = self.validate_evidence(references, row["project"], row["root"])
             # Load the actual immutable sources, including tool metadata needed
             # to establish a proven fix. Existing text is not human authority.
             all_refs = list(references) + previous["evidence"]
@@ -1753,7 +1752,7 @@ class LearningLedger:
         }[note["category"]]
         lines = [
             "---",
-            "name: " + _json(note["title"]),
+            "name: " + canonical_json(note["title"]),
             "description: "
             + _plain_line(
                 "Learned " + note["category"].replace("_", " ") + " - " + note["statement"]
@@ -1791,7 +1790,7 @@ class LearningLedger:
             "SELECT * FROM learning_notes WHERE project=? AND root=? AND status='active'",
             (project, root),
         ).fetchall():
-            digest = _hash(self.render_note(self._note(row)))
+            digest = text_hash(self.render_note(self._note(row)))
             if digest != row["file_hash"]:
                 stale.append((row["note_id"], digest))
         if not stale:
@@ -1843,7 +1842,7 @@ class LearningLedger:
                         counts["removed"] += 1
                     else:
                         content = self.render_note(self._note(row))
-                        if _hash(content) != row["file_hash"] or row["status"] != "active":
+                        if text_hash(content) != row["file_hash"] or row["status"] != "active":
                             raise LearningError("projection revision mismatch")
                         fd, temporary = tempfile.mkstemp(prefix=".learning-", dir=folder)
                         try:

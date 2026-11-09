@@ -379,6 +379,8 @@ print(json.dumps({'usage': {'iterations': 1, 'input_tokens': 0, 'output_tokens':
 @pytest.mark.skipif(sys.platform != "linux", reason="inspect Linux child process state")
 def test_timeout_stops_descendant_process(replay, tmp_path):
     import os
+    import signal
+    import time
 
     manifest, _ = replay.load_manifest()
     limits = {**manifest["limits"], "seconds": 0.2}
@@ -388,16 +390,37 @@ child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'])
 Path('child.pid').write_text(str(child.pid))
 time.sleep(20)
 """
-    result = replay.run_bounded([sys.executable, "-c", code], b"{}", tmp_path, limits)
-    assert result["status"] == "timeout"
-    pid = int((tmp_path / "child.pid").read_text())
-    stat = Path(f"/proc/{pid}/stat")
-    # A terminated orphan may remain a zombie until the host init reaps it.
-    if stat.exists():
-        assert stat.read_text().split()[2] == "Z"
-    else:
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
+
+    def wait_for_exit(pid):
+        stat = Path(f"/proc/{pid}/stat")
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                state = stat.read_text().rsplit(")", 1)[1].split()[0]
+            except (FileNotFoundError, ProcessLookupError):
+                return True
+            # A terminated orphan may remain a zombie until the host init reaps it.
+            if state == "Z":
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+
+    pid_file = tmp_path / "child.pid"
+    try:
+        result = replay.run_bounded([sys.executable, "-c", code], b"{}", tmp_path, limits)
+        pid = int(pid_file.read_text())
+        assert result["status"] == "timeout"
+        assert wait_for_exit(pid), "fixture descendant survived runner timeout cleanup"
+    finally:
+        # Keep the intentionally failing mutation check from leaving a sleeping orphan.
+        if pid_file.exists():
+            pid = int(pid_file.read_text())
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            assert wait_for_exit(pid), "fixture descendant survived test cleanup"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file resource limit")
