@@ -3210,10 +3210,12 @@ def load_session_corpus(environ: Optional[Mapping[str, str]] = None) -> List[Mem
         except OSError:
             cache_path = None
     own_folder = memory_dir(environ)
-    for folder in memory_dirs(environ):
+    folders = memory_dirs(environ)
+    corpora = _CORPUS.load_memory_corpora(folders, cache_path)
+    for folder, corpus in zip(folders, corpora):  # noqa: B905 - one corpus per folder
         # NOBLIVION-160. The run's own project folder is the first folder of the list.
         is_own = own_folder is not None and os.path.realpath(folder) == os.path.realpath(own_folder)
-        for md in load_memory_corpus(folder, cache_path):
+        for md in corpus:
             md.own = is_own
             seen.setdefault(md.rel_path, md)
     return [seen[name] for name in sorted(seen)]
