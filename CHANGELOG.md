@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.22 - 2026-11-09
+
 - Codex journals now mask secrets identified by structured field names while preserving
   safe surrounding fields. The adapter reuses its loaded redactor across event values.
 - Recall computes label boosts once per file and stops writing the unused candidate ID
