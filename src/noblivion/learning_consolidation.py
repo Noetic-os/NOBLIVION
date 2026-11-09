@@ -17,8 +17,20 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
 from . import db
-from .learning import LearningError, SemanticSnapshotChanged, _hash, _json, _safe, _text
-from .learning_extract import _AUTHORITY, _INJECTION, _quoted, source_date
+from .learning_extract import (
+    contains_authority,
+    contains_injection,
+    is_quoted_or_injected,
+    source_date,
+)
+from .learning_values import (
+    LearningError,
+    SemanticSnapshotChanged,
+    canonical_json,
+    text_hash,
+    validate_safe_text,
+    validate_text,
+)
 
 
 @dataclass(frozen=True)
@@ -55,12 +67,12 @@ class ConsolidationSettings:
 
     @property
     def fingerprint(self):
-        return _hash(_json(asdict(self)))
+        return text_hash(canonical_json(asdict(self)))
 
 
 def support_id(reference):
-    return _hash(
-        _json(
+    return text_hash(
+        canonical_json(
             {
                 k: reference[k]
                 for k in ("note_id", "revision", "source_id", "source_hash", "start", "end")
@@ -110,7 +122,7 @@ class ConsolidationLedger:
                 project, note["root"], session_id
             ):
                 raise LearningError("claim support memory use disabled")
-            exact = self.ledger._evidence([ref], project, note["root"])[0]
+            exact = self.ledger.validate_evidence([ref], project, note["root"])[0]
             stored = self.conn.execute(
                 "SELECT 1 FROM learning_evidence WHERE note_id=? AND revision=? AND source_id=? "
                 "AND source_hash=? AND start=? AND end=? AND quote=?",
@@ -132,7 +144,7 @@ class ConsolidationLedger:
                 ).fetchone()
             )
             source["metadata"] = json.loads(source["metadata"])
-            if _quoted(source["content"], exact["start"], exact["end"]):
+            if is_quoted_or_injected(source["content"], exact["start"], exact["end"]):
                 raise LearningError("quoted or injected claim support")
             item = {**exact, "note_id": note["note_id"], "revision": note["revision"]}
             item["support_id"] = support_id(item)
@@ -187,10 +199,10 @@ class ConsolidationLedger:
         ]
 
     def _guards(self, proposal, supports):
-        statement = _text(
+        statement = validate_text(
             proposal.get("statement"), "claim statement", self.settings.max_statement_chars
         )
-        _safe(_json(proposal))
+        validate_safe_text(canonical_json(proposal))
         kind, category, scope = (proposal.get(k) for k in ("kind", "category", "scope"))
         if kind not in {"explicit_statement", "observation", "inference"}:
             raise LearningError("invalid claim kind")
@@ -198,7 +210,7 @@ class ConsolidationLedger:
             raise LearningError("invalid claim category")
         if scope not in {"project", "general"}:
             raise LearningError("invalid claim scope")
-        if _AUTHORITY.search(statement) or _INJECTION.search(statement):
+        if contains_authority(statement) or contains_injection(statement):
             raise LearningError("claim cannot grant authority")
         if kind == "inference":
             if (
@@ -243,12 +255,12 @@ class ConsolidationLedger:
         """Stage a generated statement with exact edges; never implicitly admit it."""
         if not isinstance(proposal, dict):
             raise LearningError("invalid claim proposal")
-        project, root = _text(project, "project"), _text(root, "root")
+        project, root = validate_text(project, "project"), validate_text(root, "root")
         if not self.ledger.effective_controls(project, root)["contribute"]:
             raise LearningError("claim contribution is disabled")
         with db.write_tx(self.conn):
             if job_id is not None:
-                job = self.ledger._lease(job_id, lease_token)
+                job = self.ledger.validate_lease(job_id, lease_token)
                 if (job["project"], job["root"]) != (project, root):
                     raise LearningError("claim job scope mismatch")
             supports = self.validate_supports(proposal.get("supports"), project, root)
@@ -279,8 +291,8 @@ class ConsolidationLedger:
                 or proposal.get("effective_at", effective) != effective
             ):
                 raise LearningError("claim dates must come from exact support")
-            claim_id = _hash(
-                _json(
+            claim_id = text_hash(
+                canonical_json(
                     [
                         project,
                         root,
@@ -403,14 +415,14 @@ class ConsolidationLedger:
         item.pop("revisions")
         self.conn.execute(
             "INSERT INTO learning_claim_revisions VALUES (?,?,?,?,?)",
-            (claim_id, item["revision"], action, _json(item), time.time()),
+            (claim_id, item["revision"], action, canonical_json(item), time.time()),
         )
 
     def admit(self, claim_id, verdict, *, job_id=None, lease_token=None, expected_snapshot=None):
         """A distinct complete semantic verdict may admit a reference-valid claim."""
         with db.write_tx(self.conn):
             if job_id is not None:
-                self.ledger._lease(job_id, lease_token)
+                self.ledger.validate_lease(job_id, lease_token)
             claim = self.inspect(claim_id)
             if expected_snapshot is not None:
                 current = sorted(
@@ -484,7 +496,7 @@ class ConsolidationLedger:
         """
         with db.write_tx(self.conn):
             if job_id is not None:
-                self.ledger._lease(job_id, lease_token)
+                self.ledger.validate_lease(job_id, lease_token)
             candidate = self.inspect(candidate_id)
             project, root = candidate["project"], candidate["root"]
             current_notes = sorted(
@@ -640,9 +652,9 @@ class ConsolidationLedger:
             )
 
     def _context(self, project, root, query="", *, session_id="", limit_chars=6000):
-        _text(project, "project")
-        _text(root, "root")
-        _text(query, "context query", 8000, empty=True)
+        validate_text(project, "project")
+        validate_text(root, "root")
+        validate_text(query, "context query", 8000, empty=True)
         if type(limit_chars) is not int or not 0 <= limit_chars <= self.settings.max_context_chars:
             raise LearningError("invalid context size")
         empty = {"context": "", "claims": [], "conflicts": [], "deferred": [], "reason": None}
@@ -746,8 +758,7 @@ class ConsolidationLedger:
             else:
                 merged[key] = item
         conflicts = []
-        for row in self.ledger._conflict_rows(project, root):
-            conflict = self.ledger._inspect_conflict(row)
+        for conflict in self.ledger.iter_conflicts(project, root):
             if conflict["state"] != "open":
                 continue
             statement = conflict.get("proposed_statement") or ""
@@ -841,7 +852,7 @@ class ConsolidationLedger:
             "conflicts": conflicts,
             "deferred": omitted,
         }
-        cache_id = _hash(_json([project, root, session_id, query, limit_chars]))
+        cache_id = text_hash(canonical_json([project, root, session_id, query, limit_chars]))
         # At most one recent context per caller/root and 256 globally. Cached
         # bytes are diagnostic only: every serve rebuilds under support validation.
         self.conn.execute(
@@ -851,7 +862,7 @@ class ConsolidationLedger:
         )
         self.conn.execute(
             "INSERT OR REPLACE INTO learning_context_cache VALUES (?,?,?,?,?,?)",
-            (cache_id, project, root, session_id, _json(result), time.time()),
+            (cache_id, project, root, session_id, canonical_json(result), time.time()),
         )
         self.conn.execute(
             "DELETE FROM learning_context_cache WHERE cache_id NOT IN "
@@ -1012,8 +1023,8 @@ class ConsolidationLedger:
             if len(unique) < self.settings.min_workflow_runs:
                 continue
             unique = unique[: self.settings.min_workflow_runs]
-            draft_id = _hash(
-                _json(
+            draft_id = text_hash(
+                canonical_json(
                     [project, root, tool, command, [(r["note_id"], r["revision"]) for r in unique]]
                 )
             )
@@ -1032,7 +1043,7 @@ class ConsolidationLedger:
             validate_draft(document)
             with db.write_tx(self.conn):
                 if job_id is not None:
-                    self.ledger._lease(job_id, lease_token)
+                    self.ledger.validate_lease(job_id, lease_token)
                 for run in unique:
                     self.validate_supports(run["supports"], project, root)
                     source = self.conn.execute(
@@ -1049,7 +1060,15 @@ class ConsolidationLedger:
                 self.conn.execute(
                     "INSERT OR IGNORE INTO learning_drafts VALUES "
                     "(?,?,?,'review_required',0,?,?,?,?)",
-                    (draft_id, project, root, _json(document), _json(unique), now, now),
+                    (
+                        draft_id,
+                        project,
+                        root,
+                        canonical_json(document),
+                        canonical_json(unique),
+                        now,
+                        now,
+                    ),
                 )
                 for ref in refs.values():
                     self.conn.execute(
@@ -1200,7 +1219,7 @@ def validate_draft(document):
         "support_ids",
     }:
         raise LearningError("invalid procedure template")
-    _safe(_json(document))
+    validate_safe_text(canonical_json(document))
     if (
         document["format"] != "noblivion-procedure-v1"
         or document["active"] is not False
@@ -1313,7 +1332,7 @@ def withdraw(
             item.update(status="withdrawn", revision=row["revision"] + 1)
             conn.execute(
                 "INSERT INTO learning_claim_revisions VALUES (?,?,? ,?,?)",
-                (ident, item["revision"], "withdraw", _json(item), time.time()),
+                (ident, item["revision"], "withdraw", canonical_json(item), time.time()),
             )
     for ident in drafts:
         row = conn.execute(

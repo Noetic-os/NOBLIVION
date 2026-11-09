@@ -200,6 +200,36 @@ def test_expired_lease_fences_late_writes_and_reclaims(ledger):
     assert len(ledger.current_notes("test", "sample-project")) == 1
 
 
+def test_validation_interfaces_leave_commit_and_rollback_to_the_caller(ledger):
+    payload = batch()
+    ledger.capture_batch(payload)
+    job = ledger.claim("worker")
+    with pytest.raises(RuntimeError, match="rollback fixture"):
+        with db.write_tx(ledger.conn):
+            ledger.conn.execute(
+                "UPDATE learning_jobs SET attempts=attempts+1 WHERE id=?", (job["id"],)
+            )
+            current = ledger.validate_lease(job["id"], job["lease_token"])
+            assert current["attempts"] == job["attempts"] + 1
+            assert ledger.validate_evidence(
+                [evidence(payload)], "test", "sample-project", job_id=job["id"]
+            ) == [{**evidence(payload), "role": "user"}]
+            assert ledger.conn.in_transaction
+
+            ledger.conn.execute("UPDATE learning_sources SET status='excluded'")
+            with pytest.raises(LearningError, match="unavailable"):
+                ledger.validate_evidence([evidence(payload)], "test", "sample-project")
+            ledger.conn.execute("UPDATE learning_jobs SET lease_until=0")
+            with pytest.raises(LeaseLost):
+                ledger.validate_lease(job["id"], job["lease_token"])
+            assert ledger.conn.in_transaction
+            raise RuntimeError("rollback fixture")
+
+    assert ledger.validate_lease(job["id"], job["lease_token"])["attempts"] == job["attempts"]
+    assert ledger.validate_evidence([evidence(payload)], "test", "sample-project")
+    assert not ledger.conn.in_transaction
+
+
 def test_bounded_retry_exhaustion_and_explicit_recovery(ledger):
     ledger.capture_batch(batch())
     for attempt in (1, 2):

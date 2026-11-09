@@ -129,9 +129,9 @@ def test_evidence_inside_the_range_is_accepted_and_outside_is_refused(ledger):
             }
         ]
 
-    assert ledger._evidence(cite(second), PROJECT, SCOPE, job_id=job)
+    assert ledger.validate_evidence(cite(second), PROJECT, SCOPE, job_id=job)
     with pytest.raises(LearningError):
-        ledger._evidence(cite(batch(1, "other")), PROJECT, SCOPE, job_id=job)
+        ledger.validate_evidence(cite(batch(1, "other")), PROJECT, SCOPE, job_id=job)
 
 
 def test_excluding_a_source_cancels_the_ranged_job(ledger):
