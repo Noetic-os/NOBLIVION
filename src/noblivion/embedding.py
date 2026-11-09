@@ -612,7 +612,9 @@ def _todo_chunks(
 
     Returns ``(to embed, to copy)``. A chunk whose text is the text of its file
     row (a short note is one chunk) has the vector of the file row already: that
-    vector is copied, not computed again.
+    vector is copied, not computed again. A restored parent is a candidate
+    even when its chunks kept their revisions: an edit before the row was
+    hidden may still have stale vectors after a pass skipped that hidden row.
     """
     todo: list[tuple[int, str, str]] = []
     copies: list[tuple[int, str, int, bytes]] = []
@@ -623,9 +625,9 @@ def _todo_chunks(
             "LEFT JOIN chunk_vectors v ON v.chunk_id = c.id AND v.model = ? "
             "LEFT JOIN vectors f ON f.memory_id = m.id AND f.model = ? "
             "WHERE m.archived_at IS NULL AND m.deleted_at IS NULL "
-            "AND (? OR m.source_type <> ?) AND (c.rev > ? OR v.chunk_id IS NULL) "
-            "ORDER BY c.id",
-            (model_id, model_id, include_mined, db.SOURCE_MINED, after_rev),
+            "AND (? OR m.source_type <> ?) "
+            "AND (c.rev > ? OR m.rev > ? OR v.chunk_id IS NULL) ORDER BY c.id",
+            (model_id, model_id, include_mined, db.SOURCE_MINED, after_rev, after_rev),
         )
         for chunk_id, search_text, have, file_hash, dim, blob in cur.fetchall():
             text = str(search_text).strip()[:MAX_EMBED_CHARS]

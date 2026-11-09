@@ -334,3 +334,53 @@ def test_an_empty_batch_does_not_mark_stale_vectors_complete(conn, service):
     assert service.backfill(conn, batch_size=0).embedded == 0
     assert service.backfill(conn).embedded == 1
     assert_current_vectors(conn)
+
+
+@pytest.mark.parametrize("hidden_by", ["delete", "archive"])
+def test_restoring_an_edited_note_retries_its_unchanged_chunk_revisions(conn, service, hidden_by):
+    memory_id = add_memory(conn, "orchard", "old orchard guidance")
+    service.backfill(conn)
+    change_memory(conn, memory_id, "new orchard guidance")
+    with db.write_tx(conn):
+        rev, now = db.bump_rev(conn), db.utc_now()
+        if hidden_by == "delete":
+            assert db.soft_delete(conn, memory_id, rev=rev, now=now)
+        else:
+            conn.execute(
+                "UPDATE memories SET archived_at = ?, rev = ?, updated_at = ? WHERE id = ?",
+                (now, rev, now, memory_id),
+            )
+    # The completed hidden pass advances progress beyond the unembedded edit.
+    result = service.backfill(conn)
+    assert (result.embedded, result.chunks_embedded) == (0, 0)
+    row = dict(conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone())
+    chunks_before = [
+        tuple(chunk)
+        for chunk in conn.execute(
+            "SELECT id, rev FROM memory_chunks WHERE parent_id = ?", (memory_id,)
+        )
+    ]
+    with db.write_tx(conn):
+        assert db.rewrite_memory(
+            conn,
+            memory_id,
+            root=row["root"],
+            path=row["path"],
+            category=row["category"],
+            content=row["content"],
+            content_hash=row["hash"],
+            labels=row["labels"],
+            index_text=row["index_text"],
+            rev=db.bump_rev(conn),
+            now=db.utc_now(),
+        )
+    # A restore preserves identical chunk text and therefore its earlier revision.
+    assert chunks_before == [
+        tuple(chunk)
+        for chunk in conn.execute(
+            "SELECT id, rev FROM memory_chunks WHERE parent_id = ?", (memory_id,)
+        )
+    ]
+    result = service.backfill(conn)
+    assert (result.embedded, result.chunks_embedded) == (1, 1)
+    assert_current_vectors(conn)
