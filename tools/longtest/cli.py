@@ -14,11 +14,15 @@
     python -m longtest.cli units  --run-dir DIR [--notify-cmd CMD]
     python -m longtest.cli seed-stores --run-dir DIR --from DIR
     python -m longtest.cli watch  --run-dir DIR
+    python -m longtest.cli steps  --run-dir DIR [--steps N] [--pilot] [--keep-going]
 
 ``tools`` must be on ``PYTHONPATH``. ``units`` prints the text of the systemd user
 units and writes them under the run folder; it installs nothing. ``run`` starts
 the loop of the run's profile (``init --profile``); ``pilot`` runs minutes, or two
 hours for the large-project profile. ``watch`` is the watchdog step of the timer.
+``steps`` is the time-compressed run (``init --profile large-project-steps``): the
+growth steps back to back, with no nightly window and no wait; it goes on where a
+killed run stopped, and ``steps --pilot`` is its short pilot.
 """
 
 from __future__ import annotations
@@ -108,7 +112,7 @@ def cmd_pilot(a: argparse.Namespace) -> int:
     """Minutes, not days: gates 2, 3, 4 and 5 of the plan on a scratch store."""
     run = Run(Path(a.run_dir))
     manifest = run.manifest
-    if profiles.profile_of(manifest).name == profiles.LARGE.name:
+    if profiles.profile_of(manifest).name in profiles.LARGE_FAMILY:
         return pilot_large(run, a)
     a.sizes = a.sizes or "30,200"
     live_cfg, live_data = Path(manifest["live"]["config_dir"]), Path(manifest["live"]["data_dir"])
@@ -194,7 +198,12 @@ def pilot_large(run: Run, a: argparse.Namespace) -> int:
     external connects; every store ready inside its cap; one replay shard done per
     scale; B1 pull delivery on V1; one soak hour with a heartbeat every 5 minutes, a
     write that became searchable, and the embedding runtime ready at the end; the live
-    memory folders untouched. A failed gate blocks the start."""
+    memory folders untouched. A failed gate blocks the start.
+
+    The time-compressed profile has no soak store and no unit: its pilot is short. It
+    keeps the gates of the replay (freeze, zero tokens, stores ready, one warmed shard
+    per scale, the sanity floor of each build, the claims, the live folders) and shows
+    per scale what the validity gate of the report would say for each arm."""
     manifest = run.manifest
     prof = profiles.profile_of(manifest)
     live_cfg, live_data = Path(manifest["live"]["config_dir"]), Path(manifest["live"]["data_dir"])
@@ -245,10 +254,50 @@ def pilot_large(run: Run, a: argparse.Namespace) -> int:
         and not gate2["external_connects_during_replay"]
     )
     gate5 = {"live_memory_files_changed": len(moved), "ok": not moved}
+    arms = (*prof.builds, *prof.stock_arms)
+    floors = report.validity([dict(r, day=1) for r in rows], arms, prof.params, sizes)
+    report_gate = {
+        size: {"ok": g["ok"], "arms": g["steps"].get("1", {})} for size, g in floors.items()
+    }
+    if prof.steps:
+        gate3["ok"] = all(
+            g["arms"].get(b, {}).get("ok") for g in report_gate.values() for b in prof.builds
+        )
+        doc = {
+            "profile": prof.name,
+            "mode": "compressed",
+            "gate1_freeze": gate1,
+            "gate2_zero_tokens": gate2,
+            "gate3_sanity": gate3,
+            "sanity_by_scale": report_gate,
+            "report_gate_would_pass": all(g["ok"] for g in report_gate.values()),
+            "gate4_channels_fired": fired,
+            "gate4_claims": gate4,
+            "gate5_isolation": gate5,
+            "stores_ready": stores,
+            "tasks": infos,
+            "summary": summary,
+        }
+        doc["gates"] = {
+            "freeze": gate1["ok"],
+            "zero_tokens": gate2["ok"],
+            "stores_ready": stores["ok"],
+            "replay_shard_done": stores["shards_done"],
+            "sanity": gate3["ok"],
+            "claims": gate4["ok"],
+            "isolation": gate5["ok"],
+            "no_external_connects": not gate2["external_connects_during_replay"],
+        }
+        doc["all_gates"] = all(doc["gates"].values())
+        write_private(run.dir / "pilot.json", json_text(doc))
+        shown = ("gates", "all_gates", "sanity_by_scale", "report_gate_would_pass")
+        print(json.dumps({**{k: doc[k] for k in shown}, "stores": stores}, indent=1))
+        return 0 if doc["all_gates"] else 1
     loop_check = loop_gate(run, a, prof) if a.loop_seconds else {"ok": False, "skipped": True}
     limits = unit_limits()
     doc = {
         "profile": prof.name,
+        "sanity_by_scale": report_gate,
         "gate1_freeze": gate1,
         "gate2_zero_tokens": gate2,
         "gate3_sanity": gate3,
@@ -648,10 +697,51 @@ def cmd_run(a: argparse.Namespace) -> int:
     pilot = run.dir / "pilot.json"
     if not pilot.exists() or not json.loads(pilot.read_text(encoding="utf-8")).get("all_gates"):
         raise SystemExit("the pilot has not passed: run `pilot` first")
+    if profiles.profile_of(run.manifest).steps:
+        raise SystemExit("this profile runs steps, not nights: use `steps`")
     notify = command_notifier(a.notify_cmd) if a.notify_cmd else None
     loop = Loop(run, a.soak_size, notify=notify)
     loop.run_forever(a.max_seconds)
     return 0
+
+
+def cmd_steps(a: argparse.Namespace) -> int:
+    """The time-compressed run. ``--pilot`` is its short pilot (day 0: one shard per
+    scale, a few queries per variant, no growth). Without it: the steps that are not
+    done yet, one line per step. Exit 0 when every step is done and every build fired."""
+    from . import compressed
+
+    run = Run(Path(a.run_dir))
+    prof = profiles.profile_of(run.manifest)
+    if not prof.steps:
+        raise SystemExit(f"profile {prof.name} runs nights, not steps: use `run`")
+    if a.pilot:
+        return pilot_large(run, a)
+    problems = verify_frozen(run)
+    if problems:
+        raise SystemExit("the run may not start: " + "; ".join(problems))
+    pilot = run.dir / "pilot.json"
+    if not pilot.exists() or not json.loads(pilot.read_text(encoding="utf-8")).get("all_gates"):
+        raise SystemExit("the pilot has not passed: run `steps --pilot` first")
+
+    def show(row: dict) -> None:
+        keys = ("step", "ts", "seconds", "attempts", "ok", "builds_fired")
+        cells = {
+            size: {arm: c["delivery"] for arm, c in g["arms"].items()}
+            for size, g in row["gate"].items()
+        }
+        print(json.dumps({**{k: row[k] for k in keys}, "sanity": cells}), flush=True)
+
+    res = compressed.run_steps(
+        run,
+        a.steps or None,
+        retries=a.retries,
+        keep_going=a.keep_going,
+        wait_s=a.wait,
+        on_step=show,
+    )
+    print(json.dumps(res, indent=1))
+    return 0 if res["complete"] and not res["stopped"] else 1
 
 
 def cmd_status(a: argparse.Namespace) -> int:
@@ -705,7 +795,8 @@ def cmd_report(a: argparse.Namespace) -> int:
     run = Run(Path(a.run_dir))
     prof = profiles.profile_of(run.manifest)
     rows = [r for r in replay_rows(run) if r.get("day")]  # the pilot (day 0) is not the run
-    if prof.name == profiles.LARGE.name and rows:
+    large = prof.name in profiles.LARGE_FAMILY
+    if large and rows:
         # DR1 and DR3 are judged on the last night (the grown store); the nights before
         # feed the trend of DR6. A query replays every night, so the rows must not mix.
         last = max(int(r["day"]) for r in rows)
@@ -714,7 +805,7 @@ def cmd_report(a: argparse.Namespace) -> int:
         judged = rows
     summary = replay.summarize(judged)
     summary["char_ratio"] = report.char_ratio(judged)
-    if prof.name == profiles.LARGE.name:
+    if large:
         soak_rows = read_jsonl(run.out / "soak.jsonl")
         evaluation = soak.evaluate(soak_rows, params=prof.params) if soak_rows else None
         by_night = report.delivery_by_night(rows)
@@ -734,7 +825,9 @@ def cmd_report(a: argparse.Namespace) -> int:
             params=prof.params,
             sizes=list(run.manifest["sizes"]),
             validity=gate,
+            health_rule=not prof.steps,
         )
+        doc["steps"] = read_jsonl(run.out / "steps.jsonl")
         doc["latency"] = report.latency_validity(read_jsonl(run.out / "latency.jsonl"))
         doc["judged_night"] = max((int(r["day"]) for r in rows), default=None)
         doc["delivery_by_night"] = {str(k): v for k, v in by_night.items()}
@@ -850,6 +943,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--run-dir", required=True)
     s.add_argument("--no-private-network", action="store_true")
     s.add_argument("--notify-cmd", default="", help=NOTIFY_HELP)
+    s = add("steps", cmd_steps)
+    s.add_argument("--run-dir", required=True)
+    s.add_argument("--steps", type=int, default=0, help="default: the steps of the profile")
+    s.add_argument("--retries", type=int, default=2, help="runs again of a failed step")
+    s.add_argument("--keep-going", action="store_true", help="go on when a build did not fire")
+    s.add_argument("--wait", type=float, default=900.0)
+    s.add_argument("--pilot", action="store_true", help="the short pilot (day 0), not the run")
+    s.add_argument("--sizes", default="", help="pilot: default the sizes of the run")
+    s.add_argument("--limit", type=int, default=10, help="pilot: queries per variant")
+    s.add_argument("--parallel", type=int, default=1)
+    s.add_argument("--reuse", action="store_true", help="pilot: analyse the rows of day 0")
     s = add("localnet", cmd_localnet)
     s.add_argument("--run-dir", required=True)
     s.add_argument("--max-seconds", type=float, default=None)

@@ -53,6 +53,19 @@ LARGE_VERDICT = (
     "when the upper bound of B1 minus S2 is under 0 on C1 or C3, or DR3 fails. PENDING "
     "while DR5 or DR6 has no data. Else TIE."
 )
+# The time-compressed run: the same scales, growth, variants and thresholds; the steps
+# run back to back, with no soak store, so the replay claims and rules only.
+STEPS_CLAIMS = ("C1", "C2", "C3", "C4", "C10", "C13", "C16", "C17")
+STEPS_DR6 = (
+    "DR6",
+    "Trend: the Theil-Sen slope of B1 delivery on C1 over the steps of the run has "
+    "a 95% interval that holds 0 or lies above 0. Needs three steps or more.",
+)
+STEPS_VERDICT = (
+    "Verdict per scale: INVALID when the validity gate fails on a judged step. WIN when "
+    "DR1 holds on C1 or C3 and DR3 and DR6 hold. LOSE when the upper bound of B1 minus "
+    "S2 is under 0 on C1 or C3, or DR3 fails. PENDING while DR6 has no data. Else TIE."
+)
 
 
 @dataclass(frozen=True)
@@ -80,6 +93,7 @@ class Profile:
     watchdog: bool  # the timer unit that restarts a quiet core unit
     units: UnitSettings
     soak_size: int = 20000
+    steps: int = 0  # growth steps that `steps` runs back to back; 0: nights of 24 hours
 
     def prereg(self) -> str:
         return render_prereg(self)
@@ -132,7 +146,17 @@ LARGE = Profile(
     ),
 )
 
-PROFILES = {p.name: p for p in (PLAN2, LARGE)}
+STEPS = replace(
+    LARGE,
+    name="large-project-steps",
+    claims=STEPS_CLAIMS,
+    steps=7,
+    watchdog=False,
+    units=UnitSettings(),
+)
+
+PROFILES = {p.name: p for p in (PLAN2, LARGE, STEPS)}
+LARGE_FAMILY = (LARGE.name, STEPS.name)  # judged by the rules of the large project
 DEFAULT = PLAN2.name
 
 
@@ -153,6 +177,8 @@ def render_prereg(profile: Profile) -> str:
     """The pre-registration text of a profile. Same profile, same bytes."""
     if profile.name == PLAN2.name:
         return config.render_prereg(profile.params)
+    if profile.steps:
+        return render_steps_prereg(profile)
     doc = profile.params.as_dict()
     lines = [
         "# Pre-registration of the long-run test on a large project",
@@ -217,6 +243,84 @@ def render_prereg(profile: Profile) -> str:
         "and restarts the core unit when the heartbeat is older than 15 minutes.",
         "- A start inside the heavy window (01:00 to 06:00) is written as the end of "
         "that window, so every day of the run holds one night.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def render_steps_prereg(profile: Profile) -> str:
+    """The pre-registration text of the time-compressed run. Same profile, same bytes."""
+    from . import warm
+
+    doc = profile.params.as_dict()
+    lines = [
+        "# Pre-registration of the time-compressed long-run test on a large project",
+        "",
+        "Written before step 1. The sha256 of this text goes into the run manifest.",
+        "",
+        f"Profile: {profile.name}. Builds: {', '.join(profile.builds)} against "
+        f"{', '.join(profile.stock_arms)} (stock memory simulation).",
+        f"Scales: {', '.join(str(s) for s in profile.sizes)} notes, 50 projects at the "
+        "largest. Every scale replays at every step.",
+        f"Steps: {profile.steps} growth steps, back to back, with no nightly window and no "
+        f"wait between them. Before each step about {profile.growth_per_day} filler notes "
+        "are added to each kept replay store, so the last step tests the grown store. "
+        "Growth notes hold no answer string of a lesson. A step is written as a night: "
+        "its number is the day of its rows.",
+        "",
+        "## Parameters",
+        "",
+    ]
+    for key in sorted(doc):
+        lines.append(f"- {key}: {doc[key]}")
+    lines += [
+        "",
+        "## Statistics",
+        "",
+        "- Rates: Wilson 95% interval.",
+        "- Paired differences: exact two-sided McNemar test on discordant pairs, and a "
+        "cluster bootstrap 95% interval (cluster = lesson, fixed seed).",
+        "- Holm correction across all claims and scales tested.",
+        "- Trend: Theil-Sen slope over the steps, with a bootstrap 95% interval.",
+        "",
+        "## Validity",
+        "",
+        "- Before every shard the store is started and warmed: the recall tool is called "
+        f"until one call answers inside {warm.HOOK_BUDGET_S:g} s, for {warm.WARM_BOUND_S:g} s "
+        f"at most, and the latch file {warm.LATCH_FILE} of the hooks is removed.",
+        "- Every row carries the fail reason of its hook. A shard with a row that ran "
+        "under the latch is run again and is not judged.",
+        "- One store starts at a time.",
+        "- Gate per step, scale and arm: the delivery on the sanity set (V1; the recall "
+        f"tool for a build) is {doc['sanity_pull_delivery']} or more for "
+        f"{', '.join(profile.builds)} and {doc['sanity_s2_delivery']} or more for "
+        f"{', '.join(profile.stock_arms)}. A scale with a failed gate on any step gets "
+        "the result INVALID with the cause, and DR1, DR3 and DR6 are not judged there. "
+        "INVALID is never printed as a win or a loss.",
+        "",
+        "## Decision rules",
+        "",
+    ]
+    for name, text in (*(r for r in LARGE_RULES if r[0] in ("DR1", "DR3")), STEPS_DR6):
+        lines.append(f"- {name}: " + text.format(**doc))
+    lines += ["", STEPS_VERDICT, ""]
+    lines += [
+        "## Claims",
+        "",
+        "- In scope: " + ", ".join(profile.claims) + ".",
+        "- Variants replayed: " + ", ".join(profile.variants or ()) + ".",
+        "- DR1 and DR3 are judged on the rows of the last step, on the grown store. "
+        "The steps before feed DR6.",
+        "- C2 (V5, a near miss): a false row of B1 is any row on the prompt. A false "
+        "row of S2 is a near-miss note of the lesson that stock loads in its index or "
+        "opens (stock loads its index on every prompt, so 'any row' would be 1.0 by "
+        "construction). The rule is conservative against B1.",
+        "- C4 has no stock mechanism (by construction): the result reports the "
+        "NOBLIVION rate and counts no win.",
+        "- C10 is reported from the V3 rows whose lesson sits past the index cap.",
+        "- Health (DR5) is not judged by this run: it has no soak store.",
+        "- A validity check that fires gets a cause kind: T test, I implementation, "
+        "D design, M model.",
         "",
     ]
     return "\n".join(lines)
