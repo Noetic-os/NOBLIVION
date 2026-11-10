@@ -298,3 +298,54 @@ def test_latency_calls_under_the_latch_make_the_row_invalid():
     assert [call("p") for _ in range(4)] == [2000.8, 0.5, 0.5, 0.5]
     got = call.validity()
     assert got == {"latched": 3, "fails": {"store_hung": 3, "timeout": 1}, "valid": False}
+
+
+# -- one kept store at a time ------------------------------------------------------------
+
+
+def test_kept_stores_start_one_at_a_time_whatever_the_parallel_number(tmp_path, monkeypatch):
+    """Two cold stores of thousands of notes that start together share the CPU quota:
+    the replay of the 7-day run started two at once. A kept store now runs alone; the
+    small scales still run side by side."""
+    import inspect
+    import threading
+
+    from longtest import loop as loop_mod
+
+    run = make_run(tmp_path, monkeypatch)
+    lock, active, worst = threading.Lock(), {"kept": 0, "small": 0}, {"kept": 0, "small": 0}
+
+    class Counting(StubHarness):
+        def kind(self):
+            return "kept" if "large" in str(self.root) else "small"
+
+        def start(self, index=True):
+            with lock:
+                active[self.kind()] += 1
+                worst[self.kind()] = max(worst[self.kind()], active[self.kind()])
+            time.sleep(0.15)
+            return super().start(index)
+
+        def stop(self):
+            if self.store is not None:
+                with lock:
+                    active[self.kind()] -= 1
+            self.store = None
+
+    class Shards(Fx):
+        def shards(self, size):
+            return [0, 1]
+
+        def shard_dir(self, size, shard):
+            return tmp_path / "shard"
+
+    monkeypatch.setattr(runner, "Harness", Counting)
+    monkeypatch.setattr(Run, "fixture", lambda self: Shards())
+    monkeypatch.setattr(replay, "run_stock", lambda *a, **k: [])
+    monkeypatch.setattr(replay, "run_shard", lambda *a, **k: [])
+    infos = runner.replay_all(
+        run, [30, 5000, 20000], None, None, builds=("B1",), parallel=4, python=sys.executable
+    )
+    assert len(infos) == 6 and worst["kept"] == 1 and worst["small"] == 2
+    nightly = inspect.signature(loop_mod.Loop).parameters["replay_parallel"]
+    assert nightly.default == 1  # the nightly job asks for one task at a time as well

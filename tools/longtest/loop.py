@@ -68,7 +68,7 @@ class Loop:
         sleep: Callable[[float], None] = time.sleep,
         params=None,
         notify: Callable[[str], None] | None = None,
-        replay_parallel: int = 2,
+        replay_parallel: int = 1,  # one store starts at a time
         profile: profiles.Profile | None = None,
         jobs: tuple[Job, ...] | None = None,
     ) -> None:

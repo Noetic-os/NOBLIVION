@@ -11,6 +11,7 @@ only so that the open guard can refuse a write under them.
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -18,7 +19,7 @@ import os
 import shutil
 import threading
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,10 @@ from .util import (
 SIZE_NAMES = {v: k for k, v in SCALES.items()}
 PROGRAM = sorted((TOOLS / "longtest").glob("*.py"))
 KEEP_FROM = 1000  # stores of this size and above are kept: their index takes hours
+# One kept store starts and runs at a time. Two cold stores of thousands of notes that
+# start together share the CPU quota of the unit: each first call is then late, the
+# hook latches, and the soak store next to them times out.
+KEPT_STORE = threading.Lock()
 VOLATILE = ("guard-state", "recall-cache", "guard-log.jsonl", "guard-table.json")
 _lock = threading.Lock()
 
@@ -309,6 +314,32 @@ def replay_task(
     )
     h.guard_site = guard_site
     keep = keep or size >= KEEP_FROM
+    with kept_turn(size):
+        return _replay_task(run, fx, h, build, size, shard, limit, variants, day, keep)
+
+
+@contextlib.contextmanager
+def kept_turn(size: int) -> Iterator[None]:
+    """The turn of a kept store (``KEPT_STORE``); a small scale does not wait."""
+    if size < KEEP_FROM:
+        yield
+        return
+    with KEPT_STORE:
+        yield
+
+
+def _replay_task(
+    run: Run,
+    fx: Fixture,
+    h: Harness,
+    build: str,
+    size: int,
+    shard: int,
+    limit: int | None,
+    variants: Sequence[str] | None,
+    day: int,
+    keep: bool,
+) -> dict[str, Any]:
     reset_volatile(h.root)
     h.prepare(fx, size, shard)  # a kept store keeps its grown indexes (Harness.prepare)
     started = time.monotonic()
@@ -387,23 +418,24 @@ def bench_kept_store(run: Run, build: str, size: int, budget_s: float) -> dict[s
         settings=run.manifest.get("settings_env"),
     )
     h.guard_site = run.dir / "private" / "guard-site"
-    reset_volatile(root)
     texts = [fx.prompt_of(q) for q in fx.queries_for(size, ["V3", "V1"], shard)]
     first = min(fx.scale(size)["lessons"].values(), key=lambda r: r["shard"])
     cwd = f"{fixtures.WORK}/{first['session_project']}"
-    try:
-        health = h.start()
-        pid = h.store.proc.pid if h.store.proc else None
-        with Worker(h) as w:
-            # a cold store answers its first call late and latches the hook: warm it,
-            # or the row measures 30 seconds of empty answers
-            warmed = warm.warm_up(w, h.data, cwd)
-            call = warm.HookCalls(w, cwd, "bench")
-            lat = soak.latency_benchmark(call, texts, n=100, budget_s=budget_s)
-        res = soak.resources(h.data, pid)
-    finally:
-        h.stop()
+    with kept_turn(size):
         reset_volatile(root)
+        try:
+            health = h.start()
+            pid = h.store.proc.pid if h.store.proc else None
+            with Worker(h) as w:
+                # a cold store answers its first call late and latches the hook: warm it,
+                # or the row measures 30 seconds of empty answers
+                warmed = warm.warm_up(w, h.data, cwd)
+                call = warm.HookCalls(w, cwd, "bench")
+                lat = soak.latency_benchmark(call, texts, n=100, budget_s=budget_s)
+            res = soak.resources(h.data, pid)
+        finally:
+            h.stop()
+            reset_volatile(root)
     return {
         "build": build,
         "size": size,
@@ -438,6 +470,8 @@ def replay_all(
     """Arms b and c over the synthetic lessons: every build and every shard, plus the
     stock arms. Rows go to ``out/replay.jsonl``; returns one info row per task. A task
     that fails does not stop the others: one ``RuntimeError`` at the end names each.
+    ``parallel`` is for the small scales: a kept store (``KEEP_FROM`` notes and more)
+    runs alone, whatever the number (``KEPT_STORE``).
     ``stock_arms`` keeps only those stock rows (the large-project run keeps S2);
     ``stock_dir(size, shard)`` names the folder stock reads (the grown store)."""
     fx = run.fixture()
