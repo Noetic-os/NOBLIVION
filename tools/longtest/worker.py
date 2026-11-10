@@ -11,6 +11,12 @@ Jobs (``op``): ``init``, ``prompt``, ``guard``, ``error``, ``subagent``,
 stdout) and ``ms``. An exception becomes ``ok: false`` with its type name; the hook
 itself fails open, so a failure to read is the hook's, not the worker's.
 
+A hook that fails open prints nothing, and so does a hook with nothing to say. The
+answer therefore also holds ``fail``, the hook's own reason (from the status of its
+line in ``recall.log``, or from the error of the recall tool; empty when it gave
+none), and ``latched``: the ``store.hung`` stamp was in force when the call began, so
+the hook sent nothing to the store.
+
 This file uses the standard library only, because it runs on the python of the
 store venv.
 """
@@ -22,12 +28,57 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sys
 import time
 import traceback
 from pathlib import Path
 
 STATE: dict = {"hooks": {}, "mods": {}, "build": None, "config_dir": None}
+LATCH_FILE = "store.hung"
+LATCH_S = 30.0  # how long the stamp holds (HUNG_BACKOFF_S of the build)
+LATCHED = "store_hung"
+TOOL_REASON = re.compile(r"\(([A-Za-z0-9_:.-]+)\)\s*$")
+
+
+def latch_in_force(clock=time.time) -> bool:
+    """True while the ``store.hung`` stamp of the data dir is in force. Its first field
+    is the wall-clock time until which the hooks send nothing to the store; a stamp
+    that ended, or one that ends too far ahead, counts as none (as the build reads it)."""
+    try:
+        stamp = Path(os.environ["NOBLIVION_DATA_DIR"]) / LATCH_FILE
+        left = float(stamp.read_text(encoding="utf-8").split()[0]) - clock()
+    except (KeyError, OSError, ValueError, IndexError):
+        return False
+    return 0.0 < left <= LATCH_S + 1.0
+
+
+def hook_log() -> Path:
+    return Path(os.environ.get("NOBLIVION_RECALL_CACHE_DIR") or os.devnull) / "recall.log"
+
+
+def log_mark() -> int:
+    try:
+        return hook_log().stat().st_size
+    except OSError:
+        return 0
+
+
+def hook_fail(mark: int) -> str:
+    """The first ``fail:<reason>`` among the lines that the hooks wrote to
+    ``recall.log`` after ``mark``. One job runs at a time, so those lines are its own.
+    A log that got shorter was rotated: it is read from its start."""
+    try:
+        with open(hook_log(), encoding="utf-8", errors="replace") as fh:
+            fh.seek(mark if log_mark() >= mark else 0)
+            lines = fh.read().splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        status = line.rsplit(" ", 1)[-1]
+        if status.startswith("fail:"):
+            return status[5:]
+    return ""
 
 
 def load(script: str):
@@ -182,7 +233,11 @@ def do_pull(job: dict):
     started = time.perf_counter()
     answer = mod.noblivion_recall(query=job["query"], k=job.get("k", 5), environ=env)
     text = "\n".join(str(b.get("text") or "") for b in answer.get("content") or [])
-    return text, (time.perf_counter() - started) * 1000
+    fail = ""
+    if answer.get("isError"):  # "... memory store unavailable (store_hung)"
+        found = TOOL_REASON.search(text)
+        fail = found.group(1) if found else "tool_error"
+    return text, (time.perf_counter() - started) * 1000, fail
 
 
 def do_sync(job: dict):
@@ -229,14 +284,25 @@ def handle(job: dict) -> dict:
         return {"ok": True, "out": "", "ms": 0.0}
     if op == "ping":
         return {"ok": True, "out": "pong", "ms": 0.0}
+    latched, mark = latch_in_force(), log_mark()
     try:
-        out, ms = OPS[op](job)
-        return {"ok": True, "out": out, "ms": round(ms, 2)}
+        got = OPS[op](job)
+        out, ms = got[0], got[1]
+        fail = got[2] if len(got) > 2 else hook_fail(mark)
+        return {
+            "ok": True,
+            "out": out,
+            "ms": round(ms, 2),
+            "fail": fail,
+            "latched": latched or fail == LATCHED,
+        }
     except Exception as exc:  # noqa: BLE001 - the job fails, the worker stays up
         return {
             "ok": False,
             "out": "",
             "ms": 0.0,
+            "fail": "internal:" + type(exc).__name__,
+            "latched": latched,
             "error": type(exc).__name__,
             "trace": traceback.format_exc()[-400:],
         }

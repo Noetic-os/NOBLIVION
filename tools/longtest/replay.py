@@ -21,7 +21,7 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-from . import stats
+from . import stats, warm
 from .buildrunner import Harness, Worker, suite
 from .fixtures import WORK, Fixture
 from .stocksim import Stock, project_folders
@@ -133,6 +133,13 @@ def base_row(build: str, size: int, shard: int, q: dict[str, Any], channel: str)
     }
 
 
+def hook_said(r: dict[str, Any]) -> dict[str, Any]:
+    """What the worker answer ``r`` says of the hook: its fail reason (empty when it
+    gave none) and whether the call ran under the ``store.hung`` latch."""
+    fail = str(r.get("fail") or "")
+    return {"fail": fail, "latched": bool(r.get("latched")) or fail == warm.LATCHED}
+
+
 class Credentials:
     """The canary secret of a CRED lesson, put where its source says (git remote,
     pushurl, netrc or dotenv) in a scratch folder of the harness. The value comes
@@ -199,8 +206,10 @@ class ShardRun:
         return f"lt-{self.name}-{self.size}-{self.shard}-{tag}-{self.n}"
 
     def row(
-        self, q: dict[str, Any], channel: str, text: str, ms: float, ok: bool, decision: str = ""
+        self, q: dict[str, Any], channel: str, text: str, r: dict[str, Any], decision: str = ""
     ) -> dict[str, Any]:
+        """One row from the worker answer ``r`` of its call: the hit, the cost, and what
+        the hook said (``fail``, ``latched``)."""
         lesson = self.fx.lessons.get(self.fx.lesson_of(q), {})
         answer = lesson.get("answer", "")
         hit, rank = hit_rank(text, answer) if answer else (False, None)
@@ -213,14 +222,15 @@ class ShardRun:
             hit, rank = named, named_rank
         row.update(
             {
-                "ok": ok,
+                "ok": r["ok"],
                 "hit": hit,
                 "named": named,
                 "rank": rank,
                 "chars": len(text),
                 "rows": suite().row_count(text),
-                "ms": round(ms, 1),
+                "ms": round(r["ms"], 1),
                 "decision": decision,
+                **hook_said(r),
             }
         )
         if q.get("expect") in NEGATIVE:
@@ -235,11 +245,11 @@ class ShardRun:
 
     def prompt(self, q: dict[str, Any], cwd: str, tag: str = "p") -> dict[str, Any]:
         r = self.w.call("prompt", sid=self.sid(tag), cwd=cwd, prompt=self.fx.prompt_of(q))
-        return self.row(q, "prompt", ask_text("UserPromptSubmit", r["out"]), r["ms"], r["ok"])
+        return self.row(q, "prompt", ask_text("UserPromptSubmit", r["out"]), r)
 
     def pull(self, q: dict[str, Any], cwd: str) -> dict[str, Any]:
         r = self.w.call("pull", sid=self.sid("r"), cwd=cwd, query=self.fx.prompt_of(q), k=5)
-        return self.row(q, "pull", r["out"], r["ms"], r["ok"])
+        return self.row(q, "pull", r["out"], r)
 
     def guard(
         self, q: dict[str, Any], cwd: str, command: str, tag: str = "g", project: str = ""
@@ -260,8 +270,7 @@ class ShardRun:
                 q,
                 "guard",
                 ask_text("PreToolUse", r["out"]),
-                r["ms"],
-                r["ok"],
+                r,
                 st.decision_of(r["out"]),
             ),
             r["out"],
@@ -299,9 +308,7 @@ class ShardRun:
                 error=q["error"],
                 prompts=["x"],
             )
-            out.append(
-                self.row(q, "error", ask_text("PostToolUseFailure", r["out"]), r["ms"], r["ok"])
-            )
+            out.append(self.row(q, "error", ask_text("PostToolUseFailure", r["out"]), r))
         elif variant == "SUB":
             r = self.w.call(
                 "subagent",
@@ -310,14 +317,12 @@ class ShardRun:
                 tool_input=q["tool_input"],
                 parent_prompt=q["tool_input"].get("prompt", "x"),
             )
-            out.append(
-                self.row(q, "subagent", ask_text("SubagentStart", r["out"]), r["ms"], r["ok"])
-            )
+            out.append(self.row(q, "subagent", ask_text("SubagentStart", r["out"]), r))
         elif variant == "CONT":
             r = self.w.call("continuity", sid=self.sid("c"), cwd=cwd, steps=q["steps"])
             steps = json.loads(r["out"]) if r["ok"] and r["out"] else []
             last = ask_text("SessionStart", steps[-1]["out"]) if steps else ""
-            out.append(self.row(q, "continuity", last, r["ms"], r["ok"]))
+            out.append(self.row(q, "continuity", last, r))
         elif variant == "LABEL":
             if q.get("command"):
                 row, _ = self.guard(q, cwd, q["command"], tag="l")
@@ -329,9 +334,12 @@ class ShardRun:
                 out.append(row)
         return out
 
+    def first_cwd(self) -> str:
+        return f"{WORK}/" + next(iter(project_folders(self.h.config_dir))).replace("-work-", "", 1)
+
     def benign(self) -> list[dict[str, Any]]:
         """False deny: commands that no lesson forbids, in the first project."""
-        cwd = f"{WORK}/" + next(iter(project_folders(self.h.config_dir))).replace("-work-", "", 1)
+        cwd = self.first_cwd()
         rows = []
         for i, command in enumerate(BENIGN_COMMANDS):
             q = {"id": f"BENIGN-{i}", "variant": "BENIGN", "lesson": "", "claims": ["C5"]}
@@ -351,6 +359,7 @@ class ShardRun:
                     "ms": r["ms"],
                     "chars": len(ask_text("PreToolUse", r["out"])),
                     "claims": [],
+                    **hook_said(r),
                 }
             )
             row["false_deny"] = row["decision"] == "deny"
@@ -367,8 +376,12 @@ def run_shard(
     variants: Iterable[str] | None = None,
     limit_per_variant: int | None = None,
     on_row: Callable[[dict[str, Any]], None] | None = None,
+    warm_s: float = warm.WARM_BOUND_S,
 ) -> list[dict[str, Any]]:
-    """All the queries of one shard through one started harness."""
+    """All the queries of one shard through one started harness. The store is warmed
+    first (``warm.warm_up``; its timing goes to ``harness.timing``). A shard with a
+    latched row raises ``warm.LatchedShard``: its rows measure the latch, so the caller
+    gets none of them."""
     queries = list(fx.queries_for(size, variants, shard))
     if limit_per_variant:
         seen: dict[str, int] = defaultdict(int)
@@ -381,6 +394,7 @@ def run_shard(
     rows: list[dict[str, Any]] = []
     with Worker(harness) as worker:
         run = ShardRun(fx, size, shard, harness, worker, name)
+        harness.timing.update(warm.warm_up(worker, harness.data, run.first_cwd(), bound_s=warm_s))
         for q in queries:
             for row in run.one(q):
                 rows.append(row)
@@ -390,6 +404,12 @@ def run_shard(
             rows.append(row)
             if on_row:
                 on_row(row)
+    latched = warm.latched_rows(rows)
+    if latched:
+        raise warm.LatchedShard(
+            f"{name} size {size} shard {shard}: {len(latched)} of {len(rows)} rows ran under "
+            f"the hook latch ({warm.LATCH_FILE}); fail reasons {warm.fail_counts(rows)}"
+        )
     return rows
 
 

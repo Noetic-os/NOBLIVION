@@ -20,7 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import growth, live, profiles, realreplay, report, sandbox, soak
+from . import growth, live, profiles, realreplay, report, sandbox, soak, warm
 from .buildrunner import Harness, Worker, index_wait_s, store_python
 from .config import WINDOW
 from .runner import (
@@ -281,22 +281,22 @@ class Loop:
         """The nightly benchmark, 20 minutes at most: the prompt hook of B0 and of B1 at
         every size from 1,000 notes, on the stores that the replay keeps; and the soak
         store as it is, so that its row carries the churn."""
-        assert self.worker
+        assert self.worker and self.harness
         cwd = "/work/" + self.folders[0].parent.name.replace("-work-", "", 1)
-        counter = {"n": 0}
-
-        def call(prompt: str) -> float:
-            counter["n"] += 1
-            return self.worker.call("prompt", sid=f"lb-{counter['n']}", cwd=cwd, prompt=prompt)[
-                "ms"
-            ]
-
+        # The soak store is warm, but a slow call of the last 30 seconds may have set
+        # the hook latch: the stamp is removed, and the row says how many calls ran
+        # under it all the same (``valid`` is false then).
+        warm.clear_latch(self.harness.data)
+        call = warm.HookCalls(self.worker, cwd, "lb")
         sizes = [s for s in self.run.manifest["sizes"] if s >= 1000]
         builds = self.profile.builds
         budget = self.params.bench_budget_s
         each = budget / (1 + len(builds) * len(sizes))
         row = soak.latency_benchmark(call, self.texts, n=100, budget_s=each)
-        self.run.append("latency", {**self.stamp(), **row, "size": self.soak_size, "build": "soak"})
+        self.run.append(
+            "latency",
+            {**self.stamp(), **row, **call.validity(), "size": self.soak_size, "build": "soak"},
+        )
         for size in sizes:
             for build in builds:
                 got = bench_kept_store(self.run, build, size, each)

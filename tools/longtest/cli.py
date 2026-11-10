@@ -30,7 +30,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import config, growth, labels, profiles, replay, report, sandbox, watch
+from . import config, growth, labels, profiles, replay, report, sandbox, warm, watch
 from .buildrunner import index_wait_s
 from .config import CLAIMS, PARAMS, SCALES
 from .runner import (
@@ -587,16 +587,6 @@ def brief(doc: dict) -> dict:
     }
 
 
-def bench_call(worker, cwd: str):  # type: ignore[no-untyped-def]
-    count = {"i": 0}
-
-    def call(prompt: str) -> float:
-        count["i"] += 1
-        return worker.call("prompt", sid=f"bench-{count['i']}", cwd=cwd, prompt=prompt)["ms"]
-
-    return call
-
-
 def cmd_bench(a: argparse.Namespace) -> int:
     """Index build time, store memory and the prompt hook latency of each build at one
     size. The nightly benchmark of the plan, once; the stores are removed after."""
@@ -631,9 +621,9 @@ def cmd_bench(a: argparse.Namespace) -> int:
             health = h.start()
             pid = h.store.proc.pid if h.store.proc else None
             with Worker(h) as w:
-                lat = soak.latency_benchmark(
-                    bench_call(w, cwd), texts, n=a.prompts, budget_s=a.budget
-                )
+                warmed = warm.warm_up(w, h.data, cwd)
+                call = warm.HookCalls(w, cwd, "bench")
+                lat = soak.latency_benchmark(call, texts, n=a.prompts, budget_s=a.budget)
             res = soak.resources(h.data, pid)
             row = {
                 "build": build,
@@ -646,6 +636,8 @@ def cmd_bench(a: argparse.Namespace) -> int:
                 "wal_mb": res["wal_mb"],
                 "quick_check": res["quick_check"],
                 "hook_ms": lat,
+                **warmed,
+                **call.validity(),
             }
         finally:
             h.stop()

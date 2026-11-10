@@ -22,7 +22,7 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-from . import config, fixtures, profiles, realreplay, replay, sandbox
+from . import config, fixtures, profiles, realreplay, replay, sandbox, warm
 from .buildrunner import Harness, build_version, export_build, index_wait_s, store_python
 from .config import SCALES
 from .fixtures import Fixture
@@ -322,7 +322,16 @@ def replay_task(
             index_s=h.timing["index_s"],
             ready_s=h.timing["ready_s"],
         )
-        rows = replay.run_shard(fx, size, shard, h, build, variants, limit)
+        try:
+            rows = replay.run_shard(fx, size, shard, h, build, variants, limit)
+        except warm.LatchedShard as exc:
+            # no rows and no marker: the task is not done and runs again. One line says
+            # why, so a night that lost a shard to the latch can be read from the files.
+            run.append(
+                "replay-void",
+                {"day": day, "build": build, "size": size, "shard": shard, "why": str(exc)[:400]},
+            )
+            raise
         # The rows of a task go in together, with a marker, so a restart never meets
         # half a task: a task without a marker is run again. The marker keeps the
         # store timings, so a pilot that is run again can still gate on them.
@@ -339,8 +348,12 @@ def replay_task(
                 "memories": info["memories"],
                 "index_s": info["index_s"],
                 "ready_s": info["ready_s"],
+                "warm_s": h.timing.get("warm_s"),
+                "warm_tries": h.timing.get("warm_tries"),
+                "fails": warm.fail_counts(rows),
             },
         )
+        info.update(warm_s=h.timing.get("warm_s"), warm_tries=h.timing.get("warm_tries"))
         info["rows"] = len(rows)
         info["seconds"] = round(time.monotonic() - started, 1)
     finally:
@@ -381,14 +394,12 @@ def bench_kept_store(run: Run, build: str, size: int, budget_s: float) -> dict[s
     try:
         health = h.start()
         pid = h.store.proc.pid if h.store.proc else None
-        count = {"i": 0}
-
-        def call(prompt: str, w: Any = None) -> float:
-            count["i"] += 1
-            return w.call("prompt", sid=f"bench-{count['i']}", cwd=cwd, prompt=prompt)["ms"]
-
         with Worker(h) as w:
-            lat = soak.latency_benchmark(lambda p: call(p, w), texts, n=100, budget_s=budget_s)
+            # a cold store answers its first call late and latches the hook: warm it,
+            # or the row measures 30 seconds of empty answers
+            warmed = warm.warm_up(w, h.data, cwd)
+            call = warm.HookCalls(w, cwd, "bench")
+            lat = soak.latency_benchmark(call, texts, n=100, budget_s=budget_s)
         res = soak.resources(h.data, pid)
     finally:
         h.stop()
@@ -402,6 +413,8 @@ def bench_kept_store(run: Run, build: str, size: int, budget_s: float) -> dict[s
         "wal_mb": res["wal_mb"],
         "quick_check": res["quick_check"],
         **lat,
+        **warmed,
+        **call.validity(),
     }
 
 
