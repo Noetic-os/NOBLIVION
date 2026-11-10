@@ -525,19 +525,9 @@ def sanity_gate(rows: Sequence[dict], builds: Sequence[str] = ("B0", "B1")) -> d
         rows = [r for r in rows if r.get("size") == min(sizes)]
     gated = list(builds) + (["S2"] if "B0" in builds else [])
     for build in (*builds, "S2"):
-        sel = [
-            r
-            for r in rows
-            if r["variant"] == "V1"
-            and r["build"] == build
-            and (r["channel"] == "pull" or build == "S2")
-        ]
-        hits = sum(1 for r in sel if r["hit"])
-        out[build] = {"n": len(sel), "delivery": round(hits / len(sel), 3) if sel else None}
+        out[build] = report.sanity_delivery(rows, build)
     out["ok"] = all(
-        out[b]["delivery"] is not None
-        and out[b]["delivery"]
-        >= (PARAMS.sanity_s2_delivery if b == "S2" else PARAMS.sanity_pull_delivery)
+        out[b]["delivery"] is not None and out[b]["delivery"] >= report.sanity_floor(b)
         for b in gated
     )
     return out
@@ -729,7 +719,23 @@ def cmd_report(a: argparse.Namespace) -> int:
         evaluation = soak.evaluate(soak_rows, params=prof.params) if soak_rows else None
         by_night = report.delivery_by_night(rows)
         trend = report.delivery_trend(by_night)
-        doc = report.verdicts_large(summary, evaluation, trend, params=prof.params)
+        # an arm must prove that it fired on every step that a rule reads, or the scale
+        # is INVALID: the pilot alone does not show that the nights were measured
+        gate = report.validity(
+            rows,
+            arms=(*prof.builds, *prof.stock_arms),
+            params=prof.params,
+            sizes=list(run.manifest["sizes"]),
+        )
+        doc = report.verdicts_large(
+            summary,
+            evaluation,
+            trend,
+            params=prof.params,
+            sizes=list(run.manifest["sizes"]),
+            validity=gate,
+        )
+        doc["latency"] = report.latency_validity(read_jsonl(run.out / "latency.jsonl"))
         doc["judged_night"] = max((int(r["day"]) for r in rows), default=None)
         doc["delivery_by_night"] = {str(k): v for k, v in by_night.items()}
         doc["soak"] = evaluation

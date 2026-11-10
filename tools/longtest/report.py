@@ -178,6 +178,81 @@ def heartbeat_cadence(
     }
 
 
+def sanity_delivery(rows: Sequence[Mapping[str, Any]], arm: str) -> dict[str, Any]:
+    """Delivery of one arm on the sanity set: the V1 rows, on the pull channel for a
+    build (the recall tool with the lesson's own words) and as they are for stock."""
+    sel = [
+        r
+        for r in rows
+        if r.get("variant") == "V1"
+        and r.get("build") == arm
+        and (r.get("channel") == "pull" or arm.startswith("S"))
+    ]
+    hits = sum(1 for r in sel if r.get("hit"))
+    return {"n": len(sel), "delivery": round(hits / len(sel), 3) if sel else None}
+
+
+def sanity_floor(arm: str, params: Params = PARAMS) -> float:
+    return params.sanity_s2_delivery if arm.startswith("S") else params.sanity_pull_delivery
+
+
+def validity(
+    rows: Sequence[Mapping[str, Any]],
+    arms: Sequence[str] = ("B1", "S2"),
+    params: Params = PARAMS,
+    sizes: Sequence[int] | None = None,
+) -> dict[str, Any]:
+    """The validity gate of the report: an arm must prove that it fired before its
+    rows count. Per size and judged step (a night, or a step of the compressed run;
+    day 0 is the pilot and is left out) and per arm: the sanity delivery against its
+    registered floor. An arm with no sanity row has proved nothing. Returns
+    ``size -> {"ok", "causes", "steps": {step: {arm: {"n", "delivery", "floor", "ok"}}}}``;
+    a size with no step at all is not ok (no data is not a proof)."""
+    by: dict[int, dict[int, list[Mapping[str, Any]]]] = {}
+    for r in rows:
+        if r.get("day") and r.get("size"):
+            by.setdefault(int(r["size"]), {}).setdefault(int(r["day"]), []).append(r)
+    out: dict[str, Any] = {}
+    for size in sorted(by) if sizes is None else sizes:
+        steps: dict[str, Any] = {}
+        causes: list[str] = []
+        for step, step_rows in sorted(by.get(size, {}).items()):
+            cell: dict[str, Any] = {}
+            for arm in arms:
+                got = sanity_delivery(step_rows, arm)
+                floor = sanity_floor(arm, params)
+                got.update(floor=floor, ok=got["delivery"] is not None and got["delivery"] >= floor)
+                if not got["ok"]:
+                    seen = "no sanity rows" if not got["n"] else f"{got['delivery']} of {got['n']}"
+                    causes.append(
+                        f"step {step}: {arm} sanity delivery {seen}, under the floor {floor}"
+                    )
+                cell[arm] = got
+            steps[str(step)] = cell
+        if not steps:
+            causes.append("no judged step")
+        out[str(size)] = {"ok": not causes, "causes": causes, "steps": steps}
+    return out
+
+
+def latency_validity(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Latency rows by what they measured: ``invalid`` rows held calls that ran under
+    the hook latch (30 seconds of empty answers), ``unchecked`` rows come from a
+    program that did not count them. Only ``valid`` rows are a latency of the build."""
+    out = {"rows": len(rows), "valid": 0, "invalid": 0, "unchecked": 0, "invalid_rows": []}
+    for r in rows:
+        if "valid" not in r:
+            out["unchecked"] += 1
+        elif r["valid"]:
+            out["valid"] += 1
+        else:
+            out["invalid"] += 1
+            out["invalid_rows"].append(
+                {k: r.get(k) for k in ("ts", "build", "size", "latched", "p50", "p95")}
+            )
+    return out
+
+
 def delivery_by_night(
     rows: Sequence[Mapping[str, Any]], claim: str = TREND_CLAIM, build: str = "B1"
 ) -> dict[int, dict[int, float]]:
@@ -225,21 +300,30 @@ def verdicts_large(
     trend: Mapping[str, Any] | None,
     params: Params = PARAMS,
     sizes: Sequence[int] = profiles.LARGE_SIZES,
+    validity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The rules of the large-project profile (DR1, DR3, DR5, DR6) over the replay
     summary, the soak evaluation and the night trend. What the data does not hold is
-    ``None`` (pending), never guessed."""
+    ``None`` (pending), never guessed. ``validity`` is the gate of ``validity()``: a
+    scale whose gate failed gets the verdict INVALID with the causes, and DR1, DR3 and
+    DR6 are not judged there (``None``), because an arm that did not fire shows
+    neither a win nor a loss."""
     vs2 = summary["b1_vs_s2"]
     adj = stats.holm({k: v["p"] for k, v in vs2.items()})
     claims: dict[str, Any] = {}
+    void = {size for size, gate in (validity or {}).items() if not gate["ok"]}
     for key, v in sorted(vs2.items()):
+        judged = key.split("|")[0] not in void
         claims[key] = {
             "b1_minus_s2": v["diff"],
             "low": v["low"],
             "high": v["high"],
             "p_holm": round(adj[key], 4),
-            "dr1": bool(v["low"] > params.dr1_lower and adj[key] < params.alpha),
-            "lose": v["high"] < 0,
+            "judged": judged,
+            "dr1": bool(v["low"] > params.dr1_lower and adj[key] < params.alpha)
+            if judged
+            else None,
+            "lose": v["high"] < 0 if judged else None,
         }
     fd = summary.get("false_delivery_v5", {})
     health = None
@@ -256,9 +340,14 @@ def verdicts_large(
         dr3 = None if silence is None else silence["low"] > params.dr3_lower
         dr6 = None if not trend or str(size) not in trend else trend[str(size)]["ok"]
         primary = [claims[f"{size}|{c}"] for c in PRIMARY_CLAIMS if f"{size}|{c}" in claims]
+        invalid = str(size) in void
+        if invalid:
+            dr3 = dr6 = None  # not judged
         win_core = any(p["dr1"] for p in primary)
         lose = any(p["lose"] for p in primary) or dr3 is False
-        if not primary:
+        if invalid:
+            word = "INVALID"
+        elif not primary:
             word = "NO DATA"
         elif lose:
             word = "LOSE"
@@ -279,7 +368,15 @@ def verdicts_large(
             "dr6": dr6,
             "verdict": word,
         }
-    return {"claims": claims, "scales": scales, "dr5": health, "trend": trend}
+        if invalid:
+            scales[names.get(size, str(size))]["invalid_because"] = validity[str(size)]["causes"]
+    return {
+        "claims": claims,
+        "scales": scales,
+        "dr5": health,
+        "trend": trend,
+        "validity": validity,
+    }
 
 
 def status(
