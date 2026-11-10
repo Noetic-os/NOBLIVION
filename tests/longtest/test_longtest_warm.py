@@ -314,6 +314,7 @@ def test_kept_stores_start_one_at_a_time_whatever_the_parallel_number(tmp_path, 
 
     run = make_run(tmp_path, monkeypatch)
     lock, active, worst = threading.Lock(), {"kept": 0, "small": 0}, {"kept": 0, "small": 0}
+    together = threading.Barrier(2, timeout=30)
 
     class Counting(StubHarness):
         def kind(self):
@@ -323,7 +324,10 @@ def test_kept_stores_start_one_at_a_time_whatever_the_parallel_number(tmp_path, 
             with lock:
                 active[self.kind()] += 1
                 worst[self.kind()] = max(worst[self.kind()], active[self.kind()])
-            time.sleep(0.15)
+            if self.kind() == "small":
+                together.wait()  # the two small stores are up at the same time
+            else:
+                time.sleep(0.05)  # room for a second kept store to start, if one could
             return super().start(index)
 
         def stop(self):
