@@ -59,8 +59,8 @@ def test_gate_passes_when_every_arm_fired_on_every_step():
     assert gate["5000"]["ok"] and gate["5000"]["causes"] == []
     assert sorted(gate["5000"]["steps"]) == ["1", "2", "3"]
     cell = gate["5000"]["steps"]["2"]
-    assert cell["B1"] == {"n": 60, "delivery": 1.0, "floor": 0.95, "ok": True}
-    assert cell["S2"] == {"n": 60, "delivery": 0.917, "floor": 0.9, "ok": True}
+    assert cell["B1"] == {"n": 60, "delivery": 1.0, "floor": 0.95, "invalid": 0, "ok": True}
+    assert cell["S2"] == {"n": 60, "delivery": 0.917, "floor": 0.9, "invalid": 0, "ok": True}
 
 
 def test_gate_names_the_step_the_arm_and_the_floor():
@@ -80,6 +80,45 @@ def test_gate_names_the_step_the_arm_and_the_floor():
     # the prompt channel of a build is not its sanity set
     prompt = [dict(r, channel="prompt") for r in step(5000, 1, 60, 55)]
     assert report.validity(prompt, params=PARAMS)["5000"]["steps"]["1"]["B1"]["n"] == 0
+
+
+def test_gate_fails_a_step_that_holds_an_invalid_row():
+    """A row under the hook latch, or one whose hook gave up on the store, is not a
+    miss of the build: the step is not judged, even with the sanity floor reached."""
+    for fail in ("timeout", "store_hung"):
+        rows = step(5000, 1, 60, 55) + step(5000, 2, 60, 55)
+        bad = next(r for r in rows if r["day"] == 2 and r["build"] == "B1" and r["variant"] == "V3")
+        bad.update(fail=fail, hit=False)
+        gate = report.validity(rows, params=PARAMS)["5000"]
+        assert gate["ok"] is False and gate["steps"]["1"]["B1"]["ok"] is True
+        cell = gate["steps"]["2"]
+        assert cell["B1"] == {"n": 60, "delivery": 1.0, "floor": 0.95, "invalid": 1, "ok": False}
+        assert cell["S2"]["invalid"] == 0 and cell["S2"]["ok"] is True
+        assert gate["causes"] == [
+            f"step 2: B1 has 1 invalid rows, fail reasons {{'{fail}': 1}} "
+            "(the hook latch, or a hook that gave up on the store)"
+        ]
+    summary = {"b1_vs_s2": {"5000|C1": comparison(0.3, 0.6, 1e-6)}, "false_delivery_v5": {}}
+    soak = {"checks": dict.fromkeys(("budget_recall", "lag_p95", "drift_zero", "error_rate"), True)}
+    trend = {"5000": {"ok": True, "nights": 7}}
+    got = report.verdicts_large(summary, soak, trend, validity={"5000": gate})
+    assert "step 2: B1 has 1 invalid rows" in got["scales"]["LARGE-1"]["invalid_because"][0]
+    assert got["scales"]["LARGE-1"]["verdict"] == "INVALID"
+    # a row that began under the stamp is invalid whatever its reason; another fault is not
+    for extra, invalid in (({"latched": True, "fail": ""}, 1), ({"fail": "store_down"}, 0)):
+        rows = step(5000, 1, 60, 55)
+        rows[0].update(extra)
+        assert (
+            report.validity(rows, params=PARAMS)["5000"]["steps"]["1"]["B1"]["invalid"] == invalid
+        )
+
+
+def test_prompt_delivery_is_reported_apart_from_the_sanity_set():
+    rows = step(5000, 1, 60, 55)
+    rows += [dict(row("B1", 5000, 1, i, "V1", i < 52), channel="prompt") for i in range(60)]
+    assert report.prompt_delivery(rows, "B1") == {"n": 60, "delivery": 0.867}
+    assert report.sanity_delivery(rows, "B1") == {"n": 60, "delivery": 1.0}
+    assert report.prompt_delivery(rows, "S2") == {"n": 0, "delivery": None}
 
 
 def comparison(low, high, p):

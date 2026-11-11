@@ -251,6 +251,7 @@ def render_prereg(profile: Profile) -> str:
 def render_steps_prereg(profile: Profile) -> str:
     """The pre-registration text of the time-compressed run. Same profile, same bytes."""
     from . import warm
+    from .buildrunner import EMBED_THREADS
 
     doc = profile.params.as_dict()
     lines = [
@@ -285,18 +286,32 @@ def render_steps_prereg(profile: Profile) -> str:
         "",
         "## Validity",
         "",
-        "- Before every shard the store is started and warmed: the recall tool is called "
-        f"until one call answers inside {warm.HOOK_BUDGET_S:g} s, for {warm.WARM_BOUND_S:g} s "
-        f"at most, and the latch file {warm.LATCH_FILE} of the hooks is removed.",
-        "- Every row carries the fail reason of its hook. A shard with a row that ran "
-        "under the latch is run again and is not judged.",
+        "- Before every shard the store is started. It is ready only when its index is "
+        "idle and no chunk of a live note lacks a vector: a store that still embeds "
+        "answers late, and the hooks then latch. The wait is the store wait of the "
+        "scale; a store that is not ready inside it fails the shard and says how many "
+        "chunks were left.",
+        "- Then the store is warmed: one call of the recall tool and one prompt per "
+        f"round, until both answer inside {warm.HOOK_BUDGET_S:g} s, for "
+        f"{warm.WARM_BOUND_S:g} s at most, and the latch file {warm.LATCH_FILE} of the "
+        "hooks is removed.",
+        "- Every row carries the fail reason of its hook. A row that ran under the latch "
+        f"({warm.LATCHED}) or whose hook gave up on the store ({warm.GAVE_UP}) is "
+        "invalid, not a miss: its shard is run again and is not judged, and a step that "
+        "holds such a row fails the gate below.",
         "- One store starts at a time.",
+        "- Threads: the embedder of the build takes no thread count. The harness sets "
+        f"ORT_INTRA_OP_NUM_THREADS={EMBED_THREADS} for the store, the name that the model "
+        "runtime reads (one batch then took 3.5 cores, and 15 without it). "
+        "OMP_NUM_THREADS does not bind the embedder.",
         "- Gate per step, scale and arm: the delivery on the sanity set (V1; the recall "
         f"tool for a build) is {doc['sanity_pull_delivery']} or more for "
         f"{', '.join(profile.builds)} and {doc['sanity_s2_delivery']} or more for "
         f"{', '.join(profile.stock_arms)}. A scale with a failed gate on any step gets "
         "the result INVALID with the cause, and DR1, DR3 and DR6 are not judged there. "
         "INVALID is never printed as a win or a loss.",
+        "- The prompt channel of a build has no floor: the prompt hook holds a row back "
+        "by its own rules (52 of 60 on a healthy store). Its delivery is reported.",
         "",
         "## Decision rules",
         "",

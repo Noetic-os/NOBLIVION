@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The hook latch and the warm-up, with a stub build that latches as the product does:
-the first store call after a start is too slow, the hook writes ``store.hung`` and
-answers empty for 30 seconds."""
+a store call that is too slow makes the hook write ``store.hung`` and answer empty for
+30 seconds."""
 
 from __future__ import annotations
 
@@ -26,7 +26,8 @@ from pathlib import Path
 
 def search(env):
     """"" when the store answers, else the fail reason. ``cold``: the next call is too
-    slow. ``slow_at``: the call with that number is too slow. A slow call sets the latch."""
+    slow. ``slow_at``: the call with that number is too slow. A slow call sets the latch.
+    ``gave_up_at``: the hook gives up on the call with that number and sets no latch."""
     data = Path(env["NOBLIVION_DATA_DIR"])
     stamp = data / "store.hung"
     try:
@@ -41,6 +42,9 @@ def search(env):
     if (data / "cold").exists() or (slow.exists() and int(slow.read_text()) == n):
         (data / "cold").unlink(missing_ok=True)
         stamp.write_text("%.3f 2.000 store\\n" % (time.time() + 30))
+        return "timeout"
+    gave_up = data / "gave_up_at"
+    if gave_up.exists() and int(gave_up.read_text()) == n:
         return "timeout"
     return ""
 '''
@@ -120,7 +124,7 @@ class StubHarness(buildrunner.Harness):
         (self.data / "cold").write_text("")
         (self.data / "calls").unlink(missing_ok=True)
         self.store = SimpleNamespace(proc=None, stop=lambda: None)
-        self.timing.update(index_s=0.0, ready_s=0.0)
+        self.timing.update(index_s=0.0, ready_s=0.0, backlog_chunks=948, drain_s=41.5)
         return {"memories": 1}
 
 
@@ -145,27 +149,40 @@ def make_run(tmp_path: Path, monkeypatch) -> Run:
 
 
 def test_a_cold_store_does_not_latch_the_shard(tmp_path):
-    """The fault of the 7-day run: the first call on a cold store is too slow, the hook
-    latches, and every row of the shard is empty. With the warm-up the slow call is
-    not a measured one, the stamp is removed, and every row reaches the store."""
+    """The fault of the 7-day run: a call is too slow, the hook latches, and every row of
+    the shard is empty. With the warm-up the slow call is not a measured one, the stamp
+    is removed, and every row reaches the store."""
     h = harness(tmp_path)
     h.start()
     rows = replay.run_shard(Fx(), 30, 0, h, "B1")
     lesson = [r for r in rows if r["variant"] == "V1"]
     assert len(lesson) == 10 and all(r["hit"] for r in lesson)  # 5 pull rows, 5 prompt rows
     assert all(r["fail"] == "" and r["latched"] is False for r in rows)  # the benign rows too
-    assert h.timing["warm_tries"] == 2  # the cold call, then one inside the budget
+    assert h.timing["warm_tries"] == 2  # the round with the cold call, then a good one
     assert not (h.data / warm.LATCH_FILE).exists()
 
 
 def test_a_latched_row_voids_the_shard(tmp_path):
     h = harness(tmp_path)
     h.start()
-    (h.data / "slow_at").write_text("5")  # warm-up: calls 1 and 2; then the third row is slow
+    (h.data / "slow_at").write_text("7")  # warm-up: calls 1 to 4; then the third row is slow
     with pytest.raises(warm.LatchedShard) as err:
         replay.run_shard(Fx(), 30, 0, h, "B1")
-    assert "7 of 30 rows ran under the hook latch" in str(err.value)
+    assert "8 of 30 rows are invalid" in str(err.value)  # the slow row and the 7 after it
     assert "'store_hung': 7" in str(err.value) and "'timeout': 1" in str(err.value)
+
+
+def test_a_row_whose_hook_gave_up_voids_the_shard_with_no_latch(tmp_path):
+    """A hook that gave up on the store answers empty as a miss does. The row measured
+    the wait for the store, so it is invalid, with or without the stamp."""
+    h = harness(tmp_path)
+    h.start()
+    (h.data / "gave_up_at").write_text("7")
+    with pytest.raises(warm.LatchedShard) as err:
+        replay.run_shard(Fx(), 30, 0, h, "B1")
+    assert "1 of 30 rows are invalid" in str(err.value)
+    assert "fail reasons {'timeout': 1}" in str(err.value)
+    assert not (h.data / warm.LATCH_FILE).exists()
 
 
 def test_a_latched_shard_is_not_marked_done_and_its_rows_are_not_counted(tmp_path, monkeypatch):
@@ -173,7 +190,7 @@ def test_a_latched_shard_is_not_marked_done_and_its_rows_are_not_counted(tmp_pat
     args = (run, Fx(), "B1", 30, 0, sys.executable, None, None, None, 1, None, True, 900.0)
     slow = runner.shard_root(run, "B1", 30, 0) / "home/.claude/plugins/data" / "slow_at"
     data = next(p for p in [slow.parent / buildrunner.DATA_NAME] if p.mkdir(parents=True) is None)
-    (data / "slow_at").write_text("5")
+    (data / "slow_at").write_text("7")
     with pytest.raises(warm.LatchedShard):
         runner.replay_task(*args)
     assert run.done(1) == set() and read_jsonl(run.out / "replay.jsonl") == []
@@ -188,6 +205,21 @@ def test_a_latched_shard_is_not_marked_done_and_its_rows_are_not_counted(tmp_pat
     assert len(rows) == 30 and all(r["fail"] == "" and not r["latched"] for r in rows)
     marker = read_jsonl(run.out / "replay-done.jsonl")[0]
     assert marker["warm_tries"] == 2 and marker["fails"] == {}
+    # the marker keeps what the start saw: the embedding backlog and its drain time
+    assert marker["backlog_chunks"] == 948 and marker["drain_s"] == 41.5
+    assert info["backlog_chunks"] == 948 and info["drain_s"] == 41.5
+
+
+def test_a_row_whose_hook_gave_up_is_not_marked_done_either(tmp_path, monkeypatch):
+    run = make_run(tmp_path, monkeypatch)
+    args = (run, Fx(), "B1", 30, 0, sys.executable, None, None, None, 1, None, True, 900.0)
+    data = runner.shard_root(run, "B1", 30, 0) / "home/.claude/plugins/data" / buildrunner.DATA_NAME
+    data.mkdir(parents=True)
+    (data / "gave_up_at").write_text("9")
+    with pytest.raises(warm.LatchedShard):
+        runner.replay_task(*args)
+    assert run.done(1) == set() and read_jsonl(run.out / "replay.jsonl") == []
+    assert "'timeout': 1" in read_jsonl(run.out / "replay-void.jsonl")[0]["why"]
 
 
 # -- the warm-up -------------------------------------------------------------------------
@@ -208,12 +240,29 @@ class SlowWorker:
         return {"ok": True, "out": ROW, "ms": 310.0, "fail": "", "latched": False}
 
 
-def test_warm_up_waits_for_a_call_inside_the_budget_and_removes_the_stamp(tmp_path):
+def test_warm_up_waits_for_a_round_inside_the_budget_and_removes_the_stamp(tmp_path):
     w, naps = SlowWorker(tmp_path, slow=3), []
     got = warm.warm_up(w, tmp_path, "/work/a", sleep=naps.append)
-    assert got["warm_tries"] == 4 and got["warm_ms"] == 310.0 and naps == [1.0, 1.0, 1.0]
-    assert [op for op, _ in w.calls] == ["pull"] * 4
+    assert got["warm_tries"] == 3 and naps == [1.0, 1.0]
+    assert got["warm_ms"] == 310.0 and got["warm_prompt_ms"] == 310.0
+    assert [op for op, _ in w.calls] == ["pull", "prompt"] * 3  # one of each per round
+    assert len({sid for _, sid in w.calls}) == 6  # no warm-up call shares a session
     assert not (tmp_path / warm.LATCH_FILE).exists()
+
+
+def test_a_store_is_not_warm_while_its_prompt_hook_is_slow(tmp_path):
+    """The recall tool alone is not the proof: both channels are measured, so both
+    must answer inside the budget in the same round."""
+
+    class SlowPrompt(SlowWorker):
+        def call(self, op, **args):
+            self.calls.append((op, args["sid"]))
+            late = op == "prompt" and len(self.calls) <= 4
+            return {"ok": True, "out": ROW, "ms": 2100.0 if late else 40.0, "fail": ""}
+
+    w = SlowPrompt(tmp_path, 0)
+    got = warm.warm_up(w, tmp_path, "/work/a", sleep=lambda s: None)
+    assert got["warm_tries"] == 3 and got["warm_prompt_ms"] == 40.0
 
 
 def test_warm_up_is_bounded_and_says_why_it_gave_up(tmp_path):
@@ -223,11 +272,13 @@ def test_warm_up_is_bounded_and_says_why_it_gave_up(tmp_path):
             w,
             tmp_path,
             "/work/a",
-            bound_s=60,
             sleep=lambda s: clock.update(t=clock["t"] + 10),
             clock=lambda: clock["t"],
         )
-    assert len(w.calls) == 7 and "'timeout'" in str(err.value) and "60 s" in str(err.value)
+    assert warm.WARM_BOUND_S == 60.0 and warm.HOOK_BUDGET_S == 2.0
+    assert len(w.calls) == 14 and "in 7 rounds over 60 s" in str(err.value)
+    assert "'pull': \"2000.4 ms, fail 'timeout'\"" in str(err.value)
+    assert "'prompt': \"2000.4 ms, fail 'timeout'\"" in str(err.value)
 
 
 def test_a_call_over_the_budget_is_not_warm_even_with_no_fail_reason(tmp_path):
@@ -238,6 +289,19 @@ def test_a_call_over_the_budget_is_not_warm_even_with_no_fail_reason(tmp_path):
             return {"ok": True, "out": ROW, "ms": ms, "fail": ""}
 
     assert warm.warm_up(Late(tmp_path, 0), tmp_path, "/w", sleep=lambda s: None)["warm_tries"] == 2
+
+
+def test_invalid_rows_are_the_latched_ones_and_the_ones_whose_hook_gave_up():
+    rows = [
+        {"qid": "a", "fail": "", "latched": False},
+        {"qid": "b", "fail": "timeout", "latched": False},
+        {"qid": "c", "fail": "store_hung", "latched": True},
+        {"qid": "d", "fail": "", "latched": True},  # the stamp was there when it began
+        {"qid": "e", "fail": "store_down", "latched": False},  # a fault, but not the wait
+        {"qid": "f"},  # a row of a program that did not keep the reason
+    ]
+    assert [r["qid"] for r in warm.invalid_rows(rows)] == ["b", "c", "d"]
+    assert warm.INVALID_FAILS == ("store_hung", "timeout")
 
 
 # -- the worker --------------------------------------------------------------------------

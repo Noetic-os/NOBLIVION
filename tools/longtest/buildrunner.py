@@ -76,6 +76,9 @@ def build_version(build: Path) -> str:
 INDEX_S_PER_NOTE = 1.0
 
 
+EMBED_THREADS = "4"  # the threads of one model batch (``Harness.environ``)
+
+
 def index_wait_s(notes: int, floor: float = 900.0) -> float:
     """How long a store may take to index and embed ``notes`` notes before the run
     calls it stuck. The wait comes from the measured build time, not from a guess."""
@@ -107,7 +110,7 @@ class Harness:
         self.guard_site: Path | None = None  # a folder with sitecustomize.py (sandbox)
         self.wait_s = wait_s
         self.store: Any = None
-        self.timing: dict[str, float] = {}
+        self.timing: dict[str, Any] = {}
 
     def environ(self, base: dict[str, str] | None = None) -> dict[str, str]:
         base = dict(os.environ) if base is None else base
@@ -124,7 +127,13 @@ class Harness:
             NOBLIVION_GUARD_STATE_DIR=str(self.root / "guard-state"),
             NOBLIVION_GUARD_LOG=str(self.root / "guard-log.jsonl"),
             NOBLIVION_GUARD_TABLE=str(self.root / "guard-table.json"),
-            OMP_NUM_THREADS="4",  # a model batch must not take the whole host
+            # A model batch must not take the whole host. The embedder of the build
+            # gives its model runtime no thread count, and the runtime does not read
+            # OMP_NUM_THREADS: one batch took 15 cores with it, and 3.5 with the
+            # runtime's own name (measured on onnxruntime 1.30.0; an older runtime may
+            # not read the name, and then nothing binds the embedder).
+            ORT_INTRA_OP_NUM_THREADS=EMBED_THREADS,
+            OMP_NUM_THREADS=EMBED_THREADS,
             OPENBLAS_NUM_THREADS="2",
             **self.settings,
             PYTHONPATH=self.pythonpath(),
@@ -163,6 +172,10 @@ class Harness:
             shutil.copytree(self.models, self.data / "models", symlinks=True)
 
     def start(self, index: bool = True) -> dict[str, Any]:
+        """Index, start the store and wait until it is ready: the index is idle and no
+        chunk lacks a vector (``Store.wait_ready``), inside the store wait. A store
+        with an embedding backlog answers late, and the hooks then latch (``warm``):
+        the backlog found and the seconds it took to drain go to ``timing``."""
         import time
 
         st = suite()
@@ -177,6 +190,8 @@ class Harness:
         t1 = time.monotonic()
         health = self.store.start(env)
         self.timing["ready_s"] = round(time.monotonic() - t1, 2)
+        self.timing["backlog_chunks"] = self.store.backlog
+        self.timing["drain_s"] = self.store.drain_s
         return health
 
     def health(self) -> dict | None:

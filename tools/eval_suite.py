@@ -67,6 +67,7 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import statistics
 import subprocess
 import sys
@@ -86,6 +87,14 @@ REPO = TOOLS.parent
 SCHEMA = 1
 DATA_NAME = "noblivion-noblivion"
 DB_NAME = "noblivion.db"
+# As the store picks the chunks to embed: live rows, a text that is not empty. A vector
+# of an older text counts as there.
+CHUNK_BACKLOG = (
+    "SELECT count(*) FROM memory_chunks c JOIN memories m ON m.id = c.parent_id "
+    "WHERE m.archived_at IS NULL AND m.deleted_at IS NULL "
+    "AND trim(c.search_text, ' ' || char(9) || char(10) || char(13)) <> '' "
+    "AND NOT EXISTS (SELECT 1 FROM chunk_vectors v WHERE v.chunk_id = c.id)"
+)
 OFFTOPIC_FILE = TOOLS / "eval" / "offtopic_prompts.json"
 OFF_ARM = {
     "NOBLIVION_RECALL_RULES_ONLY": "0",
@@ -555,6 +564,10 @@ class Store:
         self.src = src
         self.wait_s = wait_s
         self.proc: subprocess.Popen | None = None
+        # What the last ready check saw: the chunks without a vector at its first look,
+        # and the seconds until none was left. None when it did not count (keyword mode).
+        self.backlog: int | None = None
+        self.drain_s: float | None = None
 
     def _env(self, env: Mapping[str, str]) -> dict[str, str]:
         return dict(env, PYTHONPATH=str(self.src))
@@ -625,11 +638,34 @@ class Store:
             query = urllib.parse.urlencode({"q": text, "project": "claude_code", "top_k": 1})
             self._get("/api/memories/index?" + query, 60)
 
+    def chunk_backlog(self) -> int:
+        """Chunks of live rows that have no vector yet. The health answer does not
+        count them (``embedding.missing_vectors`` is file rows only), and the ranking
+        reads the chunk vectors: a store that still embeds them answers late. 0 for a
+        database from before the chunks, and when there is no database yet."""
+        db = self.data / DB_NAME
+        if not db.is_file():
+            return 0
+        conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+        try:
+            return int(conn.execute(CHUNK_BACKLOG).fetchone()[0])
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc):
+                return 0
+            raise
+        finally:
+            conn.close()
+
     def wait_ready(self) -> dict:
-        """The health answer once the index is idle and every vector is there.
-        Two equal answers in a row, so a scan that starts late is not missed."""
+        """The health answer once the index is idle and every vector is there, the
+        chunk vectors too (``chunk_backlog``). Two equal answers in a row, so a scan
+        that starts late is not missed. A store that gives up says how many chunks
+        were left."""
         end = time.monotonic() + self.wait_s
         last = None
+        left: int | None = None
+        seen_at = 0.0
+        self.backlog = self.drain_s = None
         while time.monotonic() < end:
             if self.proc is not None and self.proc.poll() is not None:
                 log = self.data / "suite-store.out"
@@ -642,14 +678,26 @@ class Store:
                     health.get("vector_rev"),
                     health.get("memories"),
                 )
+                embeds = embedding.get("state") == "ready"
                 busy = embedding.get("state") not in ("ready", "off", "failed") or (
-                    embedding.get("state") == "ready" and embedding.get("missing_vectors")
+                    embeds and embedding.get("missing_vectors")
                 )
+                if embeds and not busy:
+                    try:
+                        left = self.chunk_backlog()
+                    except sqlite3.Error:  # the database is busy: not known, so not ready
+                        left = None
+                    if left is not None and self.backlog is None:
+                        self.backlog, seen_at = left, time.monotonic()
+                    if left == 0 and self.drain_s is None:
+                        self.drain_s = round(time.monotonic() - seen_at, 2)
+                    busy = left != 0
                 if not busy and state == last:
                     return health
                 last = state
             time.sleep(0.5)
-        raise RuntimeError(f"store not ready after {self.wait_s:.0f} s")
+        chunks = f": {left} chunks without a vector" if left else ""
+        raise RuntimeError(f"store not ready after {self.wait_s:.0f} s{chunks}")
 
 
 class Hooks:

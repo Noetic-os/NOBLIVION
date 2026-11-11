@@ -203,7 +203,8 @@ def pilot_large(run: Run, a: argparse.Namespace) -> int:
     The time-compressed profile has no soak store and no unit: its pilot is short. It
     keeps the gates of the replay (freeze, zero tokens, stores ready, one warmed shard
     per scale, the sanity floor of each build, the claims, the live folders) and shows
-    per scale what the validity gate of the report would say for each arm."""
+    per scale what the validity gate of the report would say for each arm. Its sanity
+    gate is the recall tool alone (``pilot_sanity``); the prompt channel is shown."""
     manifest = run.manifest
     prof = profiles.profile_of(manifest)
     live_cfg, live_data = Path(manifest["live"]["config_dir"]), Path(manifest["live"]["data_dir"])
@@ -260,9 +261,7 @@ def pilot_large(run: Run, a: argparse.Namespace) -> int:
         size: {"ok": g["ok"], "arms": g["steps"].get("1", {})} for size, g in floors.items()
     }
     if prof.steps:
-        gate3["ok"] = all(
-            g["arms"].get(b, {}).get("ok") for g in report_gate.values() for b in prof.builds
-        )
+        gate3["ok"] = pilot_sanity(report_gate, prof.builds)
         doc = {
             "profile": prof.name,
             "mode": "compressed",
@@ -270,6 +269,7 @@ def pilot_large(run: Run, a: argparse.Namespace) -> int:
             "gate2_zero_tokens": gate2,
             "gate3_sanity": gate3,
             "sanity_by_scale": report_gate,
+            "prompt_by_scale": prompt_by_scale(rows, sizes, prof.builds),
             "report_gate_would_pass": all(g["ok"] for g in report_gate.values()),
             "gate4_channels_fired": fired,
             "gate4_claims": gate4,
@@ -290,7 +290,13 @@ def pilot_large(run: Run, a: argparse.Namespace) -> int:
         }
         doc["all_gates"] = all(doc["gates"].values())
         write_private(run.dir / "pilot.json", json_text(doc))
-        shown = ("gates", "all_gates", "sanity_by_scale", "report_gate_would_pass")
+        shown = (
+            "gates",
+            "all_gates",
+            "sanity_by_scale",
+            "prompt_by_scale",
+            "report_gate_would_pass",
+        )
         print(json.dumps({**{k: doc[k] for k in shown}, "stores": stores}, indent=1))
         return 0 if doc["all_gates"] else 1
     loop_check = loop_gate(run, a, prof) if a.loop_seconds else {"ok": False, "skipped": True}
@@ -336,12 +342,33 @@ def pilot_large(run: Run, a: argparse.Namespace) -> int:
     return 0 if doc["all_gates"] else 1
 
 
+def pilot_sanity(report_gate: dict, builds: Sequence[str]) -> bool:
+    """The sanity gate of the short pilot: at every scale every build reached its floor
+    on the recall tool (V1 on the pull channel, 0.95 or more) and has no invalid row.
+    The prompt channel is not gated: the prompt hook holds a row back by its own
+    rules, so a healthy store gives 52 of 60 there, under the floor of the recall tool.
+    Stock is not gated either: stock that fails at 5,000 notes is the hypothesis."""
+    return all(g["arms"].get(b, {}).get("ok") for g in report_gate.values() for b in builds)
+
+
+def prompt_by_scale(rows: Sequence[dict], sizes: Sequence[int], builds: Sequence[str]) -> dict:
+    """Per scale and build: the delivery on the prompt channel of the sanity set.
+    Shown in the pilot, never a gate (``pilot_sanity``)."""
+    return {
+        str(size): {
+            b: report.prompt_delivery([r for r in rows if r.get("size") == size], b) for b in builds
+        }
+        for size in sizes
+    }
+
+
 def stores_ready_gate(
     run: Run, infos: Sequence[dict], sizes: Sequence[int], wait_s: float, error: str = ""
 ) -> dict:
-    """Every B1 store of the pilot was ready (index plus start) inside its cap, and
-    the replay shard of every scale has its done marker for day 0. A pilot that is run
-    again skips a task that is done; its timings then come from the day-0 marker."""
+    """Every B1 store of the pilot was ready (index plus start, the wait for the
+    embedding backlog in it) inside its cap, and the replay shard of every scale has
+    its done marker for day 0. A pilot that is run again skips a task that is done; its
+    timings then come from the day-0 marker."""
     fx = run.fixture()
     done = run.done(0)
     markers = [
@@ -360,6 +387,8 @@ def stores_ready_gate(
             "cap_s": cap,
             "ready_s": took,
             "memories": max((t.get("memories") or 0 for t in got), default=None),
+            "backlog_chunks": max((t.get("backlog_chunks") or 0 for t in got), default=None),
+            "drain_s": max((t.get("drain_s") or 0.0 for t in got), default=None),
             "ok": took is not None and took <= cap,
             "shard_done": ("B1", size, shard) in done,
         }

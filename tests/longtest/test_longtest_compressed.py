@@ -11,7 +11,7 @@ import longtest_path  # noqa: F401 - puts tools on the path
 import pytest
 from test_longtest_validity import row, step
 
-from longtest import cli, compressed, growth, profiles, sandbox
+from longtest import cli, compressed, growth, profiles, report, sandbox
 from longtest.runner import Run
 from longtest.util import read_jsonl
 
@@ -90,6 +90,15 @@ def test_the_steps_profile_has_its_own_pre_registration():
     assert "7 growth steps, back to back, with no nightly window and no wait" in text
     assert "0.95 or more for B1 and 0.9 or more for S2" in text and "INVALID" in text
     assert "store.hung" in text and "One store starts at a time." in text
+    # the rule that was measured: ready is no embedding backlog, then both channels warm
+    assert "ready only when its index is idle and no chunk of a live note lacks a vector" in text
+    assert "one call of the recall tool and one prompt per round" in text
+    assert "until both answer inside 2 s, for 60 s at most" in text
+    assert (
+        "(store_hung) or whose hook gave up on the store (timeout) is invalid, not a miss" in text
+    )
+    assert "ORT_INTRA_OP_NUM_THREADS=4" in text and "OMP_NUM_THREADS does not bind" in text
+    assert "The prompt channel of a build has no floor" in text
     assert "DR5" in text and "- DR5:" not in text  # named as out of scope, not as a rule
     assert prof.prereg_hash() != profiles.LARGE.prereg_hash()
     nightly = profiles.LARGE.prereg()  # the text of the 7-day run did not move
@@ -206,6 +215,7 @@ def test_the_short_pilot_gates_the_build_and_shows_what_the_report_gate_would_sa
         assert kw["day"] == 0 and shards == 1 and limit == 10
         run_.append_many("replay", step(5000, 0, 10, 7, n=10))
         marker = {"day": 0, "build": "B1", "size": 5000, "shard": 0, "index_s": 1, "ready_s": 2}
+        marker.update(backlog_chunks=948, drain_s=41.5)
         run_.append("replay-done", marker)
         return [dict(marker, memories=5000)]
 
@@ -231,6 +241,39 @@ def test_the_short_pilot_gates_the_build_and_shows_what_the_report_gate_would_sa
         "no_external_connects",
     }  # no soak hour, no heartbeat, no unit: the run has none of them
     arms = shown["sanity_by_scale"]["5000"]["arms"]
-    assert arms["B1"] == {"n": 10, "delivery": 1.0, "floor": 0.95, "ok": True}
-    assert arms["S2"] == {"n": 10, "delivery": 0.7, "floor": 0.9, "ok": False}
+    assert arms["B1"] == {"n": 10, "delivery": 1.0, "floor": 0.95, "invalid": 0, "ok": True}
+    assert arms["S2"] == {"n": 10, "delivery": 0.7, "floor": 0.9, "invalid": 0, "ok": False}
     assert shown["report_gate_would_pass"] is False  # stock under its floor: said, not hidden
+    assert shown["stores"]["sizes"]["5000"]["backlog_chunks"] == 948
+    assert shown["stores"]["sizes"]["5000"]["drain_s"] == 41.5
+
+
+def pilot_rows(pull_hits, prompt_hits, n=60):
+    """The pilot rows of one scale: the sanity set on the recall tool and on the prompt."""
+    rows = [dict(r, day=1) for r in step(5000, 1, pull_hits, 55, n=n)]
+    rows += [dict(row("B1", 5000, 1, i, "V1", i < prompt_hits), channel="prompt") for i in range(n)]
+    return rows
+
+
+def pilot_gate(rows):
+    prof = profiles.get("large-project-steps")
+    floors = report.validity(rows, ("B1", "S2"), prof.params, [5000])
+    gate = {size: {"ok": g["ok"], "arms": g["steps"].get("1", {})} for size, g in floors.items()}
+    return cli.pilot_sanity(gate, prof.builds)
+
+
+def test_the_pilot_gates_the_recall_tool_at_its_floor_and_not_the_prompt_channel():
+    """A healthy store gives 60 of 60 on the recall tool and 52 of 60 on the prompt: the
+    prompt hook holds rows back by its own rules. The pilot gate is the recall tool at
+    0.95 or more; the prompt channel is shown and never stops the start."""
+    healthy = pilot_rows(pull_hits=60, prompt_hits=52)
+    assert pilot_gate(healthy) is True
+    shown = cli.prompt_by_scale(healthy, [5000], ("B1",))
+    assert shown == {"5000": {"B1": {"n": 60, "delivery": 0.867}}}  # under 0.95, no gate
+    assert pilot_gate(pilot_rows(pull_hits=60, prompt_hits=0)) is True
+    assert pilot_gate(pilot_rows(pull_hits=57, prompt_hits=52)) is True  # 0.95: the floor
+    assert pilot_gate(pilot_rows(pull_hits=56, prompt_hits=60)) is False  # 0.933
+    # an invalid row fails the gate at any delivery: it is not a miss
+    latched = pilot_rows(pull_hits=60, prompt_hits=52)
+    latched[-1].update(fail="store_hung", latched=True, hit=False)
+    assert pilot_gate(latched) is False

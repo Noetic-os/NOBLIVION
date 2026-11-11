@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from . import profiles, stats
+from . import profiles, stats, warm
 from .config import PARAMS, SCALES, Params
 from .scheduler import window_start
 from .util import json_text, read_jsonl, sha256_file, write_private
@@ -192,6 +192,19 @@ def sanity_delivery(rows: Sequence[Mapping[str, Any]], arm: str) -> dict[str, An
     return {"n": len(sel), "delivery": round(hits / len(sel), 3) if sel else None}
 
 
+def prompt_delivery(rows: Sequence[Mapping[str, Any]], arm: str) -> dict[str, Any]:
+    """Delivery of one build on the prompt channel of the sanity set. Reported, never
+    gated: the prompt hook holds a row back by its own rules, so a healthy store does
+    not reach the floor of the recall tool (52 of 60 measured)."""
+    sel = [
+        r
+        for r in rows
+        if r.get("variant") == "V1" and r.get("build") == arm and r.get("channel") == "prompt"
+    ]
+    hits = sum(1 for r in sel if r.get("hit"))
+    return {"n": len(sel), "delivery": round(hits / len(sel), 3) if sel else None}
+
+
 def sanity_floor(arm: str, params: Params = PARAMS) -> float:
     return params.sanity_s2_delivery if arm.startswith("S") else params.sanity_pull_delivery
 
@@ -205,9 +218,11 @@ def validity(
     """The validity gate of the report: an arm must prove that it fired before its
     rows count. Per size and judged step (a night, or a step of the compressed run;
     day 0 is the pilot and is left out) and per arm: the sanity delivery against its
-    registered floor. An arm with no sanity row has proved nothing. Returns
-    ``size -> {"ok", "causes", "steps": {step: {arm: {"n", "delivery", "floor", "ok"}}}}``;
-    a size with no step at all is not ok (no data is not a proof)."""
+    registered floor, and no invalid row (``warm.invalid_rows``: the hook latch, or a
+    hook that gave up on the store; such a row is not a miss of the build). An arm
+    with no sanity row has proved nothing. Returns ``size -> {"ok", "causes", "steps":
+    {step: {arm: {"n", "delivery", "floor", "invalid", "ok"}}}}``; a size with no step
+    at all is not ok (no data is not a proof)."""
     by: dict[int, dict[int, list[Mapping[str, Any]]]] = {}
     for r in rows:
         if r.get("day") and r.get("size"):
@@ -221,11 +236,19 @@ def validity(
             for arm in arms:
                 got = sanity_delivery(step_rows, arm)
                 floor = sanity_floor(arm, params)
-                got.update(floor=floor, ok=got["delivery"] is not None and got["delivery"] >= floor)
-                if not got["ok"]:
+                fired = got["delivery"] is not None and got["delivery"] >= floor
+                bad = warm.invalid_rows(r for r in step_rows if r.get("build") == arm)
+                got.update(floor=floor, invalid=len(bad), ok=fired and not bad)
+                if not fired:
                     seen = "no sanity rows" if not got["n"] else f"{got['delivery']} of {got['n']}"
                     causes.append(
                         f"step {step}: {arm} sanity delivery {seen}, under the floor {floor}"
+                    )
+                if bad:
+                    causes.append(
+                        f"step {step}: {arm} has {len(bad)} invalid rows, fail reasons "
+                        f"{warm.fail_counts(bad)} (the hook latch, or a hook that gave "
+                        "up on the store)"
                     )
                 cell[arm] = got
             steps[str(step)] = cell

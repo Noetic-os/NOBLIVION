@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import longtest_path  # noqa: F401 - puts tools on the path
 import pytest
@@ -172,3 +174,128 @@ def test_determinism_hash_ignores_time_and_order():
     assert runner.determinism_hash(rows, 30) == runner.determinism_hash(again, 30)
     again[0]["hit"] = not again[0]["hit"]
     assert runner.determinism_hash(rows, 30) != runner.determinism_hash(again, 30)
+
+
+# -- a store is ready only when no chunk lacks a vector ---------------------------------
+
+
+def chunk_db(folder: Path, chunks: int, with_vector: int = 0) -> sqlite3.Connection:
+    """A database with the columns that the backlog count reads: ``chunks`` chunks of
+    live notes, the first ``with_vector`` of them embedded; one archived note, one
+    deleted note and one chunk with no text, none of which the store embeds."""
+    conn = sqlite3.connect(folder / buildrunner.suite().DB_NAME, isolation_level=None)
+    conn.executescript(
+        "CREATE TABLE memories (id INTEGER PRIMARY KEY, archived_at TEXT, deleted_at TEXT);"
+        "CREATE TABLE memory_chunks (id INTEGER PRIMARY KEY, parent_id INTEGER, search_text TEXT);"
+        "CREATE TABLE chunk_vectors (chunk_id INTEGER, model TEXT);"
+        "INSERT INTO memories VALUES (1, NULL, NULL), (2, 't', NULL), (3, NULL, 't');"
+        "INSERT INTO memory_chunks VALUES (901, 2, 'archived'), (902, 3, 'deleted'), "
+        "(903, 1, ' \n\t');"
+    )
+    for i in range(1, chunks + 1):
+        conn.execute("INSERT INTO memory_chunks VALUES (?, 1, 'text')", (i,))
+        if i <= with_vector:
+            conn.execute("INSERT INTO chunk_vectors VALUES (?, 'm')", (i,))
+    return conn
+
+
+def ready_store(tmp_path, monkeypatch, embedding="ready", on_look=lambda n: None):
+    """A suite store with no process: the health answer is idle with every file vector
+    there, as a store with a chunk backlog gives it. The clock is the test's own."""
+    st = buildrunner.suite()
+    clock, looks = {"t": 0.0}, []
+    fake = SimpleNamespace(
+        monotonic=lambda: clock["t"], sleep=lambda s: clock.update(t=clock["t"] + s)
+    )
+    monkeypatch.setattr(st, "time", fake)
+    store = st.Store(tmp_path, sys.executable, tmp_path, 30.0)
+
+    def health():
+        looks.append(clock["t"])
+        rev = on_look(len(looks)) or 9  # a store that embeds moves its vector revision
+        state = {"state": embedding, "missing_vectors": 0}
+        return {"index_state": "idle", "content_rev": 4, "vector_rev": rev, "embedding": state}
+
+    store.health = health
+    return store, looks
+
+
+def test_the_backlog_count_is_the_chunks_that_the_store_still_embeds(tmp_path):
+    store = buildrunner.suite().Store(tmp_path, sys.executable, tmp_path, 30.0)
+    assert store.chunk_backlog() == 0  # no database yet
+    conn = chunk_db(tmp_path, chunks=5, with_vector=2)
+    assert store.chunk_backlog() == 3  # not the archived, the deleted or the empty one
+    conn.execute("DROP TABLE chunk_vectors")
+    conn.execute("DROP TABLE memory_chunks")
+    assert store.chunk_backlog() == 0  # a build from before the chunks
+
+
+def test_the_backlog_count_reads_the_schema_of_the_build(tmp_path):
+    from noblivion import db
+
+    db.open_db(tmp_path / buildrunner.suite().DB_NAME, create=True).close()
+    store = buildrunner.suite().Store(tmp_path, sys.executable, tmp_path, 30.0)
+    assert store.chunk_backlog() == 0
+
+
+def test_a_store_with_an_embedding_backlog_is_not_ready(tmp_path, monkeypatch):
+    """The fault of the long runs: the health answer counts file vectors only, so a
+    store that still embedded 948 chunks was called ready, answered late and latched
+    the hooks. Ready now waits until no chunk lacks a vector."""
+    conn = chunk_db(tmp_path, chunks=3)
+
+    def embed_one(look):  # the store embeds one chunk between two looks
+        if look <= 3:
+            conn.execute("INSERT INTO chunk_vectors VALUES (?, 'm')", (look,))
+        return 9 + min(look, 3)
+
+    store, looks = ready_store(tmp_path, monkeypatch, on_look=embed_one)
+    health = store.wait_ready()
+    assert health["index_state"] == "idle"
+    # looks 1 and 2 see 2 and 1 chunks left, look 3 sees none, look 4 is the equal answer
+    assert len(looks) == 4 and store.backlog == 2 and store.drain_s == 1.0
+
+
+def test_a_backlog_that_does_not_drain_ends_the_wait_and_says_what_was_left(tmp_path, monkeypatch):
+    chunk_db(tmp_path, chunks=7, with_vector=2)
+    store, looks = ready_store(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match=r"^store not ready after 30 s: 5 chunks without"):
+        store.wait_ready()
+    assert len(looks) == 60 and store.backlog == 5 and store.drain_s is None
+
+
+def test_a_store_in_keyword_mode_has_no_backlog_to_wait_for(tmp_path, monkeypatch):
+    chunk_db(tmp_path, chunks=7)
+    store, looks = ready_store(tmp_path, monkeypatch, embedding="off")
+    store.wait_ready()
+    assert len(looks) == 2 and store.backlog is None and store.drain_s is None
+
+
+def test_harness_start_records_the_backlog_and_the_drain_time(tmp_path, monkeypatch):
+    class Store:
+        backlog, drain_s = 948, 41.5
+
+        def __init__(self, data, python, src, wait_s):
+            self.wait_s = wait_s
+
+        def index(self, env):
+            return True
+
+        def start(self, env):
+            self.env = env
+            return {"memories": 7261}
+
+    monkeypatch.setattr(buildrunner, "suite", lambda: SimpleNamespace(Store=Store))
+    h = buildrunner.Harness("B1", tmp_path / "b1", tmp_path / "root", sys.executable, None, 77.0)
+    assert h.start() == {"memories": 7261} and h.store.wait_s == 77.0
+    assert h.timing["backlog_chunks"] == 948 and h.timing["drain_s"] == 41.5
+    assert set(h.timing) == {"index_s", "ready_s", "backlog_chunks", "drain_s"}
+
+
+def test_the_harness_binds_the_embedder_by_the_name_its_runtime_reads(tmp_path):
+    """OMP_NUM_THREADS does not bind the embedder: its model runtime reads a name of its
+    own. The store and the worker both get it."""
+    h = buildrunner.Harness("B1", tmp_path / "b1", tmp_path / "root", sys.executable, None)
+    env = h.environ({"PATH": "/usr/bin"})
+    assert buildrunner.EMBED_THREADS == "4"
+    assert env["ORT_INTRA_OP_NUM_THREADS"] == "4" and env["OMP_NUM_THREADS"] == "4"

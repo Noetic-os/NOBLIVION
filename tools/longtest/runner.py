@@ -352,12 +352,14 @@ def _replay_task(
             memories=health.get("memories"),
             index_s=h.timing["index_s"],
             ready_s=h.timing["ready_s"],
+            backlog_chunks=h.timing.get("backlog_chunks"),
+            drain_s=h.timing.get("drain_s"),
         )
         try:
             rows = replay.run_shard(fx, size, shard, h, build, variants, limit)
         except warm.LatchedShard as exc:
             # no rows and no marker: the task is not done and runs again. One line says
-            # why, so a night that lost a shard to the latch can be read from the files.
+            # why, so a night that lost a shard to invalid rows can be read from the files.
             run.append(
                 "replay-void",
                 {"day": day, "build": build, "size": size, "shard": shard, "why": str(exc)[:400]},
@@ -379,6 +381,8 @@ def _replay_task(
                 "memories": info["memories"],
                 "index_s": info["index_s"],
                 "ready_s": info["ready_s"],
+                "backlog_chunks": info["backlog_chunks"],
+                "drain_s": info["drain_s"],
                 "warm_s": h.timing.get("warm_s"),
                 "warm_tries": h.timing.get("warm_tries"),
                 "fails": warm.fail_counts(rows),
@@ -427,8 +431,9 @@ def bench_kept_store(run: Run, build: str, size: int, budget_s: float) -> dict[s
             health = h.start()
             pid = h.store.proc.pid if h.store.proc else None
             with Worker(h) as w:
-                # a cold store answers its first call late and latches the hook: warm it,
-                # or the row measures 30 seconds of empty answers
+                # a store that answers a call late latches the hook: the start waits
+                # for the embedding backlog; warm it, or the row measures 30 seconds of
+                # empty answers
                 warmed = warm.warm_up(w, h.data, cwd)
                 call = warm.HookCalls(w, cwd, "bench")
                 lat = soak.latency_benchmark(call, texts, n=100, budget_s=budget_s)

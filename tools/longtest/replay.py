@@ -379,9 +379,10 @@ def run_shard(
     warm_s: float = warm.WARM_BOUND_S,
 ) -> list[dict[str, Any]]:
     """All the queries of one shard through one started harness. The store is warmed
-    first (``warm.warm_up``; its timing goes to ``harness.timing``). A shard with a
-    latched row raises ``warm.LatchedShard``: its rows measure the latch, so the caller
-    gets none of them."""
+    first (``warm.warm_up``; its timing goes to ``harness.timing``). A shard with an
+    invalid row (the hook latch, or a hook that gave up on the store) raises
+    ``warm.LatchedShard``: such rows measure the wait for the store, so the caller gets
+    none of them."""
     queries = list(fx.queries_for(size, variants, shard))
     if limit_per_variant:
         seen: dict[str, int] = defaultdict(int)
@@ -404,11 +405,12 @@ def run_shard(
             rows.append(row)
             if on_row:
                 on_row(row)
-    latched = warm.latched_rows(rows)
-    if latched:
+    invalid = warm.invalid_rows(rows)
+    if invalid:
         raise warm.LatchedShard(
-            f"{name} size {size} shard {shard}: {len(latched)} of {len(rows)} rows ran under "
-            f"the hook latch ({warm.LATCH_FILE}); fail reasons {warm.fail_counts(rows)}"
+            f"{name} size {size} shard {shard}: {len(invalid)} of {len(rows)} rows are "
+            f"invalid, under the hook latch ({warm.LATCH_FILE}) or with a hook that gave up "
+            f"on the store; fail reasons {warm.fail_counts(rows)}"
         )
     return rows
 
