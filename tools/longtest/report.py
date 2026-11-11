@@ -377,6 +377,7 @@ def verdicts_large(
     sizes: Sequence[int] = profiles.LARGE_SIZES,
     validity: Mapping[str, Any] | None = None,
     health_rule: bool = True,
+    incomplete: Sequence[str] = (),
 ) -> dict[str, Any]:
     """The rules of the large-project profile (DR1, DR3, DR5, DR6) over the replay
     summary, the soak evaluation and the night trend. What the data does not hold is
@@ -385,11 +386,14 @@ def verdicts_large(
     DR6 are not judged there (``None``), because an arm that did not fire shows
     neither a win nor a loss. ``health_rule`` is false for a run with no soak store
     (the time-compressed run): DR5 is then not in scope and the verdict does not wait
-    for it."""
+    for it. ``incomplete`` names why a run that stopped before its registered last
+    step is not judged: every scale gets INCOMPLETE, and no rule is judged."""
     vs2 = summary["b1_vs_s2"]
     adj = stats.holm({k: v["p"] for k, v in vs2.items()})
     claims: dict[str, Any] = {}
     void = {size for size, gate in (validity or {}).items() if not gate["ok"]}
+    if incomplete:
+        void |= {str(size) for size in sizes}
     for key, v in sorted(vs2.items()):
         judged = key.split("|")[0] not in void
         claims[key] = {
@@ -423,7 +427,9 @@ def verdicts_large(
             dr3 = dr6 = None  # not judged
         win_core = any(p["dr1"] for p in primary)
         lose = any(p["lose"] for p in primary) or dr3 is False
-        if invalid:
+        if incomplete:
+            word = "INCOMPLETE"
+        elif invalid:
             word = "INVALID"
         elif not primary:
             word = "NO DATA"
@@ -446,7 +452,9 @@ def verdicts_large(
             "dr6": dr6,
             "verdict": word,
         }
-        if invalid:
+        if incomplete:
+            scales[names.get(size, str(size))]["incomplete_because"] = list(incomplete)
+        if validity and str(size) in validity and not validity[str(size)]["ok"]:
             scales[names.get(size, str(size))]["invalid_because"] = validity[str(size)]["causes"]
     return {
         "claims": claims,
@@ -455,6 +463,7 @@ def verdicts_large(
         "trend": trend,
         "validity": validity,
         "dr5_in_scope": health_rule,
+        "incomplete": list(incomplete),
     }
 
 

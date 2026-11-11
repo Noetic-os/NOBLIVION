@@ -315,6 +315,9 @@ def render_steps_prereg(profile: Profile) -> str:
         "is reported and has no floor (see Fairness). A scale with a failed gate on any "
         "step gets the result INVALID with the cause, and DR1, DR3 and DR6 are not judged "
         "there. INVALID is never printed as a win or a loss.",
+        f"- A run with fewer than {profile.steps} finished steps gets the result "
+        "INCOMPLETE at every scale, with the steps that are missing. No rule is judged "
+        "on it. The rows of a step that did not finish are not read.",
         "- The prompt channel of a build has no floor: the prompt hook holds a row back "
         "by its own rules (52 of 60 on a healthy store). Its delivery is reported.",
         "",

@@ -827,6 +827,18 @@ def cmd_report(a: argparse.Namespace) -> int:
     prof = profiles.profile_of(run.manifest)
     rows = [r for r in replay_rows(run) if r.get("day")]  # the pilot (day 0) is not the run
     large = prof.name in profiles.LARGE_FAMILY
+    incomplete: list[str] = []
+    if prof.steps:
+        # a steps run is judged on its registered steps only: the rows of a step that
+        # has no row in steps.jsonl did not finish, and a run with fewer steps is not judged
+        done = {int(r["step"]) for r in read_jsonl(run.out / "steps.jsonl")}
+        rows = [r for r in rows if int(r["day"]) in done]
+        missing = [s for s in range(1, prof.steps + 1) if s not in done]
+        if missing:
+            incomplete.append(
+                f"{prof.steps - len(missing)} of {prof.steps} steps done; "
+                f"missing steps {', '.join(map(str, missing))}"
+            )
     if large and rows:
         # DR1 and DR3 are judged on the last night (the grown store); the nights before
         # feed the trend of DR6. A query replays every night, so the rows must not mix.
@@ -860,6 +872,7 @@ def cmd_report(a: argparse.Namespace) -> int:
             sizes=list(run.manifest["sizes"]),
             validity=gate,
             health_rule=not prof.steps,
+            incomplete=incomplete,
         )
         doc["steps"] = read_jsonl(run.out / "steps.jsonl")
         doc["latency"] = report.latency_validity(read_jsonl(run.out / "latency.jsonl"))

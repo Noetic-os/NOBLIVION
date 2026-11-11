@@ -93,6 +93,7 @@ def test_the_steps_profile_has_its_own_pre_registration():
     assert "A stock arm (S2): the gate is mechanical, every query of the step" in text
     assert "INVALID" in text and "0.9 or more" not in text
     # the ruling of 2026-11-11 and its reason are in the text that is frozen
+    assert "A run with fewer than 7 finished steps gets the result INCOMPLETE" in text
     assert "## Fairness" in text and "Ruling of 2026-11-11" in text
     assert "S2 is a deterministic simulation" in text and "cannot latch" in text
     assert "0.70 to 0.80 at 5,000 and 20,000 notes" in text
@@ -143,14 +144,43 @@ def test_steps_run_back_to_back_resume_after_a_kill_and_are_judged_as_nights(
     assert steps[0]["gate"]["20000"]["arms"]["B1"]["delivery"] == 1.0
     assert not (run.dir / "state.json").exists()  # no scheduler, no window, no day clock
     assert compressed.run_steps(run, 3, now=lambda: NOON)["ran"] == []  # nothing twice
-    # the report judges the steps as nights: the last step for DR1 and DR3, all for DR6
+    # 3 of the 7 registered steps: the report gives no verdict
+    assert cli.cmd_report(argparse.Namespace(run_dir=str(run.dir))) == 0
+    scales = json.loads(capsys.readouterr().out)
+    for scale in ("LARGE-1", "LARGE-2"):
+        assert scales[scale]["verdict"] == "INCOMPLETE"
+        assert scales[scale]["incomplete_because"] == [
+            "3 of 7 steps done; missing steps 4, 5, 6, 7"
+        ]
+        assert scales[scale]["dr1_c1"] is None and scales[scale]["dr6"] is None
+    # the rest of the steps: the report judges the steps as nights, the last step for
+    # DR1 and DR3, all of them for DR6
+    assert compressed.run_steps(run, now=lambda: NOON)["ran"] == [4, 5, 6, 7]
     assert cli.cmd_report(argparse.Namespace(run_dir=str(run.dir))) == 0
     scales = json.loads(capsys.readouterr().out)
     doc = json.loads((run.dir / "final_report.json").read_text())["verdicts"]
-    assert doc["judged_night"] == 3 and doc["dr5_in_scope"] is False
-    assert doc["trend"]["20000"]["nights"] == 3 and len(doc["steps"]) == 3
+    assert doc["judged_night"] == 7 and doc["dr5_in_scope"] is False and doc["incomplete"] == []
+    assert doc["trend"]["20000"]["nights"] == 7 and len(doc["steps"]) == 7
     assert scales["LARGE-2"]["dr6"] is True and scales["LARGE-2"]["dr5"] is None
     assert scales["LARGE-2"]["verdict"] == "WIN"  # DR5 has no data and is not waited for
+    assert "incomplete_because" not in scales["LARGE-2"]
+
+
+def test_the_report_does_not_read_the_rows_of_a_step_that_did_not_finish(
+    tmp_path, monkeypatch, capsys
+):
+    """A run killed inside step 8 of a longer series, or rows of a step with no row in
+    steps.jsonl: the report judges the finished steps, not the half step."""
+    run = make_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(growth, "grow", fake_grow([]))
+    monkeypatch.setattr(compressed, "replay_all", fake_replay([]))
+    compressed.run_steps(run, now=lambda: NOON)
+    run.append_many("replay", step(20000, 8, 0, 55))  # rows of a step that has no row
+    assert cli.cmd_report(argparse.Namespace(run_dir=str(run.dir))) == 0
+    scales = json.loads(capsys.readouterr().out)
+    doc = json.loads((run.dir / "final_report.json").read_text())["verdicts"]
+    assert doc["judged_night"] == 7 and "8" not in doc["validity"]["20000"]["steps"]
+    assert scales["LARGE-2"]["verdict"] == "WIN"
 
 
 def test_a_failed_step_runs_again_at_once_and_gives_up_after_its_retries(tmp_path, monkeypatch):
