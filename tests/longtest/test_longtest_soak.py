@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import sqlite3
@@ -66,20 +67,57 @@ def test_bad_token_is_an_error_row(client, tmp_path):
     assert soak.query_load(client, ["a"])[0]["ok"] is False
 
 
+def store_sync(seen: dict[Path, set[str]]):
+    """A stand-in for the memory-sync hook: it indexes the markers of a note that is
+    there, and forgets the markers of one that has gone."""
+
+    def sync(path: Path) -> None:
+        if path.exists():
+            seen[path] = set(re.findall(r"zqx\w+?marker", path.read_text()))
+            Handler.notes.update(seen[path])
+        else:
+            Handler.notes.difference_update(seen.pop(path, set()))
+
+    return sync
+
+
 def test_churn_measures_the_lag_of_a_new_note(client, tmp_path):
     folder = tmp_path / "mem"
     folder.mkdir()
-
-    def sync(path: Path) -> None:
-        if path.exists():  # the store "indexes" the marker of a written note
-            Handler.notes.update(re.findall(r"zqx\w+?marker", path.read_text()))
-
+    sync = store_sync({})
     rows = soak.churn(folder, client, 1, sync, timeout_s=5)
     assert rows[0]["kind"] == "write" and rows[0]["ok"] and rows[0]["lag_s"] < 2
     for n in range(2, 6):
         rows = soak.churn(folder, client, n, sync, timeout_s=5)
     assert {r["kind"] for r in rows} >= {"write", "delete", "edit"}
     assert len(list(folder.glob("project_soak_*.md"))) <= 5
+
+
+def test_churn_waits_for_the_delete_to_be_registered(client, tmp_path):
+    folder = tmp_path / "mem"
+    folder.mkdir()
+    sync = store_sync({})
+    for n in range(1, 6):
+        rows = soak.churn(folder, client, n, sync, timeout_s=5)
+    gone = [r for r in rows if r["kind"] == "delete"]
+    assert gone and gone[0]["ok"] and gone[0]["lag_s"] is not None
+    # nothing the churn deleted is still searchable: the store caught up before the
+    # churn returned, so a drift reading right after it is not a race
+    assert len(Handler.notes) == len(list(folder.glob("project_soak_*.md")))
+
+
+def test_churn_reports_a_delete_the_store_keeps(client, tmp_path):
+    folder = tmp_path / "mem"
+    folder.mkdir()
+
+    def sync(path: Path) -> None:  # indexes a write, never forgets a delete
+        if path.exists():
+            Handler.notes.update(re.findall(r"zqx\w+?marker", path.read_text()))
+
+    for n in range(1, 6):
+        rows = soak.churn(folder, client, n, sync, timeout_s=1)
+    gone = [r for r in rows if r["kind"] == "delete"]
+    assert gone and gone[0]["ok"] is False and gone[0]["lag_s"] is None
 
 
 def test_churn_reports_a_note_that_never_appears(client, tmp_path):
@@ -89,17 +127,64 @@ def test_churn_reports_a_note_that_never_appears(client, tmp_path):
     assert rows[0]["ok"] is False and rows[0]["lag_s"] is None
 
 
+NO_WAIT = {"poll_s": 0.0, "sleep": lambda s: None}
+
+
 def test_drift_is_disk_change_minus_store_change(client, tmp_path):
     folder = tmp_path / "mem"
     folder.mkdir()
     (folder / "a.md").write_text("x")
     (folder / "MEMORY.md").write_text("index")
-    base = soak.baseline(client, [folder])
+    base = soak.baseline(client, [folder], **NO_WAIT)
     assert base["disk"] == 1
     (folder / "b.md").write_text("y")
-    assert soak.drift(client, [folder], base)["drift"] == 1  # the store has not followed
+    got = soak.drift(client, [folder], base, **NO_WAIT)
+    assert got["drift"] == 1 and got["settled"]  # the store has not followed
     Handler.notes.add("b")
-    assert soak.drift(client, [folder], base)["drift"] == 0
+    got = soak.drift(client, [folder], base, **NO_WAIT)
+    assert got["drift"] == 0 and got["settled"]
+
+
+def test_drift_says_so_when_the_store_never_stops_moving(client, tmp_path):
+    folder = tmp_path / "mem"
+    folder.mkdir()
+    (folder / "a.md").write_text("x")
+    base = soak.baseline(client, [folder], **NO_WAIT)
+    counted = itertools.count()
+
+    def moving(folders):  # a note is indexed between every two readings
+        Handler.notes.add(f"n{next(counted)}")
+        return 1
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(soak, "disk_notes", moving)
+        got = soak.drift(client, [folder], base, settle_s=0.3, poll_s=0.0, sleep=lambda s: None)
+    assert got["settled"] is False
+
+
+def test_a_store_that_counts_nothing_is_a_failed_call(client, tmp_path):
+    folder = tmp_path / "mem"
+    folder.mkdir()
+    base = {"disk": 1, "memories": 20000}
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(soak.StoreClient, "health", lambda self: (True, {"memories": 0}))
+        with pytest.raises(soak.HealthCallFailed):
+            soak.drift(client, [folder], base, **NO_WAIT)
+
+
+def test_a_baseline_that_does_not_settle_stops_the_run(client, tmp_path):
+    folder = tmp_path / "mem"
+    folder.mkdir()
+    counted = itertools.count()
+
+    def moving(folders):
+        Handler.notes.add(f"n{next(counted)}")
+        return len(Handler.notes)
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(soak, "disk_notes", moving)
+        with pytest.raises(soak.HealthCallFailed):
+            soak.baseline(client, [folder], settle_s=0.3, poll_s=0.0, sleep=lambda s: None)
 
 
 def test_resources_reads_sqlite_read_only(tmp_path):
@@ -125,7 +210,7 @@ def test_latency_benchmark_caps_by_count():
     assert out["n"] == 7 and out["p95"] == 10.0 and len(seen) == 7
 
 
-def rows_for(days, p95=100.0, errors=0, lag=2.0, drift=0, rss=None):
+def rows_for(days, p95=100.0, errors=0, lag=2.0, drift=0, rss=None, settled=True):
     rows = []
     for d, day in enumerate(days):
         for i in range(400):
@@ -133,7 +218,7 @@ def rows_for(days, p95=100.0, errors=0, lag=2.0, drift=0, rss=None):
                 {"day": day, "kind": "query", "ok": i >= errors, "status": 200, "ms": p95 - (i % 5)}
             )
         rows.append({"day": day, "kind": "write", "ok": True, "lag_s": lag})
-        rows.append({"day": day, "kind": "drift", "drift": drift})
+        rows.append({"day": day, "kind": "drift", "drift": drift, "settled": settled})
         for h in range(3):
             rows.append(
                 {
@@ -161,6 +246,7 @@ def test_evaluate_passes_a_healthy_week():
         ("budget_recall", {"p95": 2500.0}),
         ("error_rate", {"errors": 20}),
         ("drift_zero", {"drift": 1}),
+        ("drift_settled", {"settled": False}),
         ("lag_p95", {"lag": 12.0}),
         ("memory_trend", {"rss": lambda d, h: 500.0 + 80 * d + h}),
     ],

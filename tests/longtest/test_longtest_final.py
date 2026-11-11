@@ -248,6 +248,30 @@ def test_soak_store_is_seeded_from_the_kept_replay_store_once(tmp_path, monkeypa
     assert not runner.seed_soak_store(run, run.dir / "stores" / "x", 5000)  # no source
 
 
+def test_a_fresh_health_store_throws_away_what_the_last_check_left(tmp_path, monkeypatch):
+    """NOBLIVION-211: the health checks share one copy and C4 leaves notes behind after
+    it kills its store, so C2 must be able to ask for a copy nothing has touched."""
+    run = run_folder(tmp_path)
+
+    class Fx:
+        def shards(self, size):
+            return [0]
+
+    monkeypatch.setattr(runner.Run, "fixture", lambda self: Fx())
+    source = tmp_path / "seed-source"
+    (source / "home").mkdir(parents=True)
+    (source / "home" / "note.md").write_text("note")
+    run.save_manifest(dict(run.manifest, seeded_stores={"B1": {"20000": {"from": str(source)}}}))
+    root = runner.seed_health_store(run, 20000)
+    assert (root / "home" / "note.md").exists()
+    (root / "home" / "project_soak_000001.md").write_text("left behind by the kill test")
+    assert runner.seed_health_store(run, 20000) == root  # a second call leaves it alone
+    assert (root / "home" / "project_soak_000001.md").exists()
+    again = runner.seed_health_store(run, 20000, fresh=True)
+    assert again == root and not (again / "home" / "project_soak_000001.md").exists()
+    assert (again / "home" / "note.md").exists()
+
+
 def test_a_store_that_is_not_ready_is_stopped_and_not_left_running(tmp_path, monkeypatch):
     run = run_folder(tmp_path)
     stopped = []

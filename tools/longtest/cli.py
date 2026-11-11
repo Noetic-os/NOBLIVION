@@ -786,18 +786,20 @@ def cmd_steps(a: argparse.Namespace) -> int:
     return 0 if res["complete"] and not res["stopped"] else 1
 
 
-def health_harness(run: Run, size: int) -> tuple[Any, list[Path], Any, int]:
+def health_harness(run: Run, size: int, fresh: bool = False) -> tuple[Any, list[Path], Any, int]:
     """A ``Harness`` of a health copy of B1's kept store, apart from the one growth
     and replay write into every day (``runner.seed_health_store``): C2 and C4 churn
     notes of their own and must not race that store, or grow it past the size C2 and
     C3 are judged at. Shared by the three health commands; each opens its own worker
-    and closes it when done."""
+    and closes it when done. ``fresh`` throws the copy away first: a check that
+    measures the store against the notes on disk must not start from what the last
+    check left behind (NOBLIVION-211)."""
     from .buildrunner import Harness, index_wait_s, store_python
     from .runner import seed_health_store
 
     fx = run.fixture()
     shard = fx.shards(size)[0]
-    root = seed_health_store(run, size)
+    root = seed_health_store(run, size, fresh=fresh)
     live_data = Path(run.manifest["live"]["data_dir"])
     harness = Harness(
         "B1",
@@ -850,7 +852,10 @@ def cmd_health_c2(a: argparse.Namespace) -> int:
     out_dir = Path(a.out_dir)
     out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     wait_out_quiet(run, now, pytime.sleep, "health c2 start")
-    harness, folders, fx, _shard = health_harness(run, a.size)
+    # A first start takes a store nothing else has touched; a restart must keep the one
+    # the events already run churned into, or the rows of this run no longer fit it.
+    done = [r["i"] for r in read_jsonl(out_dir / "c2-progress.jsonl")]
+    harness, folders, fx, _shard = health_harness(run, a.size, fresh=not done)
     harness.start()
     client = soak.StoreClient(harness.data)
     worker = Worker(harness)
@@ -891,7 +896,6 @@ def cmd_health_c2(a: argparse.Namespace) -> int:
     }
     rows_path = out_dir / "c2-rows.jsonl"
     progress_path = out_dir / "c2-progress.jsonl"
-    done = [r["i"] for r in read_jsonl(progress_path)]
     events, _compressed_s = health.compressed_schedule(speed=a.speed)
     # A fresh process's clock starts at 0: offset it to the last event already run,
     # so a resume keeps the registered spacing of the events still ahead instead of

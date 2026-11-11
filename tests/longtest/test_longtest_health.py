@@ -363,7 +363,9 @@ def test_cmd_health_c2_progress_is_written_as_each_event_finishes_not_only_at_th
     fx = FakeFixture()
     clock = FakeClock()
     monkeypatch.setattr(
-        cli, "health_harness", lambda run_, size: (harness, [tmp_path / "wk"], fx, 0)
+        cli,
+        "health_harness",
+        lambda run_, size, fresh=False: (harness, [tmp_path / "wk"], fx, 0),
     )
     monkeypatch.setattr(buildrunner, "Worker", FakeWorker)
     monkeypatch.setattr(compressed, "wait_out_quiet", lambda *a, **k: 0.0)
@@ -405,7 +407,9 @@ def test_cmd_health_c2_resume_offsets_the_schedule_clock_to_the_last_event_done(
     clock = FakeClock()
     start_t = clock.t
     monkeypatch.setattr(
-        cli, "health_harness", lambda run_, size: (harness, [tmp_path / "wk"], fx, 0)
+        cli,
+        "health_harness",
+        lambda run_, size, fresh=False: (harness, [tmp_path / "wk"], fx, 0),
     )
     monkeypatch.setattr(buildrunner, "Worker", FakeWorker)
     monkeypatch.setattr(compressed, "wait_out_quiet", lambda *a, **k: 0.0)
@@ -428,6 +432,43 @@ def test_cmd_health_c2_resume_offsets_the_schedule_clock_to_the_last_event_done(
     assert [r["i"] for r in progress] == [0, 1, 2]
 
 
+def test_cmd_health_c2_takes_a_clean_store_on_a_first_start_and_keeps_it_on_a_resume(
+    tmp_path, monkeypatch
+):
+    """NOBLIVION-211: C4 kills its store in the middle of a churn and leaves notes
+    behind, and the three health checks share one copy. C2 measures the store against
+    the notes on disk, so a first start must throw that copy away. A resume must not:
+    the events already run churned into the store it goes on with."""
+    run = make_run(tmp_path)
+    out_dir = tmp_path / "out-c2"
+    out_dir.mkdir(parents=True)
+    harness = FakeHarness(tmp_path / "data")
+    fx = FakeFixture()
+    seeds = []
+    monkeypatch.setattr(
+        cli,
+        "health_harness",
+        lambda run_, size, fresh=False: (
+            seeds.append(fresh),
+            (harness, [tmp_path / "wk"], fx, 0),
+        )[1],
+    )
+    monkeypatch.setattr(buildrunner, "Worker", FakeWorker)
+    monkeypatch.setattr(compressed, "wait_out_quiet", lambda *a, **k: 0.0)
+    monkeypatch.setattr(
+        health, "compressed_schedule", lambda **kw: (fake_health_c2_events(), 100.0)
+    )
+    clock = FakeClock()
+    monkeypatch.setattr("time.monotonic", clock.monotonic)
+    monkeypatch.setattr("time.sleep", clock.sleep)
+    patch_c2_soak(monkeypatch)
+
+    assert cli.cmd_health_c2(c2_args(run.dir, out_dir)) == 0
+    assert seeds == [True]  # nothing had run yet: start from a copy nothing has touched
+    assert cli.cmd_health_c2(c2_args(run.dir, out_dir)) == 0
+    assert seeds == [True, False]  # the progress file is there: keep the store
+
+
 def test_cmd_health_c2_folds_a_quiet_window_pause_back_into_the_schedule_clock(
     tmp_path, monkeypatch
 ):
@@ -441,7 +482,9 @@ def test_cmd_health_c2_folds_a_quiet_window_pause_back_into_the_schedule_clock(
     clock = FakeClock()
     start_t = clock.t
     monkeypatch.setattr(
-        cli, "health_harness", lambda run_, size: (harness, [tmp_path / "wk"], fx, 0)
+        cli,
+        "health_harness",
+        lambda run_, size, fresh=False: (harness, [tmp_path / "wk"], fx, 0),
     )
     monkeypatch.setattr(buildrunner, "Worker", FakeWorker)
     events = [
@@ -487,7 +530,9 @@ def test_cmd_health_c3_cold_starts_without_reindexing_and_waits_out_the_quiet_wi
     harness = FakeHarness(tmp_path / "data")
     fx = FakeFixture()
     monkeypatch.setattr(
-        cli, "health_harness", lambda run_, size: (harness, [tmp_path / "wk"], fx, 0)
+        cli,
+        "health_harness",
+        lambda run_, size, fresh=False: (harness, [tmp_path / "wk"], fx, 0),
     )
     quiet_calls = []
     monkeypatch.setattr(
@@ -520,7 +565,9 @@ def test_cmd_health_c4_reindexes_on_restart_and_fails_the_trial_if_the_burst_thr
     harness = FakeHarness(tmp_path / "data")
     fx = FakeFixture()
     monkeypatch.setattr(
-        cli, "health_harness", lambda run_, size: (harness, [tmp_path / "wk"], fx, 0)
+        cli,
+        "health_harness",
+        lambda run_, size, fresh=False: (harness, [tmp_path / "wk"], fx, 0),
     )
     monkeypatch.setattr(buildrunner, "Worker", FakeWorker)
     monkeypatch.setattr(compressed, "wait_out_quiet", lambda *a, **k: 0.0)
@@ -620,7 +667,12 @@ def test_health_harness_seeds_a_separate_health_copy_not_runs_own_b1_store(tmp_p
     monkeypatch.setattr(Run, "fixture", lambda self: fx)
     fx.shards = lambda size: [0]
     seeded_root = tmp_path / "seeded-health-copy"
-    monkeypatch.setattr(runner, "seed_health_store", lambda run_, size: seeded_root)
+    seeds = []
+    monkeypatch.setattr(
+        runner,
+        "seed_health_store",
+        lambda run_, size, fresh=False: seeds.append(fresh) or seeded_root,
+    )
 
     captured = {}
 
@@ -640,3 +692,4 @@ def test_health_harness_seeds_a_separate_health_copy_not_runs_own_b1_store(tmp_p
     assert captured["root"] == seeded_root  # the separate health copy, not run.dir/stores/b1
     assert folders == [seeded_root / "wk"]
     assert shard == 0 and returned_fx is fx
+    assert seeds == [False]  # only a first C2 start asks for a copy nothing has touched

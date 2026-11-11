@@ -238,7 +238,9 @@ def kill_test_evaluate(
     and drift must still read clean. Takes the rows ``soak.resources`` and
     ``soak.drift`` give once the store is back up."""
     quick_check_ok = resources_row["quick_check"] == "ok"
-    drift_zero = drift_row["drift"] == 0
+    # A reading the store had not caught up with is not evidence either way, so it
+    # does not pass the check (``soak.settled_pair``).
+    drift_zero = drift_row["drift"] == 0 and bool(drift_row.get("settled", True))
     return {
         "quick_check": resources_row["quick_check"],
         "quick_check_ok": quick_check_ok,

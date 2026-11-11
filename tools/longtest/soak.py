@@ -8,7 +8,8 @@ and appends their rows to ``out/soak.jsonl``.
 * ``query_load``: recall requests through the store, in parallel for a burst.
 * ``churn``: writes, edits and deletes of notes in a memory folder, then the
   write-to-searchable lag of each new note.
-* ``drift``: notes on disk against the notes the store counts.
+* ``drift``: notes on disk against the notes the store counts, read once the two
+  have stopped moving (``settled_pair``).
 * ``resources``: store memory (``/proc``), database and WAL size, ``quick_check``.
 * ``latency_benchmark``: the prompt hook, ``n`` prompts, p50 and p95, for the table
   of the nightly benchmark.
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import re
 import sqlite3
 import time
 import urllib.error
@@ -99,7 +101,10 @@ def churn(
 ) -> list[dict[str, Any]]:
     """Write one new note, edit one, delete one. ``sync`` is the memory-sync step
     of the build (the hook after a write). The lag of a new note is the time from
-    the write until its marker is searchable."""
+    the write until its marker is searchable, and the lag of a deleted note the time
+    from the delete until its marker is searchable no more. Both are waited out here,
+    so a reading taken after a churn (``drift``) sees a store that has caught up and
+    not one still working through the change."""
     rows: list[dict[str, Any]] = []
     # a nonce: a restart begins its serial at 1 again, and a marker that is in the store
     # already would be found at once and give a lag of zero
@@ -125,15 +130,48 @@ def churn(
     old = sorted(Path(folder).glob("project_soak_*.md"))
     if len(old) > 3:
         victim = old[0]
+        gone = marker_of(victim.read_text(encoding="utf-8"))
         victim.unlink()
         sync(victim)
-        rows.append({"kind": "delete", "ok": True})
+        rows.append(
+            {
+                "kind": "delete",
+                "lag_s": None if gone is None else gone_lag(client, gone, project, timeout_s),
+                "ok": True,
+            }
+        )
+        rows[-1]["ok"] = rows[-1]["lag_s"] is not None
     if old:
         target = old[-1]
         target.write_text(note_text(token + "edit", serial) + "\nEdited.\n", encoding="utf-8")
         sync(target)
         rows.append({"kind": "edit", "ok": True})
     return rows
+
+
+MARKER = re.compile(r"zqx\d{6}[0-9a-f]{8}marker")
+
+
+def marker_of(text: str) -> str | None:
+    """The marker of a churn note (``note_text``). An edited note carries the same
+    marker with ``edit`` after it, so the pattern stops at ``marker``."""
+    found = MARKER.search(text)
+    return found.group(0) if found else None
+
+
+def gone_lag(
+    client: StoreClient, marker: str, project: str, timeout_s: float, poll_s: float = 0.25
+) -> float | None:
+    """Seconds from now until ``marker`` is no longer searchable, or ``None`` when it
+    still is after ``timeout_s``. The store registers a delete a moment after the file
+    goes, the same way it registers a write a moment after it lands."""
+    started = time.monotonic()
+    while time.monotonic() - started < timeout_s:
+        status, body, _ = client.search(marker, project, 3)
+        if status == 200 and marker not in json.dumps(body):
+            return round(time.monotonic() - started, 2)
+        time.sleep(poll_s)
+    return None
 
 
 def disk_notes(folders: Sequence[Path]) -> int:
@@ -146,29 +184,97 @@ def disk_notes(folders: Sequence[Path]) -> int:
 
 
 class HealthCallFailed(Exception):
-    """The health call itself failed (a bad status, or a body with no ``memories``).
-    Not a drift reading: the scheduler logs this as a failed job, the way it logs any
-    other failed handler, instead of ``soak_drift`` writing a row that folds the
-    failure into the drift value."""
+    """The health call itself failed: a bad status, a body with no ``memories``, or a
+    body that counts no memories at all while the baseline counted some (a store that
+    is still coming up answers 200 with ``memories: 0``). Not a drift reading: the
+    scheduler logs this as a failed job, the way it logs any other failed handler,
+    instead of ``soak_drift`` writing a row that folds the failure into the drift
+    value."""
 
 
-def drift(client: StoreClient, folders: Sequence[Path], baseline: dict[str, int]) -> dict[str, Any]:
-    """Index drift: the change in notes on disk since the baseline, minus the change
-    in notes the store counts. 0 when the store follows the disk. Raises
-    ``HealthCallFailed`` when the health call itself failed: that is a separate
-    failure mode, not evidence of drift."""
+def read_pair(
+    client: StoreClient, folders: Sequence[Path], baseline: dict[str, int]
+) -> tuple[int, int, str]:
+    """One reading: notes on disk, notes the store counts, and what the index is doing."""
     ok, health = client.health()
     if not ok or "memories" not in health:
         raise HealthCallFailed(f"health call failed: ok={ok} body={health!r}")
-    disk = disk_notes(folders)
     counted = int(health["memories"])
+    if counted == 0 and baseline.get("memories", 0) > 0:
+        raise HealthCallFailed("the store counts no memories at all: it is not up yet")
+    return disk_notes(folders), counted, str(health.get("index_state", "idle"))
+
+
+def settled_pair(
+    client: StoreClient,
+    folders: Sequence[Path],
+    baseline: dict[str, int],
+    settle_s: float = 20.0,
+    poll_s: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[int, int, bool]:
+    """The notes on disk and the notes the store counts, read once the two have
+    stopped moving: two readings in a row that agree, with the index idle. The store
+    registers a write or a delete seconds after the file changes, so a reading taken
+    inside that window is the lag of the index, not drift; under the churn of a
+    compressed week that window is where most readings would land. Gives up after
+    ``settle_s`` and says so, so a store that truly never catches up is reported and
+    not hidden."""
+    disk, counted, state = read_pair(client, folders, baseline)
+    deadline = time.monotonic() + settle_s
+    while time.monotonic() < deadline:
+        sleep(poll_s)
+        again = read_pair(client, folders, baseline)
+        same = again[:2] == (disk, counted)
+        disk, counted, state = again
+        if same and state in ("idle", ""):
+            return disk, counted, True
+    return disk, counted, False
+
+
+def drift(
+    client: StoreClient,
+    folders: Sequence[Path],
+    baseline: dict[str, int],
+    settle_s: float = 20.0,
+    poll_s: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Index drift: the change in notes on disk since the baseline, minus the change
+    in notes the store counts. 0 when the store follows the disk. The pair is read
+    settled (``settled_pair``), and the row says whether it settled. Raises
+    ``HealthCallFailed`` when the health call itself failed: that is a separate
+    failure mode, not evidence of drift."""
+    disk, counted, settled = settled_pair(client, folders, baseline, settle_s, poll_s, sleep)
     value = (disk - baseline["disk"]) - (counted - baseline["memories"])
-    return {"kind": "drift", "disk": disk, "memories": counted, "drift": value}
+    return {
+        "kind": "drift",
+        "disk": disk,
+        "memories": counted,
+        "drift": value,
+        "settled": settled,
+    }
 
 
-def baseline(client: StoreClient, folders: Sequence[Path]) -> dict[str, int]:
-    ok, health = client.health()
-    return {"disk": disk_notes(folders), "memories": int(health.get("memories", 0)) if ok else 0}
+def baseline(
+    client: StoreClient,
+    folders: Sequence[Path],
+    settle_s: float = 20.0,
+    poll_s: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, int]:
+    """The pair every later drift reading is measured against. It is read settled: a
+    baseline taken while the store is still following the disk is off by the notes in
+    flight, and every later reading carries that error for the whole run. Raises
+    ``HealthCallFailed`` when it does not settle, rather than starting a run on a
+    number that is already wrong."""
+    disk, counted, settled = settled_pair(client, folders, {}, settle_s, poll_s, sleep)
+    if not settled:
+        raise HealthCallFailed(
+            f"the store had not caught up with the disk after {settle_s} s: "
+            f"disk={disk} memories={counted}"
+        )
+    return {"disk": disk, "memories": counted}
 
 
 def rss_mb(pid: int, proc: Path = Path("/proc")) -> float:
@@ -229,7 +335,7 @@ def evaluate(
 ) -> dict[str, Any]:
     """DR8 over soak rows. Rows hold ``day``, ``kind`` and the values above. Per-day
     p95 against each budget, the error rate (Wilson upper bound), drift at every
-    check, lag p95, Theil-Sen slopes of latency and memory, and quick_check."""
+    settled check, lag p95, Theil-Sen slopes of latency and memory, and quick_check."""
     by_day: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
         by_day.setdefault(r["day"], []).append(r)
@@ -267,7 +373,13 @@ def evaluate(
             "errors": errs,
             "rate": round(errs / len(rs), 5) if rs else None,
         }
-    drifts = [r["drift"] for r in rows if r["kind"] == "drift"]
+    # A drift row that did not settle holds a reading of a store still working through
+    # a change: its value is the lag of the index, so it is counted as unsettled and
+    # not as drift. A row from before this rule has no ``settled`` key and counts as
+    # settled, the way it was judged when it was written.
+    drift_rows = [r for r in rows if r["kind"] == "drift"]
+    unsettled = sum(1 for r in drift_rows if not r.get("settled", True))
+    drifts = [r["drift"] for r in drift_rows if r.get("settled", True)]
     res = [r for r in rows if r["kind"] == "resources"]
     xs = list(range(len(daily_p95)))
     latency_trend = stats.theil_sen(xs, [daily_p95[d] for d in days]) if len(days) >= 3 else None
@@ -279,6 +391,7 @@ def evaluate(
         "budget_recall": all(v <= params.budget_recall_ms for v in daily_p95.values()),
         "error_rate": upper < params.error_rate_upper or (not enough and errors == 0),
         "drift_zero": all(d == 0 for d in drifts),
+        "drift_settled": unsettled == 0,
         "lag_p95": percentile(lags, 0.95) <= params.lag_p95_s if lags else True,
         "writes_searchable": failed_writes == 0,
         "quick_check": all(r["quick_check"] == "ok" for r in res) if res else True,
@@ -302,6 +415,7 @@ def evaluate(
         "lag_p95_s": round(percentile(lags, 0.95), 2) if lags else None,
         "failed_writes": failed_writes,
         "drift_max": max((abs(d) for d in drifts), default=0),
+        "drift_unsettled": unsettled,
         "memory_growth_mb_per_day": round(growth, 2),
         "error_rate_by_day": error_rate_by_day,
     }

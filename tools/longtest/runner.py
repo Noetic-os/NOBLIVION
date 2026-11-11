@@ -581,7 +581,7 @@ def seed_soak_store(run: Run, root: Path, size: int) -> bool:
     return True
 
 
-def seed_health_store(run: Run, size: int) -> Path:
+def seed_health_store(run: Run, size: int, fresh: bool = False) -> Path:
     """A copy of the kept B1 store at ``size``, apart from ``run``'s own copy
     (``stores/b1/<size>``): growth and replay add notes to that one every day
     (``growth.py``), and Plan 4 Part C's own churn (``health.py``) must not land in
@@ -589,10 +589,15 @@ def seed_health_store(run: Run, size: int) -> Path:
     C3 are judged at. Copied once, from the same clean, never-grown shard that
     ``seed_stores_from`` first seeded ``run`` from (recorded in ``run.json``'s
     ``seeded_stores``) -- never from ``run``'s own (by now grown) copy. A second call
-    with the folder already there is a no-op, the same as ``seed_soak_store``."""
+    with the folder already there is a no-op, the same as ``seed_soak_store``, unless
+    ``fresh``: C4 kills its store in the middle of a churn and leaves notes behind, so
+    a check that measures the store against the notes on disk (C2) must start from a
+    copy nothing else has touched, not from what the last check left."""
     fx = run.fixture()
     shard = fx.shards(size)[0]
     root = run.dir / "stores" / "health" / SIZE_NAMES[size].lower() / f"shard-{shard:02d}"
+    if root.exists() and fresh:
+        shutil.rmtree(root)
     if root.exists() and any(root.iterdir()):
         return root
     seeded = run.manifest.get("seeded_stores", {}).get("B1", {}).get(str(size), {})
