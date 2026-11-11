@@ -19,6 +19,7 @@ import os
 import shutil
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
@@ -366,14 +367,18 @@ def _replay_task(
             )
             raise
         # The rows of a task go in together, with a marker, so a restart never meets
-        # half a task: a task without a marker is run again. The marker keeps the
-        # store timings, so a pilot that is run again can still gate on them.
+        # half a task: a task without a marker is run again, and its rows of the first
+        # try carry an attempt id that no marker names (``replay_rows`` drops them).
+        # The marker keeps the store timings, so a pilot that is run again can still
+        # gate on them.
+        attempt = new_attempt()
         for row in rows:
-            row["day"] = day
+            row.update(day=day, attempt=attempt)
         run.append_many("replay", rows)
         run.append(
             "replay-done",
             {
+                "attempt": attempt,
                 "day": day,
                 "build": build,
                 "size": size,
@@ -498,11 +503,19 @@ def replay_all(
                 rows = replay.run_stock(fx, size, shard, folder, variants, limit)
                 if stock_arms is not None:
                     rows = [r for r in rows if r["build"] in stock_arms]
+                attempt = new_attempt()
                 for row in rows:
-                    row["day"] = day
+                    row.update(day=day, attempt=attempt)
                 run.append_many("replay", rows)
                 run.append(
-                    "replay-done", {"day": day, "build": "stock", "size": size, "shard": shard}
+                    "replay-done",
+                    {
+                        "attempt": attempt,
+                        "day": day,
+                        "build": "stock",
+                        "size": size,
+                        "shard": shard,
+                    },
                 )
     infos: list[dict[str, Any]] = []
 
@@ -722,9 +735,23 @@ def stock_expected(
     return out
 
 
+def new_attempt() -> str:
+    """The id of one try of a replay task: on its rows and on its marker."""
+    return uuid.uuid4().hex[:12]
+
+
 def replay_rows(run: Run, day: int | None = None) -> list[dict[str, Any]]:
+    """The replay rows of ``day`` (every day: ``None``) whose task finished. A row with
+    an attempt id that no marker in ``replay-done.jsonl`` names was written by a try
+    that was killed before its marker; the task ran again, so the row would count
+    twice. A row with no attempt id comes from a program before the ids."""
+    done = {m["attempt"] for m in read_jsonl(run.out / "replay-done.jsonl") if m.get("attempt")}
     rows = read_jsonl(run.out / "replay.jsonl")
-    return [r for r in rows if day is None or r.get("day") == day]
+    return [
+        r
+        for r in rows
+        if (day is None or r.get("day") == day) and (not r.get("attempt") or r["attempt"] in done)
+    ]
 
 
 def determinism_hash(rows: Iterable[dict[str, Any]], size: int) -> str:

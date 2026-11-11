@@ -238,6 +238,40 @@ def test_a_row_whose_hook_gave_up_is_not_marked_done_either(tmp_path, monkeypatc
     assert "'timeout': 1" in read_jsonl(run.out / "replay-void.jsonl")[0]["why"]
 
 
+def test_a_kill_between_the_rows_and_the_marker_leaves_no_second_copy(tmp_path, monkeypatch):
+    """The rows of a task and its marker are two writes. A kill -9 between them leaves
+    rows with no marker; the task runs again on the resume and writes its rows again.
+    The rows of the killed try carry an attempt id that no marker names, so each query
+    is read once, and the outcome hash is that of one try."""
+    run = make_run(tmp_path, monkeypatch)
+    args = (run, Fx(), "B1", 30, 0, sys.executable, None, None, None, 1, None, True, 900.0)
+    write = Run.append
+
+    def killed(self, name, row):
+        if name == "replay-done":
+            raise SystemExit("kill -9")  # the process dies before the marker
+        write(self, name, row)
+
+    monkeypatch.setattr(Run, "append", killed)
+    with pytest.raises(SystemExit):
+        runner.replay_task(*args)
+    assert len(read_jsonl(run.out / "replay.jsonl")) == 30 and run.done(1) == set()
+    assert runner.replay_rows(run, 1) == []  # rows with no marker are not read
+    monkeypatch.setattr(Run, "append", write)
+    runner.replay_task(*args)  # the resume runs the task again
+    assert len(read_jsonl(run.out / "replay.jsonl")) == 60  # both copies are on disk
+    rows = runner.replay_rows(run, 1)
+    keys = [(r["qid"], r["channel"]) for r in rows]
+    assert len(rows) == 30 and len(set(keys)) == len(keys)  # each query and channel once
+    marker = read_jsonl(run.out / "replay-done.jsonl")[0]
+    assert {r["attempt"] for r in rows} == {marker["attempt"]}
+    # a row of a program from before the ids is still read
+    old = dict(rows[0], qid="old")
+    del old["attempt"]
+    write(run, "replay", old)
+    assert len(runner.replay_rows(run, 1)) == 31
+
+
 # -- the warm-up -------------------------------------------------------------------------
 
 
