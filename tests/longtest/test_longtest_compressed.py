@@ -404,3 +404,26 @@ def test_replay_all_calls_the_pause_before_each_store(tmp_path, monkeypatch):
         pause=lambda: seen.append("pause"),
     )  # fmt: skip
     assert seen == ["pause", 0, "pause", 1]
+
+
+def test_each_step_and_each_series_has_an_outcome_hash(tmp_path, monkeypatch, capsys):
+    """Plan Part B: the whole series runs twice and the two outcome hashes must agree."""
+
+    def series(name, b1):
+        run = make_run(tmp_path / name, monkeypatch, sizes=(5000,))
+        monkeypatch.setattr(growth, "grow", fake_grow([]))
+        monkeypatch.setattr(compressed, "replay_all", fake_replay([], b1=b1))
+        compressed.run_steps(run, now=lambda: NOON)
+        assert cli.cmd_report(argparse.Namespace(run_dir=str(run.dir))) == 0
+        capsys.readouterr()
+        doc = json.loads((run.dir / "final_report.json").read_text())["verdicts"]
+        return read_jsonl(run.out / "steps.jsonl"), doc["outcome_hash"]["5000"]
+
+    steps_a, hash_a = series("a", 60)
+    steps_b, hash_b = series("b", 60)
+    _, hash_c = series("c", 59)  # one outcome differs on every step
+    assert all(len(s["hash"]["5000"]) == 16 for s in steps_a)
+    assert [s["hash"] for s in steps_a] == [s["hash"] for s in steps_b]
+    assert hash_a == hash_b and sorted(hash_a["steps"]) == [str(d) for d in range(1, 8)]
+    assert hash_a["steps"]["3"] == steps_a[2]["hash"]["5000"]
+    assert hash_c["series"] != hash_a["series"]

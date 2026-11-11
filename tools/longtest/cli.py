@@ -48,6 +48,7 @@ from .runner import (
     replay_all,
     replay_rows,
     seed_stores_from,
+    series_hash,
     snapshot_tree,
     stock_expected,
     verify_frozen,
@@ -875,6 +876,7 @@ def cmd_report(a: argparse.Namespace) -> int:
             incomplete=incomplete,
         )
         doc["steps"] = read_jsonl(run.out / "steps.jsonl")
+        doc["outcome_hash"] = {str(size): series_hash(rows, size) for size in sizes}
         doc["latency"] = report.latency_validity(read_jsonl(run.out / "latency.jsonl"))
         doc["judged_night"] = max((int(r["day"]) for r in rows), default=None)
         doc["delivery_by_night"] = {str(k): v for k, v in by_night.items()}

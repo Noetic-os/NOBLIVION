@@ -773,6 +773,19 @@ def determinism_hash(rows: Iterable[dict[str, Any]], size: int) -> str:
     return hashlib.sha256(json.dumps(keep, default=str).encode()).hexdigest()[:16]
 
 
+def series_hash(rows: Iterable[dict[str, Any]], size: int) -> dict[str, Any]:
+    """The outcome hash of a series at one scale: ``determinism_hash`` per step (day) and
+    one hash over them. Two series of the same program and fixture must agree, or the
+    difference is explained (plan Part B)."""
+    by: dict[int, list[dict[str, Any]]] = {}
+    for r in rows:
+        if r.get("size") == size and r.get("day"):
+            by.setdefault(int(r["day"]), []).append(r)
+    steps = {str(d): determinism_hash(by[d], size) for d in sorted(by)}
+    whole = hashlib.sha256(json.dumps(steps, sort_keys=True).encode()).hexdigest()[:16]
+    return {"steps": steps, "series": whole}
+
+
 # -- the pilot ----------------------------------------------------------------------
 
 

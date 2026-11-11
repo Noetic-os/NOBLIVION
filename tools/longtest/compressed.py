@@ -24,7 +24,7 @@ from typing import Any
 
 from . import config, growth, live, profiles, report, sandbox
 from .buildrunner import store_python
-from .runner import Run, replay_all, replay_rows, stock_expected
+from .runner import Run, determinism_hash, replay_all, replay_rows, stock_expected
 from .scheduler import in_window, job_note
 from .util import append_jsonl, read_jsonl
 
@@ -147,6 +147,7 @@ def run_step(
             if attempt > retries:
                 raise
     gate = step_gate(run, prof, step, sizes, shards, limit)
+    rows = replay_rows(run, step)
     row = {
         "step": step,
         "ts": now().isoformat(timespec="seconds"),
@@ -156,6 +157,8 @@ def run_step(
         "gate": gate,
         "ok": all(g["ok"] for g in gate.values()),
         "builds_fired": builds_fired(gate, prof),
+        # the outcomes of the step: a second series must give the same hash
+        "hash": {str(size): determinism_hash(rows, size) for size in sizes},
     }
     run.append("steps", row)
     return row
