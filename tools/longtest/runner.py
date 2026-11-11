@@ -581,6 +581,34 @@ def seed_soak_store(run: Run, root: Path, size: int) -> bool:
     return True
 
 
+def seed_health_store(run: Run, size: int) -> Path:
+    """A copy of the kept B1 store at ``size``, apart from ``run``'s own copy
+    (``stores/b1/<size>``): growth and replay add notes to that one every day
+    (``growth.py``), and Plan 4 Part C's own churn (``health.py``) must not land in
+    the same store, racing them, or inflate it past the registered size that C2 and
+    C3 are judged at. Copied once, from the same clean, never-grown shard that
+    ``seed_stores_from`` first seeded ``run`` from (recorded in ``run.json``'s
+    ``seeded_stores``) -- never from ``run``'s own (by now grown) copy. A second call
+    with the folder already there is a no-op, the same as ``seed_soak_store``."""
+    fx = run.fixture()
+    shard = fx.shards(size)[0]
+    root = run.dir / "stores" / "health" / SIZE_NAMES[size].lower() / f"shard-{shard:02d}"
+    if root.exists() and any(root.iterdir()):
+        return root
+    seeded = run.manifest.get("seeded_stores", {}).get("B1", {}).get(str(size), {})
+    source = Path(seeded["from"]) if seeded.get("from") else None
+    if not source or not (source / "home").is_dir():
+        raise SystemExit(
+            f"no recorded seed source for B1 at {size} in {run.dir}/run.json "
+            "(seeded_stores.B1); run `seed-stores` on this run first"
+        )
+    reset_volatile(source)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, root, symlinks=True, dirs_exist_ok=True)
+    (root / "home/.claude/plugins/data/noblivion-noblivion/store.json").unlink(missing_ok=True)
+    return root
+
+
 def tree_hash(root: Path) -> str:
     """One hash over the relative names and the bytes of every file under ``root``."""
     digest = hashlib.sha256()

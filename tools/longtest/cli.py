@@ -15,6 +15,10 @@
     python -m longtest.cli seed-stores --run-dir DIR --from DIR
     python -m longtest.cli watch  --run-dir DIR
     python -m longtest.cli steps  --run-dir DIR [--steps N] [--pilot] [--keep-going]
+    python -m longtest.cli health-c2 --run-dir DIR --out-dir DIR --size 20000 [--speed 20]
+    python -m longtest.cli health-c3 --run-dir DIR --out-dir DIR [--sizes 5000,20000]
+                                      [--starts 10]
+    python -m longtest.cli health-c4 --run-dir DIR --out-dir DIR --size 20000
 
 ``tools`` must be on ``PYTHONPATH``. ``units`` prints the text of the systemd user
 units and writes them under the run folder; it installs nothing. ``run`` starts
@@ -22,7 +26,12 @@ the loop of the run's profile (``init --profile``); ``pilot`` runs minutes, or t
 hours for the large-project profile. ``watch`` is the watchdog step of the timer.
 ``steps`` is the time-compressed run (``init --profile large-project-steps``): the
 growth steps back to back, with no nightly window and no wait; it goes on where a
-killed run stopped, and ``steps --pilot`` is its short pilot.
+killed run stopped, and ``steps --pilot`` is its short pilot. ``health-c2``,
+``health-c3`` and ``health-c4`` are Plan 4 Part C (claim W3, health): the compressed
+7-day operation mix, the cold-start trials and the kill test, each against its own
+copy of the run's kept B1 store, apart from the one growth and replay use (seed the
+run's kept B1 store first with ``seed-stores``; the health copy is then made on
+first use).
 """
 
 from __future__ import annotations
@@ -31,8 +40,9 @@ import argparse
 import datetime as dt
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 from . import config, growth, labels, profiles, replay, report, sandbox, warm, watch
 from .buildrunner import index_wait_s
@@ -55,7 +65,7 @@ from .runner import (
     zero_token_gate,
 )
 from .scheduler import light_jobs
-from .util import TOOLS, json_text, read_jsonl, write_private
+from .util import TOOLS, append_jsonl, json_text, read_jsonl, write_private
 
 
 def parse_sizes(text: str) -> list[int]:
@@ -776,6 +786,275 @@ def cmd_steps(a: argparse.Namespace) -> int:
     return 0 if res["complete"] and not res["stopped"] else 1
 
 
+def health_harness(run: Run, size: int) -> tuple[Any, list[Path], Any, int]:
+    """A ``Harness`` of a health copy of B1's kept store, apart from the one growth
+    and replay write into every day (``runner.seed_health_store``): C2 and C4 churn
+    notes of their own and must not race that store, or grow it past the size C2 and
+    C3 are judged at. Shared by the three health commands; each opens its own worker
+    and closes it when done."""
+    from .buildrunner import Harness, index_wait_s, store_python
+    from .runner import seed_health_store
+
+    fx = run.fixture()
+    shard = fx.shards(size)[0]
+    root = seed_health_store(run, size)
+    live_data = Path(run.manifest["live"]["data_dir"])
+    harness = Harness(
+        "B1",
+        run.build_path("B1"),
+        root,
+        store_python(live_data),
+        live_data / "models",
+        wait_s=index_wait_s(size),
+        settings=run.manifest.get("settings_env"),
+    )
+    folders = harness.prepare(fx, size, shard)
+    return harness, folders, fx, shard
+
+
+def health_sync(worker: Any, folder: Path, tag: str, serial: dict) -> Callable[[Path], None]:
+    def sync(path: Path) -> None:
+        serial["n"] += 1
+        worker.call(
+            "sync",
+            sid=f"{tag}-{serial['n']}",
+            cwd="/work/" + folder.parent.name.replace("-work-", "", 1),
+            file_path=str(path),
+        )
+
+    return sync
+
+
+def cmd_health_c2(a: argparse.Namespace) -> int:
+    """Plan 4 C2: the registered 7-day operation mix, compressed to ``--speed`` times
+    real speed, on a health copy of the kept B1 store (``health_harness``).
+    Resumable: a restart reads the events already run from ``c2-progress.jsonl``
+    (written as each event finishes, not only once the whole run returns, so a kill
+    loses at most the one event in flight) and goes on from there; the schedule
+    clock is offset to the last event's own ``fire_s`` so the remaining events keep
+    their registered spacing instead of waiting from zero again. No measured work
+    starts inside the quiet window (00:45-03:00 CET): one wait before the store even
+    starts, then one more before and during every event's own wait, each one pushing
+    the schedule clock forward by the seconds slept so a pause does not bunch the
+    events that follow it back to back."""
+    import time as pytime
+
+    from . import health, soak
+    from .buildrunner import Worker
+    from .compressed import wait_out_quiet
+
+    def now() -> dt.datetime:
+        return dt.datetime.now().astimezone()
+
+    run = Run(Path(a.run_dir))
+    out_dir = Path(a.out_dir)
+    out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    wait_out_quiet(run, now, pytime.sleep, "health c2 start")
+    harness, folders, fx, _shard = health_harness(run, a.size)
+    harness.start()
+    client = soak.StoreClient(harness.data)
+    worker = Worker(harness)
+    base = soak.baseline(client, folders)
+    texts = [fx.prompt_of(q) for q in fx.queries_for(a.size, ["V3"])][:60]
+    if not texts:
+        raise SystemExit(f"no V3 queries for size {a.size}: nothing to send")
+    serial = {"n": 0}
+    sync = health_sync(worker, folders[0], "health-c2", serial)
+    counter = {"q": 0}
+
+    def next_text() -> str:
+        counter["q"] += 1
+        return texts[counter["q"] % len(texts)]
+
+    def op_query(_event):
+        return soak.query_load(client, [next_text()], 1)
+
+    def op_burst(_event):
+        return soak.query_load(client, [next_text()] * 20, 20)
+
+    def op_churn(_event):
+        return soak.churn(folders[0], client, serial["n"] + 1, sync)
+
+    def op_resources(_event):
+        pid = harness.store.proc.pid if harness.store and harness.store.proc else None
+        return [soak.resources(harness.data, pid)]
+
+    def op_drift(_event):
+        return [soak.drift(client, folders, base)]
+
+    ops = {
+        "query": op_query,
+        "burst": op_burst,
+        "churn": op_churn,
+        "resources": op_resources,
+        "drift": op_drift,
+    }
+    rows_path = out_dir / "c2-rows.jsonl"
+    progress_path = out_dir / "c2-progress.jsonl"
+    done = [r["i"] for r in read_jsonl(progress_path)]
+    events, _compressed_s = health.compressed_schedule(speed=a.speed)
+    # A fresh process's clock starts at 0: offset it to the last event already run,
+    # so a resume keeps the registered spacing of the events still ahead instead of
+    # waiting from zero up to their own (far larger) fire_s again.
+    clock = {"began": pytime.monotonic() - (events[max(done)]["fire_s"] if done else 0.0)}
+
+    def elapsed() -> float:
+        return pytime.monotonic() - clock["began"]
+
+    def pause() -> None:
+        clock["began"] += wait_out_quiet(run, now, pytime.sleep, "health c2")
+
+    try:
+        health.run_compressed(
+            events,
+            ops,
+            lambda row: append_jsonl(rows_path, row),
+            elapsed,
+            # Looked up on the module, not bound once, so the wait and ``elapsed``
+            # always read the same clock.
+            sleep=pytime.sleep,
+            pause=pause,
+            done=done,
+            on_done=lambda i: append_jsonl(progress_path, {"i": i}),
+        )
+    finally:
+        worker.close()
+        harness.stop()
+    rows = read_jsonl(rows_path)
+    doc = health.c2_report(rows, speed=a.speed)
+    write_private(out_dir / "c2.json", json_text(doc))
+    print(json.dumps({"checks": doc["evaluate"]["checks"], "failed_rules": doc["failed_rules"]}))
+    return 0 if doc["evaluate"]["pass"] else 1
+
+
+def cmd_health_c3(a: argparse.Namespace) -> int:
+    """Plan 4 C3: ``--starts`` cold starts at each of ``--sizes``, on a health copy of
+    the kept B1 store (stopped and started again every trial, never re-seeded): the
+    time to become ready, the time to the first answer, whether it was inside the 2 s
+    budget, and whether it carried any result row. A real cold start reads the
+    vectors already in the database (the health copy has them already, the same as a
+    production restart), so every start here is ``index=False`` -- the opposite of
+    C4's own restart after a kill, which must re-index. No measured work starts
+    inside the quiet window: one wait before each size's first start, then one more
+    before every later trial."""
+    import time as pytime
+
+    from . import health, soak
+    from .compressed import wait_out_quiet
+
+    def now() -> dt.datetime:
+        return dt.datetime.now().astimezone()
+
+    run = Run(Path(a.run_dir))
+    out_dir = Path(a.out_dir)
+    out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    sizes = parse_sizes(a.sizes) if a.sizes else [5000, 20000]
+    doc: dict[str, Any] = {"starts": a.starts, "sizes": {}}
+    for size in sizes:
+        harness, folders, fx, _shard = health_harness(run, size)
+        texts = [fx.prompt_of(q) for q in fx.queries_for(size, ["V3"])]
+        if not texts:
+            raise SystemExit(f"no V3 queries for size {size}: nothing to search")
+        text = texts[0]
+        trials = []
+        try:
+            for _ in range(a.starts):
+                wait_out_quiet(run, now, pytime.sleep, f"health c3 {size}")
+                harness.stop()
+
+                def start(harness=harness) -> float:
+                    t0 = pytime.monotonic()
+                    harness.start(index=False)
+                    return pytime.monotonic() - t0
+
+                client = soak.StoreClient(harness.data)
+
+                def search(client=client, text=text) -> tuple[int, dict[str, Any], float]:
+                    return client.search(text)
+
+                trials.append(health.cold_start_trial(start, search))
+        finally:
+            harness.stop()
+        doc["sizes"][str(size)] = health.cold_start_summary(trials)
+    write_private(out_dir / "c3.json", json_text(doc))
+    print(json.dumps(doc["sizes"], indent=1))
+    return 0 if all(s["pass"] for s in doc["sizes"].values()) else 1
+
+
+def cmd_health_c4(a: argparse.Namespace) -> int:
+    """Plan 4 C4: ``kill -9`` the store mid-burst on a health copy of the kept B1
+    store (``health_harness``), restart it, then ``quick_check`` and drift. A churn
+    that the kill cuts off answers ``ok: False``; that is the point of the test, not
+    graded here (DR8 is not run on this row set). The restart re-indexes
+    (``index=True``, the opposite of C3's own restart): a write cut off mid-sync is
+    still on disk but not yet in the database, and a real restart's file scan is what
+    would pick it up -- without it ``soak.drift`` could read a false, nondeterministic
+    nonzero drift for a note the crash orphaned, not the product. No measured work
+    starts inside the quiet window."""
+    import os
+    import signal
+    import threading
+    import time as pytime
+
+    from . import health, soak
+    from .buildrunner import Worker
+    from .compressed import wait_out_quiet
+
+    def now() -> dt.datetime:
+        return dt.datetime.now().astimezone()
+
+    run = Run(Path(a.run_dir))
+    out_dir = Path(a.out_dir)
+    out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    wait_out_quiet(run, now, pytime.sleep, "health c4 start")
+    harness, folders, _fx, _shard = health_harness(run, a.size)
+    harness.start()
+    worker = Worker(harness)
+    try:
+        client = soak.StoreClient(harness.data)
+        base = soak.baseline(client, folders)
+        serial = {"n": 0}
+        sync = health_sync(worker, folders[0], "health-c4", serial)
+        burst_errors: list[str] = []
+
+        def burst() -> None:
+            for _ in range(a.burst):
+                try:
+                    soak.churn(folders[0], client, serial["n"] + 1, sync, timeout_s=a.churn_timeout)
+                except Exception as exc:  # noqa: BLE001 - the store dies mid-burst by design
+                    burst_errors.append(f"{type(exc).__name__}: {exc}")
+
+        thread = threading.Thread(target=burst)
+        thread.start()
+        pytime.sleep(a.kill_after)
+        pid = harness.store.proc.pid if harness.store and harness.store.proc else None
+        if pid:
+            os.kill(pid, signal.SIGKILL)
+        join_timeout = max(30.0, a.churn_timeout * a.burst + 10)
+        thread.join(timeout=join_timeout)
+        if thread.is_alive():
+            raise RuntimeError(f"the burst thread was still running after {join_timeout}s")
+        worker.close()
+        harness.store = None  # the process is gone already; a fresh Store starts clean
+        harness.start(index=True)  # a write cut off mid-sync needs the scan to find it
+        client = soak.StoreClient(harness.data)
+        pid2 = harness.store.proc.pid if harness.store and harness.store.proc else None
+        resources_row = soak.resources(harness.data, pid2)
+        drift_row = soak.drift(client, folders, base)
+        doc = {
+            "killed": bool(pid),
+            "burst_errors": len(burst_errors),
+            "reindexed_on_restart": True,
+            **health.kill_test_evaluate(resources_row, drift_row),
+        }
+    finally:
+        worker.close()
+        harness.stop()
+    write_private(out_dir / "c4.json", json_text(doc))
+    print(json.dumps(doc, indent=1))
+    return 0 if doc["pass"] else 1
+
+
 def cmd_status(a: argparse.Namespace) -> int:
     from .runner import installed_version
 
@@ -1003,6 +1282,23 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--limit", type=int, default=10, help="pilot: queries per variant")
     s.add_argument("--parallel", type=int, default=1)
     s.add_argument("--reuse", action="store_true", help="pilot: analyse the rows of day 0")
+    s = add("health-c2", cmd_health_c2)
+    s.add_argument("--run-dir", required=True)
+    s.add_argument("--out-dir", required=True, help="where c2.json and its raw rows go")
+    s.add_argument("--size", type=int, default=20000)
+    s.add_argument("--speed", type=float, default=20.0, help="the week runs this many times over")
+    s = add("health-c3", cmd_health_c3)
+    s.add_argument("--run-dir", required=True)
+    s.add_argument("--out-dir", required=True, help="where c3.json goes")
+    s.add_argument("--sizes", default="", help="default: 5000,20000")
+    s.add_argument("--starts", type=int, default=10)
+    s = add("health-c4", cmd_health_c4)
+    s.add_argument("--run-dir", required=True)
+    s.add_argument("--out-dir", required=True, help="where c4.json goes")
+    s.add_argument("--size", type=int, default=20000)
+    s.add_argument("--burst", type=int, default=5, help="churns of the write burst")
+    s.add_argument("--kill-after", type=float, default=0.3, help="seconds before the kill -9")
+    s.add_argument("--churn-timeout", type=float, default=3.0, help="per-churn lag wait")
     s = add("localnet", cmd_localnet)
     s.add_argument("--run-dir", required=True)
     s.add_argument("--max-seconds", type=float, default=None)
