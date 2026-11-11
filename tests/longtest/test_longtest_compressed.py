@@ -380,7 +380,10 @@ def test_the_steps_pause_in_the_quiet_window_and_resume_after(tmp_path, monkeypa
     assert compressed.wait_out_quiet(run, clock.now, clock.sleep, "x") == 0.0
     clock.at = dt.datetime(2026, 11, 12, 3, 0, tzinfo=CET)
     assert compressed.wait_out_quiet(run, clock.now, clock.sleep, "x") == 0.0
-    assert "No measured work between 00:45 and 03:00 local time" in profiles.STEPS.prereg()
+    text = profiles.STEPS.prereg()
+    assert "No step and no store starts between 00:45 and 03:00 local time" in text
+    assert "A shard that started before the window runs to its end." in text
+    assert "Verdict per scale: INCOMPLETE when the run has fewer steps than registered" in text
 
 
 def test_replay_all_calls_the_pause_before_each_store(tmp_path, monkeypatch):

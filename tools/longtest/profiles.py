@@ -62,7 +62,8 @@ STEPS_DR6 = (
     "a 95% interval that holds 0 or lies above 0. Needs three steps or more.",
 )
 STEPS_VERDICT = (
-    "Verdict per scale: INVALID when the validity gate fails on a judged step. WIN when "
+    "Verdict per scale: INCOMPLETE when the run has fewer steps than registered. "
+    "INVALID when the validity gate fails on a judged step. WIN when "
     "DR1 holds on C1 or C3 and DR3 and DR6 hold. LOSE when the upper bound of B1 minus "
     "S2 is under 0 on C1 or C3, or DR3 fails. PENDING while DR6 has no data. Else TIE."
 )
@@ -303,9 +304,10 @@ def render_steps_prereg(profile: Profile) -> str:
         "not judged, and a step that holds such a row fails the gate below. A product "
         "decision to stay silent is a skip, not a fail.",
         "- One store starts at a time.",
-        f"- No measured work between {config.QUIET_WINDOW.replace('-', ' and ')} local "
-        "time, because the host load peaks then: the run pauses before the next step "
-        "and before the next store, and resumes when the window ends.",
+        f"- No step and no store starts between {config.QUIET_WINDOW.replace('-', ' and ')} "
+        "local time, because the host load peaks then: the run pauses before the next "
+        "step and before the next store, and resumes when the window ends. A shard that "
+        "started before the window runs to its end.",
         "- Threads: the embedder of the build takes no thread count. The harness sets "
         f"ORT_INTRA_OP_NUM_THREADS={EMBED_THREADS} for the store, the name that the model "
         "runtime reads (one batch then took 3.5 cores, and 15 without it). "
