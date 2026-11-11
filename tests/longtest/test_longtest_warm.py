@@ -27,7 +27,8 @@ from pathlib import Path
 def search(env):
     """"" when the store answers, else the fail reason. ``cold``: the next call is too
     slow. ``slow_at``: the call with that number is too slow. A slow call sets the latch.
-    ``gave_up_at``: the hook gives up on the call with that number and sets no latch."""
+    ``gave_up_at``: the hook gives up on the call with that number and sets no latch.
+    ``down_from``: the store is gone from the call with that number on."""
     data = Path(env["NOBLIVION_DATA_DIR"])
     stamp = data / "store.hung"
     try:
@@ -46,6 +47,9 @@ def search(env):
     gave_up = data / "gave_up_at"
     if gave_up.exists() and int(gave_up.read_text()) == n:
         return "timeout"
+    down = data / "down_from"
+    if down.exists() and n >= int(down.read_text()):
+        return "store_down"
     return ""
 '''
 
@@ -185,6 +189,18 @@ def test_a_row_whose_hook_gave_up_voids_the_shard_with_no_latch(tmp_path):
     assert not (h.data / warm.LATCH_FILE).exists()
 
 
+def test_a_store_that_dies_after_the_sanity_rows_voids_the_shard(tmp_path):
+    """A store that stops answering after the first rows gives store_down on the rest.
+    Those rows are empty, but they are not misses of the build: the shard is void."""
+    h = harness(tmp_path)
+    h.start()
+    (h.data / "down_from").write_text("12")
+    with pytest.raises(warm.LatchedShard) as err:
+        replay.run_shard(Fx(), 30, 0, h, "B1")
+    assert "fail reasons {'store_down': " in str(err.value)
+    assert not (h.data / warm.LATCH_FILE).exists()  # no latch: the store was gone
+
+
 def test_a_latched_shard_is_not_marked_done_and_its_rows_are_not_counted(tmp_path, monkeypatch):
     run = make_run(tmp_path, monkeypatch)
     args = (run, Fx(), "B1", 30, 0, sys.executable, None, None, None, 1, None, True, 900.0)
@@ -291,17 +307,23 @@ def test_a_call_over_the_budget_is_not_warm_even_with_no_fail_reason(tmp_path):
     assert warm.warm_up(Late(tmp_path, 0), tmp_path, "/w", sleep=lambda s: None)["warm_tries"] == 2
 
 
-def test_invalid_rows_are_the_latched_ones_and_the_ones_whose_hook_gave_up():
+def test_invalid_rows_are_every_row_whose_store_did_not_answer():
     rows = [
-        {"qid": "a", "fail": "", "latched": False},
+        {"qid": "a", "fail": "", "latched": False, "ok": True},
         {"qid": "b", "fail": "timeout", "latched": False},
         {"qid": "c", "fail": "store_hung", "latched": True},
         {"qid": "d", "fail": "", "latched": True},  # the stamp was there when it began
-        {"qid": "e", "fail": "store_down", "latched": False},  # a fault, but not the wait
         {"qid": "f"},  # a row of a program that did not keep the reason
     ]
-    assert [r["qid"] for r in warm.invalid_rows(rows)] == ["b", "c", "d"]
-    assert warm.INVALID_FAILS == ("store_hung", "timeout")
+    # every other reason of the build means that the store did not answer either
+    others = ["store_down", "no_token", "foreign_listener", "busy", "too_large"]
+    others += ["no_response", "unreachable:ConnectionRefusedError", "http_503"]
+    others += ["error:RuntimeError", "bad_json", "bad_shape", "namespace_mismatch"]
+    others += ["internal:KeyError", "tool_error"]
+    rows += [{"qid": reason, "fail": reason, "latched": False, "ok": True} for reason in others]
+    rows.append({"qid": "job", "fail": "", "latched": False, "ok": False})  # did not run
+    got = [r["qid"] for r in warm.invalid_rows(rows)]
+    assert got == ["b", "c", "d", *others, "job"]
 
 
 # -- the worker --------------------------------------------------------------------------

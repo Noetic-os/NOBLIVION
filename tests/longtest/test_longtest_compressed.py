@@ -101,9 +101,8 @@ def test_the_steps_profile_has_its_own_pre_registration():
     assert "ready only when its index is idle and no chunk of a live note lacks a vector" in text
     assert "one call of the recall tool and one prompt per round" in text
     assert "until both answer inside 2 s, for 60 s at most" in text
-    assert (
-        "(store_hung) or whose hook gave up on the store (timeout) is invalid, not a miss" in text
-    )
+    assert "(store_hung), or whose hook gave any fail reason (timeout, store_down" in text
+    assert "the store did not answer), or whose call did not run, is invalid, not a miss" in text
     assert "ORT_INTRA_OP_NUM_THREADS=4" in text and "OMP_NUM_THREADS does not bind" in text
     assert "The prompt channel of a build has no floor" in text
     assert "DR5" in text and "- DR5:" not in text  # named as out of scope, not as a rule

@@ -297,9 +297,11 @@ def render_steps_prereg(profile: Profile) -> str:
         f"{warm.WARM_BOUND_S:g} s at most, and the latch file {warm.LATCH_FILE} of the "
         "hooks is removed.",
         "- Every row carries the fail reason of its hook. A row that ran under the latch "
-        f"({warm.LATCHED}) or whose hook gave up on the store ({warm.GAVE_UP}) is "
-        "invalid, not a miss: its shard is run again and is not judged, and a step that "
-        "holds such a row fails the gate below.",
+        f"({warm.LATCHED}), or whose hook gave any fail reason ({warm.GAVE_UP}, "
+        "store_down, unreachable, busy and the others: the store did not answer), or "
+        "whose call did not run, is invalid, not a miss: its shard is run again and is "
+        "not judged, and a step that holds such a row fails the gate below. A product "
+        "decision to stay silent is a skip, not a fail.",
         "- One store starts at a time.",
         "- Threads: the embedder of the build takes no thread count. The harness sets "
         f"ORT_INTRA_OP_NUM_THREADS={EMBED_THREADS} for the store, the name that the model "

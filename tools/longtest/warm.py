@@ -16,8 +16,9 @@ both answer inside the hook budget, and the stamp is removed.
 
 Every worker answer says whether its call ran under the latch
 (``worker.latch_in_force``) and what the hook gave as its fail reason. A row that ran
-under the latch, or whose hook gave up on the store, is invalid: it is not a miss of
-the build. A shard with such a row is not judged (``LatchedShard``).
+under the latch, or whose hook gave any fail reason (the store did not answer), is
+invalid: it is not a miss of the build. A shard with such a row is not judged
+(``LatchedShard``).
 """
 
 from __future__ import annotations
@@ -32,7 +33,14 @@ HOOK_BUDGET_S = 2.0  # the prompt hook's total time for the store (recall.timeou
 LATCH_FILE = "store.hung"
 LATCHED = "store_hung"  # the hook's fail reason while the stamp is in force
 GAVE_UP = "timeout"  # the hook's fail reason when the store took longer than the budget
-INVALID_FAILS = (LATCHED, GAVE_UP)  # the row measured the wait for the store, not the build
+# Every ``fail:<reason>`` of the hooks means that the store gave no answer: the hook
+# fails open and says nothing. The build's reasons: store_hung, store_down, no_token,
+# foreign_listener (hooks/store_client.py), timeout, busy, too_large, no_response,
+# unreachable:*, http_*, error:*, bad_json, bad_shape, bad_project, bad_id,
+# namespace_mismatch, plaintext_url, bad_stdin, internal:* (hooks/recall_hook.py); the
+# worker adds internal:<type> and tool_error. A product decision to say nothing is ``skip:<reason>``
+# and never reaches ``fail``. So any fail reason, and any job that did not run, voids
+# the row: it measured the store's absence, not the build.
 WARM_BOUND_S = 60.0  # a store with no backlog that is not warm after this long is at fault
 WARM_PAUSE_S = 1.0
 WARM_OPS = ("pull", "prompt")  # the recall tool and the prompt hook: both are measured
@@ -45,8 +53,8 @@ class WarmupError(RuntimeError):
 
 
 class LatchedShard(RuntimeError):
-    """Rows of this shard are invalid (the hook latch, or a hook that gave up on the
-    store): the shard is run again, not judged."""
+    """Rows of this shard are invalid (the hook latch, or a store that did not
+    answer): the shard is run again, not judged."""
 
 
 def clear_latch(data_dir: Path) -> bool:
@@ -109,10 +117,10 @@ def warm_up(
 
 
 def invalid_rows(rows: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    """The rows that are not a result of the build: the call ran under the latch, or
-    the hook gave up on the store (``INVALID_FAILS``). An empty answer of such a row
-    is not a miss."""
-    return [r for r in rows if r.get("latched") or r.get("fail") in INVALID_FAILS]
+    """The rows that are not a result of the build: the call ran under the latch, the
+    hook gave a fail reason (the store did not answer), or the job did not run
+    (``ok`` false). An empty answer of such a row is not a miss."""
+    return [r for r in rows if r.get("latched") or r.get("fail") or r.get("ok") is False]
 
 
 def fail_counts(rows: Iterable[Mapping[str, Any]]) -> dict[str, int]:

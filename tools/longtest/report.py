@@ -299,8 +299,8 @@ def validity(
                 if bad:
                     causes.append(
                         f"step {step}: {arm} has {len(bad)} invalid rows, fail reasons "
-                        f"{warm.fail_counts(bad)} (the hook latch, or a hook that gave "
-                        "up on the store)"
+                        f"{warm.fail_counts(bad)} (the hook latch, or a store that did "
+                        "not answer)"
                     )
                 cell[arm] = got
             steps[str(step)] = cell
