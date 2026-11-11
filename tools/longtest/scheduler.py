@@ -180,7 +180,9 @@ class Scheduler:
                 if self._is_due(j, now) and (r := self.pause_reason(j))
             }
 
-    def mark(self, job: Job, ok: bool, note: str = "", started_at: dt.datetime | None = None) -> None:
+    def mark(
+        self, job: Job, ok: bool, note: str = "", started_at: dt.datetime | None = None
+    ) -> None:
         with self._lock:
             entry = self.state["jobs"].setdefault(job.name, {"runs": 0, "failed": 0})
             entry.update(last=self.now().isoformat(timespec="seconds"), ok=ok, note=note)
