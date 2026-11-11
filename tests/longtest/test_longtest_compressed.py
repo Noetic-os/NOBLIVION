@@ -9,7 +9,7 @@ import json
 
 import longtest_path  # noqa: F401 - puts tools on the path
 import pytest
-from test_longtest_validity import row, step
+from test_longtest_validity import FakeFixture, row, step
 
 from longtest import cli, compressed, growth, profiles, report, sandbox
 from longtest.runner import Run
@@ -41,6 +41,7 @@ def make_run(tmp_path, monkeypatch, profile="large-project-steps", sizes=(5000, 
     monkeypatch.setattr(sandbox, "OpenGuard", Off)
     monkeypatch.setattr(sandbox, "SocketGuard", Off)
     monkeypatch.setattr(sandbox, "claude_processes", lambda pid: 0)
+    monkeypatch.setattr(Run, "fixture", lambda self: FakeFixture())  # the queries of fake_replay
     return Run(run_dir)
 
 
@@ -88,7 +89,13 @@ def test_the_steps_profile_has_its_own_pre_registration():
     assert set(prof.claims) == {"C1", "C2", "C3", "C4", "C10", "C13", "C16", "C17"}
     text = prof.prereg()
     assert "7 growth steps, back to back, with no nightly window and no wait" in text
-    assert "0.95 or more for B1 and 0.9 or more for S2" in text and "INVALID" in text
+    assert "the recall tool) is 0.95 or more for B1, and no row is invalid" in text
+    assert "A stock arm (S2): the gate is mechanical, every query of the step" in text
+    assert "INVALID" in text and "0.9 or more" not in text
+    # the ruling of 2026-11-11 and its reason are in the text that is frozen
+    assert "## Fairness" in text and "Ruling of 2026-11-11" in text
+    assert "S2 is a deterministic simulation" in text and "cannot latch" in text
+    assert "0.70 to 0.80 at 5,000 and 20,000 notes" in text
     assert "store.hung" in text and "One store starts at a time." in text
     # the rule that was measured: ready is no embedding backlog, then both channels warm
     assert "ready only when its index is idle and no chunk of a live note lacks a vector" in text
@@ -167,7 +174,7 @@ def test_a_failed_step_runs_again_at_once_and_gives_up_after_its_retries(tmp_pat
     assert [f["job"] for f in failures] == ["step-1"] * 4 and "hook latch" in failures[0]["error"]
 
 
-def test_a_build_that_did_not_fire_stops_the_run_and_a_stock_miss_does_not(tmp_path, monkeypatch):
+def test_a_build_that_did_not_fire_stops_the_run_and_a_stock_fault_does_not(tmp_path, monkeypatch):
     run = make_run(tmp_path, monkeypatch, sizes=(5000,))
     monkeypatch.setattr(growth, "grow", fake_grow([]))
     monkeypatch.setattr(compressed, "replay_all", fake_replay([], b1=0))
@@ -179,11 +186,22 @@ def test_a_build_that_did_not_fire_stops_the_run_and_a_stock_miss_does_not(tmp_p
     ]
     assert compressed.run_steps(run, 3, now=lambda: NOON, keep_going=True)["done"] == [1, 2, 3]
 
+    # a low stock rate is a result, not a fault: 0.70 passes (ruling 2026-11-11)
+    low = make_run(tmp_path / "c", monkeypatch, sizes=(5000,))
+    monkeypatch.setattr(compressed, "replay_all", fake_replay([], s2=42))
+    res = compressed.run_steps(low, 2, now=lambda: NOON)
+    assert res["valid_steps"] == [1, 2] and res["invalid"] == {}
+    gate = read_jsonl(low.out / "steps.jsonl")[0]["gate"]["5000"]["arms"]["S2"]
+    assert gate["delivery"] == 0.7 and gate["floor"] is None and gate["ok"] is True
+    # a stock query that was not evaluated fails the step, and the run goes on
     other = make_run(tmp_path / "b", monkeypatch, sizes=(5000,))
+    monkeypatch.setattr(Run, "fixture", lambda self: FakeFixture(n=61))
     monkeypatch.setattr(compressed, "replay_all", fake_replay([], s2=47))
     res = compressed.run_steps(other, 2, now=lambda: NOON)
     assert res["complete"] and res["stopped"] == "" and res["valid_steps"] == []
-    assert "S2 sanity delivery 0.783 of 60" in res["invalid"]["2"]["5000"]["causes"][0]
+    assert (
+        "S2 evaluated 180 queries, the step replays 183" in res["invalid"]["2"]["5000"]["causes"][0]
+    )
     (other.dir / "stop").write_text("stop")
     assert compressed.run_steps(other, 3, now=lambda: NOON)["stopped"] == "stop file"
 
@@ -207,10 +225,6 @@ def test_the_short_pilot_gates_the_build_and_shows_what_the_report_gate_would_sa
 ):
     run = make_run(tmp_path, monkeypatch, sizes=(5000,))
 
-    class Fx:
-        def shards(self, size):
-            return [0]
-
     def pilot_replay(run_, sizes, shards, limit, **kw):
         assert kw["day"] == 0 and shards == 1 and limit == 10
         run_.append_many("replay", step(5000, 0, 10, 7, n=10))
@@ -220,7 +234,7 @@ def test_the_short_pilot_gates_the_build_and_shows_what_the_report_gate_would_sa
         return [dict(marker, memories=5000)]
 
     gate2 = {"ok": True, "public_connect_refused": True, "claude_processes": 0}
-    monkeypatch.setattr(Run, "fixture", lambda self: Fx())
+    monkeypatch.setattr(Run, "fixture", lambda self: FakeFixture(n=10, variants=("V1", "V3")))
     monkeypatch.setattr(cli, "zero_token_gate", lambda run, python: dict(gate2))
     monkeypatch.setattr(cli, "freeze_gate", lambda run: {"ok": True})
     monkeypatch.setattr(cli, "replay_all", pilot_replay)
@@ -242,8 +256,17 @@ def test_the_short_pilot_gates_the_build_and_shows_what_the_report_gate_would_sa
     }  # no soak hour, no heartbeat, no unit: the run has none of them
     arms = shown["sanity_by_scale"]["5000"]["arms"]
     assert arms["B1"] == {"n": 10, "delivery": 1.0, "floor": 0.95, "invalid": 0, "ok": True}
-    assert arms["S2"] == {"n": 10, "delivery": 0.7, "floor": 0.9, "invalid": 0, "ok": False}
-    assert shown["report_gate_would_pass"] is False  # stock under its floor: said, not hidden
+    assert arms["S2"] == {
+        "n": 10,
+        "delivery": 0.7,
+        "floor": None,
+        "queries": 20,
+        "expected": 20,
+        "errors": 0,
+        "invalid": 0,
+        "ok": True,
+    }  # stock at 0.7 is reported; its gate is that every query was evaluated
+    assert shown["report_gate_would_pass"] is True
     assert shown["stores"]["sizes"]["5000"]["backlog_chunks"] == 948
     assert shown["stores"]["sizes"]["5000"]["drain_s"] == 41.5
 

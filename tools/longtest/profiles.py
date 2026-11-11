@@ -131,6 +131,7 @@ LARGE = Profile(
         run_days=7,
         heartbeat_s=300,
         heartbeats_per_day=288,
+        sanity_s2_delivery=None,  # the mechanical gate of S2 (report.stock_gate)
         scales=tuple((k, v) for k, v in SCALES.items() if v in LARGE_SIZES),
     ),
     builds=("B1",),
@@ -304,14 +305,33 @@ def render_steps_prereg(profile: Profile) -> str:
         f"ORT_INTRA_OP_NUM_THREADS={EMBED_THREADS} for the store, the name that the model "
         "runtime reads (one batch then took 3.5 cores, and 15 without it). "
         "OMP_NUM_THREADS does not bind the embedder.",
-        "- Gate per step, scale and arm: the delivery on the sanity set (V1; the recall "
-        f"tool for a build) is {doc['sanity_pull_delivery']} or more for "
-        f"{', '.join(profile.builds)} and {doc['sanity_s2_delivery']} or more for "
-        f"{', '.join(profile.stock_arms)}. A scale with a failed gate on any step gets "
-        "the result INVALID with the cause, and DR1, DR3 and DR6 are not judged there. "
-        "INVALID is never printed as a win or a loss.",
+        "- Gate per step, scale and arm. A build: the delivery on the sanity set (V1, "
+        f"the recall tool) is {doc['sanity_pull_delivery']} or more for "
+        f"{', '.join(profile.builds)}, and no row is invalid. A stock arm "
+        f"({', '.join(profile.stock_arms)}): the gate is mechanical, every query of the "
+        "step is evaluated once and no row has an error; its delivery on the sanity set "
+        "is reported and has no floor (see Fairness). A scale with a failed gate on any "
+        "step gets the result INVALID with the cause, and DR1, DR3 and DR6 are not judged "
+        "there. INVALID is never printed as a win or a loss.",
         "- The prompt channel of a build has no floor: the prompt hook holds a row back "
         "by its own rules (52 of 60 on a healthy store). Its delivery is reported.",
+        "",
+        "## Fairness",
+        "",
+        "- Ruling of 2026-11-11: the gate of S2 is mechanical (every query evaluated, 0 "
+        "errors). Its sanity rate is reported, not gated. The gate of B1 stays the "
+        f"delivery of the recall tool on the sanity set, {doc['sanity_pull_delivery']} or "
+        "more.",
+        "- Reason: the validity gate asks whether an arm fired, not how well it did. B1 "
+        "can fail to fire: a hook that waits for a busy store latches and answers empty, "
+        "so its floor proves that the store answered. S2 is a deterministic simulation of "
+        "the stock loads over the files: it cannot latch and it has no store to wait for. "
+        "Its sanity rate is a result of stock at the scale (0.70 to 0.80 at 5,000 and "
+        "20,000 notes), not a proof that it ran. A floor on it would void every scale for "
+        "the hypothesis under test, and it would not catch a fault that the mechanical "
+        "gate does not catch.",
+        "- What stays the same: the fixture, the queries, DR1, DR3, DR6 and their "
+        "thresholds. A low S2 rate counts in the comparison as it is.",
         "",
         "## Decision rules",
         "",

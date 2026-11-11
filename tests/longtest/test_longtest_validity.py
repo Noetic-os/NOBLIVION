@@ -9,7 +9,7 @@ import json
 
 import longtest_path  # noqa: F401 - puts tools on the path
 
-from longtest import cli, profiles, report
+from longtest import cli, profiles, report, runner
 from longtest.util import append_jsonl
 
 PARAMS = profiles.LARGE.params
@@ -52,24 +52,90 @@ def step(size, day, b1_hits, s2_hits, n=60):
     return rows
 
 
+class FakeFixture:
+    """The queries of ``step``: lessons 0 to n-1 with the variants V1, V3 and V5, on one
+    shard. Stands in for ``Run.fixture`` where a test writes its rows by hand."""
+
+    def __init__(self, n=60, variants=("V1", "V3", "V5")):
+        self.n, self.variants = n, variants
+
+    def shards(self, size):
+        return [0]
+
+    def queries_for(self, size, variants=None, shard=None):
+        for v in self.variants:
+            if variants is None or v in variants:
+                for i in range(self.n):
+                    yield {"id": f"L{i:02d}-{v}", "variant": v}
+
+
+def expected(sizes, n=60, variants=("V1", "V3")):
+    return runner.stock_expected(FakeFixture(n, variants), sizes, None, None, None)
+
+
 def test_gate_passes_when_every_arm_fired_on_every_step():
     rows = [r for day in (1, 2, 3) for r in step(5000, day, 60, 55)]
     rows += step(5000, 0, 0, 0)  # the pilot is not a judged step
-    gate = report.validity(rows, params=PARAMS)
+    gate = report.validity(rows, params=PARAMS, expected=expected([5000]))
     assert gate["5000"]["ok"] and gate["5000"]["causes"] == []
     assert sorted(gate["5000"]["steps"]) == ["1", "2", "3"]
     cell = gate["5000"]["steps"]["2"]
     assert cell["B1"] == {"n": 60, "delivery": 1.0, "floor": 0.95, "invalid": 0, "ok": True}
-    assert cell["S2"] == {"n": 60, "delivery": 0.917, "floor": 0.9, "invalid": 0, "ok": True}
+    assert cell["S2"] == {
+        "n": 60,
+        "delivery": 0.917,
+        "floor": None,
+        "queries": 120,
+        "expected": 120,
+        "errors": 0,
+        "invalid": 0,
+        "ok": True,
+    }
+
+
+def test_the_gate_of_s2_is_mechanical_and_its_rate_is_reported():
+    """Ruling 2026-11-11: S2 cannot latch, so its gate is every query evaluated and no
+    error; its sanity rate (0.70 to 0.80 at the large scales) has no floor."""
+    rows = step(5000, 1, 60, 45) + step(20000, 1, 60, 42)  # S2 at 0.75 and 0.70
+    gate = report.validity(rows, params=PARAMS, expected=expected([5000, 20000]))
+    assert gate["5000"]["ok"] and gate["20000"]["ok"], gate
+    assert gate["5000"]["steps"]["1"]["S2"]["delivery"] == 0.75  # reported
+    assert gate["20000"]["steps"]["1"]["S2"]["delivery"] == 0.7
+    # the B1 gate stays the floor of the recall tool
+    low = report.validity(step(5000, 1, 56, 45), params=PARAMS, expected=expected([5000]))
+    assert low["5000"]["causes"] == ["step 1: B1 sanity delivery 0.933 of 60, under the floor 0.95"]
+    # a query that stock did not evaluate fails the gate
+    lost = [r for r in rows if not (r["build"] == "S2" and r["qid"] == "L07-V3")]
+    got = report.validity(lost, params=PARAMS, expected=expected([5000, 20000]))["5000"]
+    assert got["causes"] == [
+        "step 1: S2 evaluated 119 queries, the step replays 120 (1 missing, 0 not in the step)"
+    ]
+    # a row with an error, and a query with two rows, fail it too
+    bad = step(5000, 1, 60, 45)
+    next(r for r in bad if r["build"] == "S2").update(ok=False, error="KeyError")
+    bad.append(dict(next(r for r in bad if r["build"] == "S2" and r["variant"] == "V3")))
+    got = report.validity(bad, params=PARAMS, expected=expected([5000]))["5000"]
+    assert got["causes"] == [
+        "step 1: S2 has 1 queries with more than one row",
+        "step 1: S2 has 1 rows with an error",
+    ]
+    assert got["steps"]["1"]["S2"]["invalid"] == 1 and got["steps"]["1"]["B1"]["ok"] is True
+    # with no expected set the gate still needs rows and no query twice
+    assert report.validity(step(5000, 1, 60, 45), params=PARAMS)["5000"]["ok"] is True
+    none = [r for r in step(5000, 1, 60, 45) if r["build"] != "S2"]
+    assert "step 1: S2 has no rows" in report.validity(none, params=PARAMS)["5000"]["causes"]
+    # the first run keeps its floor for S2 at the small scale
+    assert report.sanity_floor("S2", profiles.PLAN2.params) == 0.9
+    assert report.sanity_floor("S2", PARAMS) is None
 
 
 def test_gate_names_the_step_the_arm_and_the_floor():
-    rows = step(5000, 1, 60, 55) + step(5000, 2, 0, 55) + step(20000, 1, 60, 47)
+    rows = step(5000, 1, 60, 55) + step(5000, 2, 0, 55) + step(20000, 1, 56, 47)
     gate = report.validity(rows, params=PARAMS, sizes=[5000, 20000, 1000])
     assert not gate["5000"]["ok"]
     assert gate["5000"]["causes"] == ["step 2: B1 sanity delivery 0.0 of 60, under the floor 0.95"]
     assert gate["20000"]["causes"] == [
-        "step 1: S2 sanity delivery 0.783 of 60, under the floor 0.9"
+        "step 1: B1 sanity delivery 0.933 of 60, under the floor 0.95"
     ]
     assert gate["1000"] == {"ok": False, "causes": ["no judged step"], "steps": {}}
     # an arm with no sanity row has proved nothing
@@ -152,7 +218,7 @@ def test_an_invalid_scale_is_not_judged():
     assert report.verdicts_large(summary, soak, trend)["scales"]["LARGE-1"]["verdict"] == "LOSE"
 
 
-def test_report_command_gives_invalid_for_an_arm_that_did_not_fire(tmp_path, capsys):
+def test_report_command_gives_invalid_for_an_arm_that_did_not_fire(tmp_path, capsys, monkeypatch):
     run_dir = tmp_path / "run"
     (run_dir / "out").mkdir(parents=True)
     (run_dir / "run.json").write_text(
@@ -171,6 +237,7 @@ def test_report_command_gives_invalid_for_an_arm_that_did_not_fire(tmp_path, cap
             | {"valid": valid},
         )
     append_jsonl(run_dir / "out" / "latency.jsonl", {"ts": "t", "build": "soak", "p50": 0.5})
+    monkeypatch.setattr(runner.Run, "fixture", lambda self: FakeFixture(variants=("V1", "V3")))
     assert cli.cmd_report(argparse.Namespace(run_dir=str(run_dir))) == 0
     printed = json.loads(capsys.readouterr().out)
     assert printed["LARGE-1"]["verdict"] == "INVALID"

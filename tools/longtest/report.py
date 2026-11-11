@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import shutil
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -205,8 +206,47 @@ def prompt_delivery(rows: Sequence[Mapping[str, Any]], arm: str) -> dict[str, An
     return {"n": len(sel), "delivery": round(hits / len(sel), 3) if sel else None}
 
 
-def sanity_floor(arm: str, params: Params = PARAMS) -> float:
+def sanity_floor(arm: str, params: Params = PARAMS) -> float | None:
+    """The sanity floor of an arm; ``None`` for a stock arm whose rate is reported only
+    (the large-project profiles: its gate is mechanical, ``stock_gate``)."""
     return params.sanity_s2_delivery if arm.startswith("S") else params.sanity_pull_delivery
+
+
+def stock_gate(
+    step_rows: Sequence[Mapping[str, Any]], arm: str, expected: Sequence[str] | None
+) -> tuple[dict[str, Any], list[str]]:
+    """The mechanical gate of a stock arm on one step: every query evaluated once and no
+    row with an error. Stock is a deterministic file simulation: it cannot latch, and
+    its sanity rate is a result, not a proof that it ran (ruling 2026-11-11), so the
+    rate is reported and has no floor. ``expected`` is the query ids that the step
+    replays at this size (``runner.stock_expected``); without it the step must hold at
+    least one row and no query twice. Returns the cell and the causes."""
+    sel = [r for r in step_rows if r.get("build") == arm]
+    errors = sum(1 for r in sel if r.get("ok") is not True or r.get("error"))
+    seen = Counter(str(r.get("qid")) for r in sel)
+    twice = sum(1 for n in seen.values() if n > 1)
+    missing = len(set(expected) - set(seen)) if expected is not None else 0
+    extra = len(set(seen) - set(expected)) if expected is not None else 0
+    cell: dict[str, Any] = {
+        **sanity_delivery(step_rows, arm),
+        "floor": None,
+        "queries": len(seen),
+        "expected": len(set(expected)) if expected is not None else None,
+        "errors": errors,
+    }
+    causes = []
+    if not sel:
+        causes.append(f"{arm} has no rows")
+    if missing or extra:
+        causes.append(
+            f"{arm} evaluated {len(seen)} queries, the step replays {cell['expected']} "
+            f"({missing} missing, {extra} not in the step)"
+        )
+    if twice:
+        causes.append(f"{arm} has {twice} queries with more than one row")
+    if errors:
+        causes.append(f"{arm} has {errors} rows with an error")
+    return cell, causes
 
 
 def validity(
@@ -214,15 +254,18 @@ def validity(
     arms: Sequence[str] = ("B1", "S2"),
     params: Params = PARAMS,
     sizes: Sequence[int] | None = None,
+    expected: Mapping[int, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """The validity gate of the report: an arm must prove that it fired before its
     rows count. Per size and judged step (a night, or a step of the compressed run;
-    day 0 is the pilot and is left out) and per arm: the sanity delivery against its
-    registered floor, and no invalid row (``warm.invalid_rows``: the hook latch, or a
-    hook that gave up on the store; such a row is not a miss of the build). An arm
-    with no sanity row has proved nothing. Returns ``size -> {"ok", "causes", "steps":
-    {step: {arm: {"n", "delivery", "floor", "invalid", "ok"}}}}``; a size with no step
-    at all is not ok (no data is not a proof)."""
+    day 0 is the pilot and is left out) and per arm. A build: the sanity delivery
+    against its registered floor, and no invalid row (``warm.invalid_rows``: any row
+    whose hook did not get an answer from the store; such a row is not a miss of the
+    build). A build with no sanity row has proved nothing. A stock arm whose floor is
+    ``None`` has the mechanical gate of ``stock_gate`` (``expected``: ``size -> query
+    ids`` of a step); its delivery is reported. Returns ``size -> {"ok", "causes",
+    "steps": {step: {arm: {"n", "delivery", "floor", "invalid", "ok", ...}}}}``; a size
+    with no step at all is not ok (no data is not a proof)."""
     by: dict[int, dict[int, list[Mapping[str, Any]]]] = {}
     for r in rows:
         if r.get("day") and r.get("size"):
@@ -234,9 +277,18 @@ def validity(
         for step, step_rows in sorted(by.get(size, {}).items()):
             cell: dict[str, Any] = {}
             for arm in arms:
-                got = sanity_delivery(step_rows, arm)
                 floor = sanity_floor(arm, params)
-                fired = got["delivery"] is not None and got["delivery"] >= floor
+                if floor is None and arm.startswith("S"):
+                    want = None if expected is None else expected.get(int(size), ())
+                    got, why = stock_gate(step_rows, arm, want)
+                    got.update(invalid=got["errors"], ok=not why)
+                    causes += [f"step {step}: {c}" for c in why]
+                    cell[arm] = got
+                    continue
+                got = sanity_delivery(step_rows, arm)
+                fired = (
+                    got["delivery"] is not None and floor is not None and got["delivery"] >= floor
+                )
                 bad = warm.invalid_rows(r for r in step_rows if r.get("build") == arm)
                 got.update(floor=floor, invalid=len(bad), ok=fired and not bad)
                 if not fired:

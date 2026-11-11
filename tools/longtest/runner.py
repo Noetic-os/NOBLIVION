@@ -696,6 +696,24 @@ def real_replay(
     return done
 
 
+def stock_expected(
+    fx: Fixture,
+    sizes: Sequence[int],
+    shards: int | None,
+    limit: int | None,
+    variants: Sequence[str] | None,
+) -> dict[int, list[str]]:
+    """``size -> query ids`` that the stock arms of one replay (``replay_all`` with the
+    same arguments) evaluate: what the mechanical gate of stock checks the rows against."""
+    out: dict[int, list[str]] = {}
+    for size in sizes:
+        pick = fx.shards(size)[:shards] if shards else fx.shards(size)
+        out[int(size)] = sorted(
+            str(q["id"]) for sh in pick for q in replay.stock_queries(fx, size, sh, variants, limit)
+        )
+    return out
+
+
 def replay_rows(run: Run, day: int | None = None) -> list[dict[str, Any]]:
     rows = read_jsonl(run.out / "replay.jsonl")
     return [r for r in rows if day is None or r.get("day") == day]

@@ -77,7 +77,11 @@ class Params:
     heartbeats_per_day: int = 24
     # pilot sanity (section 12, gate 3)
     sanity_pull_delivery: float = 0.95
-    sanity_s2_delivery: float = 0.90
+    # S2 at the small scale of the first run. None: S2 has no floor, its gate is
+    # mechanical and its rate is reported (the large-project profiles, ruling
+    # 2026-11-11: S2 is a deterministic simulation, it cannot latch, and it scores
+    # 0.70 to 0.80 at 5,000 and 20,000 notes).
+    sanity_s2_delivery: float | None = 0.90
     # the stock loads (Claude Code): first 200 lines or 25,000 bytes of MEMORY.md
     index_lines: int = 200
     index_bytes: int = 25_000

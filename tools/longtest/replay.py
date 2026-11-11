@@ -415,6 +415,26 @@ def run_shard(
     return rows
 
 
+def stock_queries(
+    fx: Fixture,
+    size: int,
+    shard: int,
+    variants: Iterable[str] | None = None,
+    limit_per_variant: int | None = None,
+) -> list[dict[str, Any]]:
+    """The queries that the stock arms evaluate on one shard (``run_stock``)."""
+    seen: dict[str, int] = defaultdict(int)
+    out = []
+    # V5 runs for stock only when a profile names it: the first run's rows stay the same.
+    wanted = set(variants) if variants else set(STOCK_VARIANTS)
+    for q in fx.queries_for(size, wanted & set(STOCK_VARIANTS + STOCK_NEGATIVE), shard):
+        if limit_per_variant and seen[q["variant"]] >= limit_per_variant:
+            continue
+        seen[q["variant"]] += 1
+        out.append(q)
+    return out
+
+
 def run_stock(
     fx: Fixture,
     size: int,
@@ -428,13 +448,7 @@ def run_stock(
     folders = project_folders(config_dir)
     stocks: dict[str, Stock] = {}
     rows: list[dict[str, Any]] = []
-    seen: dict[str, int] = defaultdict(int)
-    # V5 runs for stock only when a profile names it: the first run's rows stay the same.
-    wanted = set(variants) if variants else set(STOCK_VARIANTS)
-    for q in fx.queries_for(size, wanted & set(STOCK_VARIANTS + STOCK_NEGATIVE), shard):
-        if limit_per_variant and seen[q["variant"]] >= limit_per_variant:
-            continue
-        seen[q["variant"]] += 1
+    for q in stock_queries(fx, size, shard, variants, limit_per_variant):
         slug = fx.cwd_of(size, q).replace("/", "-")
         if slug not in stocks:
             stocks[slug] = Stock(folders[slug]) if slug in folders else None  # type: ignore[assignment]

@@ -49,6 +49,7 @@ from .runner import (
     replay_rows,
     seed_stores_from,
     snapshot_tree,
+    stock_expected,
     verify_frozen,
     zero_token_gate,
 )
@@ -256,7 +257,8 @@ def pilot_large(run: Run, a: argparse.Namespace) -> int:
     )
     gate5 = {"live_memory_files_changed": len(moved), "ok": not moved}
     arms = (*prof.builds, *prof.stock_arms)
-    floors = report.validity([dict(r, day=1) for r in rows], arms, prof.params, sizes)
+    expected = stock_expected(run.fixture(), sizes, 1, a.limit, prof.variants)
+    floors = report.validity([dict(r, day=1) for r in rows], arms, prof.params, sizes, expected)
     report_gate = {
         size: {"ok": g["ok"], "arms": g["steps"].get("1", {})} for size, g in floors.items()
     }
@@ -841,11 +843,14 @@ def cmd_report(a: argparse.Namespace) -> int:
         trend = report.delivery_trend(by_night)
         # an arm must prove that it fired on every step that a rule reads, or the scale
         # is INVALID: the pilot alone does not show that the nights were measured
+        sizes = list(run.manifest["sizes"])
         gate = report.validity(
             rows,
             arms=(*prof.builds, *prof.stock_arms),
             params=prof.params,
-            sizes=list(run.manifest["sizes"]),
+            sizes=sizes,
+            # a night and a step replay every shard and every query
+            expected=stock_expected(run.fixture(), sizes, None, None, prof.variants),
         )
         doc = report.verdicts_large(
             summary,

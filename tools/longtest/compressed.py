@@ -24,7 +24,7 @@ from typing import Any
 
 from . import growth, live, profiles, report, sandbox
 from .buildrunner import store_python
-from .runner import Run, replay_all, replay_rows
+from .runner import Run, replay_all, replay_rows, stock_expected
 from .scheduler import job_note
 from .util import append_jsonl, read_jsonl
 
@@ -35,10 +35,20 @@ def steps_done(run: Run) -> dict[int, dict[str, Any]]:
     return {int(r["step"]): r for r in read_jsonl(run.out / "steps.jsonl")}
 
 
-def step_gate(run: Run, prof: profiles.Profile, step: int, sizes: list[int]) -> dict[str, Any]:
+def step_gate(
+    run: Run,
+    prof: profiles.Profile,
+    step: int,
+    sizes: list[int],
+    shards: int | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
     """The validity gate of one step: ``size -> {"ok", "causes", "arms"}``."""
     arms = (*prof.builds, *prof.stock_arms)
-    gate = report.validity(replay_rows(run, step), arms=arms, params=prof.params, sizes=sizes)
+    expected = stock_expected(run.fixture(), sizes, shards, limit, prof.variants)
+    gate = report.validity(
+        replay_rows(run, step), arms=arms, params=prof.params, sizes=sizes, expected=expected
+    )
     return {
         size: {"ok": g["ok"], "causes": g["causes"], "arms": g["steps"].get(str(step), {})}
         for size, g in gate.items()
@@ -47,8 +57,8 @@ def step_gate(run: Run, prof: profiles.Profile, step: int, sizes: list[int]) -> 
 
 def builds_fired(gate: dict[str, Any], prof: profiles.Profile) -> bool:
     """Did every build reach its floor at every scale of the step. The stock arm is a
-    file simulation: a run again cannot change it, so its miss does not stop the run;
-    the report still gives INVALID for it."""
+    file simulation: a run again cannot change it, so a failed mechanical gate does not
+    stop the run; the report still gives INVALID for it."""
     return all(g["arms"].get(b, {}).get("ok") for g in gate.values() for b in prof.builds)
 
 
@@ -101,7 +111,7 @@ def run_step(
             )
             if attempt > retries:
                 raise
-    gate = step_gate(run, prof, step, sizes)
+    gate = step_gate(run, prof, step, sizes, shards, limit)
     row = {
         "step": step,
         "ts": now().isoformat(timespec="seconds"),
