@@ -175,9 +175,7 @@ class Scheduler:
         with self._lock:
             now = self.now()
             return {
-                j.name: r
-                for j in self.jobs
-                if self._is_due(j, now) and (r := self.pause_reason(j))
+                j.name: r for j in self.jobs if self._is_due(j, now) and (r := self.pause_reason(j))
             }
 
     def mark(
