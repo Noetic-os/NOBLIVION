@@ -196,6 +196,29 @@ def test_nightly_job_runs_once_per_night_even_after_a_late_night(tmp_path):
     assert "replay_nightly" not in {j.name for j in s.due()}
 
 
+def test_an_overrunning_night_still_runs_the_night_it_missed(tmp_path):
+    """A heavy job dispatched for night 1 that overruns past night 2's window must not
+    read as "already run tonight" for night 2: the night it covers is the window it
+    started in, not the window its finish time happens to fall in."""
+    import threading
+
+    gate = threading.Event()
+    clock = {"t": at(1, 5)}  # night 1 opens; the job is dispatched for it
+    s = scheduler.Scheduler(
+        tmp_path, now=lambda: clock["t"], loadavg=lambda: 1.0, free_gb=lambda p: 500.0
+    )
+    handlers = {j.name: (lambda: None) for j in s.jobs}
+    handlers["replay_nightly"] = lambda: gate.wait(5)
+    s.run_due(handlers, background=True)
+    assert s.busy() == ["replay_nightly"]
+    clock["t"] = at(1, 30, day=2)  # it overran into night 2's own window before ending
+    gate.set()
+    s.wait(10)  # it finishes now, with a timestamp already inside night 2's window
+    assert s.state["jobs"]["replay_nightly"]["runs"] == 1
+    clock["t"] = at(2, 0, day=2)  # still inside night 2's window
+    assert "replay_nightly" in {j.name for j in s.due()}  # night 2 is still owed a run
+
+
 def test_heavy_job_runs_in_the_background_and_light_jobs_go_on(tmp_path):
     import threading
 

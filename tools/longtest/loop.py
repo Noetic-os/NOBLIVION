@@ -131,6 +131,18 @@ class Loop:
             return 1
         return max(1, int((self.now() - began).total_seconds() // 86400) + 1)
 
+    def replay_day(self) -> int:
+        """The night that ``replay_nightly`` is running for: ``report.night_day``,
+        counted from the window that has opened, not the raw elapsed wall time of
+        ``day()``. A heavy job overruns past a night's end on occasion; by the time it
+        is dispatched again for the night it missed, ``day()``'s elapsed-time count can
+        still read the night it is replacing, so the rows it writes would carry the
+        wrong day. Never below 1, as ``day()`` never is."""
+        began = self.started()
+        if began is None:
+            return 1
+        return max(1, report.night_day(began.isoformat(timespec="seconds"), self.now()))
+
     def over(self) -> bool:
         began = self.started()
         end = began + dt.timedelta(days=self.params.run_days) if began else None
@@ -310,7 +322,7 @@ class Loop:
         store by the day's notes and replays every scale against it. A failed arm does
         not skip the next arm or the hashes; its error is raised after them, so the job
         fails and the scheduler retries it after 30 minutes."""
-        day = self.day()
+        day = self.replay_day()
         prof = self.profile
         sizes = prof.nightly_sizes(day, list(self.run.manifest["sizes"]))
         errors: list[Exception] = []

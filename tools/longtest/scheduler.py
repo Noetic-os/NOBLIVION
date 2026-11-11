@@ -155,24 +155,38 @@ class Scheduler:
         if last_t is None:
             return True
         if job.heavy and job.every_s >= 86400:
-            # once per night: a night that starts late must not push the next one out
-            return last_t < window_start(now)
+            # once per night: a night that starts late must not push the next one out.
+            # Compare the window the job was dispatched for, not the wall-clock time it
+            # happened to finish at - a heavy job that overruns past the next window's
+            # open finishes with a timestamp already inside that next window, so
+            # comparing last_t directly would read as "already run tonight" for a
+            # night it never touched.
+            window = entry.get("window")
+            window_t = dt.datetime.fromisoformat(window) if window else last_t
+            return window_t < window_start(now)
         return (now - last_t).total_seconds() >= job.every_s
 
     def due(self) -> list[Job]:
-        now = self.now()
-        return [j for j in self.jobs if self._is_due(j, now) and not self.pause_reason(j)]
+        with self._lock:
+            now = self.now()
+            return [j for j in self.jobs if self._is_due(j, now) and not self.pause_reason(j)]
 
     def waiting(self) -> dict[str, str]:
-        now = self.now()
-        return {
-            j.name: r for j in self.jobs if self._is_due(j, now) and (r := self.pause_reason(j))
-        }
+        with self._lock:
+            now = self.now()
+            return {
+                j.name: r
+                for j in self.jobs
+                if self._is_due(j, now) and (r := self.pause_reason(j))
+            }
 
-    def mark(self, job: Job, ok: bool, note: str = "") -> None:
+    def mark(self, job: Job, ok: bool, note: str = "", started_at: dt.datetime | None = None) -> None:
         with self._lock:
             entry = self.state["jobs"].setdefault(job.name, {"runs": 0, "failed": 0})
             entry.update(last=self.now().isoformat(timespec="seconds"), ok=ok, note=note)
+            if job.heavy and job.every_s >= 86400:
+                dispatched = started_at or self.now()
+                entry["window"] = window_start(dispatched).isoformat(timespec="seconds")
             entry["runs"] += 1
             entry["failed"] += 0 if ok else 1
             save_state(self.state_path, self.state)
@@ -194,14 +208,16 @@ class Scheduler:
             )
             append_private(self.run_dir / "ALERT", f"{ts} {name} failed: {note[:200]}")
 
-    def _execute(self, job: Job, handler: Callable[[], Any]) -> tuple[bool, str]:
+    def _execute(
+        self, job: Job, handler: Callable[[], Any], started_at: dt.datetime | None = None
+    ) -> tuple[bool, str]:
         try:
             handler()
             ok, note = True, ""
         except (Exception, SystemExit) as exc:  # noqa: BLE001 - one job must not stop the run
             ok, note = False, job_note(exc)
             self.record_failure(job.name, note)
-        self.mark(job, ok, note)
+        self.mark(job, ok, note, started_at=started_at)
         return ok, note
 
     def busy(self) -> list[str]:
@@ -225,9 +241,10 @@ class Scheduler:
         for job in self.due():
             if background and job.heavy:
                 if not self.busy():
+                    dispatched_at = self.now()
                     self._running[job.name] = self._pool.submit(
-                        self._execute, job, handlers[job.name]
+                        self._execute, job, handlers[job.name], dispatched_at
                     )
                 continue
-            done.append((job.name, self._execute(job, handlers[job.name])[0]))
+            done.append((job.name, self._execute(job, handlers[job.name], self.now())[0]))
         return done

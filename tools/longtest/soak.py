@@ -56,8 +56,9 @@ class StoreClient:
         except (OSError, ValueError):
             return 0, {}, (time.perf_counter() - started) * 1000
 
-    def health(self) -> dict[str, Any]:
-        return self._call("/api/health", 10)[1]
+    def health(self) -> tuple[bool, dict[str, Any]]:
+        status, body, _ = self._call("/api/health", 10)
+        return status == 200, body
 
     def search(
         self, text: str, project: str = "claude_code", top_k: int = 5
@@ -144,18 +145,30 @@ def disk_notes(folders: Sequence[Path]) -> int:
     )
 
 
+class HealthCallFailed(Exception):
+    """The health call itself failed (a bad status, or a body with no ``memories``).
+    Not a drift reading: the scheduler logs this as a failed job, the way it logs any
+    other failed handler, instead of ``soak_drift`` writing a row that folds the
+    failure into the drift value."""
+
+
 def drift(client: StoreClient, folders: Sequence[Path], baseline: dict[str, int]) -> dict[str, Any]:
     """Index drift: the change in notes on disk since the baseline, minus the change
-    in notes the store counts. 0 when the store follows the disk."""
-    health = client.health()
+    in notes the store counts. 0 when the store follows the disk. Raises
+    ``HealthCallFailed`` when the health call itself failed: that is a separate
+    failure mode, not evidence of drift."""
+    ok, health = client.health()
+    if not ok or "memories" not in health:
+        raise HealthCallFailed(f"health call failed: ok={ok} body={health!r}")
     disk = disk_notes(folders)
-    counted = int(health.get("memories", 0))
+    counted = int(health["memories"])
     value = (disk - baseline["disk"]) - (counted - baseline["memories"])
     return {"kind": "drift", "disk": disk, "memories": counted, "drift": value}
 
 
 def baseline(client: StoreClient, folders: Sequence[Path]) -> dict[str, int]:
-    return {"disk": disk_notes(folders), "memories": int(client.health().get("memories", 0))}
+    ok, health = client.health()
+    return {"disk": disk_notes(folders), "memories": int(health.get("memories", 0)) if ok else 0}
 
 
 def rss_mb(pid: int, proc: Path = Path("/proc")) -> float:
@@ -240,6 +253,20 @@ def evaluate(
     burst_p95 = {d: round(percentile(burst(d), 0.95), 1) for d in days if burst(d)}
     lags = [r["lag_s"] for r in rows if r["kind"] == "write" and r.get("lag_s") is not None]
     failed_writes = sum(1 for r in rows if r["kind"] == "write" and not r["ok"])
+    # The error rate of one day, over query and write rows only: a drift, edit or
+    # delete row carries no real pass/fail of its own and must not move this rate.
+    graded = lambda d: [  # noqa: E731
+        r for r in by_day.get(d, []) if r["kind"] in ("query", "write")
+    ]
+    error_rate_by_day = {}
+    for d in days:
+        rs = graded(d)
+        errs = sum(1 for r in rs if not r["ok"])
+        error_rate_by_day[d] = {
+            "n": len(rs),
+            "errors": errs,
+            "rate": round(errs / len(rs), 5) if rs else None,
+        }
     drifts = [r["drift"] for r in rows if r["kind"] == "drift"]
     res = [r for r in rows if r["kind"] == "resources"]
     xs = list(range(len(daily_p95)))
@@ -276,4 +303,5 @@ def evaluate(
         "failed_writes": failed_writes,
         "drift_max": max((abs(d) for d in drifts), default=0),
         "memory_growth_mb_per_day": round(growth, 2),
+        "error_rate_by_day": error_rate_by_day,
     }
