@@ -19,6 +19,7 @@ from longtest import soak
 
 class Handler(BaseHTTPRequestHandler):
     notes: set = set()
+    hidden: set = set()  # counted, but a search does not return them
 
     def do_GET(self):  # noqa: N802
         if self.headers.get("Authorization") != "Bearer tok":
@@ -28,7 +29,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/health"):
             body = {"memories": 5 + len(Handler.notes)}
         else:
-            body = {"rows": [t for t in Handler.notes if t in self.path]}
+            body = {"rows": [t for t in Handler.notes - Handler.hidden if t in self.path]}
         data = json.dumps(body).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(data)))
@@ -50,6 +51,7 @@ def client(tmp_path):
     (tmp_path / "store.json").write_text(json.dumps({"port": server.server_address[1]}))
     (tmp_path / "token").write_text("tok\n")
     Handler.notes = set()
+    Handler.hidden = set()
     yield soak.StoreClient(tmp_path)
     server.shutdown()
     server.server_close()
@@ -115,6 +117,46 @@ def test_churn_reports_a_delete_the_store_keeps(client, tmp_path):
             Handler.notes.update(re.findall(r"zqx\w+?marker", path.read_text()))
 
     for n in range(1, 6):
+        rows = soak.churn(folder, client, n, sync, timeout_s=1)
+    gone = [r for r in rows if r["kind"] == "delete"]
+    assert gone and gone[0]["ok"] is False and gone[0]["lag_s"] is None
+
+
+def hiding_sync(seen: dict[Path, set[str]], forget_after_s: float | None):
+    """A sync whose store drops a deleted note from its search at once but keeps
+    counting it until a scan ``forget_after_s`` later (never, with ``None``): the
+    shape of a delete the ranking loses before the index registered it."""
+
+    def sync(path: Path) -> None:
+        if path.exists():
+            seen[path] = set(re.findall(r"zqx\w+?marker", path.read_text()))
+            Handler.notes.update(seen[path])
+            return
+        gone = seen.pop(path, set())
+        Handler.hidden.update(gone)
+        if forget_after_s is not None:
+            threading.Timer(forget_after_s, Handler.notes.difference_update, [gone]).start()
+
+    return sync
+
+
+def test_churn_waits_for_the_count_not_only_the_search(client, tmp_path):
+    folder = tmp_path / "mem"
+    folder.mkdir()
+    sync = hiding_sync({}, forget_after_s=0.6)
+    for n in range(1, 5):
+        rows = soak.churn(folder, client, n, sync, timeout_s=5)
+    gone = [r for r in rows if r["kind"] == "delete"]
+    # the search lost the note at once; the lag is the time until the count dropped
+    assert gone and gone[0]["ok"] and gone[0]["lag_s"] >= 0.5
+    assert len(Handler.notes) == len(list(folder.glob("project_soak_*.md")))
+
+
+def test_churn_reports_a_delete_the_search_lost_but_the_store_counts(client, tmp_path):
+    folder = tmp_path / "mem"
+    folder.mkdir()
+    sync = hiding_sync({}, forget_after_s=None)
+    for n in range(1, 5):
         rows = soak.churn(folder, client, n, sync, timeout_s=1)
     gone = [r for r in rows if r["kind"] == "delete"]
     assert gone and gone[0]["ok"] is False and gone[0]["lag_s"] is None

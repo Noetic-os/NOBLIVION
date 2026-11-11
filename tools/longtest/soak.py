@@ -131,12 +131,17 @@ def churn(
     if len(old) > 3:
         victim = old[0]
         gone = marker_of(victim.read_text(encoding="utf-8"))
+        before = counted_memories(client)
         victim.unlink()
         sync(victim)
         rows.append(
             {
                 "kind": "delete",
-                "lag_s": None if gone is None else gone_lag(client, gone, project, timeout_s),
+                "lag_s": (
+                    None
+                    if gone is None
+                    else gone_lag(client, gone, project, timeout_s, before=before)
+                ),
                 "ok": True,
             }
         )
@@ -160,18 +165,43 @@ def marker_of(text: str) -> str | None:
 
 
 def gone_lag(
-    client: StoreClient, marker: str, project: str, timeout_s: float, poll_s: float = 0.25
+    client: StoreClient,
+    marker: str,
+    project: str,
+    timeout_s: float,
+    poll_s: float = 0.25,
+    before: int | None = None,
 ) -> float | None:
-    """Seconds from now until ``marker`` is no longer searchable, or ``None`` when it
-    still is after ``timeout_s``. The store registers a delete a moment after the file
-    goes, the same way it registers a write a moment after it lands."""
+    """Seconds from now until the store has registered the delete, or ``None`` when it
+    has not after ``timeout_s``. The store registers a delete a moment after the file
+    goes, the same way it registers a write a moment after it lands. Registered means
+    two things at once: ``marker`` is no longer searchable, and the store counts one
+    note fewer than ``before``, the count read just before the file went. The search
+    alone is not enough: the deleted note was edited after its write and carries the
+    marker with a suffix, so only the vector path still finds it, and that path drops
+    it from a short result at times. A reading that trusts the search then returns
+    before the scan ran, and the drift reading after it sees the pending delete as a
+    note the store keeps (NOBLIVION-213). With ``before`` unknown (the health call
+    failed) the search is all there is."""
     started = time.monotonic()
     while time.monotonic() - started < timeout_s:
         status, body, _ = client.search(marker, project, 3)
         if status == 200 and marker not in json.dumps(body):
-            return round(time.monotonic() - started, 2)
+            counted = None if before is None else counted_memories(client)
+            if before is None or (counted is not None and counted <= before - 1):
+                return round(time.monotonic() - started, 2)
         time.sleep(poll_s)
     return None
+
+
+def counted_memories(client: StoreClient) -> int | None:
+    """The notes the store counts, or ``None`` when the health call failed or carries
+    no count. ``read_pair`` raises on the same answer; here the caller is a churn that
+    must not raise (the kill test cuts the store off mid-churn by design)."""
+    ok, health = client.health()
+    if not ok or "memories" not in health:
+        return None
+    return int(health["memories"])
 
 
 def disk_notes(folders: Sequence[Path]) -> int:
