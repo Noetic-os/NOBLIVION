@@ -471,6 +471,7 @@ def replay_all(
     guard_site: Path | None = None,
     stock_arms: Sequence[str] | None = None,
     stock_dir: Callable[[int, int], Path] | None = None,
+    pause: Callable[[], Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Arms b and c over the synthetic lessons: every build and every shard, plus the
     stock arms. Rows go to ``out/replay.jsonl``; returns one info row per task. A task
@@ -478,7 +479,8 @@ def replay_all(
     ``parallel`` is for the small scales: a kept store (``KEEP_FROM`` notes and more)
     runs alone, whatever the number (``KEPT_STORE``).
     ``stock_arms`` keeps only those stock rows (the large-project run keeps S2);
-    ``stock_dir(size, shard)`` names the folder stock reads (the grown store)."""
+    ``stock_dir(size, shard)`` names the folder stock reads (the grown store).
+    ``pause()`` runs before each store starts (the quiet window of the steps run)."""
     fx = run.fixture()
     live_data = Path(run.manifest["live"]["data_dir"])
     python = python or store_python(live_data)
@@ -503,10 +505,16 @@ def replay_all(
                     "replay-done", {"day": day, "build": "stock", "size": size, "shard": shard}
                 )
     infos: list[dict[str, Any]] = []
+
+    def task(*args: Any) -> dict[str, Any]:
+        if pause:
+            pause()
+        return replay_task(*args)
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, parallel)) as pool:
         futures = [
             pool.submit(
-                replay_task,
+                task,
                 run,
                 fx,
                 b,

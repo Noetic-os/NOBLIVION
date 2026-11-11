@@ -303,6 +303,9 @@ def render_steps_prereg(profile: Profile) -> str:
         "not judged, and a step that holds such a row fails the gate below. A product "
         "decision to stay silent is a skip, not a fail.",
         "- One store starts at a time.",
+        f"- No measured work between {config.QUIET_WINDOW.replace('-', ' and ')} local "
+        "time, because the host load peaks then: the run pauses before the next step "
+        "and before the next store, and resumes when the window ends.",
         "- Threads: the embedder of the build takes no thread count. The harness sets "
         f"ORT_INTRA_OP_NUM_THREADS={EMBED_THREADS} for the store, the name that the model "
         "runtime reads (one batch then took 3.5 cores, and 15 without it). "

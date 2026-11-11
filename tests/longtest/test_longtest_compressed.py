@@ -329,3 +329,78 @@ def test_the_pilot_gates_the_recall_tool_at_its_floor_and_not_the_prompt_channel
     latched = pilot_rows(pull_hits=60, prompt_hits=52)
     latched[-1].update(fail="store_hung", latched=True, hit=False)
     assert pilot_gate(latched) is False
+
+
+class Clock:
+    """A local clock that moves only when the run sleeps."""
+
+    def __init__(self, at):
+        self.at, self.slept = at, []
+
+    def now(self):
+        return self.at
+
+    def sleep(self, s):
+        self.slept.append(s)
+        self.at += dt.timedelta(seconds=s)
+
+
+CET = dt.timezone(dt.timedelta(hours=1))
+
+
+def test_the_steps_pause_in_the_quiet_window_and_resume_after(tmp_path, monkeypatch):
+    """Plan rule 4: no measured work between 00:45 and 03:00 local time. A series that
+    reaches the window waits before its next step and before its next store."""
+    run = make_run(tmp_path, monkeypatch, sizes=(5000,))
+    clock = Clock(dt.datetime(2026, 11, 12, 0, 50, tzinfo=CET))
+    began = []
+
+    def replay(run_, sizes, shards, limit, **kw):
+        kw["pause"]()  # replay_all calls it before each store starts
+        began.append((kw["day"], clock.now().time()))
+        return fake_replay([])(run_, sizes, shards, limit, **kw)
+
+    monkeypatch.setattr(growth, "grow", fake_grow([]))
+    monkeypatch.setattr(compressed, "replay_all", replay)
+    res = compressed.run_steps(run, 2, now=clock.now, sleep=clock.sleep)
+    assert res["complete"] and began[0] == (1, dt.time(3, 0))  # 2 h 10 min of pause
+    assert sum(clock.slept) == 130 * 60 and max(clock.slept) <= compressed.QUIET_NAP_S
+    pauses = read_jsonl(run.out / "pauses.jsonl")
+    assert pauses == [
+        {
+            "ts": "2026-11-12T00:50:00+01:00",
+            "before": "step 1",
+            "until": "2026-11-12T03:00:00+01:00",
+        }
+    ]
+    # a store that is due inside the window waits too, even in the middle of a step
+    clock.at = dt.datetime(2026, 11, 12, 2, 59, 30, tzinfo=CET)
+    assert compressed.wait_out_quiet(run, clock.now, clock.sleep, "x") == 30.0
+    clock.at = dt.datetime(2026, 11, 12, 0, 44, 59, tzinfo=CET)  # just before: no wait
+    assert compressed.wait_out_quiet(run, clock.now, clock.sleep, "x") == 0.0
+    clock.at = dt.datetime(2026, 11, 12, 3, 0, tzinfo=CET)
+    assert compressed.wait_out_quiet(run, clock.now, clock.sleep, "x") == 0.0
+    assert "No measured work between 00:45 and 03:00 local time" in profiles.STEPS.prereg()
+
+
+def test_replay_all_calls_the_pause_before_each_store(tmp_path, monkeypatch):
+    from longtest import runner
+
+    run = make_run(tmp_path, monkeypatch, sizes=(5000,))
+    seen = []
+
+    class Fx(FakeFixture):
+        def shards(self, size):
+            return [0, 1]
+
+        def shard_dir(self, size, shard):
+            return tmp_path
+
+    monkeypatch.setattr(Run, "fixture", lambda self: Fx())
+    monkeypatch.setattr(runner.replay, "run_stock", lambda *a: [])
+    monkeypatch.setattr(runner, "replay_task", lambda run, fx, b, s, sh, *a: seen.append(sh))
+    runner.replay_all(
+        run, [5000], None, None, builds=("B1",), parallel=1, python="py", models=tmp_path,
+        pause=lambda: seen.append("pause"),
+    )  # fmt: skip
+    assert seen == ["pause", 0, "pause", 1]

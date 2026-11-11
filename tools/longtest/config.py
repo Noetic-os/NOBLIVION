@@ -98,6 +98,10 @@ class Params:
 
 PARAMS = Params()
 
+# The time-compressed run does no measured work in this window (local time): the host
+# load peaks then, and other runs replay their kept stores (plan rule 4).
+QUIET_WINDOW = "00:45-03:00"
+
 RULES = (
     (
         "DR1",

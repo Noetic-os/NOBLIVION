@@ -22,13 +22,44 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import growth, live, profiles, report, sandbox
+from . import config, growth, live, profiles, report, sandbox
 from .buildrunner import store_python
 from .runner import Run, replay_all, replay_rows, stock_expected
-from .scheduler import job_note
+from .scheduler import in_window, job_note
 from .util import append_jsonl, read_jsonl
 
 RETRIES = 2  # a step whose shard was latched, or whose store was not warm, runs again
+QUIET = config.QUIET_WINDOW  # a step and a store wait for the end of this window
+QUIET_NAP_S = 300.0  # the longest single sleep of a pause; the clock is read again after it
+
+
+def wait_out_quiet(
+    run: Run,
+    now: Callable[[], dt.datetime],
+    sleep: Callable[[float], None],
+    what: str,
+    window: str = QUIET,
+) -> float:
+    """Sleep while ``now()`` is inside ``window``; one line in ``out/pauses.jsonl`` per
+    pause. Returns the seconds slept (0 outside the window)."""
+    slept = 0.0
+    end_time = dt.time.fromisoformat(window.split("-")[1])
+    while in_window(now(), window):
+        at = now()
+        end = dt.datetime.combine(at.date(), end_time, at.tzinfo)
+        if not slept:
+            run.append(
+                "pauses",
+                {
+                    "ts": at.isoformat(timespec="seconds"),
+                    "before": what,
+                    "until": end.isoformat(timespec="seconds"),
+                },
+            )
+        nap = min(max((end - at).total_seconds(), 1.0), QUIET_NAP_S)
+        sleep(nap)
+        slept += nap
+    return slept
 
 
 def steps_done(run: Run) -> dict[int, dict[str, Any]]:
@@ -72,11 +103,14 @@ def run_step(
     shards: int | None = None,
     limit: int | None = None,
     wait_s: float = 900.0,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """One step: grow, replay (start, warm, all variants; one store at a time), gate.
     A replay that fails (a latched shard, a store that is not warm in time) is logged
     to ``out/failures.jsonl`` and run again at once, ``retries`` times: the tasks that
-    are done are not replayed. Returns the row written to ``out/steps.jsonl``."""
+    are done are not replayed. Before each store starts, a clock inside ``QUIET``
+    pauses the step until the window ends. Returns the row written to
+    ``out/steps.jsonl``."""
     began = time.monotonic()
     grown = [growth.grow(run, size, step, prof.growth_per_day, now=now()) for size in sizes]
     attempt = 0
@@ -97,6 +131,7 @@ def run_step(
                 guard_site=run.dir / "private" / "guard-site",
                 stock_arms=prof.stock_arms,
                 stock_dir=lambda size, shard: growth.stock_dir(run, size, shard),
+                pause=lambda: wait_out_quiet(run, now, sleep, f"step {step} shard"),
             )
             break
         except Exception as exc:  # noqa: BLE001 - logged, then again or raised
@@ -136,12 +171,14 @@ def run_steps(
     limit: int | None = None,
     wait_s: float = 900.0,
     on_step: Callable[[dict[str, Any]], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Steps 1 to ``steps`` (default: the steps of the profile), each once. A step that
     is in ``out/steps.jsonl`` is skipped, so a run that was killed goes on where it
     stopped. The run stops when a build did not fire on a step (``keep_going`` goes on)
     and when a ``stop`` file is in the run folder. The zero-token guards of the nightly
-    loop are on for the whole run."""
+    loop are on for the whole run. Between 00:45 and 03:00 local time (``QUIET``) the
+    run pauses before the next step and before the next store, and resumes after."""
     from .loop import sandbox_program
 
     prof = profiles.profile_of(run.manifest)
@@ -166,10 +203,11 @@ def run_steps(
         for step in range(1, steps + 1):
             if step in steps_done(run):
                 continue
+            wait_out_quiet(run, now, sleep, f"step {step}")
             if (run.dir / "stop").exists():
                 stopped = "stop file"
                 break
-            row = run_step(run, prof, step, sizes, now, retries, shards, limit, wait_s)
+            row = run_step(run, prof, step, sizes, now, retries, shards, limit, wait_s, sleep)
             ran.append(step)
             if on_step:
                 on_step(row)
