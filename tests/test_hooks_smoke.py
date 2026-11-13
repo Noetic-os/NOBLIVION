@@ -85,6 +85,7 @@ def test_every_moved_module_is_present() -> None:
         "hook_config",
         "injection_text",  # NOBLIVION-224
         "hub_stats",  # NOBLIVION-121
+        "input_check",  # NOBLIVION-118
         "label_rows",
         "learning_capture",
         "memory_fields",
