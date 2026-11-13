@@ -557,11 +557,28 @@ class BackfillResult:
     chunks_failed: int = 0
 
 
-def needs_reembed(conn: sqlite3.Connection, embedder: Embedder) -> bool:
-    """True when ``meta`` names another backend or model than ``embedder``."""
-    return (db.get_meta(conn, "embed_backend"), db.get_meta(conn, "embed_model")) != (
+def needs_reembed(conn: sqlite3.Connection, embedder: Embedder, dim: int | None = None) -> bool:
+    """True when ``meta`` names another backend or model than ``embedder``, or
+    when ``dim`` (the size of the vectors the model returns now) is known and a
+    stored vector of this model has another size (NOBLIVION-63)."""
+    if (db.get_meta(conn, "embed_backend"), db.get_meta(conn, "embed_model")) != (
         embedder.backend,
         embedder.model,
+    ):
+        return True
+    return dim is not None and has_other_dim(conn, embedder.model_id, dim)
+
+
+def has_other_dim(conn: sqlite3.Connection, model_id: str, dim: int) -> bool:
+    """True when a file or chunk vector of ``model_id`` is not ``dim`` long. A model
+    served under the same name with a new size gives vectors that the ranking
+    cannot compare with the stored ones."""
+    return any(
+        conn.execute(
+            f"SELECT 1 FROM {table} WHERE model = ? AND dim <> ? LIMIT 1", (model_id, dim)
+        ).fetchone()
+        is not None
+        for table in ("vectors", "chunk_vectors")
     )
 
 
@@ -569,13 +586,18 @@ def needs_reembed(conn: sqlite3.Connection, embedder: Embedder) -> bool:
 class _BackfillProgress:
     # One completed pass, scoped to its connection, model and consent policy.
     # Never keep row text or an unbounded set of failed IDs in the service.
-    checkpoint: tuple[sqlite3.Connection, str, bool, int] | None = None
+    checkpoint: tuple[sqlite3.Connection, str, bool, int | None, int] | None = None
 
 
 def _todo(
-    conn: sqlite3.Connection, model_id: str, include_mined: bool, after_rev: int = -1
+    conn: sqlite3.Connection,
+    model_id: str,
+    include_mined: bool,
+    after_rev: int = -1,
+    dim: int | None = None,
 ) -> tuple[list[tuple[int, str, str]], int]:
-    """Live rows whose vector for ``model_id`` is missing or stale."""
+    """Live rows whose vector for ``model_id`` is missing or stale. With ``dim``
+    a vector of another size is stale too, whatever its text (NOBLIVION-63)."""
     todo: list[tuple[int, str, str]] = []
     skipped = 0
     with db.read_tx(conn):
@@ -588,25 +610,30 @@ def _todo(
                 ).fetchone()[0]
             )
         cur = conn.execute(
-            "SELECT m.id, m.content, v.content_hash FROM memories m "
+            "SELECT m.id, m.content, v.content_hash, v.dim FROM memories m "
             "LEFT JOIN vectors v ON v.memory_id = m.id AND v.model = ? "
             "WHERE m.archived_at IS NULL AND m.deleted_at IS NULL "
-            "AND (? OR m.source_type <> ?) AND (m.rev > ? OR v.memory_id IS NULL) "
+            "AND (? OR m.source_type <> ?) "
+            "AND (m.rev > ? OR v.memory_id IS NULL OR (? IS NOT NULL AND v.dim <> ?)) "
             "ORDER BY m.id",
-            (model_id, include_mined, db.SOURCE_MINED, after_rev),
+            (model_id, include_mined, db.SOURCE_MINED, after_rev, dim, dim),
         )
-        for memory_id, content, have in cur.fetchall():
+        for memory_id, content, have, have_dim in cur.fetchall():
             text = embed_text(content)
             if not text:
                 continue
             digest = text_hash(text)
-            if digest != have:
+            if digest != have or (dim is not None and have_dim != dim):
                 todo.append((int(memory_id), text, digest))
     return todo, skipped
 
 
 def _todo_chunks(
-    conn: sqlite3.Connection, model_id: str, include_mined: bool, after_rev: int = -1
+    conn: sqlite3.Connection,
+    model_id: str,
+    include_mined: bool,
+    after_rev: int = -1,
+    dim: int | None = None,
 ) -> tuple[list[tuple[int, str, str]], list[tuple[int, str, int, bytes]]]:
     """Chunks of live rows whose vector for ``model_id`` is missing or stale.
 
@@ -615,29 +642,31 @@ def _todo_chunks(
     vector is copied, not computed again. A restored parent is a candidate
     even when its chunks kept their revisions: an edit before the row was
     hidden may still have stale vectors after a pass skipped that hidden row.
+    With ``dim`` a vector of another size is stale, and is never copied.
     """
     todo: list[tuple[int, str, str]] = []
     copies: list[tuple[int, str, int, bytes]] = []
     with db.read_tx(conn):
         cur = conn.execute(
-            "SELECT c.id, c.search_text, v.content_hash, f.content_hash, f.dim, "
+            "SELECT c.id, c.search_text, v.content_hash, v.dim, f.content_hash, f.dim, "
             "f.blob FROM memory_chunks c JOIN memories m ON m.id = c.parent_id "
             "LEFT JOIN chunk_vectors v ON v.chunk_id = c.id AND v.model = ? "
             "LEFT JOIN vectors f ON f.memory_id = m.id AND f.model = ? "
             "WHERE m.archived_at IS NULL AND m.deleted_at IS NULL "
             "AND (? OR m.source_type <> ?) "
-            "AND (c.rev > ? OR m.rev > ? OR v.chunk_id IS NULL) ORDER BY c.id",
-            (model_id, model_id, include_mined, db.SOURCE_MINED, after_rev, after_rev),
+            "AND (c.rev > ? OR m.rev > ? OR v.chunk_id IS NULL "
+            "OR (? IS NOT NULL AND v.dim <> ?)) ORDER BY c.id",
+            (model_id, model_id, include_mined, db.SOURCE_MINED, after_rev, after_rev, dim, dim),
         )
-        for chunk_id, search_text, have, file_hash, dim, blob in cur.fetchall():
+        for chunk_id, search_text, have, have_dim, file_hash, file_dim, blob in cur.fetchall():
             text = str(search_text).strip()[:MAX_EMBED_CHARS]
             if not text:
                 continue
             digest = text_hash(text)
-            if digest == have:
+            if digest == have and (dim is None or have_dim == dim):
                 continue
-            if digest == file_hash and blob is not None:
-                copies.append((int(chunk_id), digest, int(dim), bytes(blob)))
+            if digest == file_hash and blob is not None and (dim is None or file_dim == dim):
+                copies.append((int(chunk_id), digest, int(file_dim), bytes(blob)))
             else:
                 todo.append((int(chunk_id), text, digest))
     return todo, copies
@@ -669,29 +698,48 @@ def _copy_vectors(
     return written
 
 
+def timed_out(exc: BaseException | None) -> bool:
+    """True when ``exc`` or an error it was raised from is a timeout, as a
+    socket read or a connect that ran out of time under ``_post_json``."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 def _embed_batch(
     conn: sqlite3.Connection, embedder: Embedder, batch: Sequence[tuple[int, str, str]]
-) -> tuple[list[tuple[int, str, list[float]]], int]:
+) -> tuple[list[tuple[int, str, list[float]]], int, bool]:
     """Embed a batch. When the batch call fails, embed row by row, so one bad
     row does not cost the batch (section 7.4). A remote backend without its
-    consent raises ``ConsentRequiredError`` before the call; nothing is sent."""
+    consent raises ``ConsentRequiredError`` before the call; nothing is sent.
+
+    The third value is True when a single-row call ran out of time: the
+    backend stalls, so the rows after it are not sent and count as failed.
+    A stalled remote then costs one batch timeout and one row timeout, not one
+    timeout per row (NOBLIVION-63)."""
     _require_consent(conn, embedder)
     try:
         vectors = embedder.embed_documents([text for _, text, _ in batch])
         if len(vectors) != len(batch):
             raise EmbeddingError("wrong number of vectors")
-        return [(m, d, v) for (m, _, d), v in zip(batch, vectors, strict=True)], 0
+        return [(m, d, v) for (m, _, d), v in zip(batch, vectors, strict=True)], 0, False
     except Exception:  # noqa: BLE001 - fall back to single rows
         pass
     done: list[tuple[int, str, list[float]]] = []
     failed = 0
-    for memory_id, text, digest in batch:
+    for position, (memory_id, text, digest) in enumerate(batch):
         _require_consent(conn, embedder)
         try:
             done.append((memory_id, digest, embedder.embed_documents([text])[0]))
-        except Exception:  # noqa: BLE001 - the row stays without a vector
+        except Exception as exc:  # noqa: BLE001 - the row stays without a vector
+            if timed_out(exc):
+                return done, failed + len(batch) - position, True
             failed += 1
-    return done, failed
+    return done, failed, False
 
 
 def _write_vectors(
@@ -747,16 +795,30 @@ def _write_vectors(
     return written, failed, dim
 
 
-def finish_model_switch(conn: sqlite3.Connection, embedder: Embedder) -> bool:
+def finish_model_switch(
+    conn: sqlite3.Connection, embedder: Embedder, dim: int | None = None
+) -> bool:
     """End of a re-embed: in one transaction, delete vectors of other models
     and write the backend, model and dim to ``meta``. Returns True when
     ``meta`` changed. Old-model vectors are outside every pool of the new
-    model, so the delete needs no ``vector_rev`` stamp (section 6.3)."""
+    model, so the delete needs no ``vector_rev`` stamp (section 6.3). With
+    ``dim``, vectors of this model with another size are deleted too: the
+    ranking skips them, and the next pass embeds their rows (NOBLIVION-63)."""
     with db.write_tx(conn):
-        if not needs_reembed(conn, embedder):
+        # A pass that wrote every row in the new size leaves no vector of
+        # another size, but ``meta`` still names the old size.
+        old_dim = dim is not None and db.get_meta(conn, "embed_dim") not in (None, "", str(dim))
+        if not needs_reembed(conn, embedder, dim) and not old_dim:
             return False
         conn.execute("DELETE FROM vectors WHERE model <> ?", (embedder.model_id,))
         conn.execute("DELETE FROM chunk_vectors WHERE model <> ?", (embedder.model_id,))
+        if dim is not None and has_other_dim(conn, embedder.model_id, dim):
+            # These rows are in the pool of this model: the delete gets a stamp.
+            db.bump_rev(conn, "vector_rev")
+            for table in ("vectors", "chunk_vectors"):
+                conn.execute(
+                    f"DELETE FROM {table} WHERE model = ? AND dim <> ?", (embedder.model_id, dim)
+                )
         row = conn.execute(
             "SELECT dim FROM vectors WHERE model = ? LIMIT 1", (embedder.model_id,)
         ).fetchone()
@@ -773,6 +835,8 @@ def backfill(
     batch_size: int = BATCH_SIZE,
     include_mined: bool = True,
     finish: bool = True,
+    dim: int | None = None,
+    stop: Callable[[], bool] | None = None,
     _progress: _BackfillProgress | None = None,
 ) -> BackfillResult:
     """Embed every live row that has no vector for this model, or a vector of
@@ -782,42 +846,58 @@ def backfill(
     With ``finish`` the pass ends with ``finish_model_switch``. A remote
     backend whose consent is revoked raises ``ConsentRequiredError`` before
     its next call; the batches written so far stay, the pass does not finish.
+    With ``dim`` (the vector size the model returns now) a stored vector of
+    another size is embedded again. The pass ends early, and does not finish,
+    when ``stop`` returns True before a batch or when the backend stalls: the
+    rows not sent count as failed, so the next pass tries them (NOBLIVION-63).
     """
     model_id = embedder.model_id
     db.ensure_chunks(conn)  # a row with no chunk rows gets them before the pass
     # The service reuses its last complete pass. All supported content writers
     # stamp file/chunk revisions; missing vectors remain candidates regardless.
-    # A one-shot caller, new connection, model or policy starts with a full read.
+    # A one-shot caller, new connection, model, size or policy starts with a full read.
     revision = db.revisions(conn)[0] if _progress is not None else -1
-    scope = (conn, model_id, include_mined)
+    scope = (conn, model_id, include_mined, dim)
     checkpoint = None if _progress is None else _progress.checkpoint
     after_rev = (
-        checkpoint[3]
-        if checkpoint is not None and checkpoint[:3] == scope and checkpoint[3] <= revision
+        checkpoint[4]
+        if checkpoint is not None and checkpoint[:4] == scope and checkpoint[4] <= revision
         else -1
     )
-    todo, skipped = _todo(conn, model_id, include_mined, after_rev)
+    todo, skipped = _todo(conn, model_id, include_mined, after_rev, dim)
     # Texts of a like length share a batch: the model pads a batch to its longest text.
     todo.sort(key=lambda item: len(item[1]))
     embedded = failed = 0
-    for start in range(0, len(todo), max(1, batch_size)):
-        done, batch_failed = _embed_batch(conn, embedder, todo[start : start + batch_size])
-        written, bad, _ = _write_vectors(conn, model_id, done)
-        embedded += written
-        failed += batch_failed + bad
+    ended = False  # a stop or a stalled backend: the rest of the pass is not sent
+
+    def _pass(rows: list[tuple[int, str, str]], chunks: bool) -> tuple[int, int]:
+        nonlocal ended
+        good = bad_rows = 0
+        for start in range(0, len(rows), max(1, batch_size)):
+            if ended or (stop is not None and stop()):
+                ended = True
+                return good, bad_rows + len(rows) - start
+            done, batch_failed, stalled = _embed_batch(
+                conn, embedder, rows[start : start + batch_size]
+            )
+            written, bad, _ = _write_vectors(conn, model_id, done, chunks=chunks)
+            good += written
+            bad_rows += batch_failed + bad
+            ended = ended or stalled
+            if stalled:
+                return good, bad_rows + max(0, len(rows) - start - batch_size)
+        return good, bad_rows
+
+    embedded, failed = _pass(todo, False)
     # The chunk vectors (NOBLIVION-103): the ranking reads these. The file vectors
     # above stay for the dedup and the import report.
-    chunk_todo, chunk_copies = _todo_chunks(conn, model_id, include_mined, after_rev)
+    chunk_todo, chunk_copies = _todo_chunks(conn, model_id, include_mined, after_rev, dim)
     chunk_todo.sort(key=lambda item: len(item[1]))
     chunks_embedded = _copy_vectors(conn, model_id, chunk_copies)
-    chunks_failed = 0
-    for start in range(0, len(chunk_todo), max(1, batch_size)):
-        done, batch_failed = _embed_batch(conn, embedder, chunk_todo[start : start + batch_size])
-        written, bad, _ = _write_vectors(conn, model_id, done, chunks=True)
-        chunks_embedded += written
-        chunks_failed += batch_failed + bad
-    switched = finish_model_switch(conn, embedder) if finish else False
-    if _progress is not None and batch_size > 0 and not failed and not chunks_failed:
+    written, chunks_failed = _pass(chunk_todo, True)
+    chunks_embedded += written
+    switched = finish_model_switch(conn, embedder, dim) if finish and not ended else False
+    if _progress is not None and batch_size > 0 and not failed and not chunks_failed and not ended:
         # A failure or interruption retains the old checkpoint, so a stale
         # existing vector is retried too. Capture the revision BEFORE the reads:
         # an edit during a model call must remain eligible on the next pass.
@@ -872,6 +952,8 @@ class EmbeddingService:
         self.error: str | None = None
         self._failed_at: float | None = None
         self._no_consent = False  # the last failure was a missing consent
+        self._consent_unread = False  # the last failure was a consent read error
+        self._dim: int | None = None  # the vector size the model returned last
         self._unread = False  # the last consent read failed, and the log says so
         self._unread_lock = threading.Lock()
         self._backfill_progress = _BackfillProgress()
@@ -906,16 +988,23 @@ class EmbeddingService:
                     self.state = STATE_NONE
                     return self.state
                 embedder.load()
-                self._warm(embedder)
+                self._dim = self._warm(embedder)
             except Exception as exc:  # noqa: BLE001 - any fault means keyword mode
+                no_consent = isinstance(exc, ConsentRequiredError)
+                # A missing consent is said once per run of failed starts: the
+                # hourly retry and the start after a revoke write no new line.
+                said = no_consent and self._no_consent
                 self.embedder = None
                 self.state = STATE_FAILED
                 self.error = str(exc)
                 self._failed_at = self._clock()
-                self._no_consent = isinstance(exc, ConsentRequiredError)
+                self._no_consent = no_consent
+                # A consent read error is not a missing consent: the next tick
+                # reads again and starts when the read works (NOBLIVION-77).
+                self._consent_unread = isinstance(exc, sqlite3.Error)
                 # Once per failed attempt: the retry gate above returns early
                 # without a new attempt, so it logs nothing.
-                log.warning(
+                (log.debug if said else log.warning)(
                     "model load failed (%s): %s; keyword search only, next try in %d s",
                     type(exc).__name__,
                     _log_reason(exc),
@@ -925,23 +1014,27 @@ class EmbeddingService:
             self.embedder = embedder
             self.error = None
             self._failed_at = None
-            self._no_consent = False
-            self.state = STATE_REEMBEDDING if needs_reembed(conn, embedder) else STATE_READY
+            self._no_consent = self._consent_unread = False
+            self.state = (
+                STATE_REEMBEDDING if needs_reembed(conn, embedder, self._dim) else STATE_READY
+            )
             return self.state
 
     @staticmethod
-    def _warm(embedder: Embedder) -> None:
+    def _warm(embedder: Embedder) -> int | None:
         """One throw-away query embed before the state is ``ready`` (NOBLIVION-153). The
         first embed of a loaded model builds its runtime buffers and can take longer than
         ``QUERY_TIMEOUT_S``, so the first prompt after a start ranked by keyword only. A
         backend that sends text off the machine is not called: it needs a consent read, and
-        the text is a prompt. A fault here is not a load fault: the next embed tries again."""
+        the text is a prompt. A fault here is not a load fault: the next embed tries again.
+        Returns the vector size of the model, or None when it is not known."""
         if embedder.remote:
-            return
+            return None
         try:
-            embedder.embed_query(WARM_UP_TEXT)
+            return len(embedder.embed_query(WARM_UP_TEXT))
         except Exception as exc:  # noqa: BLE001 - the model is loaded; only the warm-up failed
             log.warning("embedding warm-up failed (%s)", type(exc).__name__)
+            return None
 
     def _retry_waits(self, conn: sqlite3.Connection) -> bool:
         """True while ``start`` makes no new attempt after a failed load: the
@@ -951,8 +1044,10 @@ class EmbeddingService:
         # A missing consent is the one failure that a command of the user
         # ends: the new consent does not wait for the retry time.
         # A consent that cannot be read is not a new consent: the wait goes on.
+        # A start that failed on a consent read error starts again as soon as
+        # a read finds the consent (NOBLIVION-77).
         return self._clock() - self._failed_at < RETRY_AFTER_S and not (
-            self._no_consent
+            (self._no_consent or self._consent_unread)
             and self._read_consent(
                 lambda: has_consent(conn, self.settings.backend, self.settings.model)
             )
@@ -1034,14 +1129,36 @@ class EmbeddingService:
         if embedder is None or self.state not in (STATE_READY, STATE_REEMBEDDING):
             return None
         kwargs.setdefault("include_mined", self.include_mined)
+        kwargs.setdefault("dim", self._dim)
         try:
             result = backfill(conn, embedder, _progress=self._backfill_progress, **kwargs)  # type: ignore[arg-type]
         except ConsentRequiredError:
             self._consent_gone(embedder)
             return None
-        if self.state == STATE_REEMBEDDING and not needs_reembed(conn, embedder):
+        if self.state == STATE_REEMBEDDING and not needs_reembed(conn, embedder, self._dim):
             self.state = STATE_READY
         return result
+
+    def _saw_dim(self, embedder: Embedder, dim: int, conn: sqlite3.Connection | None) -> None:
+        """Note the vector size of a query embed. A size that differs from the
+        one seen before, or from the stored vectors, starts a re-embed: a model
+        served under the same name with a new size is not ``ready`` while the
+        ranking skips its old vectors (NOBLIVION-63)."""
+        before, self._dim = self._dim, dim
+        if before == dim or self.embedder is not embedder or self.state != STATE_READY:
+            return
+        if before is not None:
+            self.state = STATE_REEMBEDDING
+            return
+        if conn is None:
+            return
+        try:
+            stale = has_other_dim(conn, embedder.model_id, dim)
+        except sqlite3.Error:
+            self._dim = None  # read again at the next query
+            return
+        if stale:
+            self.state = STATE_REEMBEDDING
 
     def embed_query(
         self,
@@ -1062,7 +1179,7 @@ class EmbeddingService:
             return None
         future = self._pool.submit(embedder.embed_query, text)
         try:
-            return normalize(future.result(timeout=timeout_s))
+            vector = normalize(future.result(timeout=timeout_s))
         except FutureTimeout:
             # A call that still waits in the pool is not sent later: its
             # consent check is old by then, and the answer is not used.
@@ -1070,6 +1187,8 @@ class EmbeddingService:
             return None
         except Exception:  # noqa: BLE001 - keyword-only for this answer
             return None
+        self._saw_dim(embedder, len(vector), conn)
+        return vector
 
     def close(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)

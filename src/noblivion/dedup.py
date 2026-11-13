@@ -700,6 +700,14 @@ def judge_pair(judge: Judge, prompt: Prompt, c: Candidate, raw_a: bytes, raw_b: 
         return unsure(f"judge error: {type(exc).__name__}", sent=True, error=type(exc).__name__)
 
 
+def _consent_holds(consent: Callable[[], bool]) -> bool:
+    """One consent read. A read error counts as no consent: nothing is sent."""
+    try:
+        return bool(consent())
+    except sqlite3.Error:
+        return False
+
+
 def build_plan(
     candidates: Sequence[Candidate],
     folders: Mapping[str, Path],
@@ -710,13 +718,17 @@ def build_plan(
     out,
     cost_cap_usd: float | None = None,
     spent_usd: float = 0.0,
+    consent: Callable[[], bool] | None = None,
 ) -> dict:
     """Judge every pair. Reads files, writes nothing.
 
     With ``cost_cap_usd`` the run stops before a pair when the money already
     spent (``spent_usd`` of earlier runs today plus this run), plus the dearest
     pair so far, would pass the cap. It also stops when a judge call reports no
-    cost, because the cap cannot then be kept. The plan names the reason."""
+    cost, because the cap cannot then be kept. With ``consent`` the run reads
+    the consent before each pair and stops when it is gone or cannot be read:
+    a revoke during a run sends no further pair (NOBLIVION-77). The pairs
+    judged before the stop stay in the plan. The plan names the reason."""
     pairs: list[dict] = []
     used_in = used_out = 0
     cost = 0.0
@@ -728,6 +740,10 @@ def build_plan(
             stopped = f"daily cost cap ${cost_cap_usd:.4f} reached"
             skipped = len(candidates) - n_done
             print(f"  stop: {stopped}; {skipped} pairs not judged", file=out)
+            break
+        if consent is not None and not _consent_holds(consent):
+            stopped = "the dedup consent was revoked or cannot be read"
+            print(f"  stop: {stopped}; {len(candidates) - n_done} pairs not judged", file=out)
             break
         folder = folders[c.root]
         try:
@@ -1835,7 +1851,15 @@ def _sweep(args, conn, settings, ds, env, out, judge_factory, candidates, folder
     judge = (judge_factory or openrouter_judge)(ds, api_key)
     run_id = new_run_id()
     plan = build_plan(
-        pairs, folders, judge, prompt, run_id=run_id, out=out, cost_cap_usd=cap, spent_usd=spent
+        pairs,
+        folders,
+        judge,
+        prompt,
+        run_id=run_id,
+        out=out,
+        cost_cap_usd=cap,
+        spent_usd=spent,
+        consent=lambda: has_consent(conn, ds.model),
     )
     print(summary_line(plan), file=out)
     path = write_plan(settings, plan)
@@ -1936,7 +1960,15 @@ def _dispatch(args, conn, settings, ds, env, stdin, out, judge_factory, min_age_
             return EXIT_REFUSED
         judge = (judge_factory or openrouter_judge)(ds, api_key)
         run_id = new_run_id()
-        plan = build_plan(pairs, folders, judge, prompt, run_id=run_id, out=out)
+        plan = build_plan(
+            pairs,
+            folders,
+            judge,
+            prompt,
+            run_id=run_id,
+            out=out,
+            consent=lambda: has_consent(conn, ds.model),
+        )
         counts, _ = tally(plan)
         print(summary_line(plan), file=out)
         path = write_plan(settings, plan)

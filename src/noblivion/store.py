@@ -48,6 +48,9 @@ SERVICE = "noblivion"
 DRAIN_TIMEOUT_S = 5.0
 JOB_JOIN_TIMEOUT_S = 60.0
 JOB_TICK_S = 0.5
+# A backfill pass that raised runs again after this wait, also with periodic
+# scans off and no content change (NOBLIVION-77).
+JOB_RETRY_S = 30.0
 
 EXIT_OK = 0
 EXIT_BIND = 2
@@ -56,6 +59,7 @@ EXIT_NOT_INSTALLED = 4  # no data dir, or no database and install.sh has not run
 
 INDEX_SCANNING = "scanning"
 INDEX_IDLE = "idle"
+INDEX_STOPPED = "stopped"  # the jobs thread ended: no scan, backfill or maintenance
 
 _NO_LABELLER = object()
 
@@ -545,14 +549,17 @@ class Store:
             )
         return result
 
-    def backfill_once(self, conn: sqlite3.Connection) -> None:
+    def backfill_once(self, conn: sqlite3.Connection) -> bool:
+        """One backfill pass. False when it raised: the jobs loop runs it again.
+        The pass stops between batches when the store stops (NOBLIVION-63)."""
         try:
-            result = self.embedding.backfill(conn)
+            result = self.embedding.backfill(conn, stop=self._jobs_stop.is_set)
         except Exception as exc:  # noqa: BLE001 - rows stay without a vector; next pass
             log.error("embed backfill failed: %s", type(exc).__name__)
-            return
+            return False
         if result is not None and (result.embedded or result.failed):
             log.info("embed backfill: embedded=%d failed=%d", result.embedded, result.failed)
+        return True
 
     def _jobs(self) -> None:
         interval = self.store_settings.index_interval_s
@@ -564,42 +571,65 @@ class Store:
                 next_scan = self.clock() + interval
                 backfilled_state = None
                 backfilled_rev = -1
+                retry_at: float | None = None  # a failed pass runs again then
+                faulted = False  # the last tick raised, and the log says so
                 while not self._jobs_stop.wait(JOB_TICK_S):
-                    # A revoked consent turns a remote backend off, also on a
-                    # store that gets no query (NOBLIVION-51). False too when
-                    # the consent cannot be read: this tick then sends nothing.
-                    consent = self.embedding.check_consent(conn)
-                    state = self.embedding.state
-                    if self.clock() >= next_maintenance:
-                        self.maintenance_once(conn)
-                        next_maintenance = self.clock() + trust.MAINTENANCE_INTERVAL_S
-                    due_scan = interval > 0 and self.clock() >= next_scan
-                    if due_scan:
-                        self.scan_once(conn)
-                        next_scan = self.clock() + interval
-                    usable = consent and state in (
-                        embedding.STATE_READY,
-                        embedding.STATE_REEMBEDDING,
-                    )
-                    # A content change by `noblivion index` also needs a pass,
-                    # with periodic scans off too (NOBLIVION-42).
-                    content_rev = db.revisions(conn)[0] if usable else 0
-                    if usable and (
-                        due_scan or backfilled_state != state or content_rev > backfilled_rev
-                    ):
-                        self.backfill_once(conn)
-                        backfilled_state = self.embedding.state
-                        backfilled_rev = content_rev
-                    if (
-                        state == embedding.STATE_FAILED
-                        and not self._model_alive()
-                        and self.embedding.retry_due(conn)
-                    ):
-                        # The service keeps the retry to once per hour, and a
-                        # new consent ends the wait. No thread and no log line
-                        # on a tick where a start would change nothing.
-                        self._model_thread = self._spawn(self._load_model, "noblivion-model")
+                    # One fault, as "database is locked", ends this tick only.
+                    # The next tick tries again (NOBLIVION-63).
+                    try:
+                        # A revoked consent turns a remote backend off, also on a
+                        # store that gets no query (NOBLIVION-51). False too when
+                        # the consent cannot be read: this tick then sends nothing.
+                        consent = self.embedding.check_consent(conn)
+                        state = self.embedding.state
+                        if self.clock() >= next_maintenance:
+                            self.maintenance_once(conn)
+                            next_maintenance = self.clock() + trust.MAINTENANCE_INTERVAL_S
+                        due_scan = interval > 0 and self.clock() >= next_scan
+                        if due_scan:
+                            self.scan_once(conn)
+                            next_scan = self.clock() + interval
+                        usable = consent and state in (
+                            embedding.STATE_READY,
+                            embedding.STATE_REEMBEDDING,
+                        )
+                        # A content change by `noblivion index` also needs a pass,
+                        # with periodic scans off too (NOBLIVION-42). A pass that
+                        # raised is not done: it runs again (NOBLIVION-77).
+                        content_rev = db.revisions(conn)[0] if usable else 0
+                        if usable and (
+                            due_scan
+                            or backfilled_state != state
+                            or content_rev > backfilled_rev
+                            or (retry_at is not None and self.clock() >= retry_at)
+                        ):
+                            if self.backfill_once(conn):
+                                backfilled_state = self.embedding.state
+                                backfilled_rev = content_rev
+                                retry_at = None
+                            else:
+                                backfilled_state = self.embedding.state
+                                backfilled_rev = max(backfilled_rev, content_rev)
+                                retry_at = self.clock() + JOB_RETRY_S
+                        if (
+                            state == embedding.STATE_FAILED
+                            and not self._model_alive()
+                            and self.embedding.retry_due(conn)
+                        ):
+                            # The service keeps the retry to once per hour, and a
+                            # new consent ends the wait. No thread and no log line
+                            # on a tick where a start would change nothing.
+                            self._model_thread = self._spawn(self._load_model, "noblivion-model")
+                    except Exception as exc:  # noqa: BLE001 - the next tick tries again
+                        if not faulted:
+                            log.error("background jobs tick failed: %s", type(exc).__name__)
+                        faulted = True
+                    else:
+                        if faulted:
+                            log.info("background jobs run again")
+                        faulted = False
         except Exception as exc:  # noqa: BLE001 - the store keeps answering
+            self.index_state = INDEX_STOPPED  # /health says so
             log.error("background jobs stopped: %s", type(exc).__name__)
 
     def _model_alive(self) -> bool:
@@ -649,10 +679,20 @@ class Store:
                 # ends on its first fault.
                 self.request_stop("data dir removed")
         log.info("store stopping: %s", self.stop_reason)
+        # The jobs end first, while the store still answers: a backfill or a
+        # scan can take a while, and recall stays up until then (NOBLIVION-63).
+        self._stop_jobs()
         self.server.shutdown()
         server_thread.join(DRAIN_TIMEOUT_S)
         self.close()
         return EXIT_OK
+
+    def _stop_jobs(self) -> None:
+        """Ask the jobs thread to end after its current batch, and wait for it."""
+        self._jobs_stop.set()
+        for thread in self._threads:
+            if thread.name == "noblivion-jobs":
+                thread.join(JOB_JOIN_TIMEOUT_S)
 
     def close(self) -> None:
         """Finish open requests (5 s), stop the jobs after their current batch,
