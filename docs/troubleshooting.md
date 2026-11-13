@@ -42,6 +42,7 @@ tells you the cause.
 | `foreign_listener` | The handshake failed. | See [Handshake failure](#handshake-failure). |
 | `timeout` | The store did not answer within 2 seconds. | See [Recall is slow](#recall-is-slow). |
 | `store_hung` | A store call timed out less than 30 seconds ago, so the hook did not call the store. | See [Recall is slow](#recall-is-slow). |
+| `ok:fallback:<reason>` | The store did not answer for `<reason>`, so the prompt rows came from the hook's text search of the note files. The rows end with `[fallback]` and have no id. | Find the cause by `<reason>` in this table. Set `NOBLIVION_RECALL_FALLBACK=off` to keep the hook silent instead. |
 | `busy` | The hook already had 4 store requests in flight, because earlier requests hang. | Check that the store answers: run `noblivion ensure-running --json`. |
 | `namespace_mismatch`, `bad_project` | `NOBLIVION_PROJECT` or `NOBLIVION_RECALL_PROJECT` differs between the hook and the store, or has bad characters. | Use lower-case letters, digits and `_`. Set the same value for both. |
 | `skip:disabled` | `NOBLIVION_RECALL_DISABLE` is set. | Remove it. |
@@ -194,7 +195,14 @@ unless `embedding.allow_download` is `true`.
   the next 30 seconds. The log then shows `store_hung`, and the prompt does
   not wait. The hooks write the end of this pause to `<data dir>/store.hung`.
   The pause stops only a call with no more time than the call that timed
-  out, so a hook with a short budget does not stop the prompt hook.
+  out, so a hook with a short budget does not stop the prompt hook. Two calls
+  that time out keep the larger budget. After 5 seconds of the pause, a hook
+  sends one proof request of 0.15 seconds; when the store answers, the hook
+  calls it again and removes the pause. The trust report (10 seconds) writes
+  no pause when it times out.
+- While the store does not answer, the prompt hook shows rows from its own
+  text search of the note files, marked `[fallback]`, and tells you once per
+  session.
   When `store_hung` comes back every 30 seconds, the store accepts a
   connection but does not answer. Stop the store (SIGTERM to the process id
   in `store.json`), then run `noblivion ensure-running`.

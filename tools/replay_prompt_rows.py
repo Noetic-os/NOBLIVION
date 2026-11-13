@@ -216,8 +216,8 @@ def filtered_hook(
     hook = _load(hooks / "recall_hook.py", alias)
     exists: dict[str, Any] = {"fn": lambda n: True}
     store_get = hook.store_get
-    hook.store_get = lambda build, environ, timeout_s: rt.filter_payload(
-        store_get(build, environ, timeout_s), exists["fn"]
+    hook.store_get = lambda build, environ, timeout_s, **kw: rt.filter_payload(
+        store_get(build, environ, timeout_s, **kw), exists["fn"]
     )
     return hook, exists
 

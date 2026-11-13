@@ -165,6 +165,7 @@ import datetime as _dt
 import hashlib
 import http.client
 import importlib
+import io
 import ipaddress
 import json
 import math
@@ -1045,7 +1046,22 @@ def _wait_for_started_store(env: Mapping[str, str], probe: Any, probe_s: float) 
         time.sleep(_STORE.HOOK_POLL_S)
 
 
-def store_get(build: Any, environ: Optional[Mapping[str, str]], timeout_s: float) -> Any:
+def _hung_probe(env: Mapping[str, str]) -> bool:
+    """NOBLIVION-224. One proof request with ``store_client.HUNG_PROBE_S`` to a
+    store that is stamped as hung. True when the store proves itself in that
+    time. The kept proofs are dropped first, so a long-lived caller asks the
+    store too, and a probe that times out writes no stamp."""
+    _STORE.forget(env)
+    try:
+        _STORE.connect(env, lambda url, budget: http_get_json(url, "", budget), _STORE.HUNG_PROBE_S)
+    except _STORE.StoreUnavailable:
+        return False
+    return True
+
+
+def store_get(
+    build: Any, environ: Optional[Mapping[str, str]], timeout_s: float, heavy: bool = False
+) -> Any:
     """GET one store route and decode its JSON, within ``timeout_s`` TOTAL.
 
     ``build(base)`` returns the URL for the store's base URL. The store is
@@ -1061,9 +1077,20 @@ def store_get(build: Any, environ: Optional[Mapping[str, str]], timeout_s: float
     While it is in force for a call with no more than that budget, this
     raises ``RecallError("store_hung")`` at once and sends nothing. A call
     with a longer budget still goes: the store may answer in the longer time.
+
+    NOBLIVION-224. A stamp is not a 30 s silence. Once it is
+    ``store_client.HUNG_PROBE_GAP_S`` old, one short proof request goes out
+    (``_hung_probe``). A store that answers it gets this call, and an answer
+    to the call removes the stamp (``store_client.clear_hung``).
+
+    NOBLIVION-89. ``heavy`` is for a route that may need its whole budget on
+    a store that is well, such as the trust report. Its request timing out
+    writes no stamp, so it never stops the light routes (the prompt rows). A
+    proof request that times out still writes one: the health route is light.
     """
     env = os.environ if environ is None else environ
-    if _STORE.hung(env, timeout_s):
+    age = _STORE.hung_age(env, timeout_s)
+    if age is not None and (age < _STORE.HUNG_PROBE_GAP_S or not _hung_probe(env)):
         raise RecallError(_STORE.HUNG)
     t0 = time.monotonic()
     store = _STORE.store_identity(env)
@@ -1099,13 +1126,16 @@ def store_get(build: Any, environ: Optional[Mapping[str, str]], timeout_s: float
     if left <= 0:
         raise RecallError("timeout")
     try:
-        return http_get_json(url, token, left)
+        answer = http_get_json(url, token, left)
     except RecallError as exc:
-        if exc.reason == "timeout":
+        if exc.reason == "timeout" and not heavy:
             _STORE.mark_hung(env, timeout_s, store)
         if not exc.reason.startswith("http_"):
             _STORE.forget(env)  # no answer: prove again next time
         raise
+    if age is not None:
+        _STORE.clear_hung(env, store)  # the stamped store answered: no back-off now
+    return answer
 
 
 def _connection(url: str, timeout_s: float) -> Tuple[http.client.HTTPConnection, str]:
@@ -1316,6 +1346,7 @@ class IndexLine:
         "desc_cap",
         "older",
         "store_lex",
+        "mark",
     )
 
     def __init__(
@@ -1338,6 +1369,7 @@ class IndexLine:
         desc_cap: int = 0,
         older: bool = False,
         store_lex: Optional[Tuple[float, float]] = None,
+        mark: str = "",
     ):
         # NOBLIVION-157. The two values of the P1h re-rank that the store computed for this
         # row, when the request asked for them: (BM25 of every query sub-token, BM25 of the
@@ -1388,6 +1420,9 @@ class IndexLine:
         # W6 renders ``rule``; W7 renders ``apply_block`` under the top rows.
         self.rule = rule
         self.apply_block = apply_block
+        # NOBLIVION-224. FALLBACK_MARK or FRESH_MARK for a row that the hook's own text
+        # search found and the store did not send; "" for a store row.
+        self.mark = mark
 
     def render(self, rule_rows: bool = False) -> str:
         """The row, inert and with no host path in it.
@@ -1410,7 +1445,10 @@ class IndexLine:
         score = "n/a" if self.score is None else f"{self.score:.2f}"
         title = strip_host_paths(_neutral(self.title, TITLE_MAX_CHARS)) or "memory"
         summary = strip_host_paths(_neutral(self.summary, INDEX_SUMMARY_MAX_CHARS))
-        return f"- {int(self.rank)}. {title} — {summary} (id {int(self.mid)}, score {score})"
+        return (
+            f"- {int(self.rank)}. {title} — {summary} (id {int(self.mid)}, score {score})"
+            f"{self.mark}"
+        )
 
     def _render_rule(self) -> str:
         """W6 F1: ``- [id 18993] <rule> (<name>)``, at most INDEX_ROW_MAX_CHARS.
@@ -1458,6 +1496,7 @@ class IndexLine:
         # "[id 5]" would forge an id. An index row's id is always 1 or more.
         prefix = f"{INDEX_ROW_PREFIX}{int(self.mid)}] " if int(self.mid) > 0 else INDEX_ROW_NO_ID
         suffix = f" ({name}{OLDER_MARK})" if self.older else f" ({name})"
+        suffix += self.mark
         room = INDEX_ROW_MAX_CHARS - len(prefix) - len(suffix)
         limit = max(1, min(INDEX_RULE_MAX_CHARS, room))
         if self.desc_cap > 0 and not self.rule:
@@ -2094,6 +2133,7 @@ def prune_session_files(
         "." + SHOWN_SET_NAME + ".lock",
         "." + LAST_INDEX_NAME + ".lock",
         HUB_SEEN_SUFFIX,
+        "." + NOTICE_NAME,
     )
     sessions: Dict[str, List[str]] = {}
     newest: Dict[str, float] = {}
@@ -3118,6 +3158,7 @@ def own_description_row(
             model=ln.model,
             source=ln.source,
             desc_cap=OWN_DESC_MAX_CHARS,
+            mark=ln.mark,
         )
         return row, pos
     return None, 0
@@ -3263,7 +3304,9 @@ def corpus_cache_path(environ: Optional[Mapping[str, str]] = None) -> Optional[s
     return os.path.join(cache_dir(env), CORPUS_CACHE_NAME)
 
 
-def load_session_corpus(environ: Optional[Mapping[str, str]] = None) -> List[MemoryFile]:
+def load_session_corpus(
+    environ: Optional[Mapping[str, str]] = None, deadline: Optional[float] = None
+) -> List[MemoryFile]:
     """The local corpus of ``memory_dirs``. On a file name that two folders
     hold, the first folder's file is kept (the project file first), as the
     store does for a shared root."""
@@ -3276,7 +3319,7 @@ def load_session_corpus(environ: Optional[Mapping[str, str]] = None) -> List[Mem
             cache_path = None
     own_folder = memory_dir(environ)
     folders = memory_dirs(environ)
-    corpora = _CORPUS.load_memory_corpora(folders, cache_path)
+    corpora = _CORPUS.load_memory_corpora(folders, cache_path, deadline if cache_path else None)
     for folder, corpus in zip(folders, corpora):  # noqa: B905 - one corpus per folder
         # NOBLIVION-160. The run's own project folder is the first folder of the list.
         is_own = own_folder is not None and os.path.realpath(folder) == os.path.realpath(own_folder)
@@ -3515,6 +3558,7 @@ def renumber(lines: Sequence[IndexLine]) -> List[IndexLine]:
             source=ln.source,
             desc_cap=ln.desc_cap,
             older=ln.older,
+            mark=ln.mark,
         )
         for i, ln in enumerate(lines, start=1)
     ]
@@ -3541,6 +3585,222 @@ def annotate_index(lines: Sequence[IndexLine], by_name: Mapping[str, MemoryFile]
         ln.rule = md.rule
         ln.apply_block = md.apply_block
     return joined
+
+
+# ── the text search leg (NOBLIVION-224) ─────────────────────────────────────
+
+# When the store does not answer (down, cold, slow or stamped as hung), the
+# prompt hook answers from its own text search over the note files instead of
+# with nothing. ``off`` turns it off; the hook is then silent as before.
+FALLBACK_ENV = "NOBLIVION_RECALL_FALLBACK"
+# The time the text search may take, from the start of the corpus read.
+FALLBACK_BUDGET_S = 0.3
+# The part of it that reading note files not in the corpus cache may take.
+FALLBACK_READ_S = 0.15
+# A note is a row only when the words it shares with the prompt carry this share
+# of the prompt's word weight. Measured on the 60 exact-wording prompts and the 60
+# generic prompts of the 20,000-note fixture: 0.3 keeps 49 of 60 answers and cuts
+# the rows on generic prompts from 60 of 60 to 5 of 60.
+FALLBACK_MIN_SHARE = 0.3
+# A word in more than half the notes tells nothing about a note (NOBLIVION-82:
+# no stop list, the corpus decides). Only for a corpus of this size or more.
+FALLBACK_COMMON_MIN_DOCS = 8
+FALLBACK_MARK = " [fallback]"
+# ``off`` turns the fresh-note leg below off; the fallback stays.
+FRESH_ENV = "NOBLIVION_RECALL_FRESH_ROWS"
+# A note written less than this long ago may not be searchable in the store yet:
+# the text search adds it when it is a top match (FRESH_TOP) and the store did
+# not send it.
+FRESH_WINDOW_S = 60.0
+FRESH_TOP = 3
+FRESH_MARK = " [new note]"
+# One notice per session, after the first prompt whose recall ran in fallback or
+# was skipped because the store did not answer.
+NOTICE_NAME = "store_notice"
+FALLBACK_NOTICE = (
+    "NOBLIVION: the memory store gave no rows ({reason}). Prompt rows come from a "
+    "local text search of the note files until it answers. This notice shows once "
+    "per session."
+)
+SKIP_NOTICE = (
+    "NOBLIVION: the memory store did not answer ({reason}), so this prompt got no "
+    "memory rows. This notice shows once per session."
+)
+# The reasons that mean the store gave no answer at all. Only these get the skip
+# notice: a store that answered with an error or another namespace is a setup
+# fault the log names, and the hook stays silent for it as before.
+NO_ANSWER_REASONS = ("store_down", "store_hung", "timeout", "busy", "no_token", "foreign_listener")
+NO_ANSWER_PREFIXES = ("unreachable:", "error:")
+_SEARCH_WORD_RE = re.compile(r"[a-z0-9]+")
+_NOTICE = ""
+
+
+def no_answer(reason: str) -> bool:
+    """True when ``reason`` says the store did not answer (NO_ANSWER_REASONS)."""
+    return reason in NO_ANSWER_REASONS or reason.startswith(NO_ANSWER_PREFIXES)
+
+
+def fallback_on(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """``NOBLIVION_RECALL_FALLBACK``: on unless off."""
+    env = os.environ if environ is None else environ
+    return switch_on(env, FALLBACK_ENV, True)
+
+
+def fresh_on(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """``NOBLIVION_RECALL_FRESH_ROWS``: on unless off."""
+    env = os.environ if environ is None else environ
+    return switch_on(env, FRESH_ENV, True)
+
+
+def _search_words(text: str) -> List[str]:
+    return _SEARCH_WORD_RE.findall(text.lower())
+
+
+def _search_text(md: MemoryFile) -> str:
+    """The fields the text search reads: the name, the description, the rule
+    and the triggers. All four come from the corpus cache, so no note file is
+    read again."""
+    return " ".join((md.name, md.description, md.rule, " ".join(md.triggers)))
+
+
+def text_search(
+    query: str, corpus: Sequence[MemoryFile], deadline: Optional[float] = None
+) -> List[Tuple[int, float]]:
+    """``(corpus index, score)`` of the notes that match ``query``, best first.
+
+    A score is the sum of the weights of the prompt words a note holds, with
+    the weight ``log(1 + (n - df + 0.5) / (df + 0.5))``. A word in more than
+    half the notes has no weight (FALLBACK_COMMON_MIN_DOCS). A note needs two
+    weighted words (one when the prompt has one word) and FALLBACK_MIN_SHARE
+    of the weight of the prompt words that some note holds. A tie goes to the lower path. Past ``deadline``
+    (``time.monotonic``) the notes not yet read are left out."""
+    words = {w for w in _search_words(query) if len(w) >= 2}
+    if not words or not corpus:
+        return []
+    sets: List[frozenset] = []
+    for i, md in enumerate(corpus):
+        if deadline is not None and i % 256 == 255 and time.monotonic() > deadline:
+            break
+        sets.append(frozenset(_search_words(_search_text(md))))
+    n = len(sets)
+    weight: Dict[str, float] = {}
+    holders: Dict[str, List[int]] = {}
+    for word in words:
+        docs = [i for i, got in enumerate(sets) if word in got]
+        df = len(docs)
+        if not df or (n >= FALLBACK_COMMON_MIN_DOCS and 2 * df > n):
+            continue
+        weight[word] = math.log(1.0 + (n - df + 0.5) / (df + 0.5))
+        holders[word] = docs
+    total = sum(weight.values())
+    if total <= 0.0:
+        return []
+    score: Dict[int, float] = {}
+    count: Dict[int, int] = {}
+    for word, docs in holders.items():
+        for i in docs:
+            score[i] = score.get(i, 0.0) + weight[word]
+            count[i] = count.get(i, 0) + 1
+    need = min(2, len(words))
+    kept = [
+        (i, v) for i, v in score.items() if count[i] >= need and v / total >= FALLBACK_MIN_SHARE
+    ]
+    kept.sort(key=lambda p: (-round(p[1], 6), corpus[p[0]].rel_path))
+    return kept
+
+
+def _search_row(md: MemoryFile, rank: int, mark: str) -> IndexLine:
+    """A row the text search found: no store id (it renders INDEX_ROW_NO_ID),
+    no score, and the path the corpus join uses."""
+    return IndexLine(
+        rank=rank,
+        mid=0,
+        title=md.name,
+        summary=md.description,
+        score=None,
+        keyword=True,
+        source=md.rel_path,
+        mark=mark,
+    )
+
+
+def fallback_index(
+    query: str, k: int, environ: Mapping[str, str]
+) -> Tuple[List[IndexLine], List[MemoryFile]]:
+    """The rows of the text search for a store that did not answer, at most
+    ``k``, and the corpus it read. Each row carries FALLBACK_MARK. Raises
+    OSError or ValueError when the corpus cannot be read."""
+    start = time.monotonic()
+    # A cold corpus cache reads every note file once. Past FALLBACK_READ_S the
+    # files not read yet are left for the next prompt, so one prompt never
+    # waits for the whole folder; the files read stay cached.
+    corpus = load_session_corpus(environ, start + FALLBACK_READ_S)
+    found = text_search(query, corpus, start + FALLBACK_BUDGET_S)
+    rows = [_search_row(corpus[i], r, FALLBACK_MARK) for r, (i, _v) in enumerate(found[:k], 1)]
+    return rows, corpus
+
+
+def fresh_index(
+    query: str,
+    corpus: Sequence[MemoryFile],
+    lines: Sequence[IndexLine],
+    by_name: Mapping[str, MemoryFile],
+    now: float,
+) -> List[IndexLine]:
+    """The rows for notes written in the last FRESH_WINDOW_S that are among the
+    FRESH_TOP best matches of the text search and that the store did not
+    send. A store indexes a new note some seconds after it is written, so this
+    covers that window. ``[]`` at once when no note is that new: the text
+    search then does not run and the store's rows are all there is."""
+    cut = now - FRESH_WINDOW_S
+    fresh = {md.rel_path for md in corpus if md.mtime >= cut}
+    if not fresh:
+        return []
+    have = {md.rel_path for md in (file_of(ln, by_name) for ln in lines) if md is not None}
+    found = text_search(query, corpus, time.monotonic() + FALLBACK_BUDGET_S)
+    return [
+        _search_row(corpus[i], 0, FRESH_MARK)
+        for i, _v in found[:FRESH_TOP]
+        if corpus[i].rel_path in fresh and corpus[i].rel_path not in have
+    ]
+
+
+def _queue_notice(cache: str, sid: Any, event: str, template: str, reason: str) -> None:
+    """Queue the once-per-session notice for ``main`` to print as the
+    ``systemMessage`` of this prompt. Only for ``UserPromptSubmit`` and a valid
+    session id; the first call of a session writes a marker file and later
+    calls see it. Never raises."""
+    global _NOTICE
+    if event != "UserPromptSubmit" or not _valid_sid(sid):
+        return
+    path = _CORPUS.session_state_file(cache, NOTICE_NAME, sid)
+    try:
+        _make_dirs(os.path.dirname(path))
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError:
+        return  # given already, or no place to say so: no notice
+    os.close(fd)
+    _NOTICE = template.format(reason=reason)
+
+
+def _write_output(stdout, text: str, notice: str) -> None:
+    """Print the hook's output. With no notice, ``text`` as it is. With one, a
+    JSON answer: the notice as ``systemMessage`` and ``text`` as the
+    ``additionalContext`` of the prompt."""
+    if notice:
+        doc: Dict[str, Any] = {"systemMessage": notice}
+        context = text.rstrip("\n")
+        if context:
+            doc["hookSpecificOutput"] = {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": context,
+            }
+        stdout.write(json.dumps(doc) + "\n")
+    elif text:
+        stdout.write(text)
+    else:
+        return
+    stdout.flush()
 
 
 def recall_index(
@@ -4005,6 +4265,9 @@ def _serve_index(
         if (hygiene or rerank or floor is not None or drop_on or rules_on or hub_span > 0)
         else k
     )
+    fallback = ""  # NOBLIVION-224: the store's failure reason when the text search answered
+    fb_corpus: Optional[List[MemoryFile]] = None
+    corpus: List[MemoryFile] = []
     try:
         lines = (
             list(candidates_override)[:ask]
@@ -4018,8 +4281,32 @@ def _serve_index(
                 for ln in lines
             ]
     except RecallError as exc:
-        log_line(cache, event, sid, 0, 0, int((time.monotonic() - t0) * 1000), f"fail:{exc.reason}")
-        return
+        # NOBLIVION-224. The store did not answer: for a prompt, the text search
+        # answers instead. Every other event keeps its silence.
+        if candidates_override is not None or diagnostic is not None or event != "UserPromptSubmit":
+            log_line(
+                cache, event, sid, 0, 0, int((time.monotonic() - t0) * 1000), f"fail:{exc.reason}"
+            )
+            return
+        why = ""
+        if not fallback_on(environ):
+            why = ":fallback_off"
+        elif not memory_dirs(environ):
+            why = " "  # nothing to search: the status of before
+        else:
+            try:
+                lines, fb_corpus = fallback_index(query, ask, environ)
+            except (OSError, ValueError) as err:
+                why = f":fallback_off:{type(err).__name__}"
+        if why:
+            if no_answer(exc.reason):
+                _queue_notice(cache, sid, event, SKIP_NOTICE, exc.reason)
+            ms = int((time.monotonic() - t0) * 1000)
+            log_line(cache, event, sid, 0, 0, ms, f"fail:{exc.reason}{why.strip()}")
+            return
+        fallback = exc.reason
+        candidates = list(lines)
+        _queue_notice(cache, sid, event, FALLBACK_NOTICE, fallback)
     # P3 and P1h. Both read the run's memory folder. Either one failing leaves
     # the store's own list, and the log line NAMES the fallback: an arm E run
     # that quietly served arm D's ranking would be a silent validity failure,
@@ -4032,7 +4319,7 @@ def _serve_index(
             note = ":local_off:no_memory_dir"
         else:
             try:
-                corpus = load_session_corpus(environ)
+                corpus = fb_corpus if fb_corpus is not None else load_session_corpus(environ)
                 by_name = corpus_by_name(corpus)
                 if hygiene:
                     lines = hygiene_index(lines, by_name)
@@ -4051,11 +4338,15 @@ def _serve_index(
             except (OSError, ValueError, ZeroDivisionError) as exc:
                 note = f":local_off:{type(exc).__name__}"
                 by_name = {}
-    # (G). After the re-rank and before the floor and the cut to k.
-    lines, trust_note = _apply_trust(
-        lines, environ, by_name, "" if diagnostic is not None else cache, sid, event
-    )
-    note += trust_note
+    # (G). After the re-rank and before the floor and the cut to k. The rows of
+    # the text search have no store id and no trust values.
+    if fallback:
+        note += ":trust_off:fallback"
+    else:
+        lines, trust_note = _apply_trust(
+            lines, environ, by_name, "" if diagnostic is not None else cache, sid, event
+        )
+        note += trust_note
     if floor is not None and keyword:
         # Design doc section 8.4: no cosine, so no floor can judge a row.
         note += ":floor_off:keyword"
@@ -4101,6 +4392,20 @@ def _serve_index(
         note += f":norule_drop{no_rule}"
     elif drop_asked:
         note += ":drop_no_rule_off:no_rule_rows"
+    if (
+        not fallback
+        and by_name
+        and diagnostic is None
+        and event == "UserPromptSubmit"
+        and fresh_on(environ)
+    ):
+        # NOBLIVION-224. A note written in the last minute that the store did not
+        # send: after the floor (it has no score) and before the admission and the
+        # cut to k, at the top. With no such note this adds nothing.
+        fresh = fresh_index(query, corpus, lines, by_name, time.time())
+        if fresh:
+            lines = fresh + list(lines)
+            note += f":fresh{len(fresh)}"
     if rules_asked and not rules_on:
         note += ":rules_only_off:no_rule_rows" if not rule_rows else ":rules_only_off:no_memory_dir"
     # NOBLIVION-121. The rows as the release before would have cut them, kept for
@@ -4283,7 +4588,9 @@ def _serve_index(
         # them. Said in the log, because the dedupe it defeats is the claim.
         note += ":shown_unwritable"
     if chars:
-        note += _record_shown_events(cache, sid, event, shown, environ)  # (E)
+        # (E). A row of the text search has no store id, so it has no event.
+        stored = [ln for ln in shown if int(ln.mid) > 0]
+        note += _record_shown_events(cache, sid, event, stored, environ)
     if hub_candidates and _valid_sid(sid):
         # NOBLIVION-121. After the emit, so it cannot delay the prompt. The
         # counts feed the hub rows of later prompts.
@@ -4294,6 +4601,8 @@ def _serve_index(
         # status of a call must not depend on what other sessions left behind.
         with contextlib.suppress(Exception):
             prune_session_files(cache, sid, environ)
+    if fallback:
+        note = f":fallback:{fallback}" + note
     log_line(cache, event, sid, len(shown), chars, ms, "ok" + note)
 
 
@@ -4441,16 +4750,26 @@ def main(stdin=None, stdout=None, environ: Optional[Dict[str, str]] = None) -> i
     exception ``run`` did not expect still leaves the call's one log line,
     ``fail:internal:<type>``: the type only, never the message, which could
     carry a secret."""
+    global _NOTICE
+    _NOTICE = ""
     env: Dict[str, str] = {}
+    out = stdout or sys.stdout
+    # NOBLIVION-224. The output is held until the end, so a notice can wrap it
+    # (``_write_output``). With no notice the bytes are the ones printed before.
+    held = io.StringIO()
     try:
         env = dict(os.environ if environ is None else environ)
         text = (stdin or sys.stdin).read()
-        run(text, stdout or sys.stdout, env)
-        label_rows(text, stdout or sys.stdout, env)
+        run(text, held, env)
+        label_rows(text, held, env)
     except BaseException as exc:  # noqa: BLE001 — fail open: no stdout, exit 0, whatever happened
         with contextlib.suppress(BaseException):
             log_line(cache_dir(env), "-", None, 0, 0, 0, f"fail:internal:{type(exc).__name__}")
+        with contextlib.suppress(BaseException):
+            _write_output(out, held.getvalue(), "")
         return 0
+    with contextlib.suppress(Exception):
+        _write_output(out, held.getvalue(), _NOTICE)
     return 0
 
 

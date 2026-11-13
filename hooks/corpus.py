@@ -24,6 +24,7 @@ import os
 import re
 import stat
 import sys
+import time
 import unicodedata
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
@@ -239,6 +240,7 @@ class MemoryFile:
         "scope",
         "triggers",
         "stamp",
+        "mtime",
     )
 
     def __init__(
@@ -282,6 +284,10 @@ class MemoryFile:
         # NOBLIVION-156. When the file was last written, in seconds: its ``modified:`` line,
         # else its modification time. 0.0 when unknown. The older-row mark reads it.
         self.stamp = stamp
+        # NOBLIVION-224. The file's modification time in seconds, set by the corpus loader
+        # (0.0 when unknown). The fresh-note leg of the prompt hook reads it: a note
+        # written in the last minute may not be searchable in the store yet.
+        self.mtime = 0.0
 
     @property
     def tokens(self) -> List[str]:
@@ -773,9 +779,14 @@ def load_memory_corpus(folder: str, cache_path: Optional[str] = None) -> List[Me
 
 
 def load_memory_corpora(
-    folders: Sequence[str], cache_path: Optional[str] = None
+    folders: Sequence[str], cache_path: Optional[str] = None, deadline: Optional[float] = None
 ) -> List[List[MemoryFile]]:
     """The corpus of each folder, in input order, with files sorted by name.
+
+    ``deadline`` (``time.monotonic``, with a cache only; NOBLIVION-224): past it, a
+    file that is not in the cache is left out and not cached, so a later call
+    reads it. The files already read are cached, so a cold cache fills over
+    a few calls and no call reads for much longer than its budget.
 
     Use one cache read and at most one atomic write for all folders. Entries
     for other folders stay in the shared cache. File parsing, lazy tokens and
@@ -795,6 +806,8 @@ def load_memory_corpora(
                     continue
                 md = _read_memory_file(path, base)
                 if md is not None:
+                    with contextlib.suppress(OSError):
+                        md.mtime = os.path.getmtime(path)
                     out.append(md)
             corpora.append(out)
         return corpora
@@ -826,6 +839,8 @@ def load_memory_corpora(
                     continue
                 md = _file_from_cache(base, row, path)
             if md is None:
+                if deadline is not None and time.monotonic() > deadline:
+                    continue  # left for a later call; ``kept`` does not hold it
                 changed = True
                 md = _read_memory_file(path, base)
                 if md is None:
@@ -844,6 +859,7 @@ def load_memory_corpora(
                     md.stamp,
                 ]
             kept[key] = row
+            md.mtime = st.st_mtime
             out.append(md)
         corpora.append(out)
     if changed or len(kept) != len(cached):  # a file was read, or a file is gone

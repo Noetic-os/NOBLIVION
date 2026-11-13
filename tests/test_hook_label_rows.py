@@ -457,8 +457,9 @@ SHIPPED_CONFIG = HOOKS.parent / "config" / "config.default.json"
 
 def _config_env(env, hook_env, tmp_path, recall_env=None):
     """``env`` plus a config file: the shipped one, or one whose ``recall.env``
-    block is ``recall_env``. No store runs and none is started, so the recall
-    hook's own leg prints nothing."""
+    block is ``recall_env``. No store runs and none is started, and the text
+    search for a silent store is off (NOBLIVION-224), so the recall hook's own
+    leg prints nothing."""
     path = SHIPPED_CONFIG
     if recall_env is not None:
         path = tmp_path / "config-labels.json"
@@ -468,13 +469,21 @@ def _config_env(env, hook_env, tmp_path, recall_env=None):
         NOBLIVION_CONFIG=str(path),
         NOBLIVION_DATA_DIR=str(hook_env["data"]),
         NOBLIVION_STORE_AUTOSTART="0",
+        NOBLIVION_RECALL_FALLBACK="0",
     )
 
 
 def _recall_main(env, stdin_text: str) -> str:
+    """The text the model sees. A prompt with the once-per-session store notice
+    (NOBLIVION-224) prints JSON with the text as its additional context."""
     out = io.StringIO()
     assert rh.main(stdin=io.StringIO(stdin_text), stdout=out, environ=env) == 0
-    return out.getvalue()
+    text = out.getvalue()
+    if text.startswith("{"):
+        doc = json.loads(text).get("hookSpecificOutput") or {}
+        context = doc.get("additionalContext") or ""
+        return context + "\n" if context else ""
+    return text
 
 
 def test_recall_hook_takes_the_labels_switch_from_the_shipped_config_file(env, hook_env, tmp_path):

@@ -105,8 +105,9 @@ def test_the_default_cache_file_is_the_one_the_session_line_reads(tmp_path):
 def test_refresh_writes_the_cache_with_counts(env, monkeypatch):
     seen = {}
 
-    def fake_store_get(build, environ, timeout):
+    def fake_store_get(build, environ, timeout, heavy=False):
         seen.update(url=build("http://127.0.0.1:9"), timeout=timeout)
+        assert heavy, "the report is a heavy route: its timeout writes no stamp"
         return REPORT
 
     monkeypatch.setattr(rep.rh(), "store_get", fake_store_get)

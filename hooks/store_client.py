@@ -24,7 +24,12 @@ client side of ``noblivion.launcher``:
    HUNG_BACKOFF_S ahead (``mark_hung``). While it is in force (``hung``), the
    hooks send nothing to that store with no larger time budget than the call
    that timed out. A new ``store.json``, or a stamp for another store, does
-   not count.
+   not count. A stamp for the same store keeps the larger budget of the two
+   calls (NOBLIVION-90), and the store is named by its pid, its port and its
+   start time, so a reused pid on the same port is another store. After
+   HUNG_PROBE_GAP_S a caller may send one short proof request
+   (``hung_age``, NOBLIVION-224); a store that answers gets its calls again,
+   and ``clear_hung`` removes the stamp after a call that it answered.
 
 The HTTP request itself belongs to the caller (``recall_hook.http_get_json``),
 so this module opens no socket.
@@ -83,6 +88,12 @@ SPAWN_STAMP_MAX_AGE_S = 30.0
 # wait per back-off, not one per prompt and per subagent start.
 HUNG_STAMP_FILE = "store.hung"
 HUNG_BACKOFF_S = 30.0
+# NOBLIVION-224. A stamp is not a 30 s silence: once it is this old, a caller sends
+# one proof request with HUNG_PROBE_S. A store that answers it is called again.
+# The gap bounds the cost of a store whose proof answers and whose search hangs:
+# one full wait per gap, not one per prompt.
+HUNG_PROBE_GAP_S = 5.0
+HUNG_PROBE_S = 0.15
 BIN_ENV = "NOBLIVION_BIN"
 BIN_KEY = "store.bin"
 AUTOSTART_ENV = "NOBLIVION_STORE_AUTOSTART"
@@ -235,13 +246,43 @@ def forget(env: Optional[Mapping[str, str]] = None) -> None:
 
 
 def store_identity(env: Optional[Mapping[str, str]] = None) -> str:
-    """``<pid>:<port>`` of the store that ``store.json`` names now, or "" when
-    it names none. A caller reads it BEFORE a call, so a stamp written after
-    the call can tell which store the call went to."""
+    """``<pid>:<port>:<started_at>`` of the store that ``store.json`` names now,
+    or "" when it names none. A caller reads it BEFORE a call, so a stamp
+    written after the call can tell which store the call went to. The start
+    time tells two stores apart that got the same pid and port (NOBLIVION-90);
+    "-" stands in for a field that ``store.json`` does not hold."""
     info = read_store_json(data_dir(env))
     if info is None:
         return ""
-    return "%s:%d" % (info.get("pid", "-"), info["port"])
+    started = re.sub(r"\s+", "", str(info.get("started_at") or "")) or "-"
+    return "%s:%d:%s" % (info.get("pid", "-"), info["port"], started)
+
+
+def _read_stamp(
+    env: Optional[Mapping[str, str]], clock: Callable[[], float]
+) -> Optional[Tuple[float, float, str]]:
+    """``(until, budget, store)`` of the stamp in force for the store that
+    ``store.json`` names now, or None. A stamp older than ``store.json`` or
+    written for another store was written for an earlier store and does not
+    count, nor does a broken one or one that ends more than HUNG_BACKOFF_S
+    ahead (the clock went back; 1 s of slack covers the rounding of the
+    written time)."""
+    folder = data_dir(env)
+    stamp = folder / HUNG_STAMP_FILE
+    try:
+        fields = stamp.read_text(encoding="ascii").split()
+        until = float(fields[0])
+        stamp_budget = float(fields[1]) if len(fields) > 1 else math.inf
+        if stamp.stat().st_mtime < (folder / STORE_JSON_FILE).stat().st_mtime:
+            return None
+    except (OSError, ValueError, IndexError):
+        return None
+    store = fields[2] if len(fields) > 2 else ""
+    if store and store != store_identity(env):
+        return None
+    if not 0.0 < until - clock() <= HUNG_BACKOFF_S + 1.0:
+        return None
+    return until, stamp_budget, store
 
 
 def mark_hung(
@@ -254,16 +295,23 @@ def mark_hung(
     HUNG_BACKOFF_S, ``hung`` is True. The stamp holds the time budget of the
     call that got no answer and ``store`` (``store_identity`` from before the
     call), so it stops only callers that would wait no longer, and only for
-    that store. Never makes the data dir; a file error leaves no stamp and is
-    not raised."""
+    that store. A stamp in force for the same store keeps the larger of the
+    two budgets and the later end (NOBLIVION-90): a call with a short budget
+    that timed out says nothing about a longer one that timed out too. Never
+    makes the data dir; a file error leaves no stamp and is not raised."""
     folder = data_dir(env)
+    until = clock() + HUNG_BACKOFF_S
+    held = _read_stamp(env, clock)
+    if held is not None and held[2] == store:
+        until = max(until, held[0])
+        budget_s = max(budget_s, held[1])
     try:
         fd, tmp = tempfile.mkstemp(prefix="." + HUNG_STAMP_FILE + ".", dir=str(folder))
     except OSError:
         return
     try:
         with os.fdopen(fd, "w", encoding="ascii") as fh:
-            fh.write("%.3f %.3f %s\n" % (clock() + HUNG_BACKOFF_S, budget_s, store))
+            fh.write("%.3f %.3f %s\n" % (until, budget_s, store))
         os.replace(tmp, folder / HUNG_STAMP_FILE)
     except OSError:
         with contextlib.suppress(OSError):
@@ -277,26 +325,36 @@ def hung(
 ) -> bool:
     """True while the "down until" stamp is in force for a call with the time
     budget ``budget_s``. A call with a larger budget than the one that timed
-    out is not stopped: the store may answer in the longer time. A stamp
-    older than ``store.json`` or written for another store (pid and port)
-    was written for an earlier store and does not count, nor does a broken
-    one or one that ends more than HUNG_BACKOFF_S ahead (the clock went back;
-    1 s of slack covers the rounding of the written time)."""
-    folder = data_dir(env)
-    stamp = folder / HUNG_STAMP_FILE
+    out is not stopped: the store may answer in the longer time. See
+    ``_read_stamp`` for the stamps that do not count."""
+    return hung_age(env, budget_s, clock) is not None
+
+
+def hung_age(
+    env: Optional[Mapping[str, str]] = None,
+    budget_s: float = 0.0,
+    clock: Callable[[], float] = time.time,
+) -> Optional[float]:
+    """The age in seconds of the stamp that stops a call with ``budget_s``,
+    or None when no stamp stops it (``hung``)."""
+    held = _read_stamp(env, clock)
+    if held is None or budget_s > held[1] + 0.001:
+        return None
+    return max(0.0, HUNG_BACKOFF_S - (held[0] - clock()))
+
+
+def clear_hung(env: Optional[Mapping[str, str]] = None, store: str = "") -> None:
+    """Remove the stamp after the store ``store`` answered a call
+    (NOBLIVION-224). A stamp for another store is left alone. Never raises."""
+    stamp = data_dir(env) / HUNG_STAMP_FILE
     try:
         fields = stamp.read_text(encoding="ascii").split()
-        until = float(fields[0])
-        stamp_budget = float(fields[1]) if len(fields) > 1 else math.inf
-        if stamp.stat().st_mtime < (folder / STORE_JSON_FILE).stat().st_mtime:
-            return False
-    except (OSError, ValueError, IndexError):
-        return False
-    if len(fields) > 2 and fields[2] != store_identity(env):
-        return False
-    if budget_s > stamp_budget + 0.001:
-        return False
-    return 0.0 < until - clock() <= HUNG_BACKOFF_S + 1.0
+    except OSError:
+        return
+    if len(fields) > 2 and fields[2] != store:
+        return
+    with contextlib.suppress(OSError):
+        stamp.unlink()
 
 
 def autostart_on(env: Optional[Mapping[str, str]] = None) -> bool:

@@ -152,8 +152,10 @@ def validate(doc: Any) -> Dict[str, Any]:
 
 def fetch(environ: Mapping[str, str], timeout_s: float = TIMEOUT_S) -> Dict[str, Any]:
     """GET the report from the proven store. Raises the recall hook's
-    RecallError on a transport failure or a store that is down."""
-    return validate(rh().store_get(report_url, environ, timeout_s))
+    RecallError on a transport failure or a store that is down. A heavy
+    route (NOBLIVION-89): the report timing out writes no ``store.hung``
+    stamp, so it never stops the prompt rows."""
+    return validate(rh().store_get(report_url, environ, timeout_s, heavy=True))
 
 
 def write_cache(

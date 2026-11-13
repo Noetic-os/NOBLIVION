@@ -265,8 +265,8 @@ class Plugin:
         self.exists: Callable[[str], bool] = lambda name: True
         store_get = self.hook.store_get
 
-        def _store_get(build: Any, environ: Any, timeout_s: float) -> Any:
-            return filter_payload(store_get(build, environ, timeout_s), self.exists)
+        def _store_get(build: Any, environ: Any, timeout_s: float, **kw: Any) -> Any:
+            return filter_payload(store_get(build, environ, timeout_s, **kw), self.exists)
 
         self.hook.store_get = _store_get
 

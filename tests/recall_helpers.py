@@ -190,6 +190,9 @@ def hook_env(tmp_path: Path, **extra: str) -> dict[str, str]:
         # NOBLIVION-156. The older-row mark swaps rows that share triggers; a test of
         # another rule keeps the order it built. A test of the mark sets the variable.
         "NOBLIVION_RECALL_OLDER_MARK": "0",
+        # NOBLIVION-224. A test writes its notes just now, so each one is a new note
+        # to the fresh-note leg. A test of that leg sets the variable.
+        "NOBLIVION_RECALL_FRESH_ROWS": "0",
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     }
     env.update(extra)

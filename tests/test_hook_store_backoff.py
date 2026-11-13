@@ -209,7 +209,7 @@ def test_a_stamp_for_another_store_does_not_count(sc, tmp_path):
     data = Path(env["NOBLIVION_DATA_DIR"])
     write_store_files(data, 40123)
     old = sc.store_identity(env)
-    assert old.endswith(":40123")
+    assert ":40123:" in old
     now = 1_000_000.0
     write_store_files(data, 40124)  # the new store
     sc.mark_hung(env, 2.0, old, clock=lambda: now)
