@@ -8,6 +8,10 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- The doctor knows the `recall.nudge`, `recall.nudge_shadow`, `recall.nudge_tools`,
+  `recall.nudge_commands` and `stop.reminders` config keys, so a valid config no longer
+  warns `config_unknown_keys`.
+
 ## 0.1.23 - 2026-11-09
 
 - Turn on automatic learning for stores with an explicit scope and valid local
