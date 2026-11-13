@@ -220,18 +220,18 @@ _SHARED_SHAPES = (
     #   follows it. The block holds no second BEGIN line, so a text of many
     #   BEGIN lines is read once;
     # - or it has no END line (a cut-off paste). Then the BEGIN line, up to 4
-    #   header lines (``Name: value``) and the runs of key text after them are
-    #   masked. The text after the key stays. A last line of key text of
-    #   fewer than 16 characters is masked too, when it is a whole line right
-    #   after the key text and holds a digit, ``+``, ``/`` or ``=``; a word
-    #   such as ``Thanks`` on that line stays.
+    #   header lines (``Name: value``, the name may hold a digit) and the
+    #   runs of key text after them are masked. The text after the key stays.
+    #   A last line of key text of fewer than 16 characters is masked too,
+    #   when it is a whole line right after the key text and holds a digit,
+    #   ``+``, ``/`` or ``=``; a word such as ``Thanks`` on that line stays.
     (
         _KEY_BEGIN
         + r"(?:(?=[ \t]*(?:[\r\n]|\\[rn]|"
         + _KEY_TEXT
         + r"))(?:(?!-----BEGIN ).)*?"
         + _KEY_END
-        + r"|(?:\r?\n[A-Za-z-]{1,20}: [^\r\n]{0,80}){0,4}(?:(?:\s|\\[rn])*"
+        + r"|(?:\r?\n[A-Za-z0-9-]{1,20}: [^\r\n]{0,80}){0,4}(?:(?:\s|\\[rn])*"
         + _KEY_TEXT
         + r")+"
         + _KEY_LAST_LINE

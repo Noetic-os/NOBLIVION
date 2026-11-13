@@ -51,6 +51,7 @@ another SQLite error (one line on stderr, no traceback).
 from __future__ import annotations
 
 import argparse
+import codecs
 import errno
 import fcntl
 import hashlib
@@ -629,25 +630,8 @@ def _head(raw: bytes) -> bytes:
 
 
 def _agreed_head(short: str, wide: str) -> str:
-    """The longest common start of the two redacted texts ``short`` and
-    ``wide``, cut back to the start of a marker that it would split, with no
-    whitespace at its end."""
-    end = min(len(short), len(wide))
-    n = 0
-    while n + 4096 <= end and short[n : n + 4096] == wide[n : n + 4096]:
-        n += 4096
-    while n < end and short[n] == wide[n]:
-        n += 1
-    moved = True
-    while moved:
-        moved = False
-        for text in (short, wide):
-            for marker in _MARKERS:
-                # A marker that starts in front of n and ends after it.
-                at = text.find(marker, max(0, n - len(marker) + 1), n + len(marker) - 1)
-                if at != -1:
-                    n, moved = at, True
-    return short[:n].rstrip()
+    """The text on which the two redactions agree (``redaction.agreed_start``)."""
+    return redaction.agreed_start(short, wide, _MARKERS)
 
 
 def _redact_head(path: str, raw: bytes, head: bytes) -> str:
@@ -665,10 +649,22 @@ def _redact_head(path: str, raw: bytes, head: bytes) -> str:
     limit also when the next line is very long, and when the head is cut
     back to a line end near half the limit. A file of up to
     ``MAX_FILE_BYTES + CUT_CONTEXT_BYTES`` bytes thus stores a start of the
-    redaction of the whole file. A secret that runs on for more than
-    ``CUT_CONTEXT_BYTES`` after the limit is not covered. A cut that splits
-    a character at the end of the wider part changes only text after the
-    head, which is never stored.
+    redaction of the whole file.
+
+    A secret can run on past the wider part too: a key block whose END line
+    is further on, a long ``<password>`` value, a long email name in a run
+    with no space. Both texts then end inside it and agree. So when the file
+    is longer than the wider part, the wider text ends with ``redaction.CUT_CLOSERS``: an
+    ``@`` with a domain, a ``</password>`` end tag and a key END line. Each
+    rule then sees an end at the end of the wider part, and masks a secret
+    that is still open there, from its start on. A secret that starts in the
+    head thus makes the texts differ from its start, and the stored text
+    keeps no part of it. The cost is that an open part which is not a secret
+    is not stored either: a prose BEGIN line of a key with no END line in
+    reach, or a run of name characters with no space for more than
+    ``CUT_CONTEXT_BYTES`` after the limit. A cut that splits a character at
+    the end of the wider part changes only text after the head, which is
+    never stored; the closers follow the last whole character.
 
     The data rule of a cluster Secret reads the ``kind: Secret`` line from
     the whole file: ``kubectl get secret -o yaml`` puts ``data:`` before
@@ -676,13 +672,16 @@ def _redact_head(path: str, raw: bytes, head: bytes) -> str:
     """
     manifest = redaction.holds_secret_kind(raw)
 
-    def redact(part: bytes) -> str:
-        text = part.decode("utf-8", errors="replace")
+    def redact(text: str) -> str:
         content = build_content(path, parse_file(path, text))
         return redaction.redact_at_rest(content, secret_manifest=manifest)
 
-    short = redact(head)
-    wide = redact(raw[: MAX_FILE_BYTES + CUT_CONTEXT_BYTES])
+    window = MAX_FILE_BYTES + CUT_CONTEXT_BYTES
+    short = redact(head.decode("utf-8", errors="replace"))
+    wide_text = raw[:window].decode("utf-8", errors="replace")
+    if len(raw) > window:
+        wide_text = wide_text.rstrip("\ufffd") + redaction.CUT_CLOSERS
+    wide = redact(wide_text)
     if redaction.REDACTION_FAILED_TOKEN in (short, wide):
         return redaction.REDACTION_FAILED_TOKEN
     return _agreed_head(short, wide)
@@ -700,6 +699,23 @@ class _Prepared:
     supersedes: tuple[str, ...] = ()  # the stems the note names in ``supersedes:``
 
 
+def _as_utf8(raw: bytes) -> bytes:
+    """The bytes of a UTF-16 or UTF-32 file (it starts with a byte order
+    mark) as UTF-8. Read as UTF-8, its text has zero bytes between the
+    letters, and no rule of the redactor matches it. Other bytes stay as
+    they are. The UTF-32 marks go first: the little-endian one starts with
+    the UTF-16 one."""
+    for bom, codec in (
+        (codecs.BOM_UTF32_LE, "utf-32"),
+        (codecs.BOM_UTF32_BE, "utf-32"),
+        (codecs.BOM_UTF16_LE, "utf-16"),
+        (codecs.BOM_UTF16_BE, "utf-16"),
+    ):
+        if raw.startswith(bom):
+            return raw.decode(codec, errors="replace").encode("utf-8")
+    return raw
+
+
 def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
     """Read, parse and redact one file. ``None`` when it must not be stored."""
     try:
@@ -710,6 +726,7 @@ def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
         return None
     # The file may have changed since it was listed; store what is on disk now.
     entry = FileEntry(entry.root, entry.path, entry.abspath, hashlib.sha256(raw).hexdigest())
+    raw = _as_utf8(raw)
     head = _head(raw)
     cut = len(head) < len(raw)
     text = head.decode("utf-8", errors="replace")

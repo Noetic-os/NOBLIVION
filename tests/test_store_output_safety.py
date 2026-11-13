@@ -66,6 +66,47 @@ def test_index_titles_and_summaries_are_masked():
         assert EVIL not in item[field] and INJECTION_TOKEN in item[field], field
 
 
+def test_a_long_summary_line_is_redacted_by_a_start_of_it(monkeypatch):
+    # NOBLIVION-86: the index route redacted the whole title and summary
+    # line. A hard-cut large file stores one line of about 256 KB, and its
+    # redaction cost about 0.14 s for each row of the answer.
+    seen: list[int] = []
+    real = rest.safe_text
+
+    def counted(text: str) -> str:
+        seen.append(len(text))
+        return real(text)
+
+    monkeypatch.setattr(rest, "safe_text", counted)
+    body = "&a=1" * 65_000
+    title, summary = rest.title_and_summary(_content("big", body, "body"), 1)
+    assert title == "big" and summary == body[: rest.SUMMARY_CHARS - 1] + "…"
+    assert max(seen) <= rest.SUMMARY_CHARS + 2 * rest.LINE_CONTEXT_CHARS + 100
+
+
+@pytest.mark.parametrize(
+    ("secret", "end"),
+    [
+        ("<password>" + "a;b" * 6000, "</password> end"),
+        ("&mail=" + "abc." * 4000 + "x", "@example.org end"),
+        (
+            "-----BEGIN PRIVATE " + "KEY----- " + "Ab3dE5gH7jK9mN2pQ4sT " * 900,
+            "-----END PRIVATE KEY-----",
+        ),
+    ],
+    ids=["password element", "email name", "key block"],
+)
+def test_a_long_summary_line_keeps_no_part_of_a_secret_that_runs_past_its_start(secret, end):
+    # The end of the secret is past both starts that are redacted. The whole
+    # line masks it, so the summary keeps no part of it.
+    line = "see " + secret + end + " and more" * 100
+    assert len("see " + secret) > rest.SUMMARY_CHARS + 2 * rest.LINE_CONTEXT_CHARS
+    whole = rest.safe_text(line)
+    assert secret[10:30] not in whole
+    _, summary = rest.title_and_summary(_content("big", line, "body"), 1)
+    assert summary.startswith("see") and secret[10:20] not in summary
+
+
 @pytest.mark.parametrize("result", [None, RankResult("hybrid", [], 0)])
 def test_index_names_the_model_also_with_no_rows(result):
     answer = rest.index_answer(result, "claude_code", query="q", mode="hybrid", model="m/one")

@@ -121,6 +121,12 @@ FORMS: list[tuple[str, str, str]] = [
         key_block("RSA", end=False, headers=ENCRYPTED),
         KEY_BODY,
     ),
+    (
+        # NOBLIVION-91: a digit in a header name stopped the no-END-line rule.
+        "key block with no END line and a header name with a digit",
+        key_block("PGP", end=False, headers=("X-Key-1: example",)),
+        KEY_BODY,
+    ),
     ("key block in one line", key_block("RSA").replace("\n", " "), KEY_BODY),
     ("key block in a string", key_block("").replace("\n", "\\n"), KEY_BODY),
     (

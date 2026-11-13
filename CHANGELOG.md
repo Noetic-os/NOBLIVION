@@ -28,7 +28,7 @@ All notable changes to NOBLIVION. The format follows
   and the stdin of a container shell (`docker exec -i`, `podman exec -i`, `docker compose
   exec`, `kubectl exec -i`) as commands, so a deny rule fires on them. The same text read by
   any other program stays data (NOBLIVION-96).
-- The redactor version is 5 (NOBLIVION-74). It now masks a YAML list item
+- The redactor (NOBLIVION-74) now masks a YAML list item
   `- pass: value`, `PASS: value` in capitals when the value is random
   (`Zx9qLm2Pw7Rt`; a test name stays), a token key with a whole number of 10
   or more digits (`token: 1234567890`; a count of 9 digits or fewer stays), and
@@ -41,6 +41,18 @@ All notable changes to NOBLIVION. The format follows
   deleted rows, and rows whose file or folder is missing (NOBLIVION-73). Before,
   these rows kept text of the old rules. The scan result reports them as
   `redacted_in_place`.
+- The stored head of a file over 256 KB keeps no part of a secret that runs on
+  for more than 64 KB after the limit: a key block with a late END line, a long
+  `<password>` value, a long email name in a run with no space (NOBLIVION-91).
+  The wider redaction now ends with an end for each such rule, so a secret
+  still open there is masked from its start and the head stops in front of it.
+- The redactor masks a key block with no END line and a header name with a
+  digit (`X-Key-1:`), and the data lines of a cluster Secret in JSON
+  (`"kind": "Secret"`) and with the `!!str` tag. A UTF-16 or UTF-32 file with
+  a byte order mark is read as text. The redactor version is 6, so the first
+  index scan after the update writes the notes again (NOBLIVION-91).
+- The index route redacts a start of a long title or summary line, not the
+  whole line: a 256 KB line cost about 0.14 s for each row (NOBLIVION-86).
 
 ## 0.1.23 - 2026-11-09
 

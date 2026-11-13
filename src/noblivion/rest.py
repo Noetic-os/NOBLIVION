@@ -52,6 +52,15 @@ LARGE_ENTRY_CHARS = 6000
 ENTRY_SEPARATOR = "\n---\n"
 TITLE_CHARS = 120
 SUMMARY_CHARS = 180
+# A title or summary line longer than its limit and this is redacted by a
+# start of it (``_clean``).
+LINE_CONTEXT_CHARS = 4096
+_LINE_MARKERS = (
+    redaction.REDACTION_TOKEN,
+    redaction.FIELD_TOKEN,
+    redaction.EMAIL_TOKEN,
+    injection.INJECTION_TOKEN,
+)
 TRUST_PRIOR_MD = trust.TRUST_PRIOR_MD
 
 SEARCH_PATH = "/api/memories/search"
@@ -115,7 +124,28 @@ def safe_text(text: str) -> str:
 
 
 def _clean(text: str, limit: int) -> str:
-    text = " ".join(safe_text(text).split())
+    """``text`` redacted, on one line, cut to ``limit`` characters.
+
+    A line of a large file can hold 256 KB, and its redaction cost about
+    0.14 s for each row of an index answer (NOBLIVION-86). So a long line is
+    redacted by two starts of it, ``LINE_CONTEXT_CHARS`` and twice that after
+    the limit, and the text on which the two agree is kept
+    (``redaction.agreed_start``). When the line is longer than the longer
+    start, that start ends with ``redaction.CUT_CLOSERS``, so a secret that
+    is still open at its end is masked from its start on and no part of it
+    is kept."""
+    if len(text) > limit + LINE_CONTEXT_CHARS:
+        short = safe_text(text[: limit + LINE_CONTEXT_CHARS])
+        wide_end = limit + 2 * LINE_CONTEXT_CHARS
+        closers = redaction.CUT_CLOSERS if len(text) > wide_end else ""
+        wide = safe_text(text[:wide_end] + closers)
+        if redaction.REDACTION_FAILED_TOKEN in (short, wide):
+            text = redaction.REDACTION_FAILED_TOKEN
+        else:
+            text = redaction.agreed_start(short, wide, _LINE_MARKERS)
+    else:
+        text = safe_text(text)
+    text = " ".join(text.split())
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"

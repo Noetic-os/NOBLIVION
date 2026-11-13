@@ -344,12 +344,65 @@ def test_cluster_secret_data_with_crlf_or_a_quoted_kind(manifest):
     assert out == manifest.format(FIELD_TOKEN, FIELD_TOKEN)
 
 
-def test_the_redactor_version_is_5():
+def test_the_redactor_version_is_6():
     # Version 4 also removes ephemeral recall capabilities. Version 5 changes
     # the pass, token, -p and key block rules (NOBLIVION-74), so the indexer
     # writes every row again once and redacts the stored text of the rows that
-    # have no file to read (NOBLIVION-73).
-    assert redaction.REDACTOR_VERSION == "5"
+    # have no file to read (NOBLIVION-73). Version 6 masks the JSON form and
+    # the ``!!str`` form of a cluster Secret and a key header name with a
+    # digit (NOBLIVION-91). The indexer writes every row again once.
+    assert redaction.REDACTOR_VERSION == "6"
+
+
+_JSON_SECRET = """{{
+    "apiVersion": "v1",
+    "data": {{
+        "db-conn": "{0}",
+        "db.user": "{1}"
+    }},
+    "kind": "Secret",
+    "metadata": {{
+        "name": "app-db",
+        "resourceVersion": "1234"
+    }},
+    "type": "Opaque"
+}}
+"""
+
+
+@pytest.mark.parametrize(
+    ("manifest", "kind"),
+    [
+        (_JSON_SECRET, '"kind": "Secret"'),
+        (_JSON_SECRET.replace("\n", "\r\n"), '"kind": "Secret"'),
+        ("apiVersion: v1\ndata:\n  a: {0}\n  b: {1}\nkind: !!str Secret\n", "kind: !!str Secret"),
+    ],
+    ids=["json", "json with CRLF", "yaml string tag"],
+)
+def test_the_json_and_tagged_forms_of_a_cluster_secret_are_masked(manifest, kind):
+    # NOBLIVION-91: neither form was masked, also not in a small file.
+    values = [
+        fake("", 24, "QWxhZGRpbjpvcGVuIHNlc2FtZQ"),
+        fake("", 32, "c2VjcmV0LXZhbHVlLTAxMjM0NTY3"),
+    ]
+    text = manifest.format(*values)
+    out = redact_at_rest(text)
+    assert not any(value in out for value in values)
+    assert out == manifest.format(FIELD_TOKEN, FIELD_TOKEN)
+    assert redaction.holds_secret_kind(text.encode())
+    # The kind line is what turns the data rule on.
+    plain = text.replace(kind, kind.replace("Secret", "ConfigMap"))
+    assert redact_at_rest(plain) == plain
+    assert not redaction.holds_secret_kind(plain.encode())
+
+
+def test_the_json_data_rule_reads_each_line_start_once():
+    # Many indented lines that start like a data line and never end like
+    # one: a long run of base64 characters with no closing quote.
+    text = "kind: Secret\n" + ('  "k": "' + "A" * 2000 + "\n") * 500
+    start = time.perf_counter()
+    redact_at_rest(text)
+    assert time.perf_counter() - start < 2.0
 
 
 # The two rules as they were before they were made linear (NOBLIVION-62

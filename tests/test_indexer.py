@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import json
 import os
 import time
@@ -393,6 +394,52 @@ def _jwt_case():
     return _run_case(block, block.index(payload) + 10, jwt, 8)
 
 
+def _late_key_case(header: str = ""):
+    # NOBLIVION-91: the END line of a key block in a quote is 70 KB after the
+    # limit, past the wider part. Both redactions ended inside the block and
+    # agreed, so the stored head kept the key lines.
+    end = f"> {secret_forms.end_line('RSA')}\n"
+    lines = [secret_forms.begin_line("RSA"), *(_KEY_LINES * 100)]
+    block = "\n" + header + "".join(f"> {line}\n" for line in lines) + end
+    raw = _limit_inside(block, block.index(end) - 70_000, _LINES_FILL)
+    assert raw.index(end.encode()) > indexer.MAX_FILE_BYTES + indexer.CUT_CONTEXT_BYTES
+    return raw, _KEY_LINES, 16
+
+
+def _late_header_key_case():
+    # NOBLIVION-91: a header name with a digit, and the END line past the
+    # wider part. The rule for a block with no END line read no such header.
+    lines = [secret_forms.begin_line("RSA"), "X-Key-1: example", "", *(_KEY_LINES * 120)]
+    block = "\n" + "".join(f"{line}\n" for line in lines) + secret_forms.end_line("RSA") + "\n"
+    raw = _limit_inside(block, block.index(_KEY_LINES[5]), _LINES_FILL)
+    assert raw.index(b"-----END") > indexer.MAX_FILE_BYTES + indexer.CUT_CONTEXT_BYTES
+    return raw, _KEY_LINES, 16
+
+
+def _long_password_case():
+    # NOBLIVION-91, the reproducer: a <password> element with a 70 KB value
+    # that starts just before byte 262144. "," ";" ":" in the value stop the
+    # hard cut from dropping it, and the end tag is past the wider part.
+    value = secret_forms.fake("", 70_000, "Ab3;dE5,gH7:")
+    return _run_case(f"<password>{value}</password>", 20, value, 8)
+
+
+def _long_email_case():
+    # NOBLIVION-91: an email name of 70 KB in a run of &key=value tokens.
+    name = secret_forms.fake("", 70_000, "abcdefgh.")
+    return _run_case(f"&mail={name}@example.org&", 20, name, 8)
+
+
+def _short_last_key_line_case():
+    # NOBLIVION-91: the last body line of the key is shorter than 16
+    # characters, and the cut falls just before the END line.
+    last = "Qx9=="
+    lines = [secret_forms.begin_line("RSA"), *_KEY_LINES, last, secret_forms.end_line("RSA")]
+    block = "\n" + "".join(f"{line}\n" for line in lines)
+    raw = _limit_inside(block, block.index("-----END") + 3, _LINES_FILL)
+    return raw, [*_KEY_LINES, "\n" + last], 6
+
+
 _CUT_CASES = {
     "a diff that removes a key": lambda: _key_case(
         "-", "diff --git a/k.pem b/k.pem\n--- a/k.pem\n+++ /dev/null\n@@ -1,14 +0,0 @@\n"
@@ -410,6 +457,11 @@ _CUT_CASES = {
     "a URL password with a colon": _url_case,
     "an email address in a run": _email_case,
     "a JWT in a run": _jwt_case,
+    "a key END line past the wider part": _late_key_case,
+    "a key with a digit in a header name, END line past the wider part": _late_header_key_case,
+    "a 70 KB password value": _long_password_case,
+    "a 70 KB email name in a run": _long_email_case,
+    "a short last key line, cut just before END": _short_last_key_line_case,
 }
 
 
@@ -458,6 +510,40 @@ def test_a_head_cut_back_near_half_the_limit_keeps_no_part_of_a_secret(tmp_path)
     assert not _holds_part(stored, secret_forms.PASSWORD, 8)
     # A file of up to 320 KB stores a start of the redaction of the whole file.
     assert whole.startswith(stored) and stored.endswith("<password>")
+
+
+@pytest.mark.parametrize("key", ["password=", "password:", '"password":"', "passwd=", "secret:"])
+def test_a_hard_cut_after_a_separator_keeps_no_part_of_a_password(tmp_path, key):
+    # NOBLIVION-86, the reproducer: a 300 KB file with no space and no line
+    # end, and the cut falls after "ab;" of "password=ab;cd". The part in
+    # front of the cut is shorter than 6 characters, the field rule minimum.
+    value = "ab;cdefgh"
+    block = key + value
+    raw = _limit_inside(block, len(key) + 3, _RUN_FILL, _RUN_FILL * 11_000)
+    assert 300_000 < len(raw) < 310_000 and b" " not in raw and b"\n" not in raw
+    assert raw[: indexer.MAX_FILE_BYTES].endswith(f"{key}ab;".encode())
+    stored = _stored(tmp_path, raw)
+    after = stored[stored.rindex(key.strip('"=:')) :]
+    assert "ab" not in after and "cd" not in after
+    assert len(stored.encode()) > indexer.MAX_FILE_BYTES - 100  # the head is still stored
+
+
+def test_a_utf16_file_is_stored_as_text_and_redacted(conn, tmp_path):
+    # NOBLIVION-91: read as UTF-8, a UTF-16 file has a zero byte between its
+    # letters, and no rule of the redactor matched it.
+    value = base64.b64encode(b"example-db-password-0123456789").decode()
+    text = f"apiVersion: v1\ndata:\n  db.conf: {value}\nkind: Secret\npassword={_LINES_FILL}"
+    for encoding in ("utf-16", "utf-16-be", "utf-32"):
+        raw = text.encode(encoding)
+        if encoding == "utf-16-be":
+            raw = codecs.BOM_UTF16_BE + raw
+        folder = make_folder(tmp_path / encoding, "proj-demo", {"reference_u.md": ""})
+        (folder / "reference_u.md").write_bytes(raw)
+        indexer.scan(conn, [folder])
+        content = rows(conn)[("proj-demo", "reference_u.md")]["content"]
+        assert "\x00" not in content, encoding
+        assert f"  db.conf: {redaction.FIELD_TOKEN}\n" in content, encoding
+        assert value not in content and "notes about" not in content, encoding
 
 
 def test_a_file_one_byte_over_the_limit_is_cut_in_front_of_its_last_line():

@@ -47,7 +47,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-REDACTOR_VERSION = "5"
+REDACTOR_VERSION = "6"
 
 _READ_CAPABILITY = re.compile(r"nobrc1_[A-Za-z0-9_-]+")
 
@@ -118,18 +118,18 @@ SHARED_SHAPES: tuple[tuple[str, int], ...] = (
     #   follows it. The block holds no second BEGIN line, so a text of many
     #   BEGIN lines is read once;
     # - or it has no END line (a cut-off paste). Then the BEGIN line, up to 4
-    #   header lines (``Name: value``) and the runs of key text after them are
-    #   masked. The text after the key stays. A last line of key text of
-    #   fewer than 16 characters is masked too, when it is a whole line right
-    #   after the key text and holds a digit, ``+``, ``/`` or ``=``; a word
-    #   such as ``Thanks`` on that line stays.
+    #   header lines (``Name: value``, the name may hold a digit) and the
+    #   runs of key text after them are masked. The text after the key stays.
+    #   A last line of key text of fewer than 16 characters is masked too,
+    #   when it is a whole line right after the key text and holds a digit,
+    #   ``+``, ``/`` or ``=``; a word such as ``Thanks`` on that line stays.
     (
         _KEY_BEGIN
         + r"(?:(?=[ \t]*(?:[\r\n]|\\[rn]|"
         + _KEY_TEXT
         + r"))(?:(?!-----BEGIN ).)*?"
         + _KEY_END
-        + r"|(?:\r?\n[A-Za-z-]{1,20}: [^\r\n]{0,80}){0,4}(?:(?:\s|\\[rn])*"
+        + r"|(?:\r?\n[A-Za-z0-9-]{1,20}: [^\r\n]{0,80}){0,4}(?:(?:\s|\\[rn])*"
         + _KEY_TEXT
         + r")+"
         + _KEY_LAST_LINE
@@ -312,12 +312,20 @@ _BEARER_FIELD_RE = re.compile(
 _K8S_SECRET_DATA_RE = re.compile(
     r"(?m)(?:\A|(?<=\S)[^\S\n]*\n)(\s+[\w.\-]+:\s+)([A-Za-z0-9+/]{16,}={0,2})(?=\r?$)"
 )
+# The same data line in the JSON form (``kubectl get secret -o json``): an
+# indented ``"key": "<base64>"`` line, with or without a comma at its end.
+# Group 1 is the text in front of the value. Each line start is tried once.
+_K8S_SECRET_JSON_DATA_RE = re.compile(
+    r"(?m)^([ \t]+\"[\w.\-]+\"[ \t]*:[ \t]*\")([A-Za-z0-9+/]{16,}={0,2})(?=\"[ \t]*,?[ \t]*\r?$)"
+)
 # The kind line is read as ASCII only: `\s`, `\b` and the case folding of the
 # text rule match what the byte rule (``holds_secret_kind``) matches. With
 # Unicode reading, the text rule also took a no-break space, an em space,
 # U+001C, the long s and the Kelvin sign, and the byte rule did not, so the
 # stored head of a large file kept data lines that the whole file masked.
-_K8S_KIND = r"kind:\s*[\"']?secret\b"
+# The JSON form (``"kind": "Secret"``) and the YAML string tag
+# (``kind: !!str Secret``) are kind lines too.
+_K8S_KIND = r"kind[\"']?\s*:\s*(?:!!str\s+)?[\"']?secret\b"
 _K8S_KIND_RE = re.compile(_K8S_KIND, re.IGNORECASE | re.ASCII)
 _K8S_KIND_BYTES_RE = re.compile(_K8S_KIND.encode(), re.IGNORECASE)
 
@@ -412,6 +420,7 @@ def _redact_once(text: str, secret_manifest: bool = False) -> str:
     out = _redact_conn_str_urls(out)
     if secret_manifest or _K8S_KIND_RE.search(out):
         out = _K8S_SECRET_DATA_RE.sub(_mask_secret_data, out)
+        out = _K8S_SECRET_JSON_DATA_RE.sub(lambda m: m.group(1) + FIELD_TOKEN, out)
     return _redact_emails(out)
 
 
@@ -435,6 +444,43 @@ def redact_at_rest(text: str, *, secret_manifest: bool = False) -> str:
         return out if _redact_once(out, secret_manifest) == out else REDACTION_FAILED_TOKEN
     except Exception:  # noqa: BLE001 - fail closed, never the raw text
         return REDACTION_FAILED_TOKEN
+
+
+# The text to put after a part cut from a longer text, before its redaction
+# is compared with the redaction of a shorter part (``agreed_start``): an end
+# for each rule that masks a secret only when it sees its end. The email rule
+# and the URL password rule need an "@" and a domain, the ``<password>`` rule
+# its end tag, the key block rule its END line. A secret that is still open
+# at the end of the part is then masked from its start on.
+CUT_CLOSERS = "@example.com</password>\n-----END PRIVATE KEY-----\n"
+
+
+def agreed_start(short: str, wide: str, markers: tuple[str, ...]) -> str:
+    """The longest common start of the two redacted texts ``short`` and
+    ``wide``, cut back to the start of a marker of ``markers`` that it would
+    split, with no whitespace at its end.
+
+    A rule masks a secret only when it sees the end of it. A text cut from a
+    longer one can end inside a secret that the redaction of the longer text
+    masks. The redaction of a longer part sees that end, so the two texts
+    differ from the start of the secret on, and the common start keeps no
+    part of it."""
+    end = min(len(short), len(wide))
+    n = 0
+    while n + 4096 <= end and short[n : n + 4096] == wide[n : n + 4096]:
+        n += 4096
+    while n < end and short[n] == wide[n]:
+        n += 1
+    moved = True
+    while moved:
+        moved = False
+        for text in (short, wide):
+            for marker in markers:
+                # A marker that starts in front of n and ends after it.
+                at = text.find(marker, max(0, n - len(marker) + 1), n + len(marker) - 1)
+                if at != -1:
+                    n, moved = at, True
+    return short[:n].rstrip()
 
 
 def holds_secret_kind(raw: bytes) -> bool:
