@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """NOBLIVION-56: a compaction resets the guard's show state of the session.
 
 After a compaction the context no longer holds the guard rows and full texts
