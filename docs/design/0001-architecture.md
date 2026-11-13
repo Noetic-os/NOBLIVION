@@ -739,6 +739,8 @@ With a valid token:
 
 - `status` is `ok`, or `degraded` when the model failed to load. A degraded store still answers every route.
 - `embedding.state`: `loading`, `ready`, `reembedding`, `failed`, `off`.
+- `index_state`: `idle`, `scanning`, or `stopped` when the background jobs
+  thread has ended (no scan, backfill or maintenance until a restart).
 - `embedding.consent`: `not_needed` for a backend that keeps text on the
   machine, else `given` or `missing` (section 7.1). The store reads it from
   `meta` for each health answer.
