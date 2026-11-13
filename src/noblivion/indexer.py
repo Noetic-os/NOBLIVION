@@ -34,6 +34,12 @@ scan also keeps the revision of its last write (``redactor_rev:<namespace>``)
 and redoes a row with a later revision: a store process that still runs an
 older release wrote that row, with its rules.
 
+A row that has no file to read again (a mined row, an imported row, an
+archived or deleted row, a row on the redo list) gets the redactor once more on
+its stored text: every such row after a version change, else the ones with a
+later revision and the ones on the list (NOBLIVION-73). Text that cannot be
+redacted is withheld.
+
 CLI: ``python -m noblivion.indexer [--force] [--allow-shrink]`` (also
 ``noblivion index``). Exit codes: 0 done; 1 some files were skipped (not
 readable or not redactable) so nothing was deleted in their roots; 2 the shrink
@@ -530,6 +536,8 @@ class ScanResult:
     deletes_held: dict[str, int] = field(default_factory=dict)  # root -> deletes a skip held
     content_rev: int = 0
     cut: list[str] = field(default_factory=list)  # files stored by their head (_head)
+    # rows with no file to read whose stored text the redactor changed (NOBLIVION-73)
+    redacted: int = 0
 
     @property
     def changed(self) -> int:
@@ -555,6 +563,7 @@ class ScanResult:
             "deletes_cancelled": self.deletes_cancelled,
             "deletes_held": dict(self.deletes_held),
             "files_cut": len(self.cut),
+            "redacted_in_place": self.redacted,
             "content_rev": self.content_rev,
         }
 
@@ -948,7 +957,20 @@ def scan(
     # text, so it stays on the redo list. The version mark is set also then:
     # the next scan redoes the list, not every row again.
     left = redo - {op.row_id for op, _ in work}
-    if stale or left != stored_redo or work or result.superseded or stored_rev is None:
+    # A row that has no file to read again keeps the text of the rules that
+    # wrote it: a mined row, an imported row, an archived or deleted row, and
+    # a row on the redo list whose file this scan could not read. Run the
+    # redactor again on its stored text (NOBLIVION-73): every such row after a
+    # version change, else the ones written after the last scan and the ones
+    # left on the list. The redactor gives the same text when it runs twice,
+    # so this is safe, and a row that is already clean is not written. A row
+    # on the list stays there: its file is read again when it can be.
+    after = None if stale or stored_rev is None else stored_rev
+    with db.read_tx(conn):
+        fileless = db.fileless_row_ids(conn, project, after_rev=after)
+    checked = sorted(set(fileless) | left)
+    _redact_stored_rows(conn, checked, result)
+    if stale or left != stored_redo or work or result.superseded or stored_rev is None or fileless:
         with db.write_tx(conn):
             db.set_meta(conn, _version_key(project), redaction.REDACTOR_VERSION)
             db.set_meta(conn, _redo_key(project), json.dumps(sorted(left)))
@@ -959,6 +981,52 @@ def scan(
         with db.write_tx(conn):
             db.set_meta(conn, _supersedes_key(project), encoded)
     return result
+
+
+def _redact_text_columns(content: str, index_text: str, labels: str) -> tuple[str, str, str]:
+    """The stored text of a row after one more run of the redactor. Text that
+    cannot be redacted is withheld: the content becomes
+    ``REDACTION_FAILED_TOKEN`` and the index fields become empty. A label the
+    redactor would change is dropped, as ``labels_json`` does."""
+    new_content = redaction.redact_at_rest(content)
+    new_index = redaction.redact_at_rest(index_text) if index_text else ""
+    if redaction.REDACTION_FAILED_TOKEN in (new_content, new_index):
+        new_index = ""
+    try:
+        values = json.loads(labels)
+    except ValueError:
+        values = None
+    if isinstance(values, list) and all(isinstance(v, str) for v in values):
+        kept = [v for v in values if not redaction.would_change(v)]
+        new_labels = labels if kept == values else json.dumps(kept)
+    else:
+        new_labels = "[]"
+    return new_content, new_index, new_labels
+
+
+def _redact_stored_rows(conn: sqlite3.Connection, ids: Sequence[int], result: ScanResult) -> None:
+    """Run the redactor again on the stored text of the rows ``ids`` and write
+    each row whose text changes, in batches of ``db.BATCH_ROWS``. A batch that
+    writes bumps ``content_rev`` once and stamps its rows, so the chunks, the
+    keyword index and the vectors follow. A row that another writer changed
+    after the read is left to the next scan."""
+    for start in range(0, len(ids), db.BATCH_ROWS):
+        with db.read_tx(conn):
+            stored = db.stored_text(conn, ids[start : start + db.BATCH_ROWS])
+        changes = []
+        for memory_id, *old in stored:
+            new = _redact_text_columns(*old)
+            if new != tuple(old):
+                changes.append((memory_id, tuple(old), new))
+        if not changes:
+            continue
+        with db.write_tx(conn):
+            rev = db.bump_rev(conn, "content_rev")
+            now = db.utc_now()
+            for memory_id, old, new in changes:
+                if db.replace_stored_text(conn, memory_id, old=old, new=new, rev=rev, now=now):
+                    result.redacted += 1
+        result.content_rev = rev
 
 
 # -- supersedes (NOBLIVION-156) ------------------------------------------------

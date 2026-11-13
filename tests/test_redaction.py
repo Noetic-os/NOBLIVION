@@ -129,7 +129,13 @@ def test_a_pass_key_with_a_colon_counts_when_its_value_looks_like_a_secret():
     # `pass` is a word of prose too. After ":" with no quotes the value must be
     # one word of 8 or more characters with a digit, a symbol, or a capital
     # letter after a small one.
-    for value in ("hunter2hunter2", "12345678", "correct-horse", "hunterHunter", "$ecretword"):
+    for value in (
+        "hunter2hunter2",
+        "12345678",
+        "correct-horse-battery",
+        "hunterHunter",
+        "$ecretword",
+    ):
         assert redact_at_rest(f"smtp-pass: {value}") == f"smtp-pass: {FIELD_TOKEN}", value
     assert redact_at_rest("smtp:\n  smtp-pass: hunter2hunter2\n") == (
         f"smtp:\n  smtp-pass: {FIELD_TOKEN}\n"
@@ -137,6 +143,7 @@ def test_a_pass_key_with_a_colon_counts_when_its_value_looks_like_a_secret():
     assert redact_at_rest('db_pass: "hunter2hunter2"') == f'db_pass: "{FIELD_TOKEN}"'
     assert redact_at_rest("mysql_pwd: hunter2hunter2") == f"mysql_pwd: {FIELD_TOKEN}"
     plain = ("complete", "Complete", "COMPLETE", "optimizer.", "enabled,", "hunter2", "(skipped)")
+    plain += ("in-progress", "test_name", "two.words")  # two joined words (NOBLIVION-74)
     for value in plain:
         assert redact_at_rest(f"first_pass: {value}") == f"first_pass: {value}", value
     # `PASS` in capitals and `pwd` alone are not a key in front of ":".
@@ -156,11 +163,14 @@ def test_a_plain_pass_key_at_the_start_of_a_line_counts_when_its_value_looks_lik
     )
     assert redact_at_rest(f'\tpass: "{plain}"') == f'\tpass: "{FIELD_TOKEN}"'
     assert redact_at_rest(f"User: alice\nPass: {plain}") == f"User: alice\nPass: {FIELD_TOKEN}"
+    # `PASS` in capitals counts only with a random value up to the line end
+    # (NOBLIVION-74); a YAML list dash may come first.
+    assert redact_at_rest(f"PASS: {plain}") == f"PASS: {FIELD_TOKEN}"
+    assert redact_at_rest(f"- pass: {plain}\n") == f"- pass: {FIELD_TOKEN}\n"
     # `PASS` in capitals is a word of a test report, a plain word is not a
     # secret, and `pass` in the middle of a line is prose.
     for text in (
         "PASS: test_name",
-        f"PASS: {plain}",
         "pass: complete",
         "  pass: complete",
         "The first pass: read the file",
@@ -231,6 +241,9 @@ def test_the_hook_redactor_holds_the_same_shared_shapes():
     in_use = {pattern.pattern for pattern, _repl in redaction._SHAPE_PATTERNS}
     assert all(shape in in_use for shape, _flags in redaction.SHARED_SHAPES)
     assert all(row in hook._SECRET_PATTERNS for row in hook._SHARED_SHAPES)
+    # The value tests of the `pass` key are the same text too (NOBLIVION-74).
+    assert hook._SECRET_LIKE == redaction._SECRET_LIKE
+    assert hook._STRONG_SECRET == redaction._STRONG_SECRET
 
 
 @pytest.mark.parametrize(
@@ -331,10 +344,12 @@ def test_cluster_secret_data_with_crlf_or_a_quoted_kind(manifest):
     assert out == manifest.format(FIELD_TOKEN, FIELD_TOKEN)
 
 
-def test_the_redactor_version_is_4():
-    # Version 4 also removes ephemeral recall capabilities, so the
-    # indexer writes every row again once.
-    assert redaction.REDACTOR_VERSION == "4"
+def test_the_redactor_version_is_5():
+    # Version 4 also removes ephemeral recall capabilities. Version 5 changes
+    # the pass, token, -p and key block rules (NOBLIVION-74), so the indexer
+    # writes every row again once and redacts the stored text of the rows that
+    # have no file to read (NOBLIVION-73).
+    assert redaction.REDACTOR_VERSION == "5"
 
 
 # The two rules as they were before they were made linear (NOBLIVION-62

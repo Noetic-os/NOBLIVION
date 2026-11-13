@@ -137,10 +137,24 @@ def test_a_pass_key_in_memory_text_needs_an_equals_sign_or_a_value_like_a_secret
     assert mt.redact_memory("pass = hunter2hunter2") == "pass = [REDACTED]"
     # with ":" the value is one word of 8 or more characters with a digit, a
     # symbol, or a capital letter after a small one
-    for value in ("hunter2hunter2", "12345678", "correct-horse", "hunterHunter", "$ecretword"):
+    for value in (
+        "hunter2hunter2",
+        "12345678",
+        "correct-horse-battery",
+        "hunterHunter",
+        "$ecretword",
+    ):
         assert mt.redact_memory(f"smtp-pass: {value}") == "smtp-pass: [REDACTED]", value
     assert mt.redact_memory('db_pass: "hunter2hunter2"') == "db_pass: [REDACTED]"
-    for value in ("complete", "Complete", "COMPLETE", "optimizer.", "enabled,", "hunter2"):
+    for value in (
+        "complete",
+        "Complete",
+        "COMPLETE",
+        "optimizer.",
+        "enabled,",
+        "hunter2",
+        "in-progress",
+    ):
         assert mt.redact_memory(f"first_pass: {value}") == f"first_pass: {value}", value
     assert mt.redact_memory("PASS: TestIndexer12") == "PASS: TestIndexer12"
     # the other keys of the rule stay as in the query set
@@ -161,11 +175,14 @@ def test_a_plain_pass_key_at_the_start_of_a_line_counts_in_memory_text() -> None
     )
     assert mt.redact_memory(f'\tpass: "{plain}"') == "\tpass: [REDACTED]"
     assert mt.redact_memory(f"User: alice\nPass: {plain}") == "User: alice\nPass: [REDACTED]"
+    # `PASS` in capitals counts only with a random value up to the line end
+    # (NOBLIVION-74); a YAML list dash may come first.
+    assert mt.redact_memory(f"PASS: {plain}") == "PASS: [REDACTED]"
+    assert mt.redact_memory(f"- pass: {plain}\n") == "- pass: [REDACTED]\n"
     # ``PASS`` in capitals is a word of a test report, a plain word is not a
     # secret, and ``pass`` in the middle of a line is prose
     for text in (
         "PASS: test_name",
-        f"PASS: {plain}",
         "pass: complete",
         "  pass: complete",
         "The first pass: read the file",

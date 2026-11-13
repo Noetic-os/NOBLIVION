@@ -857,6 +857,15 @@ description is left out with its blank line.
   `redactor_redo:<namespace>`). A later scan writes only the rows on the
   list again, each when its file can be read. So one bad file does not make
   every scan write all rows again.
+- A row that has no file to read again keeps the text of the rules that
+  wrote it: a row of the transcript miner, an imported row, an archived or
+  deleted row, and a row on the redo list. So the scan runs the redactor
+  again on the stored text (content, index fields, labels) of each such row:
+  of every one after a version change, else of the ones with a revision after
+  the last scan and of the ones on the redo list. A row whose text changes is
+  written with a new revision and keeps its state and its hash. Text that
+  cannot be redacted is replaced by the failure marker. A row on the redo
+  list stays there, so its file is read again when it can be.
 - A database of an older release holds one mark for all namespaces (key
   `redactor_version`). A namespace with no mark of its own reads that mark.
   The indexer does not write it.

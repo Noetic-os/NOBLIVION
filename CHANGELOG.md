@@ -28,6 +28,19 @@ All notable changes to NOBLIVION. The format follows
   and the stdin of a container shell (`docker exec -i`, `podman exec -i`, `docker compose
   exec`, `kubectl exec -i`) as commands, so a deny rule fires on them. The same text read by
   any other program stays data (NOBLIVION-96).
+- The redactor version is 5 (NOBLIVION-74). It now masks a YAML list item
+  `- pass: value`, `PASS: value` in capitals when the value is random
+  (`Zx9qLm2Pw7Rt`; a test name stays), a token key with a whole number of 10
+  or more digits (`token: 1234567890`; a count of 9 digits or fewer stays), and
+  the short last line of a key block whose END line is cut off. It keeps
+  `pass: test_name`, `x_pass: in-progress` and `mkdir -p x`: two joined words
+  are not a secret value, and `-p` counts only before a value that looks like a
+  secret. Both redactors, the store and the hooks, follow the same rules.
+- After a redactor version change the index scan also redacts the stored text
+  of rows that have no file to read: mined rows, imported rows, archived and
+  deleted rows, and rows whose file or folder is missing (NOBLIVION-73). Before,
+  these rows kept text of the old rules. The scan result reports them as
+  `redacted_in_place`.
 
 ## 0.1.23 - 2026-11-09
 

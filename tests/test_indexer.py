@@ -817,7 +817,8 @@ def test_a_skipped_file_does_not_make_every_scan_write_all_rows_again(
             assert (again.updated, again.unchanged) == (0, 49)
             assert again.skipped == ["proj-demo/user_07.md"]
             assert db.revisions(conn)[0] == first.content_rev  # no row was written again
-        assert "hunter2hunter2" in rows(conn)[bad]["content"]
+        # The row keeps no old secret while its file is skipped (NOBLIVION-73).
+        assert "hunter2hunter2" not in rows(conn)[bad]["content"]
         # Another file changes while the bad one is still skipped: one update.
         (folder / "user_08.md").write_text("new text\n", encoding="utf-8")
         assert indexer.scan(conn, [folder]).updated == 1
@@ -863,6 +864,118 @@ def test_a_row_that_is_gone_leaves_the_redo_list(conn, tmp_path, monkeypatch):
     assert indexer.scan(conn, [folder]).updated == 49
     assert redo_list(conn) == []
     assert indexer.scan(conn, [folder]).updated == 0
+
+
+# -- NOBLIVION-73: rows with no file to read again ------------------------------
+
+
+def _insert_old_row(conn, kind: str, project: str = config.DEFAULT_NAMESPACE) -> int:
+    """A row that holds ``SECRET_NOTE`` as the rules of version 1 kept it, and
+    that the scan cannot read again from a file: ``kind`` is "mined" (the
+    transcript miner wrote it), "imported" (``db.IMPORT_ROOT``) or "archived"
+    (a note row that was withdrawn)."""
+    source = db.SOURCE_MINED if kind == "mined" else db.SOURCE_MD
+    root = {"mined": "proj-demo", "imported": db.IMPORT_ROOT, "archived": "proj-demo"}[kind]
+    with db.write_tx(conn):
+        rev = db.bump_rev(conn, "content_rev")
+        now = db.utc_now()
+        memory_id = db.insert_memory(
+            conn,
+            project=project,
+            root=root,
+            path=f"{kind}-row",
+            source_type=source,
+            category="reference",
+            content=SECRET_NOTE,
+            content_hash="h-" + kind,
+            labels=json.dumps(["db", "password=hunter2hunter2"]),
+            rev=rev,
+            now=now,
+            index_text=SECRET_NOTE,
+        )
+        if kind == "archived":
+            conn.execute("UPDATE memories SET archived_at = ? WHERE id = ?", (now, memory_id))
+    return memory_id
+
+
+def stored_row(conn, memory_id: int) -> dict:
+    row = dict(conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone())
+    chunks = conn.execute(
+        "SELECT text, search_text FROM memory_chunks WHERE parent_id = ?", (memory_id,)
+    ).fetchall()
+    row["chunks"] = "".join(r[0] + r[1] for r in chunks)
+    return row
+
+
+def holds_old_secret(row: dict) -> bool:
+    text = row["content"] + row["index_text"] + row["labels"] + row["chunks"]
+    return "hunter2hunter2" in text
+
+
+@pytest.mark.parametrize("kind", ["mined", "imported", "archived"])
+def test_a_new_redactor_version_redacts_the_stored_text_of_a_row_with_no_file(
+    conn, tmp_path, monkeypatch, kind
+):
+    folder = make_folder(tmp_path, "proj-demo", {"user_alice.md": "x\n"})
+    scan_as_version_1(monkeypatch, conn, folder)
+    memory_id = _insert_old_row(conn, kind)
+    before = stored_row(conn, memory_id)
+    assert holds_old_secret(before) and before["chunks"]
+    result = indexer.scan(conn, [folder])
+    after = stored_row(conn, memory_id)
+    assert not holds_old_secret(after)
+    assert redaction.FIELD_TOKEN in after["content"] and redaction.FIELD_TOKEN in after["chunks"]
+    assert json.loads(after["labels"]) == ["db"]  # a label the redactor changes is dropped
+    assert result.redacted == 1 and after["rev"] == result.content_rev
+    # The state and the hash of the row stay.
+    for column in ("source_type", "root", "path", "hash", "archived_at", "deleted_at"):
+        assert after[column] == before[column], column
+    again = indexer.scan(conn, [folder])
+    assert (again.redacted, again.changed) == (0, 0)
+    assert db.revisions(conn)[0] == result.content_rev
+
+
+def test_a_mined_row_written_after_the_last_scan_is_redacted(conn, tmp_path):
+    # A store process of an older release mines a row with its rules after the
+    # last scan of this code. The version mark is current, so only the
+    # revision tells the scan to read the row.
+    folder = make_folder(tmp_path, "proj-demo", {"user_alice.md": "x\n"})
+    indexer.scan(conn, [folder])
+    assert version_mark(conn) == redaction.REDACTOR_VERSION
+    memory_id = _insert_old_row(conn, "mined")
+    result = indexer.scan(conn, [folder])
+    assert result.redacted == 1 and not holds_old_secret(stored_row(conn, memory_id))
+    rev = db.revisions(conn)[0]
+    assert indexer.scan(conn, [folder]).redacted == 0
+    assert db.revisions(conn)[0] == rev
+
+
+def test_a_row_of_a_missing_folder_loses_its_old_secret_at_once(conn, tmp_path, monkeypatch):
+    folder = make_folder(tmp_path, "proj-demo", {"reference_db.md": SECRET_NOTE + "\n"})
+    scan_as_version_1(monkeypatch, conn, folder)
+    key = ("proj-demo", "reference_db.md")
+    away = folder.with_name("memory-away")
+    folder.rename(away)
+    result = indexer.scan(conn, [folder])
+    assert (result.updated, result.deleted, result.redacted) == (0, 0, 1)
+    assert not holds_old_secret(stored_row(conn, rows(conn)[key]["id"]))
+    # The row stays on the redo list: its file is read again when it is back.
+    assert redo_list(conn) == [rows(conn)[key]["id"]]
+    assert indexer.scan(conn, [folder]).redacted == 0
+    away.rename(folder)
+    assert indexer.scan(conn, [folder]).updated == 1
+    assert redo_list(conn) == []
+
+
+def test_text_that_cannot_be_redacted_again_is_withheld(conn, tmp_path, monkeypatch):
+    folder = make_folder(tmp_path, "proj-demo", {"user_alice.md": "x\n"})
+    scan_as_version_1(monkeypatch, conn, folder)
+    memory_id = _insert_old_row(conn, "mined")
+    _make_unredactable(monkeypatch, "hunter2hunter2")
+    assert indexer.scan(conn, [folder]).redacted == 1
+    row = stored_row(conn, memory_id)
+    assert row["content"] == redaction.REDACTION_FAILED_TOKEN and row["index_text"] == ""
+    assert not holds_old_secret(row)
 
 
 def test_secrets_are_redacted_before_storing(conn, tmp_path):

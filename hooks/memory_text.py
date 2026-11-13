@@ -93,7 +93,8 @@ _RX_KEY_NAME = (
 # are words, not secrets (the query forms hit 356 times in 705 memory bodies,
 # 2026-09-30). In memory text a scheme value must hold a digit, a key name
 # needs ":" or "=" before its value and the value is not a bare number
-# (``MAX_TOKENS=16384``). Every other pattern is the same, except the ``pass``
+# (``MAX_TOKENS=16384``), except a whole number of 10 or more digits: no count
+# is that large, a numeric token is (``api_token: 1234567890123``). Every other pattern is the same, except the ``pass``
 # key and ``-p`` below.
 _RX_SCHEME_MEMORY = (
     r"(?i)\b(bearer|basic|token)\s+(?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{8,}",
@@ -101,7 +102,7 @@ _RX_SCHEME_MEMORY = (
 )
 _RX_KEY_NAME_MEMORY = (
     r"(?i)\b([\w-]*(?:password|passwd|pwd|secret|token|api[ \t_-]*key|auth|credential|private[_-]?key)[\w-]*)"
-    r"(\s*[:=]\s*)(['\"]?)(?!\d+(?:[\s'\"&,;]|$))[^\s'\"&,;]{4,}\3",
+    r"(\s*[:=]\s*)(['\"]?)(?!\d{1,9}(?:[\s'\"&,;]|$))[^\s'\"&,;]{4,}\3",
     0,
 )
 # A key in quotes, the JSON form ``"password": "value"``: the closing quote of
@@ -111,11 +112,13 @@ _RX_KEY_NAME_MEMORY = (
 # A value in quotes runs to its closing quote, so a space in it does not end
 # it. ``true``, ``false`` and ``null`` are not a secret. A number is a secret
 # for a password key (``"password": 12345678``) and a count for a key that
-# ends in ``token`` or ``pass`` (``"input_token": 12345678``). The same rule
+# ends in ``token`` or ``pass`` (``"input_token": 12345678``), except a whole
+# number of 10 or more digits (``"api_token": 1234567890123``). The same rule
 # serves the query and the memory text.
 _RX_QUOTED_KEY = (
     r"(?i)(['\"](?:[\w-]*(?:password|passwd|pwd|secret|credential|(?:api|private|access)[_-]?key)"
-    r"|(?:[\w-]*token|(?:[\w.-]*[_.-])?pass)(?!['\"]\s*:\s*-?[\d.]+(?:[\s'\"&,;}\]]|$)))['\"])"
+    r"|(?:[\w-]*token|(?:[\w.-]*[_.-])?pass)"
+    r"(?!['\"]\s*:\s*(?!\d{10,}(?:[\s'\"&,;}\]]|$))-?[\d.]+(?:[\s'\"&,;}\]]|$)))['\"])"
     r"(\s*:\s*)(?:(['\"])(?:(?!\3)[^\\\n]|\\.){4,}\3"
     r"|-?[\d.]{4,}(?=[\s'\"&,;}\]]|$)"
     r"|(?!\[REDACTED\])(?!(?:true|false|null)(?:[\s'\"&,;}\]]|$))[^\s'\"&,;]{4,})",
@@ -144,26 +147,43 @@ _RX_PASS_KEY = (
 # (``DB_PASS=value``, not ``bypass=off``), and as the last part of a name in
 # front of ``:`` when the value looks like a secret
 # (``smtp-pass: hunter2hunter2``). A plain ``pass`` or ``Pass`` is a key in
-# front of ``:`` at the start of a line, also after an indent (YAML), when the
-# value on that line looks like a secret; ``PASS`` in capitals is the word of
-# a test report there. ``passphrase``, ``passcode``, ``session`` and
+# front of ``:`` at the start of a line, also after an indent or a list dash
+# (YAML), when the value on that line looks like a secret; ``PASS`` in
+# capitals is the word of a test report there, and counts only with a value
+# like ``Zx9qLm2Pw7Rt``. ``passphrase``, ``passcode``, ``session`` and
 # ``cookie`` keys stay as in the query set; the key is read from that word
 # on, at most 40 characters.
 # A value that looks like a secret: one word of 8 or more characters that has
-# a digit, a symbol inside it, or a capital letter after a small letter. A
+# a digit, a symbol inside it that does not join two words (``-``, ``_`` and
+# ``.`` join words), two joins in 12 or more characters
+# (``correct-horse-battery``), or a capital letter after a small letter. A
 # plain word stays, also with a capital first letter, in brackets or with a
-# full stop or a comma after it. Only the first 64 characters are read, so a
-# long word costs the same as a short one. The store redactor has the same
-# text (``_SECRET_LIKE`` in ``src/noblivion/redaction.py``).
+# full stop or a comma after it, and so do two joined words (``in-progress``,
+# ``test_name``). Only the first 64 characters are read, so a long word costs
+# the same as a short one. ``PASS`` in capitals at the start of a line, also
+# after a YAML list dash, counts only with a value that ``_STRONG_SECRET``
+# takes. The store redactor has the same text (``_SECRET_LIKE`` and
+# ``_STRONG_SECRET`` in ``src/noblivion/redaction.py``); a test fails when
+# they differ.
 _SECRET_LIKE = (
     r"(?=[^\s'\"]{8})"
     r"(?:[^\s\d'\"]{0,63}\d"
-    r"|[^\W_]{0,63}(?:_|[^\s\w'\"(){}\[\],;`])[^\W_]"
+    r"|[^\W_]{0,63}[^\s\w'\"(){}\[\],;`.\-][^\W_]"
+    r"|(?=[^\s'\"]{12})[^\W_]{1,63}[_.\-][^\W_]{1,63}[_.\-][^\W_]"
     r"|(?-i:[^\sa-z'\"]{0,63}[a-z][^\sA-Z'\"]{0,63}[A-Z]))"
+)
+# A value after ``PASS`` in capitals, the word of a test report: one word of 8
+# to 64 characters up to the end of its line, with a small letter, a capital
+# letter and a digit in front of a letter (``Zx9qLm2Pw7Rt``). A test name stays
+# (``test_name``, ``TestIndexer12``, ``TestHttp2Server (0.01s)``).
+_STRONG_SECRET = (
+    r"(?-i:(?=[^\s'\"]{0,63}\d[A-Za-z])(?=[^\s'\"]{0,63}[a-z])(?=[^\s'\"]{0,63}[A-Z])"
+    r"[^\s'\"]{8,64}['\"]?[ \t]*(?:\r?\n|$))"
 )
 _RX_PASS_KEY_MEMORY = (
     r"(?i)((?<![a-z])pass(?=\s*=)|(?<=[_.-])pass(?=\s*:\s*['\"]?" + _SECRET_LIKE + r")"
-    r"|(?m:^[ \t]*)(?-i:[Pp]ass)(?=[ \t]*:[ \t]*['\"]?" + _SECRET_LIKE + r")"
+    r"|(?m:^[ \t]*)(?:-[ \t]+)?(?-i:[Pp]ass)(?=[ \t]*:[ \t]*['\"]?" + _SECRET_LIKE + r")"
+    r"|(?m:^[ \t]*)(?:-[ \t]+)?(?-i:PASS)(?=[ \t]*:[ \t]*['\"]?" + _STRONG_SECRET + r")"
     r"|(?:passphrase|passcode|session|cookie)[\w-]{0,40})"
     r"(\s*[:=]\s*)(['\"]?)[^\s'\"&,;]{3,}\3",
     0,
@@ -189,6 +209,10 @@ _RX_DASH_P_MEMORY = (
 _KEY_BEGIN = r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
 _KEY_END = r"-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
 _KEY_TEXT = r"[A-Za-z0-9+/=]{16,}"
+_KEY_LAST_LINE = (
+    r"(?:(?:\r?\n|\\r\\n|\\n)[ \t]*(?=[A-Za-z]{0,14}[0-9+/=])[A-Za-z0-9+/=]{1,15}"
+    r"(?=[ \t]*(?:[\r\n'\"]|\\[rn]|$)))?"
+)
 _SHARED_SHAPES = (
     # A private key block, also the PGP form (``PRIVATE KEY BLOCK``). Prose
     # that only names the BEGIN line stays: a block is masked when
@@ -197,8 +221,10 @@ _SHARED_SHAPES = (
     #   BEGIN lines is read once;
     # - or it has no END line (a cut-off paste). Then the BEGIN line, up to 4
     #   header lines (``Name: value``) and the runs of key text after them are
-    #   masked. The text after the key stays. A last run of fewer than 16
-    #   characters stays too.
+    #   masked. The text after the key stays. A last line of key text of
+    #   fewer than 16 characters is masked too, when it is a whole line right
+    #   after the key text and holds a digit, ``+``, ``/`` or ``=``; a word
+    #   such as ``Thanks`` on that line stays.
     (
         _KEY_BEGIN
         + r"(?:(?=[ \t]*(?:[\r\n]|\\[rn]|"
@@ -207,7 +233,9 @@ _SHARED_SHAPES = (
         + _KEY_END
         + r"|(?:\r?\n[A-Za-z-]{1,20}: [^\r\n]{0,80}){0,4}(?:(?:\s|\\[rn])*"
         + _KEY_TEXT
-        + r")+)",
+        + r")+"
+        + _KEY_LAST_LINE
+        + r")",
         re.S,
     ),
     # Token prefixes: a code host, a cloud API, a payment API (two key types),

@@ -14,12 +14,16 @@ Covered shapes:
   chat bot tokens, cloud access key ids, and the token prefixes ``glpat-``,
   ``AIza``, ``sk_live_``, ``rk_live_``, ``hf_`` and ``npm_``;
 - the text of an XML ``<password>`` element;
-- CLI ``key=value``, ``--token=``, ``--password=`` and ``-p VALUE`` forms;
+- CLI ``key=value``, ``--token=`` and ``--password=`` forms, and ``-p VALUE``
+  when the value looks like a secret (not ``mkdir -p x``);
 - secret field names in ``key: value`` and ``key=value`` form, also with the
   key in quotes (JSON: ``"password": "value"``). A key that ends in ``pass``
   or ``pwd`` counts in front of ``=``, in the JSON form, and in front of
   ``:`` when its value looks like a secret. A plain ``pass`` key in front of
-  ``:`` counts at the start of a line;
+  ``:`` counts at the start of a line, also after a YAML list dash, and
+  ``PASS`` in capitals there only with a random value. A key that ends in
+  ``token`` keeps a number as a count, except a whole number of 10 or more
+  digits;
 - the password in a connection URL (``scheme://user:PASSWORD@host``);
 - the data block of a cluster ``kind: Secret`` manifest;
 - email addresses.
@@ -43,7 +47,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-REDACTOR_VERSION = "4"
+REDACTOR_VERSION = "5"
 
 _READ_CAPABILITY = re.compile(r"nobrc1_[A-Za-z0-9_-]+")
 
@@ -103,6 +107,10 @@ _JWT_RE = re.compile(
 _KEY_BEGIN = r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
 _KEY_END = r"-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
 _KEY_TEXT = r"[A-Za-z0-9+/=]{16,}"
+_KEY_LAST_LINE = (
+    r"(?:(?:\r?\n|\\r\\n|\\n)[ \t]*(?=[A-Za-z]{0,14}[0-9+/=])[A-Za-z0-9+/=]{1,15}"
+    r"(?=[ \t]*(?:[\r\n'\"]|\\[rn]|$)))?"
+)
 SHARED_SHAPES: tuple[tuple[str, int], ...] = (
     # A private key block, also the PGP form (``PRIVATE KEY BLOCK``). Prose
     # that only names the BEGIN line stays: a block is masked when
@@ -111,8 +119,10 @@ SHARED_SHAPES: tuple[tuple[str, int], ...] = (
     #   BEGIN lines is read once;
     # - or it has no END line (a cut-off paste). Then the BEGIN line, up to 4
     #   header lines (``Name: value``) and the runs of key text after them are
-    #   masked. The text after the key stays. A last run of fewer than 16
-    #   characters stays too.
+    #   masked. The text after the key stays. A last line of key text of
+    #   fewer than 16 characters is masked too, when it is a whole line right
+    #   after the key text and holds a digit, ``+``, ``/`` or ``=``; a word
+    #   such as ``Thanks`` on that line stays.
     (
         _KEY_BEGIN
         + r"(?:(?=[ \t]*(?:[\r\n]|\\[rn]|"
@@ -121,7 +131,9 @@ SHARED_SHAPES: tuple[tuple[str, int], ...] = (
         + _KEY_END
         + r"|(?:\r?\n[A-Za-z-]{1,20}: [^\r\n]{0,80}){0,4}(?:(?:\s|\\[rn])*"
         + _KEY_TEXT
-        + r")+)",
+        + r")+"
+        + _KEY_LAST_LINE
+        + r")",
         re.S,
     ),
     # Token prefixes: a code host, a cloud API, a payment API (two key types),
@@ -178,6 +190,30 @@ _SHAPE_PATTERNS: list[tuple[re.Pattern[str], _Replacement]] = [
     (re.compile(r"A(?:KIA|SIA)[A-Z0-9]{16}"), lambda m: REDACTION_TOKEN),
 ]
 
+# A value that looks like a secret: one word of 8 or more characters that has
+# a digit, a symbol inside it that does not join two words (``-``, ``_`` and
+# ``.`` join words), two joins in 12 or more characters
+# (``correct-horse-battery``), or a capital letter after a small letter. A
+# plain word stays, also with a capital first letter, in brackets or with a
+# full stop or a comma after it, and so do two joined words (``in-progress``,
+# ``test_name``). Only the first 64 characters are read, so a long word costs
+# the same as a short one.
+_SECRET_LIKE = (
+    r"(?=[^\s'\"]{8})"
+    r"(?:[^\s\d'\"]{0,63}\d"
+    r"|[^\W_]{0,63}[^\s\w'\"(){}\[\],;`.\-][^\W_]"
+    r"|(?=[^\s'\"]{12})[^\W_]{1,63}[_.\-][^\W_]{1,63}[_.\-][^\W_]"
+    r"|(?-i:[^\sa-z'\"]{0,63}[a-z][^\sA-Z'\"]{0,63}[A-Z]))"
+)
+# A value after ``PASS`` in capitals, the word of a test report: one word of 8
+# to 64 characters up to the end of its line, with a small letter, a capital
+# letter and a digit in front of a letter (``Zx9qLm2Pw7Rt``). A test name stays
+# (``test_name``, ``TestIndexer12``, ``TestHttp2Server (0.01s)``).
+_STRONG_SECRET = (
+    r"(?-i:(?=[^\s'\"]{0,63}\d[A-Za-z])(?=[^\s'\"]{0,63}[a-z])(?=[^\s'\"]{0,63}[A-Z])"
+    r"[^\s'\"]{8,64}['\"]?[ \t]*(?:\r?\n|$))"
+)
+
 # -- Broad CLI and key=value forms. At rest a false positive costs little and
 # a missed credential costs a lot, so these run too.
 _KEYVALUE_PATTERNS: list[tuple[re.Pattern[str], _Replacement]] = [
@@ -196,8 +232,14 @@ _KEYVALUE_PATTERNS: list[tuple[re.Pattern[str], _Replacement]] = [
         re.compile(r"--password=" + _NOT_A_MARKER + r"\S+"),
         lambda m: f"--password={REDACTION_TOKEN}",
     ),
+    # `-p VALUE` when the value looks like a secret (`mysql -p s3cretpw`). A
+    # flag value stays: `mkdir -p x`, `docker compose -p project`, a path
+    # (`-p build/out2`), a port or a host and port (`-p 127.0.0.1:8080:80`),
+    # and `pytest -p no:cacheprovider`.
     (
-        re.compile(r"(^|\s)-p\s+" + _NOT_A_MARKER + r"\S+"),
+        re.compile(
+            r"(^|\s)-p\s+" + _NOT_A_MARKER + r"(?![^\s/:]{0,63}[/:])(?=" + _SECRET_LIKE + r")\S+"
+        ),
         lambda m: f"{m.group(1)}-p {REDACTION_TOKEN}",
     ),
 ]
@@ -218,35 +260,31 @@ _KEYVALUE_PATTERNS: list[tuple[re.Pattern[str], _Replacement]] = [
 # - as the last part of a name in front of `:` (YAML), when the value looks
 #   like a secret (`smtp-pass: hunter2hunter2`, not `first_pass: complete`);
 # - a plain `pass` or `Pass` in front of `:` at the start of a line, also
-#   after an indent (YAML), when the value on that line looks like a secret
-#   (`  pass: hunter2hunter2`); `PASS` in capitals is the word of a test
-#   report there;
+#   after an indent or a YAML list dash (`- pass: value`), when the value on
+#   that line looks like a secret (`  pass: hunter2hunter2`);
+# - `PASS` in capitals there, the word of a test report, only when the value
+#   is the last word of its line and has a small letter, a capital letter and
+#   a digit in front of a letter (`PASS: Zx9qLm2Pw7Rt`, not `PASS: test_name`);
 # - `pwd` in front of a number.
 # `pass` must not follow a letter ("bypass") and `pwd` in front of `=` must
 # be the last part of a name.
 _NOT_A_KEYWORD = r"(?!\s*(?:true|false|null)(?:[\s,;}\]]|$))"
 _NOT_A_NUMBER = r"(?!\s*-?[\d.]+(?:[\s,;}\]]|$))"
+# After a key that ends in `token` a number is a count (`input_token: 12345678`),
+# except a whole number of 10 or more digits: no count is that large, a numeric
+# token is (`api_token: 1234567890123`).
+_NOT_A_COUNT = r"(?!\s*(?!\d{10,}(?:[\s,;}\]]|$))-?[\d.]+(?:[\s,;}\]]|$))"
 _NUMBER = r"[\d.]{6,}(?=[\s,;}\]]|$)"
-# A value that looks like a secret: one word of 8 or more characters that has
-# a digit, a symbol inside it, or a capital letter after a small letter. A
-# plain word stays, also with a capital first letter, in brackets or with a
-# full stop or a comma after it. Only the first 64 characters are read, so a
-# long word costs the same as a short one.
-_SECRET_LIKE = (
-    r"(?=[^\s'\"]{8})"
-    r"(?:[^\s\d'\"]{0,63}\d"
-    r"|[^\W_]{0,63}(?:_|[^\s\w'\"(){}\[\],;`])[^\W_]"
-    r"|(?-i:[^\sa-z'\"]{0,63}[a-z][^\sA-Z'\"]{0,63}[A-Z]))"
-)
 _FIELD_KEY = (
     r"(?:password|passwd|secret|api[_-]?key|credential|private[_-]?key|access[_-]?key"
     r"|secret[_-]?key|client[_-]?secret|jwt|\.dockerconfigjson|tls\.crt|tls\.key|ca\.crt)"
     r"['\"]?\s*(?:=|:" + _NOT_A_KEYWORD + r")\s*"
-    r"|token['\"]?\s*(?:=|:" + _NOT_A_KEYWORD + _NOT_A_NUMBER + r")\s*"
+    r"|token['\"]?\s*(?:=|:" + _NOT_A_KEYWORD + _NOT_A_COUNT + r")\s*"
     r"|(?:(?<![a-z])pass|(?<=[_.\-])pwd)['\"]?\s*=\s*"
     r"|(?:(?<=['\"_.\-])pass|(?<=[_.\-])pwd)['\"]\s*:\s*(?=['\"])"
     r"|(?<=[_.\-])(?:pass|pwd)\s*:\s*(?=['\"]?" + _SECRET_LIKE + r")"
-    r"|(?m:^[ \t]*)(?-i:[Pp]ass)[ \t]*:[ \t]*(?=['\"]?" + _SECRET_LIKE + r")"
+    r"|(?m:^[ \t]*)(?:-[ \t]+)?(?-i:[Pp]ass)[ \t]*:[ \t]*(?=['\"]?" + _SECRET_LIKE + r")"
+    r"|(?m:^[ \t]*)(?:-[ \t]+)?(?-i:PASS)[ \t]*:[ \t]*(?=['\"]?" + _STRONG_SECRET + r")"
     r"|(?<![a-z])pwd['\"]?\s*[=:]\s*(?=" + _NUMBER + r")"
 )
 _SECRET_FIELD_RE = re.compile(

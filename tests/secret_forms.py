@@ -77,6 +77,13 @@ ENCRYPTED = ("Proc-Type: 4,ENCRYPTED", "DEK-Info: AES-256-CBC," + "0123ABCD" * 4
 # Two values for a plain `pass` key: letters with digits, and symbols.
 PLAIN_PASS = "S3cr3t" + "Passw0rd"
 SYMBOL_PASS = "Xk9#" + "mQ2!vL"
+# A random password: digits between small and capital letters (NOBLIVION-74).
+RANDOM_PASS = "Zx9qLm" + "2Pw7Rt"
+# A numeric token: 10 or more digits. A count of 9 digits or fewer stays.
+NUMERIC_TOKEN = "12345" + "67890"
+LONG_NUMERIC_TOKEN = NUMERIC_TOKEN + "123"
+# The short last line of a key block whose END line is cut off.
+SHORT_KEY_TAIL = "abc123" + "def456"
 
 # (name, text, the secret that must be gone)
 FORMS: list[tuple[str, str, str]] = [
@@ -97,6 +104,17 @@ FORMS: list[tuple[str, str, str]] = [
         KEY_BODY,
     ),
     ("pgp key block with no END line", f"The key file:\n{key_block('PGP', end=False)}", KEY_BODY),
+    # NOBLIVION-74: the last line of a cut-off block is shorter than 16.
+    (
+        "key block with no END line, short last line",
+        f"The key file:\n{begin_line('RSA')}\n{KEY_BODY}\n{KEY_BODY}\n{SHORT_KEY_TAIL}\n",
+        SHORT_KEY_TAIL,
+    ),
+    (
+        "key block in a string, no END line, short last line",
+        f'"{begin_line("")}\\n{KEY_BODY}\\n{SHORT_KEY_TAIL}\\n"',
+        SHORT_KEY_TAIL,
+    ),
     ("encrypted key block", f"{key_block('RSA', headers=ENCRYPTED)}\nKeep it safe.", KEY_BODY),
     (
         "encrypted key block with no END line",
@@ -144,6 +162,15 @@ FORMS: list[tuple[str, str, str]] = [
     ("yaml pass key after a tab, value in quotes", f'\tpass: "{PLAIN_PASS}"', PLAIN_PASS),
     ("pass key with a capital first letter", f"User: alice\nPass: {PLAIN_PASS}", PLAIN_PASS),
     ("pass key at the start of a line, mixed case value", "pass: hunterHunter", "hunterHunter"),
+    # NOBLIVION-74: a YAML list item, and `PASS` in capitals with a random value.
+    ("yaml list item pass key", f"- pass: {RANDOM_PASS}", RANDOM_PASS),
+    ("yaml list item pass key after an indent", f"users:\n  - pass: {RANDOM_PASS}\n", RANDOM_PASS),
+    ("pass key in capitals, random value", f"PASS: {RANDOM_PASS}", RANDOM_PASS),
+    ("yaml pass suffix, three joined words", "x_pass: correct-horse-battery", "horse"),
+    # NOBLIVION-74: a token key with a number of 10 or more digits.
+    ("token of digits", f"token: {NUMERIC_TOKEN}", NUMERIC_TOKEN),
+    ("token suffix of digits", f"api_token: {LONG_NUMERIC_TOKEN}", LONG_NUMERIC_TOKEN),
+    ("json token of digits", '{"api_token": ' + LONG_NUMERIC_TOKEN + "}", LONG_NUMERIC_TOKEN),
     ("value in quotes with spaces", f'password="{PHRASE}"', PHRASE_TAIL),
     ("value in single quotes with spaces", f"SECRET_KEY='{PHRASE}'", PHRASE_TAIL),
     ("yaml value in quotes with spaces", f'password: "{PHRASE}"', PHRASE_TAIL),
@@ -207,6 +234,8 @@ ORDINARY: list[str] = [
     '{"input_tokens": 12345678, "token_count": 152000, "max_tokens": 16384}',
     '{"output_token": 99999999, "cached_token": 12345678}',
     '{"secret_count": 12345678, "password_length": 12345678}',
+    # NOBLIVION-74: a flag value is not a password.
+    "mkdir -p x",
 ]
 
 # Text of a note that the store redactor and the memory text redactor of the
@@ -265,6 +294,18 @@ NOTES: list[str] = [
     "The second pass: step2_of_the_plan is done",
     'pass: "{{ vault_smtp_pass }}"',
     "pass: ${SMTP_PASS}",
+    # NOBLIVION-74: two joined words are a name or a state, not a secret, and
+    # a test name after `PASS` stays.
+    "pass: test_name",
+    "x_pass: in-progress",
+    "- pass: complete",
+    "PASS: TestHttp2Server (0.01s)",
+    "PASS: test_v2_parser",
+    "token: 123456789",
+    "docker compose -p myproject up",
+    "pytest -p no:cacheprovider",
+    "mkdir -p build/out2",
+    "Run `mkdir -p build` first.",
 ]
 
 # (name, a hostile text of 100 KB or more): a new or changed rule must stay

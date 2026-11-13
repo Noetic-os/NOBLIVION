@@ -517,6 +517,61 @@ def rewrite_memory(
     return True
 
 
+def fileless_row_ids(
+    conn: sqlite3.Connection, project: str, *, after_rev: int | None = None
+) -> list[int]:
+    """The ids of the rows of a namespace whose text an index scan does not
+    read again from a file: a row of another source (the transcript miner), an
+    imported row (``IMPORT_ROOT``), and an archived or deleted row. With
+    ``after_rev``, only the rows with a later revision."""
+    sql = (
+        "SELECT id FROM memories WHERE project = ? AND (source_type != ? OR root = ? "
+        "OR archived_at IS NOT NULL OR deleted_at IS NOT NULL)"
+    )
+    args: list[object] = [project, SOURCE_MD, IMPORT_ROOT]
+    if after_rev is not None:
+        sql += " AND rev > ?"
+        args.append(after_rev)
+    return [int(r[0]) for r in conn.execute(sql + " ORDER BY id", args).fetchall()]
+
+
+def stored_text(conn: sqlite3.Connection, ids: Sequence[int]) -> list[tuple[int, str, str, str]]:
+    """``(id, content, index_text, labels)`` of the rows ``ids`` that exist."""
+    out: list[tuple[int, str, str, str]] = []
+    for start in range(0, len(ids), BATCH_ROWS):
+        part = list(ids[start : start + BATCH_ROWS])
+        marks = ", ".join("?" * len(part))
+        cur = conn.execute(
+            f"SELECT id, content, index_text, labels FROM memories WHERE id IN ({marks})", part
+        )
+        out.extend((int(r[0]), r[1], r[2], r[3]) for r in cur.fetchall())
+    return out
+
+
+def replace_stored_text(
+    conn: sqlite3.Connection,
+    memory_id: int,
+    *,
+    old: tuple[str, str, str],
+    new: tuple[str, str, str],
+    rev: int,
+    now: str,
+) -> bool:
+    """Set ``(content, index_text, labels)`` of a row to ``new`` when it still
+    holds ``old``, and make its chunks match. Its state (live, archived,
+    deleted) and its hash stay. Call inside ``write_tx``. False when another
+    writer changed the row first."""
+    cur = conn.execute(
+        "UPDATE memories SET content = ?, index_text = ?, labels = ?, rev = ?, updated_at = ? "
+        "WHERE id = ? AND content = ? AND index_text = ? AND labels = ?",
+        (*new, rev, now, memory_id, *old),
+    )
+    if cur.rowcount != 1:
+        return False
+    sync_chunks(conn, memory_id, new[0], rev)
+    return True
+
+
 # -- chunks (NOBLIVION-103) ------------------------------------------------------
 
 CHUNKER_VERSION_KEY = "chunker_version"
