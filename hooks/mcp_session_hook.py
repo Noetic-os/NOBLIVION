@@ -96,4 +96,8 @@ def main(stdin=None, stdout=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        from input_check import run as _checked  # NOBLIVION-118
+    except Exception:  # noqa: BLE001 - no check: the hook runs as before
+        def _checked(_hook, fn, notify=True): return fn()
+    sys.exit(_checked("mcp_session_hook", main))

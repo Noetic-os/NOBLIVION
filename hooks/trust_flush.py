@@ -790,7 +790,11 @@ def _make_dirs(path: Any) -> None:
 
 if __name__ == "__main__":
     try:
-        code = _cli(sys.argv[1:])
+        from input_check import run as _checked  # NOBLIVION-118
+    except Exception:  # noqa: BLE001 - no check: the hook runs as before
+        def _checked(_hook, fn, notify=True): return fn()
+    try:
+        code = _checked("trust_flush", lambda: _cli(sys.argv[1:]), notify=False)
     except BaseException:  # noqa: BLE001 - a hook fails open
         code = 0
     os._exit(code)

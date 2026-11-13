@@ -1477,7 +1477,11 @@ def _make_dirs(path: Any) -> None:
 
 if __name__ == "__main__":
     try:
-        main()
+        from input_check import run as _checked  # NOBLIVION-118
+    except Exception:  # noqa: BLE001 - no check: the hook runs as before
+        def _checked(_hook, fn, notify=True): return fn()
+    try:
+        _checked("error_recall_hook", main)
     except BaseException:  # noqa: BLE001, S110 - a hook fails open
         pass
     try:

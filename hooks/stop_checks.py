@@ -1456,4 +1456,8 @@ def _make_dirs(path: Any) -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        from input_check import run as _checked  # NOBLIVION-118
+    except Exception:  # noqa: BLE001 - no check: the hook runs as before
+        def _checked(_hook, fn, notify=True): return fn()
+    sys.exit(_checked("stop_checks", lambda: main(sys.argv[1:])))

@@ -409,6 +409,7 @@ def run_forked(
                 os.environ.clear()
                 os.environ.update(environ)
             code, stdout, stderr = combine(run_event(event_name, event_text), event_name)
+            stdout = _with_notice(code, stdout, event_text, event_name)
             data = json.dumps({"code": code, "stdout": stdout, "stderr": stderr}).encode("utf-8")
             with os.fdopen(write_fd, "wb") as pipe:
                 pipe.write(data)
@@ -444,6 +445,15 @@ def run_forked(
         return 1, "", "dispatch: child gave no answer\n"
 
 
+def _with_notice(code: int, stdout: str, event_text: str, event_name: str) -> str:
+    """``stdout`` with the one notice of the session when the event lacks a field that Claude Code
+    documents (NOBLIVION-118, ``input_check.py``). Complete input: ``stdout`` unchanged."""
+    try:
+        return _load("input_check").apply(code, stdout, event_text, "dispatch " + event_name, event_name)
+    except Exception:  # noqa: BLE001 - the check never changes the answer
+        return stdout
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     raw = "--raw" in args
@@ -459,6 +469,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         event_text = ""
     parts = run_event(event_name, event_text)
     code, stdout, stderr = combine(parts, event_name)
+    stdout = _with_notice(code, stdout, event_text, event_name)
     if raw:
         doc = {
             "code": code,

@@ -59,6 +59,10 @@ All notable changes to NOBLIVION. The format follows
 - Embedding backfill notices a new vector size from the model. A failed backfill
   pass or a failed consent read retries later instead of waiting for new content.
 - Duplicate merge planning stops when dedup consent is revoked or unreadable.
+- Show one notice for each session when the Claude Code hook input lacks a field that the
+  hooks read (for example after a field is renamed), and write one line for each session to
+  `input-drift.log` in the data dir. The hooks still fail open and never block the prompt.
+  Complete input gives the same output as before (NOBLIVION-118).
 
 ## 0.1.23 - 2026-11-09
 
