@@ -53,6 +53,12 @@ All notable changes to NOBLIVION. The format follows
   index scan after the update writes the notes again (NOBLIVION-91).
 - The index route redacts a start of a long title or summary line, not the
   whole line: a 256 KB line cost about 0.14 s for each row (NOBLIVION-86).
+- A fault in one background jobs tick no longer stops the jobs loop; a stopped loop
+  shows as `index_state: stopped` in /health. A stalled embedding server costs one
+  batch timeout and one row timeout, and the jobs stop before the HTTP server.
+- Embedding backfill notices a new vector size from the model. A failed backfill
+  pass or a failed consent read retries later instead of waiting for new content.
+- Duplicate merge planning stops when dedup consent is revoked or unreadable.
 
 ## 0.1.23 - 2026-11-09
 
