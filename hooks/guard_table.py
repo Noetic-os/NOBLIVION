@@ -1074,10 +1074,137 @@ def _ssh_reads_stdin(args: List[str]) -> bool:
     return not rest or _stdin_reader(rest) == "shell"
 
 
+# NOBLIVION-96: a container shell reads the stdin of ``docker exec -i``,
+# ``podman exec -i``, ``docker compose exec`` and ``kubectl exec -i``. Without
+# ``-i`` (``--interactive``, ``--stdin``) docker, podman and kubectl do not
+# pass stdin on, so the body stays data. The options that take a value are
+# skipped with their value, and so is the container, service or pod name.
+_DOCKER_GLOBAL_ARGS = frozenset(
+    ("-H", "--host", "-c", "--context", "--config", "-l", "--log-level", "--url", "--connection")
+)
+_COMPOSE_GLOBAL_ARGS = frozenset(
+    ("-f", "--file", "-p", "--project-name", "--project-directory", "--profile", "--env-file")
+    + ("--ansi", "--progress", "--parallel")
+)
+_EXEC_LONG_ARGS = frozenset(
+    ("--env", "--env-file", "--user", "--workdir", "--detach-keys", "--preserve-fds", "--index")
+)
+_EXEC_SHORT_ARGS = frozenset("euw")
+_KUBECTL_LONG_ARGS = frozenset(
+    ("--namespace", "--container", "--filename", "--context", "--kubeconfig", "--cluster")
+    + ("--user", "--server", "--request-timeout", "--pod-running-timeout", "--as", "--as-group")
+    + ("--token", "--certificate-authority", "--client-certificate", "--client-key", "--v")
+)
+_KUBECTL_SHORT_ARGS = frozenset("ncfsv")
+
+
+def _long_takes_value(w: str, names: frozenset) -> bool:
+    """True when the long option ``w`` names its value in the next word."""
+    return "=" not in w and w in names
+
+
+def _container_reads_stdin(tool: str, args: List[str]) -> bool:
+    """True when ``docker ARGS`` or ``podman ARGS`` is an ``exec`` (or
+    ``compose exec``) that passes its stdin to a shell reading stdin."""
+    k, compose = 0, False
+    while True:  # global options, ``container`` and ``compose`` up to ``exec``
+        if k >= len(args):
+            return False
+        w = args[k]
+        if w == "exec":
+            k += 1
+            break
+        if w == "compose" and not compose:
+            compose = True
+        elif w == "container" and not compose:
+            pass
+        elif w.startswith("-"):
+            names = _COMPOSE_GLOBAL_ARGS if compose else _DOCKER_GLOBAL_ARGS
+            k += 1 if w in names else 0
+        else:
+            return False
+        k += 1
+    interactive, named = compose, True  # compose exec keeps stdin open by default
+    while k < len(args):
+        w = args[k]
+        if w == "--":
+            k += 1
+            break
+        if len(w) < 2 or w[0] != "-":
+            break
+        if w.startswith("--"):
+            name = w.split("=", 1)[0]
+            if name == "--interactive":
+                interactive = not w.endswith("=false")
+            elif name == "--latest" and tool == "podman":
+                named = False
+            k += 2 if _long_takes_value(w, _EXEC_LONG_ARGS) else 1
+            continue
+        for p, ch in enumerate(w[1:], 1):
+            if ch == "i":
+                interactive = True
+            elif ch == "l" and tool == "podman":
+                named = False
+            elif ch in _EXEC_SHORT_ARGS:
+                k += p == len(w) - 1  # the value is the next word
+                break
+        k += 1
+    k += 1 if named else 0  # the container or service name
+    return interactive and k < len(args) and _stdin_reader(args[k:]) == "shell"
+
+
+def _kubectl_reads_stdin(args: List[str]) -> bool:
+    """True when ``kubectl ARGS`` is an ``exec -i`` whose command is a shell
+    reading stdin (``kubectl exec -i pod -- bash``)."""
+    k = 0
+    while True:  # global options up to ``exec``
+        if k >= len(args):
+            return False
+        w = args[k]
+        if w == "exec":
+            k += 1
+            break
+        if not w.startswith("-"):
+            return False
+        if w.startswith("--"):
+            k += 2 if _long_takes_value(w, _KUBECTL_LONG_ARGS) else 1
+        else:
+            k += 2 if len(w) == 2 and w[1] in _KUBECTL_SHORT_ARGS else 1
+    stdin, pod, command = False, "", None
+    while k < len(args):
+        w = args[k]
+        if w == "--":
+            command = args[k + 1 :]
+            break
+        if w.startswith("--"):
+            name = w.split("=", 1)[0]
+            if name == "--stdin":
+                stdin = not w.endswith("=false")
+            k += 2 if _long_takes_value(w, _KUBECTL_LONG_ARGS) else 1
+            continue
+        if len(w) > 1 and w[0] == "-":
+            for p, ch in enumerate(w[1:], 1):
+                if ch == "i":
+                    stdin = True
+                elif ch in _KUBECTL_SHORT_ARGS:
+                    k += p == len(w) - 1
+                    break
+            k += 1
+            continue
+        if pod:  # the old form without ``--``: the command follows the pod
+            command = args[k:]
+            break
+        pod = w
+        k += 1
+    return stdin and bool(command) and _stdin_reader(command or []) == "shell"
+
+
 def _stdin_reader(argv: List[str]) -> str:
     """Who reads the stdin of a simple command (``argv``: its words with the
     quotes removed). ``"shell"`` when a shell runs it as commands (``bash``,
     ``sh``, ``zsh``, ``dash``, ``ksh``, ``su``, ``sudo -s``/``-i``, ``ssh``,
+    a shell in ``docker exec -i``, ``podman exec -i``, ``docker compose
+    exec`` or ``kubectl exec -i``,
     also by path and behind ``sudo``, ``env``, ``nohup``, ``exec`` and the
     other lead words), ``"cat"`` when ``cat`` with no file passes it on,
     ``""`` otherwise."""
@@ -1095,6 +1222,10 @@ def _stdin_reader(argv: List[str]) -> str:
             return "" if run else "shell"
         if b == "ssh":
             return "shell" if _ssh_reads_stdin(words[k + 1 :]) else ""
+        if b in ("docker", "podman"):
+            return "shell" if _container_reads_stdin(b, words[k + 1 :]) else ""
+        if b == "kubectl":
+            return "shell" if _kubectl_reads_stdin(words[k + 1 :]) else ""
         if b in _LEAD_WORDS or w in _KEYWORDS:
             lead, after_opt = b, False
         elif w.startswith("-") and lead:
@@ -1117,6 +1248,79 @@ def _stdin_reader(argv: List[str]) -> str:
                 return "cat"
             return ""
     return "shell" if login else ""
+
+
+# NOBLIVION-96: what ``echo`` or ``printf`` writes to a pipe is the stdin of the
+# next command. When a shell reads it (``echo '...' | bash``), it is code.
+_ECHO_OPT = re.compile(r"-[neE]+")
+_ESCAPE = re.compile(r"\\([abfnrtv\\])")
+_ESCAPES = {"a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
+_PRINTF_SPEC = re.compile(r"%(?:%|[-+ #0']*(?:\d+|\*)?(?:\.(?:\d+|\*)?)?([A-Za-z]))")
+_STDOUT_AWAY = re.compile(r"(?:1|&)?(?:>>|>\||>)(.*)", re.S)  # stdout to a file
+PRINTF_ROUNDS = 64  # printf repeats its format while arguments are left
+
+
+def _unescape(text: str) -> str:
+    return _ESCAPE.sub(lambda m: _ESCAPES.get(m.group(1), m.group(1)), text)
+
+
+def _printf_text(fmt: str, args: List[str]) -> str:
+    """The text of ``printf FMT ARGS``: escapes decoded, each conversion
+    replaced by the next argument, the format repeated for the arguments
+    that are left."""
+    fmt, out, rest = _unescape(fmt), [], list(args)
+    for _ in range(PRINTF_ROUNDS):
+        used = False
+
+        def put(m: re.Match[str]) -> str:
+            nonlocal used
+            if m.group(0) == "%%":
+                return "%"
+            used = True
+            value = rest.pop(0) if rest else ""
+            return _unescape(value) if m.group(1) == "b" else value
+
+        out.append(_PRINTF_SPEC.sub(put, fmt))
+        if not rest or not used:
+            break
+    return "".join(out)
+
+
+def _printed_text(argv: List[str], raw: List[str]) -> Optional[str]:
+    """What ``echo`` or ``printf`` (``argv``, after the lead words) writes to
+    its stdout, or ``None`` for any other command and for output that goes to
+    a file or a descriptor (``> f``, ``>&2``) or into a variable (``printf -v
+    x``). ``raw`` holds the words with their quotes, so a quoted ``'>'`` is
+    text, not a redirection."""
+    if any(_STDOUT_AWAY.fullmatch(w) for w in raw):
+        return None
+    words = _without_redirections(argv)
+    lead, after_opt = "", False
+    for k, w in enumerate(words):
+        b = _base(w)
+        if b == "echo":
+            rest = words[k + 1 :]
+            while rest and _ECHO_OPT.fullmatch(rest[0]):
+                rest = rest[1:]
+            return _unescape(" ".join(rest)) + "\n"
+        if b == "printf":
+            rest = words[k + 1 :]
+            if rest and rest[0] == "--":
+                rest = rest[1:]
+            if not rest or rest[0].startswith("-v"):
+                return None
+            return _printf_text(rest[0], rest[1:])
+        if b in _LEAD_WORDS or w in _KEYWORDS:
+            lead, after_opt = b, False
+        elif w.startswith("-") and lead:
+            after_opt = True
+        elif _NAME_EQ.match(w) or _NUMBER.fullmatch(w):
+            after_opt = False
+        elif after_opt:
+            after_opt = False
+        else:
+            return None
+    return None
 
 
 class _Scan:
@@ -1152,12 +1356,17 @@ class _Scan:
         self.comment[off : off + len(text)] = inner.comment
 
     def _feed(
-        self, argv: List[str], stdin: List[Tuple[int, str]], pipe: bool
+        self, argv: List[str], stdin: List[Tuple[int, str]], pipe: bool, raw: List[str]
     ) -> List[Tuple[int, str]]:
         """The end of a simple command with the words ``argv`` and the stdin
         texts ``stdin`` (``(index, text)``: a here-string in ``s`` at
         ``index``; ``-1`` for a heredoc body or text not in ``s``). A shell
-        reader runs them; ``cat`` before a ``|`` passes them on (returned)."""
+        reader runs them; ``cat`` before a ``|`` passes them on (returned).
+        ``echo`` or ``printf`` before a ``|`` passes on what it prints."""
+        if pipe:
+            printed = _printed_text(argv, raw)
+            if printed is not None:
+                return [(-1, printed)] if printed.strip() else []
         if not stdin:
             return []
         reader = _stdin_reader(argv)
@@ -1198,7 +1407,7 @@ class _Scan:
             nonlocal carry
             end_word()
             if argv or stdin:  # an empty command (``|&``, ``|`` newline) keeps the carry
-                carry = self._feed(argv, stdin or carry, pipe)
+                carry = self._feed(argv, stdin or carry, pipe, words)
             argv.clear()
             stdin.clear()
 
@@ -1295,6 +1504,11 @@ class _Scan:
                         stdin.append((-1, body))
                     i = m.end()
                     continue
+            if c == "&" and (s[i - 1 : i] in ("<", ">") or s.startswith("&>", i)):
+                cur.append(c)  # ``2>&1``, ``>&2``, ``&>f``: a redirection, not ``&``
+                arg.append(c)
+                i += 1
+                continue
             if c in ";|&\n":
                 # a pipe passes what ``cat`` read to the next command; ``||`` does not
                 end_cmd(c == "|" and not s.startswith("||", i) and s[i - 1 : i] != "|")

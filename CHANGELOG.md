@@ -24,6 +24,10 @@ All notable changes to NOBLIVION. The format follows
   (NOBLIVION-224). A slow trust report no longer pauses the prompt rows (NOBLIVION-89).
   A shorter call no longer replaces the budget of a longer one in the pause, and a new
   store with a reused pid and port no longer counts as the store that hung (NOBLIVION-90).
+- The guard now checks text that `echo` or `printf` pipes to a shell (`echo '...' | bash`)
+  and the stdin of a container shell (`docker exec -i`, `podman exec -i`, `docker compose
+  exec`, `kubectl exec -i`) as commands, so a deny rule fires on them. The same text read by
+  any other program stays data (NOBLIVION-96).
 
 ## 0.1.23 - 2026-11-09
 

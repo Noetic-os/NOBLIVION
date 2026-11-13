@@ -230,6 +230,23 @@ def test_a_heredoc_that_a_shell_reads_is_denied_and_a_file_body_is_not(env):
     assert out is None or "permissionDecision" not in out
 
 
+def test_text_piped_to_a_shell_or_a_container_shell_is_denied_and_printed_text_is_not(env):
+    # NOBLIVION-96: ``echo '...' | bash`` and ``docker exec -i c bash <<EOF`` run the text
+    for cmd in (
+        "echo 'git push --force origin main' | bash",
+        "docker exec -i c bash <<'EOF'\ngit push --force origin main\nEOF",
+    ):
+        out = call(env, bash(cmd))
+        assert out["permissionDecision"] == "deny"
+        assert out["permissionDecisionReason"].startswith("Never force-push.")
+    for cmd in (
+        "echo 'git push --force origin main' | grep push",
+        "docker exec c bash <<'EOF'\ngit push --force origin main\nEOF",
+    ):
+        out = call(env, bash(cmd))
+        assert out is None or "permissionDecision" not in out
+
+
 # 2. budget ----------------------------------------------------------------
 def test_budget_spent_retry_is_still_denied_and_escalates(env):
     """Arm G trap t06 (RESULT-G.md): the model retried after 2 denies and the

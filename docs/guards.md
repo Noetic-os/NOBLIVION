@@ -221,6 +221,15 @@ command. The reason names the rule.
     (`ssh host bash -s`).
   - `cat` with no file, when it pipes to one of these readers
     (`cat <<EOF | bash`).
+  - A shell in a container: `docker exec -i`, `podman exec -i`,
+    `docker compose exec` and `kubectl exec -i` (also `--interactive` and
+    `--stdin`), followed by the container, service or pod name and a shell
+    that reads stdin (`kubectl exec -i pod -- bash`). Without `-i`, the
+    container gets no stdin, so the body stays data.
+- The text that `echo` or `printf` writes to a pipe is data too, unless one
+  of these readers reads it (`echo '...' | bash`, `printf '%s\n' '...' | sh`).
+  Then the hook checks the text as a command of its own. When the output
+  goes to a file (`> f`) or to another program (`| grep`), it stays data.
 - Every other reader keeps the body as data, for example `cat > file`,
   `tee`, `git commit -F -`, `gh pr create --body-file -` and `python3`.
 

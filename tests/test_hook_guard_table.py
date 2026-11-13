@@ -14,6 +14,10 @@ What these tests hold:
 11. A SHELL READS ITS HEREDOC AS CODE (NOBLIVION-52): the body of
    ``bash <<EOF``, ``ssh host <<EOF``, ``cat <<EOF | bash`` and the text of
    ``bash <<< "..."`` fire; the same body for ``cat > f`` or ``tee`` does not.
+12. PIPED TEXT AND CONTAINER SHELLS ARE CODE (NOBLIVION-96): ``echo '...' |
+   bash``, ``printf '...' | sh``, ``docker exec -i c bash <<EOF`` and
+   ``kubectl exec -i pod -- bash <<EOF`` fire; the same text for ``grep``,
+   ``> f`` or a container command without ``-i`` does not.
 5. THE CLI FAILS OPEN: ``--rebuild`` exits 0 and prints nothing, on success and
    on failure; a failure never replaces a good table.
 8. A SKIPPED RULE IS NAMED (NOBLIVION-50): when the build skipped a rule,
@@ -991,6 +995,146 @@ def test_the_body_a_shell_reads_is_its_own_view_and_segment():
     ]
     # the body is still cut from the command line itself
     assert gt.without_heredoc_bodies("bash <<'EOF'" + BODY + "\necho b") == "bash <<'EOF'\necho b"
+
+
+# 12. NOBLIVION-96: text piped to a shell, and a container shell's stdin, is code
+PUSH = "git push --force origin main"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # the reproducer of the ticket
+        "echo 'git push --force' | bash",
+        "printf 'git push --force\\n' | sh",
+        "docker exec -i c bash <<'EOF'\ngit push --force\nEOF",
+        "kubectl exec -i pod -- bash <<'EOF'\ngit push --force\nEOF",
+        # echo and printf: options, escapes, conversions, wrappers, readers
+        f'echo "{PUSH}" | bash',
+        f"echo -e 'cd x\\n{PUSH}' | sh",
+        f"echo -n '{PUSH}' | bash -s",
+        f"printf '%s\\n' '{PUSH}' | bash",
+        f"printf -- 'cd x; %s' '{PUSH}' | zsh",
+        f"printf '%s\\n' 'cd x' '{PUSH}' | bash",
+        f"sudo echo '{PUSH}' | sudo bash",
+        f"echo '{PUSH}' | ssh host",
+        f"echo '{PUSH}' | ssh host bash -s",
+        f"echo '{PUSH}' | cat | bash",
+        f"echo '{PUSH}' 2>&1 | bash",
+        f"echo '{PUSH}' |& bash",
+        f"cd x && echo '{PUSH}' | /bin/sh",
+        f"echo '{PUSH}' | docker exec -i c sh",
+        # container shells that read a heredoc or a here-string
+        "docker exec -i c sh -s <<EOF" + BODY,
+        "docker exec -it -u root -w /app c bash <<EOF" + BODY,
+        "docker exec --interactive -e A=1 c bash <<EOF" + BODY,
+        "docker -H unix:///x.sock exec -i c bash <<EOF" + BODY,
+        "docker container exec -i c bash <<EOF" + BODY,
+        "sudo docker exec -i c bash <<EOF" + BODY,
+        "docker exec -i c sudo bash <<EOF" + BODY,
+        "podman exec -i c sh <<EOF" + BODY,
+        "podman exec -il bash <<EOF" + BODY,
+        "docker compose exec -T app sh <<EOF" + BODY,
+        "docker compose -f dc.yml exec app bash <<EOF" + BODY,
+        "kubectl exec -i pod -- sh <<EOF" + BODY,
+        "kubectl exec -it -n ns pod -c app -- bash <<EOF" + BODY,
+        "kubectl -n ns exec --stdin deploy/app -- /bin/bash <<EOF" + BODY,
+        "kubectl exec pod -i -- bash <<EOF" + BODY,
+        "kubectl exec -i pod bash <<EOF" + BODY,
+        f"docker exec -i c bash <<< '{PUSH}'",
+        f'kubectl exec -i pod -- sh <<< "{PUSH}"',
+        "ssh host docker exec -i c bash <<EOF" + BODY,
+    ],
+)
+def test_text_piped_to_a_shell_or_read_by_a_container_shell_is_matched_as_commands(cmd):
+    assert _sids(cmd) == ["push_force"]
+
+
+# Not a bypass form: the same text, printed or read as data. These commands
+# must stay exactly as before the fix: no hit and no extra executed view.
+NOT_BYPASS = [
+    # echo and printf whose output no shell reads
+    f"echo '{PUSH}'",
+    f"echo '{PUSH}' > run.sh",
+    f"echo '{PUSH}' >> notes.md",
+    f"echo '{PUSH}' | grep push",
+    f"echo '{PUSH}' | tee notes.md",
+    f"echo '{PUSH}' | python3",
+    f"echo '{PUSH}' | bash -c 'cat > f'",
+    f"echo '{PUSH}' | bash script.sh",
+    f"echo '{PUSH}' >&2 | bash",
+    f"echo '{PUSH}' > f | bash",
+    f"echo '{PUSH}' || bash",
+    f"echo '{PUSH}'; bash",
+    f"echo '{PUSH}' && bash",
+    f"printf '%s\\n' '{PUSH}' | wc -l",
+    f"printf -v cmd '%s' '{PUSH}' | bash",
+    f"printf '{PUSH}' > f",
+    f"git log | grep '{PUSH}'",
+    # container commands that do not pass stdin to a shell
+    "docker exec c bash <<EOF" + BODY,
+    "docker exec -t c bash <<EOF" + BODY,
+    "docker exec --interactive=false c bash <<EOF" + BODY,
+    "docker exec -i c psql <<EOF" + BODY,
+    "docker exec -i c bash script.sh <<EOF" + BODY,
+    "docker exec -i c sh -c 'cat > f' <<EOF" + BODY,
+    "docker run -i img bash <<EOF" + BODY,
+    "docker logs c <<EOF" + BODY,
+    "podman exec c sh <<EOF" + BODY,
+    "kubectl exec pod -- bash <<EOF" + BODY,
+    "kubectl exec -i pod -- cat > f <<EOF" + BODY,
+    "kubectl exec --stdin=false pod -- bash <<EOF" + BODY,
+    "kubectl apply -f - <<EOF" + BODY,
+    "kubectl exec -i pod <<EOF" + BODY,
+    f"echo '{PUSH}' | docker exec c sh",
+    f"echo '{PUSH}' | kubectl exec -i pod -- python3",
+]
+
+
+@pytest.mark.parametrize("cmd", NOT_BYPASS)
+def test_the_same_text_printed_or_read_as_data_stays_data(cmd):
+    assert _sids(cmd) == []
+    executed = [raw for _masked, raw, _dead in gt.command_views(cmd)[1:]]
+    assert not any("push" in x for x in executed)  # the text is no executed string
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "git push --force origin main",
+        "git push --force-with-lease origin main",
+        "bash -c 'git push --force origin main'",
+        "docker exec c sh -c 'git push --force origin main'",
+        "echo ok && git push --force origin main",
+        "git stash pop",
+        "ls -la | head",
+        "echo hi | bash",
+    ],
+)
+def test_a_call_that_is_no_bypass_form_matches_as_on_main(cmd):
+    """The views of these calls hold no stdin text from echo, printf or a
+    container, so the fix leaves their matches as they were. The expected ids
+    are the result of ``match`` at main before the fix."""
+    expected = {
+        "git push --force origin main": ["push_force"],
+        "git push --force-with-lease origin main": ["push_force"],
+        "bash -c 'git push --force origin main'": ["push_force"],
+        "docker exec c sh -c 'git push --force origin main'": ["push_force"],
+        "echo ok && git push --force origin main": ["push_force"],
+        "git stash pop": ["stash_pop"],
+        "ls -la | head": [],
+        "echo hi | bash": [],
+    }
+    assert _sids(cmd) == expected[cmd]
+
+
+def test_piped_text_is_its_own_view_and_segment():
+    hits = gt.match("echo 'cd x; git stash pop' | bash", SHELL_TABLE)
+    assert [(h["id"], h["via"], h["segment"]) for h in hits] == [
+        ("stash_pop", "segment", "git stash pop")
+    ]
+    views = [v[0] for v in gt.command_views("printf '%s\\n' a b | sh")]
+    assert views[1:] == ["a\nb\n"]
 
 
 # 8. NOBLIVION-50: a skipped rule is named at session start --------------------
