@@ -143,6 +143,7 @@ for the full steps and limits.
 - [Executive summary](docs/executive-summary.md): what NOBLIVION is, why it exists, the gaps it closes and its features ([PDF](docs/executive-summary.pdf))
 - [NOBLIVION against Claude Code memory](docs/noblivion-against-claude-code-memory.md): architecture, features, scores and conclusion ([PDF](docs/noblivion-against-claude-code-memory.pdf))
 - [Long-run test report](docs/long-run-report.md): the sealed multi-day run, its results and its limits ([PDF](docs/long-run-report.pdf))
+- [Where NOBLIVION improves Claude Code memory](docs/memory-improvements.md): each area, what Claude Code does alone, what NOBLIVION adds and the setting that controls it ([PDF](docs/memory-improvements.pdf))
 - [The NOBLIVION paper](docs/noblivion-paper.md): features, differences from other memory modules, evidence and limits
 - [Contributing](CONTRIBUTING.md)
 

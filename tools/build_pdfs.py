@@ -20,6 +20,7 @@ BOOKS = (
     ("executive-summary", "NOBLIVION executive summary"),
     ("noblivion-against-claude-code-memory", "NOBLIVION against Claude Code memory"),
     ("long-run-report", "NOBLIVION long-run test report"),
+    ("memory-improvements", "Where NOBLIVION improves Claude Code memory"),
 )
 
 CSS = """
