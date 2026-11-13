@@ -69,7 +69,12 @@ import tempfile
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - no flock on this platform
+    _fcntl = None  # type: ignore[assignment]
 
 STORE_JSON_FILE = "store.json"
 TOKEN_FILE = "token"
@@ -94,6 +99,11 @@ HUNG_BACKOFF_S = 30.0
 # one full wait per gap, not one per prompt.
 HUNG_PROBE_GAP_S = 5.0
 HUNG_PROBE_S = 0.15
+# NOBLIVION-90. Every change of the stamp (read, merge, write or remove) runs
+# under a flock of this file, so two hooks cannot both read the old stamp. The
+# wait is bounded: a hook paused with the lock held cannot stop another past it.
+HUNG_LOCK_FILE = "store.hung.lock"
+HUNG_LOCK_WAIT_S = 0.5
 BIN_ENV = "NOBLIVION_BIN"
 BIN_KEY = "store.bin"
 AUTOSTART_ENV = "NOBLIVION_STORE_AUTOSTART"
@@ -258,6 +268,48 @@ def store_identity(env: Optional[Mapping[str, str]] = None) -> str:
     return "%s:%d:%s" % (info.get("pid", "-"), info["port"], started)
 
 
+@contextlib.contextmanager
+def _stamp_lock(folder: Path) -> Iterator[None]:
+    """Hold the stamp lock of ``folder`` (HUNG_LOCK_FILE), waiting at most
+    HUNG_LOCK_WAIT_S. With no flock, no data dir, any OSError or the wait
+    spent, the caller goes on unlocked (fail open). Never makes the data dir."""
+    if _fcntl is None or not folder.is_dir():
+        yield
+        return
+    try:
+        fh = open(folder / HUNG_LOCK_FILE, "a")  # noqa: SIM115 - held across the yield
+    except OSError:
+        yield
+        return
+    locked = False
+    deadline = time.monotonic() + HUNG_LOCK_WAIT_S
+    try:
+        while True:
+            try:
+                _fcntl.flock(fh, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                locked = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.005)
+        yield
+    finally:
+        if locked:
+            with contextlib.suppress(OSError):
+                _fcntl.flock(fh, _fcntl.LOCK_UN)
+        fh.close()
+
+
+def read_stamp_text(env: Optional[Mapping[str, str]] = None) -> str:
+    """The stamp file as it is now, or "" when there is none. ``clear_hung``
+    removes a stamp only when it still reads the same."""
+    try:
+        return (data_dir(env) / HUNG_STAMP_FILE).read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
 def _read_stamp(
     env: Optional[Mapping[str, str]], clock: Callable[[], float]
 ) -> Optional[Tuple[float, float, str]]:
@@ -298,24 +350,27 @@ def mark_hung(
     that store. A stamp in force for the same store keeps the larger of the
     two budgets and the later end (NOBLIVION-90): a call with a short budget
     that timed out says nothing about a longer one that timed out too. Never
-    makes the data dir; a file error leaves no stamp and is not raised."""
+    makes the data dir; a file error leaves no stamp and is not raised. The
+    read and the write run under the stamp lock (``_stamp_lock``), so of two
+    hooks that write at once the second one merges the first one's stamp."""
     folder = data_dir(env)
-    until = clock() + HUNG_BACKOFF_S
-    held = _read_stamp(env, clock)
-    if held is not None and held[2] == store:
-        until = max(until, held[0])
-        budget_s = max(budget_s, held[1])
-    try:
-        fd, tmp = tempfile.mkstemp(prefix="." + HUNG_STAMP_FILE + ".", dir=str(folder))
-    except OSError:
-        return
-    try:
-        with os.fdopen(fd, "w", encoding="ascii") as fh:
-            fh.write("%.3f %.3f %s\n" % (until, budget_s, store))
-        os.replace(tmp, folder / HUNG_STAMP_FILE)
-    except OSError:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
+    with _stamp_lock(folder):
+        until = clock() + HUNG_BACKOFF_S
+        held = _read_stamp(env, clock)
+        if held is not None and held[2] == store:
+            until = max(until, held[0])
+            budget_s = max(budget_s, held[1])
+        try:
+            fd, tmp = tempfile.mkstemp(prefix="." + HUNG_STAMP_FILE + ".", dir=str(folder))
+        except OSError:
+            return
+        try:
+            with os.fdopen(fd, "w", encoding="ascii") as fh:
+                fh.write("%.3f %.3f %s\n" % (until, budget_s, store))
+            os.replace(tmp, folder / HUNG_STAMP_FILE)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
 
 
 def hung(
@@ -343,18 +398,23 @@ def hung_age(
     return max(0.0, HUNG_BACKOFF_S - (held[0] - clock()))
 
 
-def clear_hung(env: Optional[Mapping[str, str]] = None, store: str = "") -> None:
+def clear_hung(
+    env: Optional[Mapping[str, str]] = None, store: str = "", seen: Optional[str] = None
+) -> None:
     """Remove the stamp after the store ``store`` answered a call
-    (NOBLIVION-224). A stamp for another store is left alone. Never raises."""
-    stamp = data_dir(env) / HUNG_STAMP_FILE
-    try:
-        fields = stamp.read_text(encoding="ascii").split()
-    except OSError:
-        return
-    if len(fields) > 2 and fields[2] != store:
-        return
-    with contextlib.suppress(OSError):
-        stamp.unlink()
+    (NOBLIVION-224). A stamp for another store is left alone, and so is a
+    stamp that no longer reads ``seen`` (``read_stamp_text`` from before the
+    call): another hook wrote it since. Under the stamp lock. Never raises."""
+    folder = data_dir(env)
+    with _stamp_lock(folder):
+        text = read_stamp_text(env)
+        if not text or (seen is not None and text != seen):
+            return
+        fields = text.split()
+        if len(fields) > 2 and fields[2] != store:
+            return
+        with contextlib.suppress(OSError):
+            (folder / HUNG_STAMP_FILE).unlink()
 
 
 def autostart_on(env: Optional[Mapping[str, str]] = None) -> bool:

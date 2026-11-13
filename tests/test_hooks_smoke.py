@@ -83,6 +83,7 @@ def test_every_moved_module_is_present() -> None:
         "process_targets",  # NOBLIVION-127
         "guard_table",
         "hook_config",
+        "injection_text",  # NOBLIVION-224
         "hub_stats",  # NOBLIVION-121
         "label_rows",
         "learning_capture",

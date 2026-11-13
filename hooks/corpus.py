@@ -783,10 +783,11 @@ def load_memory_corpora(
 ) -> List[List[MemoryFile]]:
     """The corpus of each folder, in input order, with files sorted by name.
 
-    ``deadline`` (``time.monotonic``, with a cache only; NOBLIVION-224): past it, a
-    file that is not in the cache is left out and not cached, so a later call
-    reads it. The files already read are cached, so a cold cache fills over
-    a few calls and no call reads for much longer than its budget.
+    ``deadline`` (``time.monotonic``; NOBLIVION-224): past it, a file that is not
+    in the cache is left out and not cached, so a later call reads it. The
+    files already read are cached, so a cold cache fills over a few calls and
+    no call reads for much longer than its budget. With no cache the files
+    after the deadline are left out.
 
     Use one cache read and at most one atomic write for all folders. Entries
     for other folders stay in the shared cache. File parsing, lazy tokens and
@@ -804,6 +805,8 @@ def load_memory_corpora(
                 path = os.path.join(folder, base)
                 if not os.path.isfile(path):
                     continue
+                if deadline is not None and time.monotonic() > deadline:
+                    break  # NOBLIVION-224: no cache to fill, so the rest is left out
                 md = _read_memory_file(path, base)
                 if md is not None:
                     with contextlib.suppress(OSError):

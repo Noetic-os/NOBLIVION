@@ -31,6 +31,8 @@ WORDS = re.compile(
 ALLOWED = (
     # The injection redactor must match forged approval claims by their words.
     ("src/noblivion/injection.py", "operator"),
+    # The hook copy of that redactor (NOBLIVION-224), with the same patterns.
+    ("hooks/injection_text.py", "operator"),
     # Docker's own error text, matched in tool output.
     ("hooks/error_recall_hook.py", "Error response from daemon"),
     ("hooks/error_recall_hook.py", "daemon container"),

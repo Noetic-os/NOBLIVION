@@ -16,9 +16,10 @@ All notable changes to NOBLIVION. The format follows
   their text. Deny counts, failed run-first commands and the table error note stay (NOBLIVION-56).
 - The prompt hook no longer goes silent when the store is down, cold, slow or paused
   after a timeout: it shows rows from a local text search of the note files, marked
-  `[fallback]`, and says so once per session. A note written in the last minute that
-  the store has not indexed yet is added the same way, marked `[new note]`. With a
-  healthy store and no new note, the output is unchanged (NOBLIVION-224).
+  `[fallback]` and redacted as the store redacts its rows, and says so once per
+  session. A note written in the last minute that the store has not indexed yet is
+  added the same way, marked `[new note]`. With a healthy store and no new note, the
+  output is unchanged (NOBLIVION-224).
 - The `store.hung` pause is probed after 5 seconds and removed when the store answers
   (NOBLIVION-224). A slow trust report no longer pauses the prompt rows (NOBLIVION-89).
   A shorter call no longer replaces the budget of a longer one in the pause, and a new

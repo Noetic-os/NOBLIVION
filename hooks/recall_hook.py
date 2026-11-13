@@ -1090,6 +1090,7 @@ def store_get(
     """
     env = os.environ if environ is None else environ
     age = _STORE.hung_age(env, timeout_s)
+    seen = _STORE.read_stamp_text(env) if age is not None else ""
     if age is not None and (age < _STORE.HUNG_PROBE_GAP_S or not _hung_probe(env)):
         raise RecallError(_STORE.HUNG)
     t0 = time.monotonic()
@@ -1134,7 +1135,7 @@ def store_get(
             _STORE.forget(env)  # no answer: prove again next time
         raise
     if age is not None:
-        _STORE.clear_hung(env, store)  # the stamped store answered: no back-off now
+        _STORE.clear_hung(env, store, seen)  # the stamped store answered: no back-off now
     return answer
 
 
@@ -1502,6 +1503,10 @@ class IndexLine:
         if self.desc_cap > 0 and not self.rule:
             limit = max(1, min(limit, self.desc_cap - len(suffix) + 3))
         text = self.rule or self.summary
+        if self.mark:
+            # NOBLIVION-224. A row of the hook's own text search did not pass the
+            # store's redaction: the local rule and description are redacted here.
+            text = clean_note_text(text)
         rule = _at_word_boundary(strip_host_paths(_neutral(text, 2 * limit)), limit)
         return prefix, rule, suffix, limit
 
@@ -1514,7 +1519,8 @@ class IndexLine:
         """
         if limit <= 0 or not self.apply_block:
             return ""
-        lines = apply_excerpt(self.apply_block, limit)
+        block = clean_note_text(self.apply_block) if self.mark else self.apply_block
+        lines = apply_excerpt(block, limit)
         if not lines:
             return ""
         return "\n".join(
@@ -3319,7 +3325,7 @@ def load_session_corpus(
             cache_path = None
     own_folder = memory_dir(environ)
     folders = memory_dirs(environ)
-    corpora = _CORPUS.load_memory_corpora(folders, cache_path, deadline if cache_path else None)
+    corpora = _CORPUS.load_memory_corpora(folders, cache_path, deadline)
     for folder, corpus in zip(folders, corpora):  # noqa: B905 - one corpus per folder
         # NOBLIVION-160. The run's own project folder is the first folder of the list.
         is_own = own_folder is not None and os.path.realpath(folder) == os.path.realpath(own_folder)
@@ -3632,6 +3638,7 @@ SKIP_NOTICE = (
 NO_ANSWER_REASONS = ("store_down", "store_hung", "timeout", "busy", "no_token", "foreign_listener")
 NO_ANSWER_PREFIXES = ("unreachable:", "error:")
 _SEARCH_WORD_RE = re.compile(r"[a-z0-9]+")
+CLEAN_FAILED_TOKEN = "***REDACTION_FAILED_TEXT_WITHHELD***"
 _NOTICE = ""
 
 
@@ -3672,26 +3679,29 @@ def text_search(
     the weight ``log(1 + (n - df + 0.5) / (df + 0.5))``. A word in more than
     half the notes has no weight (FALLBACK_COMMON_MIN_DOCS). A note needs two
     weighted words (one when the prompt has one word) and FALLBACK_MIN_SHARE
-    of the weight of the prompt words that some note holds. A tie goes to the lower path. Past ``deadline``
-    (``time.monotonic``) the notes not yet read are left out."""
+    of the weight of the prompt words that some note holds. A tie goes to the
+    lower path. Past ``deadline`` (``time.monotonic``, checked every 64 notes)
+    the notes not yet read are left out."""
     words = {w for w in _search_words(query) if len(w) >= 2}
     if not words or not corpus:
         return []
-    sets: List[frozenset] = []
-    for i, md in enumerate(corpus):
-        if deadline is not None and i % 256 == 255 and time.monotonic() > deadline:
-            break
-        sets.append(frozenset(_search_words(_search_text(md))))
-    n = len(sets)
-    weight: Dict[str, float] = {}
+    # One pass: each note's words, kept only where the prompt has them, so the
+    # cost grows with the notes and not with notes times prompt words.
     holders: Dict[str, List[int]] = {}
-    for word in words:
-        docs = [i for i, got in enumerate(sets) if word in got]
-        df = len(docs)
-        if not df or (n >= FALLBACK_COMMON_MIN_DOCS and 2 * df > n):
+    n = 0
+    for i, md in enumerate(corpus):
+        if deadline is not None and i % 64 == 63 and time.monotonic() > deadline:
+            break
+        n += 1
+        for word in words.intersection(_search_words(_search_text(md))):
+            holders.setdefault(word, []).append(i)
+    weight: Dict[str, float] = {}
+    for word in list(holders):
+        df = len(holders[word])
+        if n >= FALLBACK_COMMON_MIN_DOCS and 2 * df > n:
+            del holders[word]
             continue
         weight[word] = math.log(1.0 + (n - df + 0.5) / (df + 0.5))
-        holders[word] = docs
     total = sum(weight.values())
     if total <= 0.0:
         return []
@@ -3709,14 +3719,30 @@ def text_search(
     return kept
 
 
+def clean_note_text(text: str) -> str:
+    """Note text the store did not redact, redacted as the store redacts a
+    title or a summary: secret shapes (``memory_text.redact_memory``), then
+    injection shapes (``injection_text.redact_injection``, a copy of the
+    store's). Fails closed: on any error the text is withheld."""
+    if not text:
+        return text
+    try:
+        out = _memory_text().redact_memory(text)
+        return _sibling_module("injection_text").redact_injection(out)[0]
+    except Exception:  # noqa: BLE001 - never the raw text
+        return CLEAN_FAILED_TOKEN
+
+
 def _search_row(md: MemoryFile, rank: int, mark: str) -> IndexLine:
     """A row the text search found: no store id (it renders INDEX_ROW_NO_ID),
-    no score, and the path the corpus join uses."""
+    no score, and the path the corpus join uses. The name and the description
+    are redacted (``clean_note_text``); the rule and apply text the row gets
+    later are redacted when it is rendered."""
     return IndexLine(
         rank=rank,
         mid=0,
-        title=md.name,
-        summary=md.description,
+        title=clean_note_text(md.name),
+        summary=clean_note_text(md.description),
         score=None,
         keyword=True,
         source=md.rel_path,
@@ -3746,23 +3772,35 @@ def fresh_index(
     lines: Sequence[IndexLine],
     by_name: Mapping[str, MemoryFile],
     now: float,
+    need_text: bool = False,
 ) -> List[IndexLine]:
     """The rows for notes written in the last FRESH_WINDOW_S that are among the
     FRESH_TOP best matches of the text search and that the store did not
     send. A store indexes a new note some seconds after it is written, so this
     covers that window. ``[]`` at once when no note is that new: the text
-    search then does not run and the store's rows are all there is."""
+    search then does not run and the store's rows are all there is. The rows
+    pass the drops the store's rows passed before them: P3 (``dropped``) and,
+    with ``need_text``, the no-rule drop of WI-18."""
     cut = now - FRESH_WINDOW_S
     fresh = {md.rel_path for md in corpus if md.mtime >= cut}
     if not fresh:
         return []
     have = {md.rel_path for md in (file_of(ln, by_name) for ln in lines) if md is not None}
     found = text_search(query, corpus, time.monotonic() + FALLBACK_BUDGET_S)
-    return [
-        _search_row(corpus[i], 0, FRESH_MARK)
-        for i, _v in found[:FRESH_TOP]
-        if corpus[i].rel_path in fresh and corpus[i].rel_path not in have
-    ]
+    rows = []
+    for i, _v in found[:FRESH_TOP]:
+        md = corpus[i]
+        if md.rel_path not in fresh or md.rel_path in have:
+            continue
+        if md.dropped:
+            continue  # P3: an index, a topic file or a closed note is no row
+        row = _search_row(md, 0, FRESH_MARK)
+        if need_text:
+            annotate_index([row], by_name)
+            if not row.has_rule_text():
+                continue  # WI-18: a row with no rule and no summary is no row
+        rows.append(row)
+    return rows
 
 
 def _queue_notice(cache: str, sid: Any, event: str, template: str, reason: str) -> None:
@@ -4402,7 +4440,7 @@ def _serve_index(
         # NOBLIVION-224. A note written in the last minute that the store did not
         # send: after the floor (it has no score) and before the admission and the
         # cut to k, at the top. With no such note this adds nothing.
-        fresh = fresh_index(query, corpus, lines, by_name, time.time())
+        fresh = fresh_index(query, corpus, lines, by_name, time.time(), drop_on)
         if fresh:
             lines = fresh + list(lines)
             note += f":fresh{len(fresh)}"
