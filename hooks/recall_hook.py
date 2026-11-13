@@ -2293,12 +2293,18 @@ def reset_shown_rows(cache: str, session_id: Any) -> bool:
 
 def main_reset_rows(stdin=None, environ: Optional[Dict[str, str]] = None) -> int:
     """``--reset-rows``: the SessionStart hook for source ``compact``. Reads the
-    hook JSON for the session id. Always returns 0 and prints nothing."""
+    hook JSON for the session id, and resets the recall shown-set and the
+    guard's show state of that session. Always returns 0 and prints nothing."""
     with contextlib.suppress(BaseException):
         env = dict(os.environ if environ is None else environ)
         doc = json.loads((stdin or sys.stdin).read() or "{}")
         sid = doc.get("session_id") if isinstance(doc, dict) else None
-        reset_shown_rows(cache_dir(env), sid)
+        with contextlib.suppress(BaseException):
+            reset_shown_rows(cache_dir(env), sid)
+        # NOBLIVION-56: the guard's rows of this agent were in the compacted
+        # context too, so its show counts and budgets reset as well.
+        guard = _sibling_module("guard_hook")
+        guard.reset_shown(env, sid, guard.agent_key(doc))
     return 0
 
 

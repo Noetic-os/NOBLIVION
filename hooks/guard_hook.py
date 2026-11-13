@@ -907,6 +907,24 @@ class SessionState:
             self._fh.close()
 
 
+def reset_shown(env: Mapping[str, str], session_id: object, agent: str = "main") -> bool:
+    """NOBLIVION-56: a compaction removes the rows and full texts shown so far
+    from the context, so the agent's record of them goes: the show counts
+    (``rows``, ``full``, ``labels``) and the budgets they used (``row_chars``,
+    ``label_chars``, the everyday share in ``notes``). The record of what the
+    agent did stays: the deny counts, the failed run-first commands and the
+    one-time table error note. No state file: nothing to reset, none made.
+    Returns True when a file was reset."""
+    if not _state_file(env, session_id, agent).exists():
+        return False
+    state = SessionState(env, session_id, agent)
+    state.rows, state.full, state.labels = {}, {}, {}
+    state.row_chars = state.label_chars = 0
+    state.notes.pop("everyday_chars", None)
+    state.close()
+    return True
+
+
 # --------------------------------------------------------------------------
 # rows (triggers)
 # --------------------------------------------------------------------------

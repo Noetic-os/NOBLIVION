@@ -11,6 +11,9 @@ All notable changes to NOBLIVION. The format follows
 - The doctor knows the `recall.nudge`, `recall.nudge_shadow`, `recall.nudge_tools`,
   `recall.nudge_commands` and `stop.reminders` config keys, so a valid config no longer
   warns `config_unknown_keys`.
+- A compaction now also resets the guard's show state of the agent: the row and full-text show
+  counts, the row, label and everyday budgets. Rows shown before the compaction show again with
+  their text. Deny counts, failed run-first commands and the table error note stay (NOBLIVION-56).
 
 ## 0.1.23 - 2026-11-09
 
