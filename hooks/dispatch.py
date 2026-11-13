@@ -449,7 +449,9 @@ def _with_notice(code: int, stdout: str, event_text: str, event_name: str) -> st
     """``stdout`` with the one notice of the session when the event lacks a field that Claude Code
     documents (NOBLIVION-118, ``input_check.py``). Complete input: ``stdout`` unchanged."""
     try:
-        return _load("input_check").apply(code, stdout, event_text, "dispatch " + event_name, event_name)
+        return _load("input_check").apply(
+            code, stdout, event_text, "dispatch " + event_name, event_name
+        )
     except Exception:  # noqa: BLE001 - the check never changes the answer
         return stdout
 

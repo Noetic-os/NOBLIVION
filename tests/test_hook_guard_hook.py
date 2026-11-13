@@ -1110,6 +1110,7 @@ def failed(
         "error": error,
         "is_interrupt": interrupt,
         "cwd": "/tmp",
+        "transcript_path": "/nonexistent/noblivion-test/t.jsonl",
     }
     if agent:
         ev["agent_id"] = agent

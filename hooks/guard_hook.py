@@ -2738,7 +2738,10 @@ if __name__ == "__main__":
     try:
         from input_check import run as _checked  # NOBLIVION-118
     except Exception:  # noqa: BLE001 - no check: the hook runs as before
-        def _checked(_hook, fn, notify=True): return fn()
+
+        def _checked(_hook, fn, notify=True):
+            return fn()
+
     # Exit 0 on every path (review finding F3): Claude Code reads exit 2 from a
     # PreToolUse hook as a block. os._exit skips interpreter shutdown, where a
     # late flush error could still set a non-zero code.

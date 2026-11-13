@@ -305,9 +305,19 @@ def test_user_prompt_submit_with_one_printing_module_passes_its_bytes_through(
     assert _flat(raw["stdout"]) == _flat(only)
 
 
+# Claude Code sends it with every event (NOBLIVION-118: without it the input check gives a notice).
+TRANSCRIPT = "/nonexistent/noblivion-test/t.jsonl"
+
+
 @pytest.mark.parametrize("source", ["startup", "resume", "clear", "compact"])
 def test_session_start_gives_the_same_parts_for_each_source(tmp_path, store, memory, source):
-    event = {"hook_event_name": "SessionStart", "session_id": "s2", "source": source, "cwd": CWD}
+    event = {
+        "hook_event_name": "SessionStart",
+        "session_id": "s2",
+        "source": source,
+        "cwd": CWD,
+        "transcript_path": TRANSCRIPT,
+    }
     old_env = _world(tmp_path, "old", store, memory)
     new_env = _world(tmp_path, "new", store, memory)
     for env in (old_env, new_env):
@@ -332,7 +342,13 @@ def test_session_start_gives_the_same_parts_for_each_source(tmp_path, store, mem
 
 @pytest.mark.parametrize("trigger", ["manual", "auto"])
 def test_pre_compact_gives_the_same_parts(tmp_path, store, memory, trigger):
-    event = {"hook_event_name": "PreCompact", "session_id": "s3", "trigger": trigger, "cwd": CWD}
+    event = {
+        "hook_event_name": "PreCompact",
+        "session_id": "s3",
+        "trigger": trigger,
+        "cwd": CWD,
+        "transcript_path": TRANSCRIPT,
+    }
     old_env = _world(tmp_path, "old", store, memory)
     new_env = _world(tmp_path, "new", store, memory)
     expected = _expected_parts("PreCompact", event, old_env)

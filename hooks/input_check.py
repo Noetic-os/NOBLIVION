@@ -62,18 +62,28 @@ TEXT_IS_CONTEXT = ("SessionStart", "UserPromptSubmit")
 _WRAPPERS = {"sh", "bash", "dash", "zsh", "python", "python3", "env", "timeout", "uv"}
 
 
+def _norm(key: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(key).lower())
+
+
 def missing_fields(text: str) -> Optional[Tuple[str, List[str], List[str]]]:
     """``(event name, missing fields, present fields)`` when the input lacks an expected field;
-    None when every field is there. Empty input (a hook run by hand) is not checked. Input that is
-    not a JSON object counts as drift, with the missing field ``<json object>``."""
+    None when every field is there.
+
+    Only input that Claude Code made is checked: a JSON object that names its event in
+    ``hook_event_name``, or in a field of the same name in another case or spelling
+    (``hookEventName``). Empty input, input that is not an object and a hand-made event without
+    an event name (a hook run by hand, a test) are not checked."""
     if not text or not text.strip():
         return None
     try:
         event = json.loads(text)
     except ValueError:
-        event = None
+        return None
     if not isinstance(event, dict):
-        return "?", ["<json object>"], []
+        return None
+    if _norm("hook_event_name") not in {_norm(k) for k in event}:
+        return None
     name = event.get("hook_event_name")
     name = name if isinstance(name, str) and name else "?"
     want = COMMON + EXPECTED.get(name, ())
@@ -87,7 +97,9 @@ def _hook_config() -> Any:
     mod = sys.modules.get("hook_config")
     if mod is not None and hasattr(mod, "data_dir"):
         return mod
-    spec = importlib.util.spec_from_file_location("_input_check_hook_config", HOOKS_DIR / "hook_config.py")
+    spec = importlib.util.spec_from_file_location(
+        "_input_check_hook_config", HOOKS_DIR / "hook_config.py"
+    )
     if spec is None or spec.loader is None:
         raise ImportError("hook_config")
     mod = importlib.util.module_from_spec(spec)
@@ -265,7 +277,11 @@ def _event_name(text: str, default: str = "?") -> str:
 
 
 def apply(
-    code: int, stdout: str, text: str, hook: str, event: str = "",
+    code: int,
+    stdout: str,
+    text: str,
+    hook: str,
+    event: str = "",
     env: Optional[Mapping[str, str]] = None,
 ) -> str:
     """The stdout to print for a hook answer ``(code, stdout)`` on input ``text``. Only exit 0
