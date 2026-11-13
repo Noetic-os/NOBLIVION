@@ -2205,7 +2205,9 @@ def test_a_timeout_after_the_deny_was_printed_adds_no_message(env, monkeypatch):
         time.sleep(2)
 
     monkeypatch.setattr(gh.Decision, "commit", slow)
-    text = _timed_out(env, bash("git push --force origin x"))
+    # 0.8 s: a slow CI runner (macOS) must reach the deny before the limit;
+    # the commit still sleeps far past it.
+    text = _timed_out(env, bash("git push --force origin x"), time_limit=0.8)
     assert text.count("\n") == 1
     assert json.loads(text)["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "systemMessage" not in json.loads(text)
