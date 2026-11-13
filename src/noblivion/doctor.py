@@ -62,7 +62,7 @@ _LIST_KEYS = frozenset(
     "memory_dirs labels.ticket_prefixes labels.service_prefixes "
     "recall.shared_roots guard.generic_args_extra guard.evidence_stop_extra "
     "continuity.decision_files continuity.open_files stop.shared_checkouts "
-    "stop.worktree_prefixes stop.deploy_hosts".split()
+    "stop.worktree_prefixes stop.deploy_hosts recall.nudge_tools recall.nudge_commands".split()
 )
 _TEXT_KEYS = frozenset(
     "namespace global_memory_dir store.bin embedding.model "
@@ -84,7 +84,8 @@ _SWITCH_KEYS = frozenset(
     "embedding.remote_include_mined trust.events trust.citation_use "
     "trust.correction_contradict trust.behaviour_use recall.rules_only recall.task_file "
     "memory.similar_hint recall.own_rows recall.older_mark recall.guard_only_landing miner.enabled "
-    "guard.rewrite guard.ask guard.act_shadow guard.everyday_triggers guard.quarantine".split()
+    "guard.rewrite guard.ask guard.act_shadow guard.everyday_triggers guard.quarantine "
+    "recall.nudge recall.nudge_shadow".split()
 )
 _CHOICES = {
     "embedding.backend": ("fastembed", "ollama", "openrouter", "none"),
@@ -104,6 +105,7 @@ KNOWN_KEYS = (
     | {
         "recall.env",
         "stop.checks",
+        "stop.reminders",
     }
 )
 ENV_KEYS = {
@@ -374,7 +376,7 @@ def _valid(key: str, value: object) -> bool:
             k.startswith("NOBLIVION_RECALL_") and isinstance(v, (str, int, float, bool))
             for k, v in value.items()
         )
-    if key == "stop.checks":
+    if key in ("stop.checks", "stop.reminders"):
         return isinstance(value, str) or (
             isinstance(value, list) and all(isinstance(p, str) for p in value)
         )

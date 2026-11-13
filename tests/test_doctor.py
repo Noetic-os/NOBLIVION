@@ -936,3 +936,40 @@ def test_darwin_child_wait_timeout_stops_child_and_closes_pipe(tmp_path, monkeyp
     assert process.killed
     assert process.wait_limits == [0.05, 0.05]
     assert process.stdout.closed
+
+
+def test_every_config_key_a_hook_reads_is_known_to_doctor():
+    """A hook switch that the doctor does not know makes a valid config warn
+    ``config_unknown_keys`` (NOBLIVION-225). Scan the hooks for the dotted keys
+    they read and require each one in ``KNOWN_KEYS``."""
+    import re
+
+    from noblivion import doctor
+
+    hooks = Path(__file__).resolve().parents[1] / "hooks"
+    patterns = (
+        r'hook_config\.(?:get|switch|string_list)\(\s*"([a-z_]+\.[a-z_]+)"',
+        r'\b[A-Z_]*KEY[A-Z_]*\s*=\s*"([a-z_]+\.[a-z_]+)"',
+        r'[A-Z_]+_KEY\s*=\s*"[^"]*",\s*"([a-z_]+\.[a-z_]+)"',
+        r'"NOBLIVION_[A-Z_]+",\s*"([a-z_]+\.[a-z_]+)"',
+    )
+    found = {}
+    for path in sorted(hooks.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for pattern in patterns:
+            for match in re.finditer(pattern, text):
+                found.setdefault(match.group(1), path.name)
+    assert len(found) >= 30, "the scan no longer finds the hook config keys"
+    missing = sorted(f"{k} ({v})" for k, v in found.items() if k not in doctor.KNOWN_KEYS)
+    assert missing == []
+
+
+def test_nudge_and_reminder_keys_validate():
+    from noblivion import doctor
+
+    assert doctor._valid("recall.nudge", True)
+    assert doctor._valid("recall.nudge_tools", ["^mcp__x__create_issue$"])
+    assert not doctor._valid("recall.nudge_tools", "^mcp__x$")
+    assert doctor._valid("stop.reminders", "notify,lesson")
+    assert doctor._valid("stop.reminders", ["notify"])
+    assert not doctor._valid("stop.reminders", 3)
