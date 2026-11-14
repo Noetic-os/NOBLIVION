@@ -168,7 +168,6 @@ _SEMANTIC_REASK = (
 )
 # Text-free reason class of a candidate that the worker does not store.
 SEMANTIC_UNVALIDATED = "semantic comparison not validated"
-INCONSISTENT_DECISIONS = "inconsistent window decisions"
 
 
 def piece_depth(slot: int) -> int:
