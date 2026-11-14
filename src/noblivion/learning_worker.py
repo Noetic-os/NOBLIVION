@@ -38,6 +38,14 @@ from .learning_extract import (
     validate_semantic_response,
 )
 from .learning_pages import CoverageExhausted, ExtractionPages
+from .learning_semantic import (
+    MAX_BATCH_ITEMS,
+    SEMANTIC_BATCH_PROMPT,
+    SEMANTIC_BATCH_SCHEMA,
+    learnable_window,
+    semantic_batches,
+    validate_semantic_batch,
+)
 from .learning_values import canonical_json
 
 LOG = logging.getLogger(__name__)
@@ -229,9 +237,21 @@ REQUEST_PROVIDER = ("provider_type", "endpoint", "model", "reasoning_effort")
 # accepts, the version 1 check accepts with the same result, so old and new pages
 # mix safely.
 # The neutral mark for a legacy redaction marker changes note data, not a prompt.
-EXTRACTION_CONTRACT = 1
+# NOBLIVION-241 adds version 2 for new extraction jobs. It needs fewer model
+# calls: a window holds WINDOW_SCALE times window_chars, a window with no tool
+# part and no direct user part gets a no_lesson receipt with no call, and one
+# semantic call compares several candidates. Each started job keeps the version
+# it froze, so a version 1 job resumes with version 1 windows and calls.
+EXTRACTION_CONTRACT = 2
 # Releases up to 0.1.24 stored no contract. Their contract is version 1.
 LEGACY_EXTRACTION_CONTRACT = 1
+# Every version this worker can run. A started job continues under its own one.
+SUPPORTED_CONTRACTS = (1, 2)
+# Consolidation and draft jobs use only version 1 text, which version 2 keeps
+# unchanged. They freeze version 1, so their started stages keep matching.
+DERIVATION_CONTRACT = 1
+# Characters per window are window_chars times this factor.
+WINDOW_SCALE = {1: 1, 2: 3}
 # The exact configuration shape frozen by releases up to 0.1.24.
 LEGACY_SETTINGS = (
     "max_attempts",
@@ -561,6 +581,24 @@ class OpenAICompatibleProvider:
             raise ProviderError("invalid") from exc
 
 
+def _apply_relations(candidate: dict, relations: list[dict], notes: list[dict]) -> None:
+    """The first relation that is not distinct turns an add into a visible conflict."""
+    blocked = next((r for r in relations if r["relation"] != "distinct"), None)
+    if blocked:
+        candidate.update(
+            action="conflict",
+            reason="semantic " + blocked["relation"],
+            semantic_review={
+                "target_id": blocked["target_id"],
+                "relation": blocked["relation"],
+            },
+        )
+        target = next((n for n in notes if str(n["note_id"]) == blocked["target_id"]), None)
+        if target is not None:
+            candidate["note_id"] = target["note_id"]
+            candidate["expected_revision"] = target["revision"]
+
+
 class LearningWorker:
     def __init__(
         self,
@@ -629,14 +667,18 @@ class LearningWorker:
                 job["progress"] = state
                 return run_derivation(self.ledger, job, self._validated_call)
             sources = job["sources"]
-            windows = self.windows(sources)
-            current = self._configuration()
-            execution = input_fingerprint(sources, windows, request_configuration(current))
             progress = job.get("progress") or {}
+            # The contract decides the windows and the request shape, so it is
+            # resolved before either is hashed (NOBLIVION-241).
+            contract = self._job_contract(progress, sources)
+            job["contract"] = contract
+            windows = self.windows(sources, contract)
+            current = self._configuration(contract)
+            execution = input_fingerprint(sources, windows, request_configuration(current))
             started = progress.get("execution_fingerprint", progress.get("fingerprint"))
             if not execution_matches(progress, sources, windows, current):
                 if (
-                    not self._output_recovery(state)
+                    not self._output_recovery(state, contract)
                     or frozen_execution(progress, sources, windows) is None
                 ):
                     raise ValidationError("window configuration changed during a job")
@@ -766,12 +808,12 @@ class LearningWorker:
             )
             return {"status": "failed", "job_id": ident, "error": reason, "permanent": permanent}
 
-    def _output_recovery(self, state):
+    def _output_recovery(self, state, contract=DERIVATION_CONTRACT):
         """Only a recorded length result permits a reviewed provider-limit change."""
         previous = state.get("call_configuration")
         if not state.get("output_limit_hold") or not isinstance(previous, dict):
             return False
-        current = self._configuration()
+        current = self._configuration(contract)
 
         def policy(configuration):
             # Policy settings and budgets are already outside the request part.
@@ -783,18 +825,49 @@ class LearningWorker:
 
         return policy(previous) == policy(current)
 
-    def windows(self, sources):
+    def windows(self, sources, contract=LEGACY_EXTRACTION_CONTRACT):
         cfg = self.settings
+        window_chars = min(cfg.window_chars * WINDOW_SCALE[contract], 262144)
         return build_windows(
             sources,
-            window_chars=cfg.window_chars,
-            overlap=min(cfg.overlap_chars, cfg.window_chars // 4),
+            window_chars=window_chars,
+            overlap=min(cfg.overlap_chars, window_chars // 4),
             max_windows=cfg.max_windows,
         )
 
-    def _configuration(self):
+    def _job_contract(self, progress, sources):
+        """The contract of one extraction job: its frozen one, or the newest one.
+
+        A started job runs under the supported contract whose configuration
+        reproduces its frozen fingerprint. The stored configuration names the
+        first one to try; releases up to 0.1.24 stored none, which means 1. If
+        no contract matches, the stored one is returned and the normal check
+        fails the job visibly, as before.
+        """
+        frozen = progress.get("execution_fingerprint", progress.get("fingerprint"))
+        if frozen is None:
+            return EXTRACTION_CONTRACT
+        hint = LEGACY_EXTRACTION_CONTRACT
+        for key in ("execution_configuration", "call_configuration"):
+            stored = progress.get(key)
+            if isinstance(stored, dict):
+                hint = stored.get("contract", LEGACY_EXTRACTION_CONTRACT)
+                break
+        if hint not in SUPPORTED_CONTRACTS:
+            # An unknown, newer contract: fail visibly under it, never re-freeze.
+            raise ValidationError("unsupported extraction contract")
+        for contract in dict.fromkeys((hint, *SUPPORTED_CONTRACTS)):
+            try:
+                windows = self.windows(sources, contract)
+            except ValidationError:
+                continue
+            if execution_matches(progress, sources, windows, self._configuration(contract)):
+                return contract
+        return hint
+
+    def _configuration(self, contract=DERIVATION_CONTRACT):
         return {
-            "contract": EXTRACTION_CONTRACT,
+            "contract": contract,
             "settings": asdict(self.settings),
             "budgets": vars(self.budget_limits),
             "provider_type": type(self.provider).__module__
@@ -819,6 +892,22 @@ class LearningWorker:
                         raise CoverageExhausted(
                             "extraction page limit reached; coverage incomplete"
                         )
+                    if (
+                        continuation == 0
+                        and job.get("contract", LEGACY_EXTRACTION_CONTRACT) >= 2
+                        and not learnable_window(window)
+                    ):
+                        # No part can hold accepted evidence, so a model call
+                        # cannot add a note. The receipt still covers the window.
+                        receipt = pages.save(
+                            unit_index,
+                            continuation,
+                            window,
+                            [],
+                            "no_lesson",
+                            "no tool or direct user text in the window; no model call",
+                        )
+                if receipt is None:
                     previous = [
                         d
                         for row in pages._rows()
@@ -1066,7 +1155,7 @@ class LearningWorker:
             estimated_seconds=cfg.timeout_seconds,
             estimated_cost=cost,
         )
-        state["call_configuration"] = self._configuration()
+        state["call_configuration"] = self._configuration(job.get("contract", DERIVATION_CONTRACT))
         state.pop("output_limit_hold", None)
         self.ledger.checkpoint(job["id"], job["lease_token"], state)
         if before_provider is not None:
@@ -1165,53 +1254,83 @@ class LearningWorker:
             }
             state["semantic"] = stage
             self.ledger.checkpoint(job["id"], job["lease_token"], state)
-        tasks = semantic_targets(
-            decisions, stage["notes"], max_chars=min(self.settings.max_existing_chars, 16000)
-        )
+        max_chars = min(self.settings.max_existing_chars, 16000)
         results = stage["decisions"]
-        for index in range(stage["next_task"], len(tasks)):
-            task = tasks[index]
-            candidate = results[task["candidate_index"]]
-            if candidate["action"] == "add":
-                if self.stop is not None and self.stop.is_set():
-                    raise BudgetExceeded("worker stopping")
-                relations = self._validated_call(
-                    job,
-                    [
-                        {"role": "system", "content": SEMANTIC_PROMPT},
-                        {"role": "user", "content": json.dumps(task, ensure_ascii=False)},
-                    ],
-                    lambda raw, task=task: validate_semantic_response(raw, task),
-                    state,
-                    f"semantic:{index}",
-                    SEMANTIC_SCHEMA,
-                )
-                blocked = next((r for r in relations if r["relation"] != "distinct"), None)
-                if blocked:
-                    candidate.update(
-                        action="conflict",
-                        reason="semantic " + blocked["relation"],
-                        semantic_review={
-                            "target_id": blocked["target_id"],
-                            "relation": blocked["relation"],
-                        },
+        if job.get("contract", LEGACY_EXTRACTION_CONTRACT) >= 2:
+            self._semantic_batched(job, decisions, stage, state, max_chars)
+        else:
+            tasks = semantic_targets(decisions, stage["notes"], max_chars=max_chars)
+            for index in range(stage["next_task"], len(tasks)):
+                task = tasks[index]
+                candidate = results[task["candidate_index"]]
+                if candidate["action"] == "add":
+                    if self.stop is not None and self.stop.is_set():
+                        raise BudgetExceeded("worker stopping")
+                    relations = self._validated_call(
+                        job,
+                        [
+                            {"role": "system", "content": SEMANTIC_PROMPT},
+                            {"role": "user", "content": json.dumps(task, ensure_ascii=False)},
+                        ],
+                        lambda raw, task=task: validate_semantic_response(raw, task),
+                        state,
+                        f"semantic:{index}",
+                        SEMANTIC_SCHEMA,
                     )
-                    target = next(
-                        (n for n in stage["notes"] if str(n["note_id"]) == blocked["target_id"]),
-                        None,
-                    )
-                    if target is not None:
-                        candidate["note_id"] = target["note_id"]
-                        candidate["expected_revision"] = target["revision"]
-            stage["next_task"] = index + 1
-            state.pop("format_repair", None)
-            self.ledger.checkpoint(job["id"], job["lease_token"], state)
+                    _apply_relations(candidate, relations, stage["notes"])
+                stage["next_task"] = index + 1
+                state.pop("format_repair", None)
+                self.ledger.checkpoint(job["id"], job["lease_token"], state)
         for candidate in results:
             if candidate["action"] == "add":
                 candidate["semantic_snapshot"] = stage["snapshot"]
         stage["complete"] = True
         self.ledger.checkpoint(job["id"], job["lease_token"], state)
         return results
+
+    def _semantic_batched(self, job, decisions, stage, state, max_chars):
+        """Contract 2: the same comparisons as contract 1, several per call.
+
+        The batches come from the same tasks in the same order, so every
+        (candidate, target) pair of contract 1 is still judged. A batch whose
+        candidates are all blocked already makes no call, as in contract 1.
+        """
+        tasks = semantic_targets(
+            decisions, stage["notes"], max_chars=max_chars, max_tasks=512 * MAX_BATCH_ITEMS
+        )
+        batches = semantic_batches(tasks, max_chars=max_chars)
+        if len(batches) > 512:
+            raise ValidationError("semantic reconciliation exceeds bounded task count")
+        results = stage["decisions"]
+        start = stage.get("next_batch", 0)
+        if type(start) is not int or not 0 <= start <= len(batches):
+            raise ValidationError("invalid durable semantic progress")
+        for index in range(start, len(batches)):
+            batch = batches[index]
+            if any(results[i["candidate_index"]]["action"] == "add" for i in batch["items"]):
+                if self.stop is not None and self.stop.is_set():
+                    raise BudgetExceeded("worker stopping")
+                answers = self._validated_call(
+                    job,
+                    [
+                        {"role": "system", "content": SEMANTIC_BATCH_PROMPT},
+                        {
+                            "role": "user",
+                            "content": json.dumps(batch["request"], ensure_ascii=False),
+                        },
+                    ],
+                    lambda raw, batch=batch: validate_semantic_batch(raw, batch),
+                    state,
+                    f"semantic-batch:{index}",
+                    SEMANTIC_BATCH_SCHEMA,
+                )
+                for item, relations in zip(batch["items"], answers, strict=True):
+                    candidate = results[item["candidate_index"]]
+                    if candidate["action"] == "add":
+                        _apply_relations(candidate, relations, stage["notes"])
+            stage["next_batch"] = index + 1
+            state.pop("format_repair", None)
+            self.ledger.checkpoint(job["id"], job["lease_token"], state)
 
     def run_forever(self, stop: Event) -> None:
         """Keep independent jobs alive after one failure; shutdown is bounded."""

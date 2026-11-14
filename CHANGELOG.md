@@ -8,6 +8,17 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- New learning jobs need fewer model calls (NOBLIVION-241). They start under
+  extraction contract version 2: a window holds three times `window_chars`, a
+  window with no tool text and no direct user text gets a `no_lesson` receipt
+  with no model call, and one semantic call compares up to 8 candidates and 64
+  (candidate, target) pairs. Every pair still needs one explicit relation, and
+  every evidence and secret check stays. On recorded jobs of a live store the
+  simulated median falls from about 67 to about 15 calls per job (p90 123 to
+  30) at today's note count. Jobs that an older release started keep contract
+  version 1 and resume with version 1 windows and calls. Consolidation and
+  draft jobs keep version 1.
+
 ## 0.1.25 - 2026-11-14
 
 - One extraction candidate that fails a check of its own values no longer ends

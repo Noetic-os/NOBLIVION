@@ -114,6 +114,40 @@ started and that made no model call stored only a hash. It continues only while
 the configuration is unchanged, so a budget change still fails it. A derivation
 job that resumes on this release is frozen again in the request-only shape.
 
+### Extraction contract versions
+
+Each extraction job freezes the version of the extraction contract when it
+starts. A started job always resumes under its own version. A new job starts
+under the newest version. The worker supports versions 1 and 2. Version 2
+(NOBLIVION-241) needs fewer model calls per job:
+
+- A window holds three times `window_chars`. With the default 12,000 characters
+  a window holds 36,000 characters, and the overlap stays at `overlap_chars`.
+  On recorded jobs of a live store the median job needs 7 windows instead of
+  25.
+- A window that holds no tool text and no direct user text gets a `no_lesson`
+  receipt with the reason `no tool or direct user text in the window; no model
+  call`. The model is not called, because the evidence checks cannot accept a
+  candidate from such a window. A window with only tool output is still sent:
+  a fact or a fix proof can come from tool output.
+- One semantic call compares up to 8 candidates and up to 64 (candidate,
+  target) pairs. Each pair is the same pair that version 1 compares, and each
+  pair still needs one explicit relation. A reply with a missing, extra,
+  repeated or unknown candidate or target is rejected, as in version 1.
+
+Version 2 keeps every version 1 prompt and schema unchanged and adds only the
+batched semantic prompt and schema. Consolidation and draft jobs use only
+version 1 text, so they freeze version 1. A job that 0.1.25 or an older release
+started resumes as version 1: same windows, one semantic call per comparison
+task. A window of 36,000 characters with 24,000 characters of existing notes
+needs about 20,000 input tokens. Keep `window_chars` at a value whose triple,
+plus the existing notes and the output limit, fits the model context.
+
+The number of semantic comparisons grows with the number of notes in the
+scope: each new candidate is compared with every managed note. Batching cuts
+the calls for these comparisons by up to 8 times, but the count still grows
+with the note count.
+
 A downgrade to 0.1.24 fails each job that this release froze: every job it
 started, every resumed derivation job and every job frozen again by an
 output-limit recovery. The failure happens before any provider call, and the

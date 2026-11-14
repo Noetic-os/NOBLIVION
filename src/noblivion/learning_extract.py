@@ -822,7 +822,7 @@ preference for brief answers may be equivalent even with different titles.
 
 
 def semantic_targets(
-    decisions: list[dict], notes: list[dict], *, max_chars: int = 16000
+    decisions: list[dict], notes: list[dict], *, max_chars: int = 16000, max_tasks: int = 512
 ) -> list[dict]:
     """Bound each comparison, covering all supplied managed notes and batch adds."""
     tasks = []
@@ -855,7 +855,7 @@ def semantic_targets(
             tasks.append(
                 {"candidate_index": index, "candidate": decision["statement"], "targets": group}
             )
-    if len(tasks) > 512:
+    if len(tasks) > max_tasks:
         raise ValidationError("semantic reconciliation exceeds bounded task count")
     return tasks
 
