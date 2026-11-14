@@ -712,6 +712,27 @@ class LearningLedger:
             )
             self._expire_reservations()
 
+    def renew_lease(self, job_id: str, lease_token: str, lease_seconds: float) -> None:
+        """Keep a current lease alive while its worker waits for a call slot.
+
+        It never shortens a lease and never revives a lost one (NOBLIVION-242).
+        """
+        if (
+            isinstance(lease_seconds, bool)
+            or not isinstance(lease_seconds, (int, float))
+            or not math.isfinite(lease_seconds)
+            or lease_seconds <= 0
+        ):
+            raise LearningError("invalid lease limits")
+        seconds = float(lease_seconds)
+        with db.write_tx(self.conn):
+            self.validate_lease(job_id, lease_token)
+            now = time.time()
+            self.conn.execute(
+                "UPDATE learning_jobs SET lease_until=max(lease_until,?),updated_at=? WHERE id=?",
+                (now + seconds, now, job_id),
+            )
+
     def checkpoint(self, job_id: str, lease_token: str, progress: dict[str, Any]) -> None:
         if not isinstance(progress, dict):
             raise LearningError("invalid job progress")
