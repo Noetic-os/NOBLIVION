@@ -716,6 +716,36 @@ def test_found_reads_the_name_field_and_the_rule() -> None:
     assert tool.found("nothing here\n", "note_x.md", "A rule") == (False, None)
 
 
+def test_gate0_ranks_rows_of_the_json_hooks() -> None:
+    """NOBLIVION-228: the guard, error recall and subagent hooks print JSON. The
+    check must read the rows the model sees, so a found lesson has a rank."""
+    tool = load_tool()
+    rows = json.dumps(
+        {"hookSpecificOutput": {"additionalContext": "- [id 1] x (other)\n- [id 2] y (n)\n"}}
+    )
+    gate = object.__new__(tool.Gate0)
+    gate.note_fields = lambda lesson, cwd: ("", "")
+    gate.prompt_rows = lambda *a, **k: ""
+    gate.guard = lambda *a, **k: rows
+    gate.error_recall = lambda *a, **k: rows
+    gate.subagent = lambda *a, **k: rows
+    case = {
+        "id": "t1",
+        "W": "W5",
+        "lesson": "n.md",
+        "cwd": "/tmp",
+        "prompt": "p",
+        "hazard_commands": ["git status"],
+        "guard_tool_calls": [{"tool": "Edit", "file_path": "/tmp/f"}],
+        "failing": {"command": "false", "output": "Exit code 1"},
+    }
+    ranks = {c["check"]: (c["pass"], c["rank"]) for c in gate.case(case)}
+    assert ranks["guard_bash[0]"] == (True, 2)
+    assert ranks["guard_edit[0]"] == (True, 2)
+    assert ranks["error_recall"] == (True, 2)
+    assert ranks["subagent_start_rules"] == (True, 2)
+
+
 def test_verdict_ignores_an_information_check() -> None:
     tool = load_tool()
     checks = [
