@@ -971,19 +971,24 @@ class Gate0:
             return out + self.credential(case, sid, prompts)
         for i, command in enumerate(case.get("hazard_commands") or []):
             text = self.guard(f"{sid}G{i}", "Bash", {"command": command}, prompts, cwd)
+            text = model_text("PreToolUse", text)
             seen, rank = found(text, lesson, *keys) if lesson else (False, None)
             out.append(check(f"guard_bash[{i}]", seen, rank))
         for i, call in enumerate(case.get("guard_tool_calls") or []):
             tool_input = {"file_path": call["file_path"], "new_string": "x", "old_string": "y"}
             text = self.guard(f"{sid}E{i}", call["tool"], tool_input, prompts, cwd)
+            text = model_text("PreToolUse", text)
             seen, rank = found(text, lesson, *keys) if lesson else (False, None)
             out.append(check(f"guard_edit[{i}]", seen, rank))
         if case.get("failing"):
-            text = self.error_recall(sid, case["failing"], prompts, cwd)
+            text = model_text(
+                "PostToolUseFailure", self.error_recall(sid, case["failing"], prompts, cwd)
+            )
             seen, rank = found(text, lesson, *keys)
             out.append(check("error_recall", seen, rank))
         if scenario == "W5":
-            seen, rank = found(self.subagent(sid + "S", case), lesson, *keys)
+            text = model_text("SubagentStart", self.subagent(sid + "S", case))
+            seen, rank = found(text, lesson, *keys)
             out.append(check("subagent_start_rules", seen, rank))
         if scenario == "W4":
             out.extend(self.compaction(case, sid + "P"))

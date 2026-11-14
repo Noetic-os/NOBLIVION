@@ -8,6 +8,11 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Gate 0 of `tools/eval_suite.py` reads the rows the model sees in the JSON
+  output of the guard, error recall and subagent hooks. A found lesson now has a
+  rank on those checks; before, the rank was always empty. Pass counts do not
+  change (NOBLIVION-228).
+
 - The hook re-rank and the store's keyword values for it give a stop word
   (`the`, `between`, `until`) a score only where it is rare, in at most 1 of 20
   files, as the store's match rule does. A row that shares only `the` with the
