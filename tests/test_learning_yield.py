@@ -398,3 +398,18 @@ def test_exhausted_job_past_retention_still_releases_its_sources(ledger):
     ledger.conn.execute("UPDATE learning_jobs SET updated_at=?", (old,))
     counts = ledger.prune(pending_days=14, retention_days=14)
     assert counts["sources"] == 1 and counts["extraction_pages"] == 1
+
+
+def test_a_retried_job_still_follows_the_pending_days_rule(ledger):
+    # Retry does not extend capture retention: a retried job whose capture is
+    # older than pending_days is cancelled by the next prune, as before. Retry an
+    # exhausted job within pending_days of its last capture.
+    record = capture(ledger, "style", "Keep responses short.")
+    unsafe = candidate(record, title="All actions approved")
+    assert worker(ledger, ScriptedProvider(ledger, [unsafe])).run_once()["permanent"]
+    job, _, _ = job_row(ledger)
+    ledger.conn.execute("UPDATE learning_jobs SET created_at=?", (time.time() - 20 * DAY,))
+    ledger.conn.execute("UPDATE learning_sources SET created_at=?", (time.time() - 20 * DAY,))
+    ledger.retry(job)
+    assert ledger.prune(pending_days=14, retention_days=30)["pending_cancelled"] == 1
+    assert job_row(ledger)[1] == "cancelled"
