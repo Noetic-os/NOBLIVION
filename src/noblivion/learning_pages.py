@@ -18,6 +18,12 @@ from .learning_extract import ValidationError, contains_secret
 # RESPONSE_FAILURES check. The receipt holds no candidate, and the job goes on
 # with the next window. A rejected receipt with any other reason fails the job.
 WINDOW_REJECTED = "unsafe response rejected; no candidate kept; job continues"
+# NOBLIVION-245: the reason of a receipt for a window piece whose model reply
+# reached the output token cap at the smallest piece size. The cut-off reply is
+# not kept. The job goes on with the next piece or window.
+LENGTH_REJECTED = "output reached the token cap at the smallest window; no candidate kept"
+# A rejected receipt with one of these reasons lets the job go on.
+CONTINUING_REJECTIONS = frozenset({WINDOW_REJECTED, LENGTH_REJECTED})
 
 
 class CoverageExhausted(ValidationError):
@@ -130,10 +136,11 @@ class ExtractionPages:
 def retry_rejected(conn, job_id):
     """Explicit retry can repair a rejected page without losing prior receipts.
 
-    A window marked WINDOW_REJECTED keeps its receipt: the job cursor is already
-    past it, so the receipt is its only coverage record.
+    A window marked with a CONTINUING_REJECTIONS reason keeps its receipt: the
+    job cursor is already past it, so the receipt is its only coverage record.
     """
     conn.execute(
-        "DELETE FROM learning_extraction_pages WHERE job_id=? AND status='rejected' AND reason!=?",
-        (job_id, WINDOW_REJECTED),
+        "DELETE FROM learning_extraction_pages WHERE job_id=? AND status='rejected' "
+        "AND reason NOT IN (?,?)",
+        (job_id, WINDOW_REJECTED, LENGTH_REJECTED),
     )

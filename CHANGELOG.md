@@ -8,6 +8,17 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- A learning window whose model output reaches the output token cap no longer
+  defers its job every hour without end. The worker splits that window in two
+  halves and goes on with each half. A piece is not split below 2048
+  characters or past three splits. At that floor the piece gets a `rejected`
+  page receipt and the job goes on. A cut-off output is never stored as
+  candidates. The window plan and the job fingerprint stay the same, so a
+  started job goes on. A job that an older release deferred on this result
+  resumes with the split. A deferral that gives the attempt back, for a length
+  result of a semantic call or for `ContextDependencyDeferred`, now happens at
+  most 24 times per job. After that each deferral counts an attempt, so the job
+  ends (NOBLIVION-245).
 - A learning window whose model response fails a response failure class (for
   example an authority claim or quoted evidence) no longer fails the whole
   extraction job. No candidate of the response is stored, as before, and the

@@ -146,7 +146,7 @@ def test_clean_unambiguous_fact_yield(ledger, index):
     assert ledger.current_notes("demo", "scope")[0]["statement"] == record["content"]
 
 
-@pytest.mark.parametrize("reason,expected", [("length", "deferred"), ("transport", "failed")])
+@pytest.mark.parametrize("reason,expected", [("length", "done"), ("transport", "failed")])
 def test_failure_duration_separate_from_reservation_and_no_identical_length_retry(
     ledger, monkeypatch, reason, expected
 ):
@@ -169,13 +169,12 @@ def test_failure_duration_separate_from_reservation_and_no_identical_length_retr
     assert status["provider_actual"]["seconds"] == 2.5
     assert status["provider_actual"]["reasons"] == {reason: 1}
     assert status["budget"]["seconds"] == 60
-    assert status["failure_reasons"]["Provider:" + reason] == 1
     if reason == "length":
-        ready(ledger)
-        assert run.run_once()["status"] == "deferred" and len(calls) == 1
-        assert ledger.status()["provider_actual"]["calls"] == 1
-        assert ledger.conn.execute("SELECT attempts FROM learning_jobs").fetchone()[0] == 0
+        # A one-line window is at the split floor: it is rejected and the job
+        # ends with no second call (NOBLIVION-245).
+        assert len(calls) == 1 and status["rejected_windows"] == 1
     else:
+        assert status["failure_reasons"]["Provider:" + reason] == 1
         assert (
             ledger.conn.execute("SELECT status FROM learning_budget").fetchone()[0] == "uncertain"
         )
@@ -257,23 +256,41 @@ def test_paired_output_timeout_limits_extend_lease_before_submission(ledger):
     assert run.run_once()["status"] == "done"
 
 
+def semantic_length(ledger, semantic):
+    """A job whose extraction succeeds and whose semantic call runs ``semantic``.
+
+    An extraction window splits on length (NOBLIVION-245). The output-limit hold
+    and its reviewed recovery still apply to a semantic call.
+    """
+    seed(ledger, capture(ledger, "old", "Keep responses short."))
+    new = capture(ledger, "new", "I prefer concise replies.")
+    provider = ScriptedProvider(ledger, [candidate(new, key="different")], "distinct")
+    scripted = provider.complete
+
+    def complete(messages, **kwargs):
+        if "sources" in json.loads(messages[-1]["content"]):
+            return scripted(messages, **kwargs)
+        return semantic(messages, **kwargs)
+
+    provider.complete = complete
+    return provider, scripted
+
+
 @pytest.mark.parametrize("format_retry", [False, True])
 def test_length_hold_can_resume_with_reviewed_output_limits(ledger, format_retry):
     from noblivion.learning_worker import ProviderResponse
 
-    capture(ledger, "new", "The indigo service uses port 8443.")
-    provider = ScriptedProvider(ledger, [])
     limits = []
 
-    def complete(messages, **kwargs):
+    def semantic(messages, **kwargs):
         limits.append(kwargs["max_tokens"])
         if format_retry and len(limits) == 1:
             return ProviderResponse("not JSON", 20)
         if kwargs["max_tokens"] == 2048:
             raise ProviderError("length", tokens=2048)
-        return ProviderResponse('{"version":1,"candidates":[]}', 40)
+        return scripted(messages, **kwargs)
 
-    provider.complete = complete
+    provider, scripted = semantic_length(ledger, semantic)
     run = worker(ledger, provider)
     assert run.run_once()["status"] == "deferred"
     ready(ledger)
@@ -285,7 +302,8 @@ def test_length_hold_can_resume_with_reviewed_output_limits(ledger, format_retry
         ledger,
         provider,
         WorkerSettings(max_output_tokens=8192, timeout_seconds=180),
-        BudgetLimits(),
+        # Budgets are policy, not frozen: the extra semantic call needs room.
+        BudgetLimits(max_seconds=1000),
     )
     assert recovered.run_once()["status"] == "done"
     assert limits[-1] == 8192
@@ -293,15 +311,13 @@ def test_length_hold_can_resume_with_reviewed_output_limits(ledger, format_retry
 
 
 def test_length_recovery_does_not_allow_source_or_window_change(ledger):
-    capture(ledger, "new", "The indigo service uses port 8443.")
-    provider = ScriptedProvider(ledger, [])
     calls = []
 
-    def complete(*args, **kwargs):
+    def semantic(*args, **kwargs):
         calls.append(kwargs)
         raise ProviderError("length")
 
-    provider.complete = complete
+    provider, _ = semantic_length(ledger, semantic)
     assert worker(ledger, provider).run_once()["status"] == "deferred"
     ready(ledger)
     changed = LearningWorker(
@@ -336,22 +352,20 @@ def test_withheld_old_evidence_records_deferred_correction_instead_of_mutation(l
 
 
 def test_timeout_only_change_does_not_repeat_identical_length_request(ledger):
-    capture(ledger, "new", "The indigo service uses port 8443.")
-    provider = ScriptedProvider(ledger, [])
     calls = []
 
-    def complete(*args, **kwargs):
+    def semantic(*args, **kwargs):
         calls.append(kwargs)
         raise ProviderError("length")
 
-    provider.complete = complete
+    provider, _ = semantic_length(ledger, semantic)
     assert worker(ledger, provider).run_once()["status"] == "deferred"
     ready(ledger)
     changed = LearningWorker(ledger, provider, WorkerSettings(timeout_seconds=180), BudgetLimits())
     assert changed.run_once()["status"] == "deferred" and len(calls) == 1
 
 
-def test_output_recovery_preserves_completed_page_receipts(ledger):
+def test_length_split_preserves_completed_page_receipts(ledger):
     from dataclasses import replace
 
     from noblivion.learning_worker import ProviderResponse
@@ -370,14 +384,10 @@ def test_output_recovery_preserves_completed_page_receipts(ledger):
     provider.complete = complete
     limits = replace(BudgetLimits(), max_seconds=1000, max_tokens=200000)
     run = LearningWorker(ledger, provider, WorkerSettings(), limits)
-    assert run.run_once()["status"] == "deferred" and offsets[0] == 0 and offsets[1] > 0
-    ready(ledger)
-    recovered = LearningWorker(
-        ledger, provider, WorkerSettings(max_output_tokens=8192, timeout_seconds=180), limits
-    )
-    assert recovered.run_once()["status"] == "done"
-    assert offsets[2] == offsets[1] and offsets.count(0) == 1
-    assert all(offset > offsets[1] for offset in offsets[3:])
+    # The second window splits in two halves and the job ends in the same run.
+    assert run.run_once()["status"] == "done" and offsets[0] == 0 and offsets[1] > 0
+    assert offsets[2] == offsets[1] and offsets[3] > offsets[2] and offsets.count(0) == 1
+    assert all(offset > offsets[1] for offset in offsets[4:])
     assert (
         ledger.conn.execute("SELECT count(*) FROM learning_extraction_pages").fetchone()[0]
         == len(offsets) - 1
@@ -403,5 +413,7 @@ def test_length_hold_survives_budget_settlement_failure(ledger):
     assert run.run_once()["status"] == "failed"
     ledger.settle = settle
     ready(ledger)
-    assert run.run_once()["status"] == "deferred" and len(calls) == 1
+    # The hold stops a second identical call. The one-line window is at the
+    # split floor, so it is rejected and the job ends (NOBLIVION-245).
+    assert run.run_once()["status"] == "done" and len(calls) == 1
     assert ledger.status()["provider_actual"]["reasons"] == {"length": 1}
