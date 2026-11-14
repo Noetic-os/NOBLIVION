@@ -96,6 +96,24 @@ no worker.
   never spend past `max_calls`, `max_tokens`, `max_seconds` or `max_cost`.
   The ledger also refuses a call when `max_concurrency` reservations are open
   in the database, from all processes together.
+- A call that only `max_concurrency` refuses is retried after
+  `worker.poll_seconds`, and the job keeps its attempt. This happens after a
+  restart during a model call: the stopped process leaves the call reserved
+  until its job lease ends, at most `timeout_seconds` + 30 seconds later.
+- When the store stops, a worker that waits for a call slot takes no slot, so
+  no new call starts. A call that has started runs to its end or dies with the
+  process; its reservation stays and counts against the budget.
+- A worker loop claims its next job as soon as the last one is done. It waits
+  `worker.poll_seconds` only when no job was done. So jobs run back to back,
+  with no 5 second pause, also at `max_concurrency` 1.
+- At N worker loops, `max_calls` and `max_seconds` run out about N times
+  faster in wall time. `max_seconds` charges at least `worker.timeout_seconds`
+  for each call, because each call reserves that time and a call that ends
+  sooner gives none of it back.
+- Jobs that add notes to one root at the same time see the notes of the other
+  jobs appear. Such a job repeats its semantic comparison against the new
+  notes, and each repeat is one more model call. It never repeats its
+  extraction calls.
 
 ### Context and output deferrals
 

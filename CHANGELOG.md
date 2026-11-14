@@ -19,6 +19,21 @@ All notable changes to NOBLIVION. The format follows
   does not defer a started job with `BudgetExceeded`. A worker that waits for
   a call slot renews its job lease. The default stays 1, and at most 16 loops
   run (NOBLIVION-242).
+- Learning jobs now run back to back. Before, one job started every 5 seconds;
+  now a worker loop claims the next job as soon as its last job is done, also
+  at `max_concurrency` 1. At N loops, `max_calls` and `max_seconds` therefore
+  run out about N times faster in wall time. `max_seconds` charges at least
+  `worker.timeout_seconds` for each call. Jobs that add notes to one root at
+  the same time may repeat their semantic comparison, and each repeat is one
+  more model call (NOBLIVION-242).
+- A call refused only because `max_concurrency` reservations are open is
+  retried after `worker.poll_seconds`, not after the budget window. Before, a
+  store that stopped during a model call left that call reserved for up to
+  `timeout_seconds` + 30 seconds, and the next process deferred each job it
+  claimed in that time by an hour. The job keeps its attempt, and
+  `noblivion learning status` shows "waiting for a call slot". A worker that
+  waits for a call slot also checks for a stop before it takes a free slot, so
+  no new call starts during a shutdown (NOBLIVION-242).
 
 ## 0.1.25 - 2026-11-14
 
