@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.24 - 2026-11-14
+
 - The doctor knows the `recall.nudge`, `recall.nudge_shadow`, `recall.nudge_tools`,
   `recall.nudge_commands` and `stop.reminders` config keys, so a valid config no longer
   warns `config_unknown_keys`.
