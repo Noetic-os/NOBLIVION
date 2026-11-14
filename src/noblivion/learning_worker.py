@@ -22,7 +22,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from threading import Event, Timer
 
-from .learning import BudgetExceeded, LeaseLost, SemanticSnapshotChanged
+from .learning import BudgetExceeded, ConcurrencyExceeded, LeaseLost, SemanticSnapshotChanged
 from .learning_context import dependent_decisions, isolate_notes
 from .learning_extract import (
     EXTRACTION_SCHEMA,
@@ -742,6 +742,14 @@ class LearningWorker:
             self.ledger.checkpoint(ident, lease, state)
             self.ledger.defer(ident, lease, retry_delay=1, error="SemanticSnapshotChanged")
             return {"status": "deferred", "job_id": ident, "error": "SemanticSnapshotChanged"}
+        except ConcurrencyExceeded:
+            # Other reserved calls hold every slot, for example the calls of a
+            # process that stopped mid-call, until their leases expire. Retry
+            # after the poll interval; defer gives the attempt back.
+            self.ledger.defer(
+                ident, lease, retry_delay=cfg.poll_seconds, error="ConcurrencyExceeded"
+            )
+            return {"status": "deferred", "job_id": ident, "error": "ConcurrencyExceeded"}
         except BudgetExceeded:
             self.ledger.defer(
                 ident,

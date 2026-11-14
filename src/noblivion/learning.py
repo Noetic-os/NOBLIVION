@@ -41,6 +41,14 @@ class BudgetExceeded(LearningError):
     """No call may start under the configured persistent limits."""
 
 
+class ConcurrencyExceeded(BudgetExceeded):
+    """Only ``max_concurrency`` refuses: other reserved calls hold every slot.
+
+    The refusal is short-lived (a held call settles, or its lease expires), so
+    a worker retries after its poll interval, not after the budget window.
+    """
+
+
 class RevisionConflict(LearningError):
     """The note changed since the caller read it."""
 
@@ -624,9 +632,11 @@ class LearningLedger:
                 or used["tokens"] + tokens > limits.max_tokens
                 or used["seconds"] + seconds > limits.max_seconds
                 or used["cost"] + cost > limits.max_cost
-                or active >= limits.max_concurrency
+                or (active == 0 and active >= limits.max_concurrency)
             ):
                 raise BudgetExceeded("persistent learning budget exhausted")
+            if active >= limits.max_concurrency:
+                raise ConcurrencyExceeded("every learning call slot is reserved")
             reservation = {"id": _id(), "tokens": int(tokens), "seconds": seconds, "cost": cost}
             self.conn.execute(
                 "INSERT INTO learning_budget VALUES (?,?,?,?,?,?,'reserved',?,?)",
@@ -1966,6 +1976,8 @@ class LearningLedger:
         error = str(row["last_error"] or "")
         if error in {"budget unavailable", "BudgetExceeded"}:
             return "budget", row["updated_at"], False
+        if error == "ConcurrencyExceeded":
+            return "waiting for a call slot", row["updated_at"], False
         if error == "ScopeNotEnabled":
             return "scope not enabled", row["updated_at"], False
         if error.startswith("Context"):

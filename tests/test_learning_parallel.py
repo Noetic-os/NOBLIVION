@@ -12,7 +12,13 @@ from contextlib import contextmanager
 import pytest
 
 from noblivion import db, learning_runtime
-from noblivion.learning import BudgetLimits, LearningLedger, LeaseLost
+from noblivion.learning import (
+    BudgetExceeded,
+    BudgetLimits,
+    ConcurrencyExceeded,
+    LearningLedger,
+    LeaseLost,
+)
 from noblivion.learning_worker import ProviderResponse, WorkerSettings
 
 LONG = "Routine context. " * 300  # two extraction windows of 4096 characters
@@ -320,6 +326,11 @@ def test_parallel_jobs_in_one_root_all_write_their_notes(tmp_path, pool_env, mon
     # Jobs that add notes in one root at once see the snapshot change and
     # repeat only the semantic comparison, never the extraction call.
     assert len(provider.starts) == 4
+    # Each pass of a job makes one semantic call when the root has notes and
+    # none when it is empty. A pass repeats only after another job wrote a
+    # note, so the job that writes k-th compares against at most k-1 distinct
+    # snapshots: at most 0 + 1 + 2 + 3 = 6 semantic calls for 4 jobs.
+    assert provider.semantic <= 6
 
 
 def test_invalid_settings_stop_the_workers(tmp_path, pool_env):
@@ -413,6 +424,116 @@ def test_waiting_for_a_slot_renews_the_lease(pool_env, monkeypatch):
     pool.slots.release()
     thread.join(10)
     assert result["reservation"] and pool.slots.used == 0
+
+
+def test_a_free_slot_is_not_given_after_the_stop():
+    slots = learning_runtime.CallSlots()
+    slots.set_limit(2)
+    stop = threading.Event()
+    stop.set()
+    assert not slots.acquire(stop, lambda: None)
+    assert slots.used == 0
+
+
+def test_a_stop_during_a_slot_wait_gives_no_slot(monkeypatch):
+    monkeypatch.setattr(learning_runtime, "SLOT_WAIT_SECONDS", 5.0)
+    slots = learning_runtime.CallSlots()
+    slots.set_limit(1)
+    stop = threading.Event()
+    assert slots.acquire(stop, lambda: None)
+    result = {}
+    thread = threading.Thread(target=lambda: result.setdefault("ok", slots.acquire(stop, None)))
+    thread.start()
+    time.sleep(0.1)
+    # The stop and the free slot arrive in the same wake-up.
+    with slots._cond:
+        stop.set()
+        slots._used = 0
+        slots._cond.notify_all()
+    thread.join(10)
+    assert result == {"ok": False} and slots.used == 0
+
+
+def reserve_one(ledger, job, limits, seconds=1.0):
+    return ledger.reserve(
+        job["id"],
+        job["lease_token"],
+        limits=limits,
+        estimated_tokens=10,
+        estimated_seconds=seconds,
+        estimated_cost=0,
+    )
+
+
+def test_only_a_full_concurrency_raises_concurrency_exceeded(tmp_path):
+    store = FakeStore(tmp_path)
+    capture(store, 2, text="Job {index} context.")
+    with store.connection() as conn:
+        ledger = LearningLedger(conn)
+        first = ledger.claim("a", lease_seconds=120)
+        second = ledger.claim("b", lease_seconds=120)
+        reserve_one(ledger, first, BudgetLimits(max_calls=10))
+        with pytest.raises(ConcurrencyExceeded):
+            reserve_one(ledger, second, BudgetLimits(max_calls=10))
+        # Another limit refuses as well: the budget refusal wins.
+        with pytest.raises(BudgetExceeded) as refused:
+            reserve_one(ledger, second, BudgetLimits(max_calls=1))
+        assert type(refused.value) is BudgetExceeded
+    store2 = FakeStore(tmp_path / "zero")
+    capture(store2, 1, text=SHORT)
+    with store2.connection() as conn:
+        ledger = LearningLedger(conn)
+        job = ledger.claim("a", lease_seconds=120)
+        # max_concurrency 0 is a configured stop, not a busy slot.
+        with pytest.raises(BudgetExceeded) as refused:
+            reserve_one(ledger, job, BudgetLimits(max_concurrency=0))
+        assert type(refused.value) is BudgetExceeded
+
+
+def test_a_restart_during_a_call_retries_jobs_after_the_poll_interval(tmp_path, pool_env):
+    """A stopped process leaves a job leased and its call reserved for up to
+    timeout + 30 s. The new process must not defer each job it claims by the
+    budget window (3600 s) in that time."""
+    store, pool, provider = pool_env
+    capture(store, 3, text="Job {index} context.")
+    with store.connection() as conn:
+        ledger = LearningLedger(conn)
+        stale = ledger.claim("stopped-process", lease_seconds=120)
+        reserve_one(ledger, stale, BudgetLimits(max_calls=1000), seconds=180)
+    write_settings(tmp_path, 1)
+    provider.gate.set()
+    pool.pass_once()
+
+    def others():
+        return rows(
+            store,
+            "SELECT status,attempts,last_error,next_attempt FROM learning_jobs WHERE id<>?",
+            (stale["id"],),
+        )
+
+    wait_for(lambda: any(job["last_error"] for job in others()))
+    time.sleep(0.3)  # several more claims and deferrals at poll_seconds 0.05
+    now = time.time()
+    for job in others():
+        assert job["status"] in {"pending", "leased"}
+        assert job["last_error"] in {"", "ConcurrencyExceeded"}
+        # Retried after the poll interval, not after the budget window, and
+        # the deferral gives the attempt back.
+        assert job["next_attempt"] < now + 60
+        assert job["attempts"] <= 1 and (job["status"] == "leased" or job["attempts"] == 0)
+    assert provider.starts == []
+    # The stale lease expires: every job runs without a manual retry.
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE learning_jobs SET lease_until=? WHERE id=?", (time.time() - 1, stale["id"])
+        )
+        conn.commit()
+    wait_for(all_done(store, 3))
+    attempts = {
+        j["id"]: j["attempts"] for j in rows(store, "SELECT id,attempts FROM learning_jobs")
+    }
+    assert attempts.pop(stale["id"]) == 2
+    assert set(attempts.values()) == {1}
 
 
 def test_renew_lease_never_revives_a_lost_lease(tmp_path):

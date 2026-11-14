@@ -205,12 +205,16 @@ class CallSlots:
         """
         while True:
             with self._cond:
+                # Check the stop first: a free slot must not start a call
+                # while the store shuts down.
+                if stop.is_set() or self._limit <= 0:
+                    return False
                 if self._used < self._limit:
                     self._used += 1
                     return True
+                self._cond.wait(SLOT_WAIT_SECONDS)
                 if stop.is_set() or self._limit <= 0:
                     return False
-                self._cond.wait(SLOT_WAIT_SECONDS)
                 if self._used < self._limit:
                     self._used += 1
                     return True
