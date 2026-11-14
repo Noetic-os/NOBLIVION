@@ -87,8 +87,25 @@ same request remain deferred and make no model call. Changing only the timeout
 does not release this hold. After reviewing the cause, change the output limit,
 model or reasoning mode in the explicit worker configuration, then let the
 pending job resume. The worker retains completed extraction pages and all budget
-charges. Source, window, coverage, scope and budget policy changes cannot use
-this recovery path. Do not reset exhausted historical jobs as part of this step.
+charges. Source, window, coverage and scope changes cannot use this recovery
+path. Do not reset exhausted historical jobs as part of this step.
+
+### Configuration changes during a job
+
+A started job freezes only the request part of the configuration: the window
+and overlap sizes, the window count, the context size, the output limit, the
+coverage limits (pages, continuations, decisions), the provider type, endpoint,
+model and reasoning mode, and the version of the learning prompts and schemas.
+A change to any of these fails a started job with `window configuration changed
+during a job`, so outputs of two configurations never mix in one job.
+
+Budget limits, `enable_consolidation`, `max_attempts`, `lease_seconds`,
+`retry_delay`, `poll_seconds` and `timeout_seconds` are policy. A started job
+uses their current values on its next call. So you can raise the budget while
+jobs wait with `BudgetExceeded`. Jobs that releases up to 0.1.24 started also
+continue: their stored configuration proves the frozen value, and only its
+request part is compared (NOBLIVION-236). After such a job resumes, it carries
+the new fingerprint shape, so an older release would fail it.
 
 Learning status includes `failure_reasons`, `context_rejections`, `outcomes`, and
 `provider_actual`. Provider reasons are `length`, `incomplete`, `empty`, `timeout`,
@@ -342,7 +359,8 @@ Default hard limits are twelve proposals per call, 32 exact supports per claim
 (configured internal ceiling 64), 512 notes per derivation, 24,000 input characters,
 2,000 characters per generated statement, 32 context claims, 12,000 context
 characters and eight drafts per pass. Query input is limited to 8,000 characters.
-Settings, model and budget fingerprints are frozen before calls. A dense
+Request settings and the model are frozen before calls; budget and scheduling
+policy are not (see [Configuration changes during a job](#configuration-changes-during-a-job)). A dense
 extraction response with twelve candidates is saturated. Durable continuation
 receipts must establish remaining coverage before atomic admission. The default
 maximum is sixteen continuations per unit, 256 pages and 512 decisions per job;

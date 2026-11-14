@@ -8,6 +8,16 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- A change to the learning budget, `enable_consolidation`, `max_attempts`,
+  `lease_seconds`, `retry_delay`, `poll_seconds` or `timeout_seconds` in
+  `learning.json` no longer fails started jobs with `window configuration
+  changed during a job`. A started job freezes only the request part: windows,
+  context and output size, coverage limits, provider, model, reasoning mode and
+  a new version of the learning prompts and schemas. Jobs started by 0.1.24 and
+  earlier continue when their stored configuration proves the frozen value and
+  its request part is unchanged. A test fails when a new worker or budget field
+  is not classified (NOBLIVION-236).
+
 - Gate 0 of `tools/eval_suite.py` reads dated bench amendments
   (`gate0/amendments_*.json`). An amendment can name an equivalent lesson for a
   case; a check then passes on that lesson too and records it in a `matched`

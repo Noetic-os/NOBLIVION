@@ -509,7 +509,9 @@ within an explicitly mapped learning scope to enqueue generated-claim work.
 Omitting the field keeps extraction without automatic consolidation. The worker
 uses the same finite persistent budgets and the explicitly priced zero-dollar
 loopback provider; unknown or external provider prices never permit a request.
-Worker settings and model/budget fingerprints are frozen for each durable job.
+The request part of the worker settings and the model are frozen for each
+durable job. Budget limits and scheduling settings apply to started jobs too (see
+[Configuration changes during a job](learning.md#configuration-changes-during-a-job)).
 See [Background learning](learning.md#evidence-linked-consolidation) for the full
 context API, hard bounds, extraction coverage and inert-draft policy.
 

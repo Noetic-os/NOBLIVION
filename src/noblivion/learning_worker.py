@@ -46,6 +46,11 @@ _FORMAT_RETRY = (
     "response schema, without Markdown fences, commentary or trailing delimiters. "
     "All evidence and safety requirements still apply."
 )
+CONTINUATION_PROMPT = (
+    "\nThis is a coverage continuation. Return only remaining lessons; "
+    "already_returned statements must not be emitted again. A response "
+    "with twelve candidates signals saturation and requires another page."
+)
 
 
 class ProviderError(RuntimeError):
@@ -110,6 +115,177 @@ class WorkerSettings:
             or type(self.enable_consolidation) is not bool
         ):
             raise ValueError("worker limits exceed hard bounds")
+
+
+# NOBLIVION-236: a started job freezes only the configuration that can change a
+# provider request, the accepted output or a durable coverage receipt. Policy
+# settings decide when, how often and under which admission limit the worker
+# calls. They never enter a request, so a started job uses their current value.
+# Every WorkerSettings and BudgetLimits field must be in exactly one set; a test
+# enforces this for new fields.
+REQUEST_SETTINGS = frozenset(
+    {
+        "window_chars",  # window boundaries
+        "overlap_chars",
+        "max_windows",
+        "max_existing_chars",  # reconciliation context in every request
+        "max_output_tokens",  # provider max_tokens and the length-hold key
+        "max_pages",  # coverage limits decide the durable receipt status
+        "max_continuations",
+        "max_decisions",
+    }
+)
+POLICY_SETTINGS = frozenset(
+    {
+        "max_attempts",  # retry and lease scheduling
+        "lease_seconds",
+        "retry_delay",
+        "poll_seconds",
+        "timeout_seconds",  # call deadline and reservation estimate, not request text
+        "enable_consolidation",  # follow-up job after a finished extraction
+    }
+)
+# Budgets are admission control over the shared learning_budget table. reserve()
+# reads the current limits on every call and settlement never reads them.
+REQUEST_BUDGETS = frozenset()
+POLICY_BUDGETS = frozenset(
+    {"window_seconds", "max_calls", "max_tokens", "max_seconds", "max_cost", "max_concurrency"}
+)
+REQUEST_PROVIDER = ("provider_type", "endpoint", "model", "reasoning_effort")
+# Version of the prompts, schemas and validators of every learning request. Bump
+# it when a request or its acceptance rules change; started jobs then fail
+# visibly instead of mixing outputs. A test pins the prompt and schema text.
+EXTRACTION_CONTRACT = 1
+# Releases up to 0.1.24 stored no contract. Their contract is version 1.
+LEGACY_EXTRACTION_CONTRACT = 1
+# The exact configuration shape frozen by releases up to 0.1.24.
+LEGACY_SETTINGS = (
+    "max_attempts",
+    "lease_seconds",
+    "retry_delay",
+    "timeout_seconds",
+    "max_output_tokens",
+    "window_chars",
+    "overlap_chars",
+    "max_windows",
+    "max_existing_chars",
+    "poll_seconds",
+    "max_pages",
+    "max_continuations",
+    "max_decisions",
+    "enable_consolidation",
+)
+LEGACY_BUDGETS = (
+    "window_seconds",
+    "max_calls",
+    "max_tokens",
+    "max_seconds",
+    "max_cost",
+    "max_concurrency",
+)
+
+
+def request_configuration(configuration: dict | None) -> dict:
+    """The frozen part of a worker configuration, from the current or a stored one."""
+    configuration = configuration if isinstance(configuration, dict) else {}
+    settings = configuration.get("settings")
+    settings = settings if isinstance(settings, dict) else {}
+    budgets = configuration.get("budgets")
+    budgets = budgets if isinstance(budgets, dict) else {}
+    return {
+        "contract": configuration.get("contract", LEGACY_EXTRACTION_CONTRACT),
+        "settings": {key: settings.get(key) for key in sorted(REQUEST_SETTINGS)},
+        "budgets": {key: budgets.get(key) for key in sorted(REQUEST_BUDGETS)},
+        **{key: configuration.get(key, "") for key in REQUEST_PROVIDER},
+    }
+
+
+def legacy_configuration(configuration: dict) -> dict:
+    """A configuration in the shape that releases up to 0.1.24 hashed."""
+    settings, budgets = configuration["settings"], configuration["budgets"]
+    return {
+        "settings": {key: settings[key] for key in LEGACY_SETTINGS},
+        "budgets": {key: budgets[key] for key in LEGACY_BUDGETS},
+        **{key: configuration[key] for key in REQUEST_PROVIDER},
+    }
+
+
+def input_fingerprint(sources, windows, configuration) -> str:
+    """The frozen identity of one extraction job's sources, windows and configuration."""
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "sources": [(s["id"], s["sha256"]) for s in sources],
+                "windows": windows,
+                "configuration": configuration,
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+
+
+def worker_fingerprint(configuration) -> str:
+    """The frozen identity of one derivation job's worker configuration."""
+    return hashlib.sha256(json.dumps(configuration, sort_keys=True).encode()).hexdigest()
+
+
+def _frozen_hashes(stored: dict, digest) -> set:
+    hashes = {digest(stored), digest(request_configuration(stored))}
+    try:
+        hashes.add(digest(legacy_configuration(stored)))
+    except (KeyError, TypeError):
+        pass
+    return hashes
+
+
+def frozen_execution(progress: dict, sources, windows) -> dict | None:
+    """The stored configuration that reproduces the frozen extraction hash, or None.
+
+    A stored configuration counts only when it hashes, with the current sources
+    and windows, to the frozen value in the old full shape or the request shape.
+    So a source or window change, or an edited progress row, still fails.
+    """
+    frozen = progress.get("execution_fingerprint", progress.get("fingerprint"))
+    for key in ("execution_configuration", "call_configuration"):
+        stored = progress.get(key)
+        if isinstance(stored, dict) and frozen in _frozen_hashes(
+            stored, lambda value: input_fingerprint(sources, windows, value)
+        ):
+            return stored
+    return None
+
+
+def execution_matches(progress: dict, sources, windows, current: dict) -> bool:
+    """True when a started extraction job may continue under the current configuration."""
+    frozen = progress.get("execution_fingerprint", progress.get("fingerprint"))
+    if frozen is None:
+        return True
+    request = request_configuration(current)
+    if frozen == input_fingerprint(sources, windows, request):
+        return True
+    stored = frozen_execution(progress, sources, windows)
+    return stored is not None and request_configuration(stored) == request
+
+
+def worker_matches(progress: dict, current: dict) -> bool:
+    """True when a started derivation job may continue under the current configuration.
+
+    Releases up to 0.1.24 stored only the hash before the first call. Such a job
+    continues when the current configuration is unchanged, or when a stored call
+    configuration proves the frozen one.
+    """
+    frozen = progress.get("worker_fingerprint")
+    if frozen is None:
+        return True
+    request = request_configuration(current)
+    if frozen in {worker_fingerprint(request), worker_fingerprint(legacy_configuration(current))}:
+        return True
+    for key in ("worker_configuration", "call_configuration"):
+        stored = progress.get(key)
+        if isinstance(stored, dict) and frozen in _frozen_hashes(stored, worker_fingerprint):
+            return request_configuration(stored) == request
+    return False
 
 
 @dataclass(frozen=True)
@@ -369,54 +545,36 @@ class LearningWorker:
             if job.get("kind", "extract") != "extract":
                 from .learning_synthesis import run_derivation
 
-                frozen = hashlib.sha256(
-                    json.dumps(self._configuration(), sort_keys=True).encode()
-                ).hexdigest()
-                if state.get("worker_fingerprint") not in {None, frozen}:
+                current = self._configuration()
+                if not worker_matches(state, current):
                     if not self._output_recovery(state):
                         raise ValidationError("derivation worker configuration changed")
-                state["worker_fingerprint"] = frozen
+                state["worker_fingerprint"] = worker_fingerprint(request_configuration(current))
+                state["worker_configuration"] = current
                 self.ledger.checkpoint(ident, lease, state)
                 job["progress"] = state
                 return run_derivation(self.ledger, job, self._validated_call)
             sources = job["sources"]
-            windows = build_windows(
-                sources,
-                window_chars=cfg.window_chars,
-                overlap=min(cfg.overlap_chars, cfg.window_chars // 4),
-                max_windows=cfg.max_windows,
-            )
-
-            def input_fingerprint(configuration):
-                return hashlib.sha256(
-                    json.dumps(
-                        {
-                            "sources": [(s["id"], s["sha256"]) for s in sources],
-                            "windows": windows,
-                            "configuration": configuration,
-                        },
-                        sort_keys=True,
-                        ensure_ascii=False,
-                    ).encode()
-                ).hexdigest()
-
-            execution = input_fingerprint(self._configuration())
+            windows = self.windows(sources)
+            current = self._configuration()
+            execution = input_fingerprint(sources, windows, request_configuration(current))
             progress = job.get("progress") or {}
-            frozen = progress.get("execution_fingerprint", progress.get("fingerprint"))
-            if frozen not in {None, execution}:
+            started = progress.get("execution_fingerprint", progress.get("fingerprint"))
+            if not execution_matches(progress, sources, windows, current):
                 if (
                     not self._output_recovery(state)
-                    or input_fingerprint(
-                        state.get("execution_configuration", state.get("call_configuration"))
-                    )
-                    != frozen
+                    or frozen_execution(progress, sources, windows) is None
                 ):
                     raise ValidationError("window configuration changed during a job")
-            # Receipts keep their immutable identity across an explicit, safe
-            # output-limit recovery. Source/window/policy changes still fail.
+                started = None  # an explicit output-limit recovery freezes again
+            # Receipts keep their immutable identity across a policy change and
+            # an explicit, safe output-limit recovery. Source, window, coverage,
+            # provider and contract changes still fail (NOBLIVION-236). A policy
+            # change keeps the original freeze, so its stored proof stays valid.
             fingerprint = progress.get("fingerprint", execution)
-            state["execution_fingerprint"] = execution
-            state["execution_configuration"] = self._configuration()
+            if started is None:
+                state["execution_fingerprint"] = execution
+                state["execution_configuration"] = current
             existing = progress.get("existing_notes")
             exclusions = progress.get("context_exclusions", [])
             if existing is None or progress.get("dependency_deferred"):
@@ -542,17 +700,27 @@ class LearningWorker:
         current = self._configuration()
 
         def policy(configuration):
-            frozen = json.loads(json.dumps(configuration))
+            # Policy settings and budgets are already outside the request part.
+            frozen = request_configuration(configuration)
             frozen.pop("model", None)
             frozen.pop("reasoning_effort", None)
-            for key in ("max_output_tokens", "timeout_seconds"):
-                frozen["settings"].pop(key, None)
+            frozen["settings"].pop("max_output_tokens", None)
             return frozen
 
         return policy(previous) == policy(current)
 
+    def windows(self, sources):
+        cfg = self.settings
+        return build_windows(
+            sources,
+            window_chars=cfg.window_chars,
+            overlap=min(cfg.overlap_chars, cfg.window_chars // 4),
+            max_windows=cfg.max_windows,
+        )
+
     def _configuration(self):
         return {
+            "contract": EXTRACTION_CONTRACT,
             "settings": asdict(self.settings),
             "budgets": vars(self.budget_limits),
             "provider_type": type(self.provider).__module__
@@ -586,10 +754,7 @@ class LearningWorker:
                     messages = [
                         {
                             "role": "system",
-                            "content": SYSTEM_PROMPT
-                            + "\nThis is a coverage continuation. Return only remaining lessons; "
-                            "already_returned statements must not be emitted again. A response "
-                            "with twelve candidates signals saturation and requires another page.",
+                            "content": SYSTEM_PROMPT + CONTINUATION_PROMPT,
                         },
                         {
                             "role": "user",
