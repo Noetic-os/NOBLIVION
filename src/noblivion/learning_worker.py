@@ -1397,10 +1397,12 @@ class LearningWorker:
     def _semantic_answer(self, job, task, index, stage, state):
         """Return validated relations, or None past the bounded re-asks.
 
-        Each answer that fails SemanticAnswerRejected counts in stage["reasks"]
-        before the next call, so a crash cannot make an uncounted call. Every
-        call goes through _call, so the budget charges it. Other failures (an
-        unsafe answer, a format retry that fails again) still fail the job.
+        stage["reasks"] counts the failed answers of each task. The count is
+        saved before the next request, so a resume sends that re-ask, not the
+        first request again. A crash during a call sends the same call again,
+        as for every other call. Every call goes through _call, so the budget
+        charges it. Other failures (an unsafe answer, a format retry that fails
+        again) still fail the job.
         """
         reasks = stage.setdefault("reasks", {})
         while True:
