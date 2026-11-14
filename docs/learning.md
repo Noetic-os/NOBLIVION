@@ -127,8 +127,26 @@ alone does not prove that hidden material is unrelated. Corrections whose old
 evidence is withheld become visible conflicts; they never replace the old note.
 All provider inputs still pass the complete secret check.
 
-A `Provider:length` result holds the exact request. Automatic attempts with the
-same request remain deferred and make no model call. Changing only the timeout
+A `Provider:length` result means the model output reached the output token
+cap. The cut-off output is never kept. For an extraction window, the worker
+splits that window in two halves and goes on with each half. A half that also
+ends on `length` splits again. A window of several parts splits between parts. A
+single part splits in the middle, but not below 2048 characters. Nothing splits
+past three levels (eight pieces). At that floor the piece gets a `rejected`
+page receipt, its unit index goes into `rejected_windows`, and the job goes on.
+So one window makes at most 15 calls that end on `length`. The frozen window
+plan and the job fingerprint do not change: the split is recorded per window in
+the job progress as `length_splits`, and a piece stores its page receipts at
+continuation `64 * piece + continuation`. A job that an older release deferred
+on `length` resumes with the split and does not send the held request again.
+
+For a semantic or derivation call, a `Provider:length` result holds the exact
+request. Automatic attempts with the same request remain deferred and make no
+model call. A deferral of this kind, and a `ContextDependencyDeferred`
+deferral, gives the attempt back at most 24 times per job (about one day at one
+hour each). The job counts them in `returned_deferrals` in its progress. After
+24, each such deferral counts an attempt, so the job ends after at most
+`max_attempts` more runs. An explicit retry renews the count. Changing only the timeout
 does not release this hold. After reviewing the cause, change the output limit,
 model or reasoning mode in the explicit worker configuration, then let the
 pending job resume. The worker retains completed extraction pages and all budget
@@ -185,7 +203,7 @@ A new job starts under the newest version. The worker supports versions 1 and 2.
 
 Version 2 keeps every version 1 prompt and schema unchanged and adds only the
 batched semantic prompt and schema. Consolidation and draft jobs use only
-version 1 text, so they freeze version 1. A job that 0.1.25 or an older release
+version 1 text, so they freeze version 1. A job that 0.1.28 or an older release
 started resumes as version 1 when it has partial work: same windows, one
 semantic call per comparison task. Partial work is a completed window, a page
 receipt, a semantic stage, a decision, a pending format retry or an output-limit
@@ -206,7 +224,7 @@ scope: each new candidate is compared with every managed note. Batching cuts
 the calls for these comparisons by up to 8 times, but the count still grows
 with the note count.
 
-A downgrade to 0.1.25 fails each extraction job that started or froze again
+A downgrade to 0.1.28 or older fails each extraction job that started or froze again
 under contract version 2 with `window configuration changed during a job`, before any
 provider call. A job that names a contract version this release does not know
 fails with `unsupported extraction contract`. To recover, upgrade again,
@@ -230,10 +248,23 @@ deferred jobs, exhausted failures and corrections deferred as visible conflicts.
 without text. A candidate that fails a check of its own values is dropped, and
 the valid rest of the response is kept. These are the text length, logical key,
 scope, evidence, date, reconciliation target, correction and fix proof checks.
-These failures reject the whole response and the job: a secret, invalid JSON,
-the response envelope, the candidate schema (fields, field types, enum values),
-an authority claim, quoted or injected evidence and an unknown source. A dropped
-candidate is checked for them too, in all its fields and references. The
+These failures reject the whole response: a secret, invalid JSON, the response
+envelope, the candidate schema (fields, field types, enum values), an authority
+claim, quoted or injected evidence and an unknown source. A dropped candidate is
+checked for them too, in all its fields and references. No candidate of a
+rejected response is stored. When a candidate fails one of the five response
+failure classes (an authority claim, quoted or injected evidence, an unknown
+source, a secret in a candidate field or an evidence span mismatch), the job
+does not fail. The window gets a `rejected` page receipt with no candidate, its
+unit index goes into `rejected_windows` in the job progress, and the job goes
+on with the next window. The worker does not call the model again for that
+window. When this happens on a continuation, the candidates of the earlier
+pages of the window stay: each page is a separate response, validated on its
+own. Learning status counts these windows in `rejected_windows`, and
+`noblivion learning retry` keeps their receipts. The other response failures
+(the candidate schema, an unclassified failure, a secret in the raw response,
+invalid JSON after the format retry, the envelope and the version) still fail
+the job, as before. The
 records of one job use at most 256 KiB. An exact-quote failure has a detail: `repeated`,
 `whitespace`, `case`, `typography` or `absent`. The progress row of each job keeps
 one record per page (`unit`, `continuation`) with the cited source IDs, so a

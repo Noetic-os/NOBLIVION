@@ -8,6 +8,50 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- A learning window whose model output reaches the output token cap no longer
+  defers its job every hour without end. The worker splits that window in two
+  halves and goes on with each half. A single part is not split below 2048
+  characters, and nothing splits past three levels. At that floor the piece
+  gets a `rejected` page receipt and the job goes on. A cut-off output is never
+  stored as candidates. The window plan and the job fingerprint stay the same, so a
+  started job goes on. A job that an older release deferred on this result
+  resumes with the split. A deferral that gives the attempt back, for a length
+  result of a semantic call or for `ContextDependencyDeferred`, now happens at
+  most 24 times per job. After that each deferral counts an attempt, so the job
+  ends (NOBLIVION-245).
+- New learning jobs need fewer model calls (NOBLIVION-241). They start under
+  extraction contract version 2: a window holds three times `window_chars`, a
+  window with no tool text and no direct user text gets a `no_lesson` receipt
+  with no model call, and one semantic call compares up to 8 candidates and 64
+  (candidate, target) pairs. Every pair still needs one explicit relation, and
+  every evidence and secret check stays. A job measured about 57 calls
+  (median) and 87 (p90) under version 1. On 470 recorded jobs of a live store
+  the simulated median falls from about 67 to about 15 calls per job (p90 123
+  to 30) at today's note count. A job that an older release froze but that has
+  no partial work (no completed window, page receipt, semantic stage,
+  decision, format retry or output-limit hold) freezes again under version 2
+  when a worker leases it, so the waiting backlog also needs fewer calls. A
+  job with partial work keeps contract version 1 and resumes with version 1
+  windows and calls. Consolidation and draft jobs keep version 1.
+- A version 2 job whose semantic batches differ on resume from the batches it
+  started with fails with `semantic batches changed during a job`. Before, the
+  stored batch counter could skip or repeat comparisons (NOBLIVION-241).
+
+## 0.1.27 - 2026-11-14
+
+- A learning window whose model response fails a response failure class (for
+  example an authority claim or quoted evidence) no longer fails the whole
+  extraction job. No candidate of the response is stored, as before, and the
+  budget still charges the call. The window gets a `rejected` page receipt,
+  its unit index goes into `rejected_windows` in the job progress, and the job
+  goes on with the next window. Learning status shows the count in
+  `rejected_windows`, and an explicit retry keeps these receipts. A schema or
+  unclassified failure still fails the job. A started job keeps its execution
+  fingerprint. A `rejected` receipt written by an older release still fails
+  the job (NOBLIVION-244).
+
+## 0.1.26 - 2026-11-14
+
 - The store runs up to `budget.max_concurrency` learning worker loops, so model
   calls run in parallel on a model server that serves several requests at once.
   Before, the store ran one loop and `max_concurrency` only limited
@@ -34,23 +78,6 @@ All notable changes to NOBLIVION. The format follows
   `noblivion learning status` shows "waiting for a call slot". A worker that
   waits for a call slot also checks for a stop before it takes a free slot, so
   no new call starts during a shutdown (NOBLIVION-242).
-- New learning jobs need fewer model calls (NOBLIVION-241). They start under
-  extraction contract version 2: a window holds three times `window_chars`, a
-  window with no tool text and no direct user text gets a `no_lesson` receipt
-  with no model call, and one semantic call compares up to 8 candidates and 64
-  (candidate, target) pairs. Every pair still needs one explicit relation, and
-  every evidence and secret check stays. A job measured about 57 calls
-  (median) and 87 (p90) under version 1. On 470 recorded jobs of a live store
-  the simulated median falls from about 67 to about 15 calls per job (p90 123
-  to 30) at today's note count. A job that an older release froze but that has
-  no partial work (no completed window, page receipt, semantic stage,
-  decision, format retry or output-limit hold) freezes again under version 2
-  when a worker leases it, so the waiting backlog also needs fewer calls. A
-  job with partial work keeps contract version 1 and resumes with version 1
-  windows and calls. Consolidation and draft jobs keep version 1.
-- A version 2 job whose semantic batches differ on resume from the batches it
-  started with fails with `semantic batches changed during a job`. Before, the
-  stored batch counter could skip or repeat comparisons (NOBLIVION-241).
 
 ## 0.1.25 - 2026-11-14
 

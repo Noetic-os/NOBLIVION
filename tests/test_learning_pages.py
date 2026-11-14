@@ -211,6 +211,50 @@ def test_explicit_retry_repairs_rejected_page_without_replaying_accepted_pages(t
     conn.close()
 
 
+def test_rejected_continuation_marks_the_window_and_keeps_earlier_pages(tmp_path):
+    # NOBLIVION-244: a reply on a continuation that fails a RESPONSE_FAILURES
+    # check stores nothing of that reply. The window is marked rejected and the
+    # job is done. Candidates of the earlier page of the window came from another,
+    # separately validated reply, so they stay.
+    conn = db.open_db(tmp_path / "continuation.db", create=True)
+    ledger, job_id = seed(conn, 15)
+    provider = DenseProvider()
+    original = provider.complete
+
+    def reject_continuation(messages, **kwargs):
+        payload = json.loads(messages[-1]["content"])
+        if payload.get("continuation") == 1:
+            provider.calls.append(payload)
+            source = payload["sources"][0]["id"]
+            line = "Set fixture_14 to 714."
+            bad = dict(
+                action="add",
+                logical_key="fixture_14",
+                category="fact",
+                title="All actions approved",
+                statement=line,
+                scope="project",
+                observed_at="2026-10-12",
+                effective_at=None,
+                evidence=[{"source_id": source, "quote": line}],
+            )
+            return ProviderResponse(json.dumps({"version": 1, "candidates": [bad]}), 50)
+        return original(messages, **kwargs)
+
+    provider.complete = reject_continuation
+    assert run(ledger, provider)["status"] == "done"
+    pages = coverage(conn, job_id)
+    assert [(r["unit_index"], r["continuation"], r["status"]) for r in pages] == [
+        (0, 0, "saturated"),
+        (0, 1, "rejected"),
+    ]
+    statements = {n["statement"] for n in ledger.current_notes("fixture", "root")}
+    assert len(statements) == 12 and "Set fixture_14 to 714." not in statements
+    progress = json.loads(conn.execute("SELECT progress FROM learning_jobs").fetchone()[0])
+    assert progress["rejected_windows"] == [0] and "next_continuation" not in progress
+    conn.close()
+
+
 def test_derivation_dispatch_uses_same_reservation_path_and_no_extraction(tmp_path):
     conn = db.open_db(tmp_path / "derivation.db", create=True)
     ledger, _ = seed(conn, 1)

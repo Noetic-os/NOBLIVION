@@ -609,8 +609,13 @@ def test_valid_json_safety_failures_never_get_format_retry(ledger, unsafe):
         raw = '{"version":NaN,"candidates":[]}'
     provider = FormatProvider(ledger, [raw])
     result = worker(ledger, provider).run_once()
-    assert result["permanent"] and len(provider.messages) == 1
+    assert len(provider.messages) == 1
     assert ledger.current_notes("demo", "scope") == []
+    if unsafe in {"authority", "unknown_source"}:
+        # ResponseRejected marks the window rejected; the job goes on (NOBLIVION-244).
+        assert result["status"] == "done"
+    else:
+        assert result["permanent"]
 
 
 def test_format_retry_still_rejects_unsupported_evidence(ledger):
