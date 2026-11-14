@@ -356,7 +356,8 @@ def test_output_recovery_preserves_completed_page_receipts(ledger):
 
     from noblivion.learning_worker import ProviderResponse
 
-    capture(ledger, "new", "Routine context. " * 1100)
+    # Four windows under contract 2 (NOBLIVION-241), so a later window can fail.
+    capture(ledger, "new", "Routine context. " * 3300)
     provider = ScriptedProvider(ledger, [])
     offsets = []
 
