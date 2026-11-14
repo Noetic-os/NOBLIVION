@@ -48,6 +48,25 @@ _DROPPED_KINDS = frozenset({"index", "topic"})
 _FRONTMATTER_KEY_RE = re.compile(r"^([A-Za-z_][\w\-]*):\s*(.*)$")
 _SUB_TOKEN_SPLIT_RE = re.compile(r"[_/.\-]+")
 _DAEMON_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9_.\-/]+")
+
+# The store's stop words (``noblivion.bm25.STOP_WORDS``), copied because a hook does not
+# import the store package; a test keeps the two equal. The hook re-rank gives one a
+# score only where it is rare, in at most 1/STOP_WORD_RARE_SHARE_DIV of the files, as
+# the store does (NOBLIVION-82).
+STOP_WORDS = frozenset(
+    """
+    about above after again am an and are as at be been before being below between
+    both but by can could did do does doing don during each for from further had has
+    have having he her here hers herself him himself his how if in into is it its
+    itself just me more most my myself no nor not of on once only or other our ours
+    ourselves own same she should so some such than that the their theirs them
+    themselves then there these they this those through to too until very was we
+    were what when where which while who whom why will with would you your yours
+    yourself yourselves
+    aren couldn didn doesn hadn hasn haven isn shouldn wasn weren won wouldn
+    """.split()
+)
+STOP_WORD_RARE_SHARE_DIV = 20
 _KNOWN_KINDS = frozenset({"feedback", "project", "reference", "topic", "user", "index"})
 _INDEX_FILES = frozenset({"MEMORY.md", "MEMORY_ARCHIVE.md"})
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")

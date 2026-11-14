@@ -3353,7 +3353,7 @@ class BM25:
       rare when the candidate list is short.
     """
 
-    __slots__ = ("idf", "tf", "dl", "avgdl", "n", "common")
+    __slots__ = ("idf", "tf", "dl", "avgdl", "n", "common", "df")
 
     def __init__(
         self,
@@ -3387,6 +3387,15 @@ class BM25:
         # floor weight above and tell nothing about a document. ``rerank_index``
         # leaves them out of the value that the rescue (NOBLIVION-151) reads.
         self.common = frozenset(negative)
+        self.df = df
+
+    def scores_word(self, word: str) -> bool:
+        """True when ``word`` may add to the re-rank score: it is not a stop word, or
+        it is a stop word in at most 1/STOP_WORD_RARE_SHARE_DIV of the files. The
+        store's ``PoolView.scores_word`` (NOBLIVION-82)."""
+        return word not in _CORPUS.STOP_WORDS or (
+            self.df.get(word, 0) * _CORPUS.STOP_WORD_RARE_SHARE_DIV <= self.n
+        )
 
     def scores(
         self,
@@ -3495,14 +3504,16 @@ def rerank_index(
         shared = {j: lines[i].store_lex[1] for i, j in wanted}  # type: ignore[index]
         informative: List[str] = []
     else:
-        lexical = bm25.scores(tokens_sub(query), [j for _, j in wanted])
+        # A stop word scores only where it is rare (NOBLIVION-82), as in the store.
+        words = [t for t in tokens_sub(query) if bm25.scores_word(t)]
+        lexical = bm25.scores(words, [j for _, j in wanted]) if words else {}
         row_score = {i: lexical.get(j, 0.0) for i, j in wanted}
     # NOBLIVION-130. The value that the rescue (NOBLIVION-151) reads: the same BM25 over
     # the query words that are NOT in more than half the documents. A word such as
     # "the" is in nearly every note, so a score that counts it is above 0 for any
     # prompt and any note, and "shares a word" would mean nothing.
     if bm25 is not None:
-        informative = [t for t in tokens_sub(query) if t not in bm25.common]
+        informative = [t for t in words if t not in bm25.common]
         shared = bm25.scores(informative, [j for _, j in wanted]) if informative else {}
     for ln in lines:
         ln.lexical = 0.0

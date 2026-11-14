@@ -61,9 +61,9 @@ def local_values(folder: Path, query: str):
     """What the hook computed on its own: ``{rel_path: (every word, informative words)}``."""
     files = corpus_mod.load_memory_corpus(str(folder), None)
     index = hook.BM25([md.tokens for md in files])
-    words = hook.tokens_sub(query)
+    words = [w for w in hook.tokens_sub(query) if index.scores_word(w)]
     informative = [w for w in words if w not in index.common]
-    every = index.scores(words)
+    every = index.scores(words) if words else [0.0] * len(files)
     shared = index.scores(informative) if informative else {}
     return {md.rel_path: (every[i], shared.get(i, 0.0)) for i, md in enumerate(files)}
 
@@ -167,3 +167,72 @@ def test_the_corpus_cache_keeps_no_tokens_and_reads_them_when_asked(tmp_path):
         assert c._tokens is not None  # read on first use, from the file
     fresh = corpus_mod.load_memory_corpus(str(folder), str(cache))
     assert all(md._tokens is None for md in fresh)  # a cache hit builds none
+
+
+# NOBLIVION-82: the hook re-rank and the store give a stop word a score only where it is
+# rare (in at most 1/20 of the files), the rule that ``matches`` uses.
+
+
+def test_the_hook_stop_words_are_the_store_stop_words():
+    from noblivion import bm25
+
+    assert corpus_mod.STOP_WORDS == bm25.STOP_WORDS
+    assert corpus_mod.STOP_WORD_RARE_SHARE_DIV == bm25.STOP_WORD_RARE_SHARE_DIV
+
+
+@pytest.fixture
+def stop_world(tmp_path):
+    """40 notes. Each holds "the" and "between"; only note 7 holds "until"."""
+    folder = tmp_path / "projects" / "-work-demo" / "memory"
+    folder.mkdir(parents=True)
+    for n in range(40):
+        extra = " retry until done" if n == 7 else ""
+        (folder / f"feedback_stop{n}.md").write_text(
+            f"---\nname: stop {n}\ndescription: the note between term{n}{extra}\n"
+            f"type: feedback\n---\nthe body of note between term{n} and term{n + 1}{extra}\n",
+            encoding="utf-8",
+        )
+    (folder / "MEMORY.md").write_text("- [stop 0](feedback_stop0.md) term0\n", encoding="utf-8")
+    conn = db.open_db(tmp_path / "data" / "noblivion.db", create=True)
+    indexer.scan(conn, [folder], project="claude_code", labeller=None)
+    yield conn, folder
+    conn.close()
+
+
+def _rerank(folder: Path, query: str):
+    files = corpus_mod.load_memory_corpus(str(folder), None)
+    by_name = hook.corpus_by_name(files)
+    index = hook.BM25([md.tokens for md in files])
+    lines = [
+        hook.IndexLine(rank=i + 1, mid=i + 1, title=md.name, summary="", score=0.5)
+        for i, md in enumerate(files)
+    ]
+    rows, _joined = hook.rerank_index(lines, query, files, by_name, index)
+    return {r.title: r for r in rows}, index
+
+
+def test_a_common_stop_word_gets_no_hook_score(stop_world):
+    _conn, folder = stop_world
+    rows, index = _rerank(folder, "the between")
+    assert not index.scores_word("the") and not index.scores_word("between")
+    assert all(r.lexical == 0.0 for r in rows.values())
+
+
+def test_a_rare_stop_word_keeps_its_hook_score(stop_world):
+    _conn, folder = stop_world
+    rows, index = _rerank(folder, "the until")
+    assert index.scores_word("until")
+    assert rows["stop 7"].lexical > 0.0
+    assert all(r.lexical == 0.0 for t, r in rows.items() if t != "stop 7")
+
+
+def test_the_store_values_equal_the_hook_values_for_stop_words(stop_world):
+    conn, folder = stop_world
+    ranker = ranking.Ranker(None)
+    for query in ("the until", "between term3 the", "the between"):
+        want = local_values(folder, query)
+        result = ranker.search(
+            conn, query, project="claude_code", top_k=100, root="-work-demo", lex=True
+        )
+        for hit in result.hits:
+            assert hit.lex == pytest.approx(want[hit.row.path], rel=1e-9, abs=1e-9), query

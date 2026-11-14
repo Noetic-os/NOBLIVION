@@ -267,11 +267,13 @@ def test_p1h_promotes_the_row_only_a_sub_token_split_can_match(daemon, env, corp
     The arithmetic, by the documented rule (reciprocal rank fusion, k=60, one
     weight each, ties by id ascending). Cosine order is by the row's score, so
     the target is 4th of 4. Only the target carries the query's tokens, so it
-    is 1st in the lexical list and the other three follow by id: 401, 402, 403.
+    is the only row in the lexical list. The other three share only the stop
+    word "the" with the prompt, and in a pool of 5 files no stop word is rare
+    enough to score (NOBLIVION-82), so they have no lexical rank:
       target 404: 1/(60+4) + 1/(60+1) = 0.015625 + 0.016393 = 0.032018
-      row 401:    1/(60+1) + 1/(60+2) = 0.016393 + 0.016129 = 0.032522
-    So the target does NOT reach rank 1 from last place: that is what rank
-    fusion is. It moves from 4 to 2, and the assertion says 2.
+      row 401:    1/(60+1)            = 0.016393
+    The target moves from 4 to 1. Before NOBLIVION-82, "the" gave rows 401 to
+    403 a lexical rank too, and the target stopped at 2.
     """
     daemon.index_rows = [
         _row(1, 401, "feedback_live_thing", "Run the migration before the deploy", 0.70),
@@ -289,7 +291,7 @@ def test_p1h_promotes_the_row_only_a_sub_token_split_can_match(daemon, env, corp
         dict(env, NOBLIVION_RECALL_INDEX_RERANK="1", NOBLIVION_RECALL_MEMORY_DIR=str(corpus)),
         "I ran git checkout by mistake, can I get the file back",
     )
-    assert [mid for _, mid in _ranks_and_ids(text)] == [401, 404, 402, 403]
+    assert [mid for _, mid in _ranks_and_ids(text)] == [404, 401, 402, 403]
 
 
 def test_p1h_with_p3_reaches_rank_1_because_hygiene_removed_the_rows_above(daemon, env, corpus):

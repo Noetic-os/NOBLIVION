@@ -785,7 +785,8 @@ class RankIndex:
         entry = snap.pools[key]
         fview = entry.fview
         assert fview is not None
-        words = bm25.tokenize_sub(query)
+        # A stop word scores only where it is rare (NOBLIVION-82), as in ``matches``.
+        words = [w for w in bm25.tokenize_sub(query) if fview.scores_word(w)]
         informative = [w for w in words if not fview.is_common(w)]
         every = fview.scores(words)
         shared = fview.scores(informative) if informative else None

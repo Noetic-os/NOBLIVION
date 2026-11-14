@@ -285,6 +285,14 @@ class PoolView:
                 out.add(word)
         return out
 
+    def scores_word(self, word: str) -> bool:
+        """True when ``word`` may add to a lexical score: it is not a stop word, or it is
+        a stop word in at most 1/``bm25.STOP_WORD_RARE_SHARE_DIV`` of the units
+        (NOBLIVION-82). A word the pool does not hold scores 0 either way."""
+        return word not in bm25.STOP_WORDS or (
+            self.df[word] * bm25.STOP_WORD_RARE_SHARE_DIV <= self.n
+        )
+
     def is_common(self, word: str) -> bool:
         """True when the pool holds ``word`` and its idf is negative before the replacement:
         the word is in more than half of the units (``bm25.BM25`` calls these ``negative``)."""

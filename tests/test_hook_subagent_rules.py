@@ -448,7 +448,7 @@ def test_the_floor_and_the_no_rule_drop_of_the_recall_hook_apply(tmp_path, env, 
 @pytest.mark.parametrize(
     ("model", "note"),
     [
-        ("BAAI/bge-small-en-v1.5", ":floor3of4"),
+        ("BAAI/bge-small-en-v1.5", ":floor2of3"),
         ("example/other-embedder", ":floor_off:model"),
         (None, ":floor_off:no_model"),  # the answer of a store of an older version
     ],
@@ -457,9 +457,10 @@ def test_the_default_floor_is_for_the_measured_model(tmp_path, env, store, model
     # NOBLIVION-76. The subagent floor is a cosine of THRESHOLD_MODEL, like the
     # floor of the prompt index. Another model puts its cosines on another
     # scale, so the default applies only to an answer that names that model.
+    # Three rows, so the row cap cuts none and only the floor decides on 19002.
     assert rh.INDEX_MIN_SCORE_ENV not in env
     assert sub.DEFAULT_INDEX_MIN_SCORE > 0.40
-    rows = _results(4)
+    rows = _results(3)
     rows[1]["score"] = 0.40
     store.results, store.model = rows, model
     _run(_pre(), env)
