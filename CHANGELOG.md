@@ -12,7 +12,11 @@ All notable changes to NOBLIVION. The format follows
   output of the guard, error recall and subagent hooks. A found lesson now has a
   rank on those checks; before, the rank was always empty. Pass counts do not
   change (NOBLIVION-228).
-
+- Error recall now acts on a Bash failure that has an exit code and no error
+  line (`gh pr checks` exits 8 while a check is pending). It shows a note only
+  when the note's description or rule names the command and its subcommand and
+  speaks of an exit code. A pipeline, a list of statements and a command whose
+  exit is an answer (`grep`, `diff`, `test`) are skipped (NOBLIVION-228).
 - The hook re-rank and the store's keyword values for it give a stop word
   (`the`, `between`, `until`) a score only where it is rare, in at most 1 of 20
   files, as the store's match rule does. A row that shares only `the` with the

@@ -414,10 +414,14 @@ note was used.
     (`{"error":"description is not valid"}`) counts as the error message
     for the quote check. The keys are `error`, `message`, `detail`,
     `error_description`, `msg` and `reason`.
-  - A call whose output holds no line of error form (for example `gh pr
-    checks` with exit 8 prints a table) shows nothing. The hook does not
-    search from the command text, because that would give up the 0 false
-    shows of this mode.
+  - A call that fails with an exit code and no line of error form (for
+    example `gh pr checks` with exit 8 prints a table) is searched by the
+    command head: the tool and its subcommand (`gh pr checks`). A note shows
+    only when its description or its rule names that head and speaks of an
+    exit code (`non-zero exit`, `exits 8`). A pipeline, a list of statements,
+    a one-word command and a command whose exit is an answer (`grep`, `diff`,
+    `test`) show nothing. On the 100 sessions of the eval suite, this gives 0
+    new shows; on gate 0 it delivers case 8a.
 - **Subagent rules.** When Claude Code starts a subagent, the hook sends
   the task text to the store and adds up to 8 matching rules to the
   subagent's context.

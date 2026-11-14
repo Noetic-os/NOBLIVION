@@ -1526,3 +1526,73 @@ def test_a_name_in_the_title_of_the_note_may_be_held_by_more_notes():
     assert not er.passes_quote_gate(
         body_only, query, lambda tok, limit: held.get(tok, 0.0) <= limit
     )
+
+
+# --------------------------------------------------------------------------
+# NOBLIVION-228: a failure with only an exit code
+# --------------------------------------------------------------------------
+CHECKS_TABLE = "Exit code 8\nbuild\tpass\t1m2s\thttps://ci.example.test/runs/1\nlint\tpending\t0\t-"
+
+
+def _exit_note(folder: Path, mid: str, description: str, body: str = "") -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{mid}.md").write_text(
+        "---\n"
+        f"name: {mid}\n"
+        f"description: {json.dumps(description)}\n"
+        "metadata:\n  type: feedback\n"
+        "rule: Read the output text, not the exit code.\n"
+        "---\n\n" + body,
+        encoding="utf-8",
+    )
+
+
+def test_an_exit_only_failure_shows_the_note_that_names_the_command_and_its_exit(env):
+    mem = Path(env["NOBLIVION_ERROR_RECALL_MEMORY_DIR"])
+    _exit_note(
+        mem,
+        "feedback_checks_exit",
+        "`gh pr checks` returns a non-zero exit while a check is pending",
+    )
+    _exit_note(
+        mem,
+        "feedback_checks_other",
+        "Label the pull request before the review",
+        body="gh pr checks shows the lanes. The exit code of a lane run is in the log.\n",
+    )
+    out = run(fail_event(CHECKS_TABLE, command="gh pr checks 12 --repo org/repo"), env)
+    assert "feedback_checks_exit" in out
+    assert "feedback_checks_other" not in out  # head and exit only in the body
+    rec = log_lines(env)[-1]
+    assert rec["decision"] == "show" and rec["kind"] == "exit:8"
+    assert rec["query"] == "exit code only"  # the command head is not logged
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "gh pr checks 12 | tail -3",  # a pipeline: which stage exited is not known
+        "gh pr checks 12; echo done",  # several statements
+        "grep -q needle file.txt",  # the exit is an answer
+        "diff a.txt b.txt",
+        "make",  # one word: no subcommand
+        "./run.sh --all",  # a path, not a tool name
+    ],
+)
+def test_exit_only_skips_a_command_with_no_clear_head(command):
+    assert er.exit_only(fail_event(CHECKS_TABLE, command=command)) is None
+
+
+def test_exit_only_needs_an_exit_line_and_no_error_line():
+    cmd = "gh pr checks 12"
+    assert er.exit_only(fail_event(CHECKS_TABLE, command=cmd)) == ("8", "gh pr checks")
+    assert er.exit_only(fail_event("build\tpass", command=cmd)) is None
+    assert er.exit_only(fail_event(REV, command="git rev-parse --short a b")) is None
+    assert er.exit_only(fail_event(CHECKS_TABLE, command=cmd, is_interrupt=True)) is None
+
+
+def test_the_command_head_stops_at_a_flag_number_or_path():
+    assert er.command_head("sudo docker compose -f x.yml down") == "docker compose"
+    assert er.command_head("gh pr checks 2147 --repo org/repo") == "gh pr checks"
+    assert er.command_head("/usr/bin/git rev-parse HEAD") == "git rev-parse"
+    assert er.command_head("git 'rev-parse'") == ""
