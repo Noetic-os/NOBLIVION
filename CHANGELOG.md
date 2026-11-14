@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.26 - 2026-11-14
+
 - The store runs up to `budget.max_concurrency` learning worker loops, so model
   calls run in parallel on a model server that serves several requests at once.
   Before, the store ran one loop and `max_concurrency` only limited
