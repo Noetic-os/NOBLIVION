@@ -13,9 +13,10 @@ All notable changes to NOBLIVION. The format follows
   window with no tool text and no direct user text gets a `no_lesson` receipt
   with no model call, and one semantic call compares up to 8 candidates and 64
   (candidate, target) pairs. Every pair still needs one explicit relation, and
-  every evidence and secret check stays. On recorded jobs of a live store the
-  simulated median falls from about 67 to about 15 calls per job (p90 123 to
-  30) at today's note count. Jobs that an older release started keep contract
+  every evidence and secret check stays. A job measured about 57 calls
+  (median) and 87 (p90) under version 1. On 470 recorded jobs of a live store
+  the simulated median falls from about 67 to about 15 calls per job (p90 123
+  to 30) at today's note count. Jobs that an older release started keep contract
   version 1 and resume with version 1 windows and calls. Consolidation and
   draft jobs keep version 1.
 

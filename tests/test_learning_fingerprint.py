@@ -85,10 +85,10 @@ WINDOWS = [[{"source_id": "source-1", "offset": 0, "text": "x"}]]
 # The prompt and schema text of each extraction contract version. Change a
 # prompt or schema only together with EXTRACTION_CONTRACT and a new entry here.
 # Version 2 (NOBLIVION-241) keeps every version 1 string and adds the batched
-# semantic prompt and schema.
+# semantic prompt and schema, the batch limits and the window scale.
 CONTRACT_TEXT = {
     1: "d36896fdc03a381cefca3212199a2e5afae95d357f5a703085e3c5bf9c392e99",
-    2: "862e9abd10b6e4d7c933b3b22e1ab41a0299dc84de0cc4efd9f5607f8980e3ef",
+    2: "4e3f1a2944c64beb7d5846a037031e1ef747875b4e1cbc893c5b5fb191027dfc",
 }
 
 
@@ -167,7 +167,13 @@ def contract_text(version):
         learning_synthesis.EQUIVALENCE_SCHEMA,
     ]
     if version >= 2:
-        text += [learning_semantic.SEMANTIC_BATCH_PROMPT, learning_semantic.SEMANTIC_BATCH_SCHEMA]
+        text += [
+            learning_semantic.SEMANTIC_BATCH_PROMPT,
+            learning_semantic.SEMANTIC_BATCH_SCHEMA,
+            learning_semantic.MAX_BATCH_ITEMS,
+            learning_semantic.MAX_BATCH_PAIRS,
+            learning_worker.WINDOW_SCALE[2],
+        ]
     return hashlib.sha256(json.dumps(text, sort_keys=True).encode()).hexdigest()
 
 

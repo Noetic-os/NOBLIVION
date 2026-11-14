@@ -22,8 +22,10 @@ from .learning_extract import (
 
 RELATIONS = ("equivalent", "contradicts", "distinct", "uncertain")
 # One call holds at most this many comparison items and (candidate, target)
-# pairs. Short aliases keep the reply near 15 tokens per pair, so 64 pairs fit
-# well inside the smallest output limit of 2048 tokens.
+# pairs. Short aliases (c1, t1) keep each relation in the reply short: 64
+# compact relations are about 2,900 characters of JSON. The limits are part of the
+# pinned contract 2 text: a change repacks the batches of a started job, so it
+# needs a new contract version.
 MAX_BATCH_ITEMS = 8
 MAX_BATCH_PAIRS = 64
 

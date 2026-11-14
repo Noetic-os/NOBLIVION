@@ -97,7 +97,9 @@ and overlap sizes, the window count, the context size, the output limit, the
 coverage limits (pages, continuations, decisions), the provider type, endpoint,
 model and reasoning mode, and the version of the learning prompts and schemas.
 A change to any of these fails a started job with `window configuration changed
-during a job`, so outputs of two configurations never mix in one job.
+during a job`, so outputs of two configurations never mix in one job. A new
+release that adds a contract version does not fail a started job: the job keeps
+its own version (see Extraction contract versions below).
 
 Budget limits, `enable_consolidation`, `max_attempts`, `lease_seconds`,
 `retry_delay`, `poll_seconds` and `timeout_seconds` are policy. A started job
@@ -147,6 +149,12 @@ The number of semantic comparisons grows with the number of notes in the
 scope: each new candidate is compared with every managed note. Batching cuts
 the calls for these comparisons by up to 8 times, but the count still grows
 with the note count.
+
+A downgrade to 0.1.25 fails each extraction job that started under contract
+version 2 with `window configuration changed during a job`, before any
+provider call. A job that names a contract version this release does not know
+fails with `unsupported extraction contract`. To recover, upgrade again,
+then run `noblivion learning retry <id>` for each failed job.
 
 A downgrade to 0.1.24 fails each job that this release froze: every job it
 started, every resumed derivation job and every job frozen again by an
