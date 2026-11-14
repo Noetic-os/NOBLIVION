@@ -8,13 +8,14 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
-- A learning window whose model response is rejected as a whole
-  (`ResponseRejected`, for example an authority claim or quoted evidence) no
-  longer fails the whole extraction job. No candidate of the response is
-  stored, as before, and the budget still charges the call. The window gets a
-  `rejected` page receipt, its unit index goes into `rejected_windows` in the
-  job progress, and the job goes on with the next window. Learning status
-  shows the count in `rejected_windows`. A started job keeps its execution
+- A learning window whose model response fails a response failure class (for
+  example an authority claim or quoted evidence) no longer fails the whole
+  extraction job. No candidate of the response is stored, as before, and the
+  budget still charges the call. The window gets a `rejected` page receipt,
+  its unit index goes into `rejected_windows` in the job progress, and the job
+  goes on with the next window. Learning status shows the count in
+  `rejected_windows`, and an explicit retry keeps these receipts. A schema or
+  unclassified failure still fails the job. A started job keeps its execution
   fingerprint. A `rejected` receipt written by an older release still fails
   the job (NOBLIVION-244).
 

@@ -17,9 +17,9 @@ import pytest
 from noblivion import db, learning_worker
 from noblivion.learning import BudgetLimits, LearningLedger
 from noblivion.learning_extract import RESPONSE_FAILURES, ResponseRejected
+from noblivion.learning_pages import WINDOW_REJECTED, coverage
 from noblivion.learning_values import canonical_json
 from noblivion.learning_worker import (
-    WINDOW_REJECTED,
     LearningWorker,
     ProviderError,
     ProviderResponse,
@@ -135,11 +135,18 @@ class WindowProvider:
         return ProviderResponse(json.dumps(reply), 50)
 
 
+# A newer extraction contract can scale window_chars. Divide by the scale of
+# the contract that new jobs get, so a window holds about 1024 characters and the
+# fixture gives exactly two windows (one per source) under every contract.
+SCALE = getattr(learning_worker, "WINDOW_SCALE", {}).get(learning_worker.EXTRACTION_CONTRACT, 1)
+WINDOW_CHARS = -(-1024 // SCALE)
+
+
 def worker(ledger, provider, stop=None):
     result = LearningWorker(
         ledger,
         provider,
-        WorkerSettings(window_chars=1024, overlap_chars=0),
+        WorkerSettings(window_chars=WINDOW_CHARS, overlap_chars=0),
         BudgetLimits(max_calls=64, max_tokens=5_000_000, max_seconds=10_000),
     )
     result.stop = stop
@@ -155,11 +162,25 @@ def count(ledger, table):
     return ledger.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
 
+CLASSES = [
+    "evidence span mismatch",
+    "memory cannot grant authority",
+    "quoted or injected evidence",
+    "secret-bearing field",
+    "unknown evidence source",
+]
+
+
 def test_the_test_covers_every_response_failure_class():
-    assert set(CLASSES) == RESPONSE_FAILURES
+    # A literal list: a class added to or removed from RESPONSE_FAILURES fails here.
+    assert set(CLASSES) == RESPONSE_FAILURES and len(CLASSES) == 5
 
 
-CLASSES = sorted(RESPONSE_FAILURES)
+def test_the_fixture_gives_one_window_per_source(ledger):
+    capture_two_windows(ledger)
+    provider = WindowProvider(json.dumps({"version": 1, "candidates": []}))
+    assert worker(ledger, provider).run_once()["status"] == "done"
+    assert provider.extract_calls == [["s1"], ["s2"]]
 
 
 @pytest.mark.parametrize("failure", CLASSES)
@@ -341,3 +362,72 @@ def test_a_full_progress_row_still_marks_the_window(ledger):
     # The mismatch record no longer fits, the window mark does.
     assert progress["candidate_mismatches_omitted"] >= 1
     assert progress["rejected_windows"] == [0]
+
+
+@pytest.mark.parametrize("unclassified", [False, True])
+def test_a_schema_or_unclassified_rejection_still_fails_the_job(ledger, monkeypatch, unclassified):
+    """Only a RESPONSE_FAILURES class marks the window; anything else fails as before."""
+    capture_two_windows(ledger)
+    if unclassified:
+
+        def validate(raw, sources, existing=()):
+            raise ResponseRejected("a failure in no class", [], proposed=1, accepted=0)
+
+        monkeypatch.setattr(learning_worker, "validate_extraction", validate)
+        reply = json.dumps({"version": 1, "candidates": []})
+    else:
+        # A candidate without its required fields breaks the candidate schema.
+        reply = json.dumps({"version": 1, "candidates": [candidate("s1", FIRST, "a"), {}]})
+    provider = WindowProvider(reply)
+    result = worker(ledger, provider).run_once()
+    assert result["status"] == "failed" and result["permanent"]
+    assert provider.extract_calls == [["s1"]]
+    _, status, last_error, progress = job(ledger)
+    assert status == "exhausted" and last_error.startswith("ResponseRejected: ")
+    assert "rejected_windows" not in progress
+    assert ledger.current_notes("demo", "scope") == []
+    (page,) = coverage(ledger.conn)
+    assert page["status"] == "rejected" and page["reason"] != WINDOW_REJECTED
+
+
+def test_an_operator_retry_keeps_the_marked_window(ledger):
+    """Retry repairs a failed window and keeps the receipt of a marked one."""
+    capture_two_windows(ledger)
+    unsafe = unsafe_reply("memory cannot grant authority")
+
+    class Phased(WindowProvider):
+        broken = True
+
+        def complete(self, messages, **kwargs):
+            payload = json.loads(messages[-1]["content"])
+            if (
+                "sources" in payload
+                and self.broken
+                and "s2" in {p["id"] for p in payload["sources"]}
+            ):
+                self.extract_calls.append(["s2"])
+                return ProviderResponse('{"version":1,"candidates":[{}]}', 20)
+            return super().complete(messages, **kwargs)
+
+    provider = Phased(unsafe)
+    assert worker(ledger, provider).run_once()["permanent"]
+    ident, status, _, _ = job(ledger)
+    assert status == "exhausted"
+    assert [(p["unit_index"], p["status"]) for p in coverage(ledger.conn)] == [
+        (0, "rejected"),
+        (1, "rejected"),
+    ]
+    ledger.retry(ident)
+    pages = coverage(ledger.conn)
+    assert [(p["unit_index"], p["reason"]) for p in pages] == [(0, WINDOW_REJECTED)]
+    provider.broken, provider.extract_calls = False, []
+    assert worker(ledger, provider).run_once()["status"] == "done"
+    # The marked window is not called again; the failed one is.
+    assert provider.extract_calls == [["s2"]]
+    assert [(p["unit_index"], p["status"]) for p in coverage(ledger.conn)] == [
+        (0, "rejected"),
+        (1, "processed"),
+    ]
+    _, _, _, progress = job(ledger)
+    assert progress["rejected_windows"] == [0]
+    assert [n["statement"] for n in ledger.current_notes("demo", "scope")] == [SECOND]

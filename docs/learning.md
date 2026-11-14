@@ -181,14 +181,17 @@ These failures reject the whole response: a secret, invalid JSON, the response
 envelope, the candidate schema (fields, field types, enum values), an authority
 claim, quoted or injected evidence and an unknown source. A dropped candidate is
 checked for them too, in all its fields and references. No candidate of a
-rejected response is stored. When the candidate checks reject the response
-(`ResponseRejected`: the candidate schema, an authority claim, quoted or injected
-evidence, an unknown source, a secret in a candidate field or an evidence span
-mismatch), the job does not fail. The window gets a `rejected` page receipt with
-no candidate, its unit index goes into `rejected_windows` in the job progress,
-and the job goes on with the next window. The worker does not call the model
-again for that window. Learning status counts these windows in
-`rejected_windows`. The other response failures (a secret in the raw response,
+rejected response is stored. When a candidate fails one of the five response
+failure classes (an authority claim, quoted or injected evidence, an unknown
+source, a secret in a candidate field or an evidence span mismatch), the job
+does not fail. The window gets a `rejected` page receipt with no candidate, its
+unit index goes into `rejected_windows` in the job progress, and the job goes
+on with the next window. The worker does not call the model again for that
+window. When this happens on a continuation, the candidates of the earlier
+pages of the window stay: each page is a separate response, validated on its
+own. Learning status counts these windows in `rejected_windows`, and
+`noblivion learning retry` keeps their receipts. The other response failures
+(the candidate schema, an unclassified failure, a secret in the raw response,
 invalid JSON after the format retry, the envelope and the version) still fail
 the job, as before. The
 records of one job use at most 256 KiB. An exact-quote failure has a detail: `repeated`,

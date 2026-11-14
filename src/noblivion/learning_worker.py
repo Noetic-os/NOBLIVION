@@ -26,6 +26,7 @@ from .learning import BudgetExceeded, ConcurrencyExceeded, LeaseLost, SemanticSn
 from .learning_context import dependent_decisions, isolate_notes
 from .learning_extract import (
     EXTRACTION_SCHEMA,
+    RESPONSE_FAILURES,
     SEMANTIC_PROMPT,
     SEMANTIC_SCHEMA,
     SYSTEM_PROMPT,
@@ -38,7 +39,7 @@ from .learning_extract import (
     validate_extraction,
     validate_semantic_response,
 )
-from .learning_pages import CoverageExhausted, ExtractionPages
+from .learning_pages import WINDOW_REJECTED, CoverageExhausted, ExtractionPages
 from .learning_values import canonical_json
 
 LOG = logging.getLogger(__name__)
@@ -59,10 +60,6 @@ CONTINUATION_PROMPT = (
 # exclusions, a cached format retry, semantic state). A count limit is not enough:
 # a record with twelve classes and long source IDs takes about 4 KB.
 MAX_MISMATCH_BYTES = 256 * 1024
-# NOBLIVION-244: the reason of a receipt for a window whose model reply was
-# rejected as a whole. The receipt holds no candidate. The job goes on with the
-# next window. A rejected receipt with any other reason still fails the job.
-WINDOW_REJECTED = "unsafe response rejected; no candidate kept; job continues"
 
 
 def _encoded_size(value) -> int:
@@ -879,7 +876,9 @@ class LearningWorker:
                             error=str(exc),
                         )
                         self.ledger.checkpoint(job["id"], job["lease_token"], state)
-                        unsafe = isinstance(exc, ResponseRejected)
+                        # Only a RESPONSE_FAILURES class marks the window. A schema
+                        # failure or an unclassified failure still fails the job.
+                        unsafe = isinstance(exc, ResponseRejected) and str(exc) in RESPONSE_FAILURES
                         pages.save(
                             unit_index,
                             continuation,

@@ -15,6 +15,12 @@ from . import db
 from .learning_extract import ValidationError, contains_secret
 
 
+# NOBLIVION-244: the reason of a receipt for a window whose model reply failed a
+# RESPONSE_FAILURES check. The receipt holds no candidate, and the job goes on
+# with the next window. A rejected receipt with any other reason fails the job.
+WINDOW_REJECTED = "unsafe response rejected; no candidate kept; job continues"
+
+
 class CoverageExhausted(ValidationError):
     """Coverage cannot complete inside the explicitly configured job bounds."""
 
@@ -123,7 +129,12 @@ class ExtractionPages:
 
 
 def retry_rejected(conn, job_id):
-    """Explicit retry can repair a rejected page without losing prior receipts."""
+    """Explicit retry can repair a rejected page without losing prior receipts.
+
+    A window marked WINDOW_REJECTED keeps its receipt: the job cursor is already
+    past it, so the receipt is its only coverage record.
+    """
     conn.execute(
-        "DELETE FROM learning_extraction_pages WHERE job_id=? AND status='rejected'", (job_id,)
+        "DELETE FROM learning_extraction_pages WHERE job_id=? AND status='rejected' AND reason!=?",
+        (job_id, WINDOW_REJECTED),
     )
