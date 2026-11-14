@@ -128,6 +128,17 @@ jobs, including failed calls. Unknown usage is not reported as a measurement.
 The existing `budget` totals remain conservative reservations, including unknown
 usage after a crash or transport failure. `outcomes` separates committed decisions,
 deferred jobs, exhausted failures and corrections deferred as visible conflicts.
+`candidate_mismatches` counts dropped and rejected extraction candidates by class,
+without text. A candidate that fails only an evidence check (exact unique quote,
+statement in the evidence, human or observed-fact evidence, evidence inside the
+model window) is dropped, and the valid rest of the response is kept. Any other
+failure, such as an authority claim or quoted or injected evidence, rejects the
+whole response and the job. An exact-quote failure has a detail: `repeated`,
+`whitespace`, `case`, `typography` or `absent`. The progress row of each job keeps
+one record per page (`unit`, `continuation`) with the cited source IDs, so a
+measurement can join it to the page spans. `context_rejections` also counts
+`ContextLegacyMarkerReplaced`: a read-only legacy note whose only finding was an
+old redaction marker, sent with the neutral mark `[...]` instead.
 
 Before enabling paused learning, verify provider readiness and budgets, capture
 cadence and retention, and one bounded capture-to-accepted-note-to-recall path.
@@ -241,7 +252,9 @@ Pruning deletes data, so it is off until you ask. Run `noblivion learning prune`
 would drop (nothing is changed), and add `--apply` to drop it. It cancels pending extraction jobs
 whose latest update is older than `--pending-days` (14), drops expired source links, budget rows and
 extraction pages of terminal jobs after `--retention-days` (14), and drops old eligible sources that no
-note, claim, draft, conflict or live job uses. Audit-linked job rows and batch receipts remain.
+note, claim, draft, conflict or live job uses. An exhausted job within `--retention-days` keeps
+its sources and pages, so `noblivion learning retry` can still run it. Audit-linked job rows and
+batch receipts remain.
 Excluded and forgotten sources stay, because their hash blocks the same text. To run it hourly
 in the store worker, add
 `"prune": {"enabled": true, "pending_days": 14, "retention_days": 14}` to `learning.json`.

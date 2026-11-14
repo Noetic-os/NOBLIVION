@@ -8,6 +8,29 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- One extraction candidate that fails an evidence check no longer ends the
+  whole learning job. The worker drops that candidate and keeps the valid rest
+  of the model response. The checks are: exact unique quote, statement in the
+  evidence, human evidence, observed-fact evidence and evidence inside the model
+  window. An authority claim, quoted or injected evidence, an unknown source or
+  a broken schema still rejects the whole response. What counts as evidence
+  does not change, and an explicit edit keeps the strict check. Saturation
+  counts the raw proposals, so a page of twelve with a dropped candidate still
+  asks for the rest. Started jobs keep their frozen fingerprint (NOBLIVION-237).
+- A read-only legacy note that holds only an old redaction marker, such as
+  `***REDACTED***`, goes to the model with the neutral mark `[...]`. Before,
+  the secret check withheld the note and every new note of the job waited on
+  it. The unchanged secret check runs again on the result: a live secret, a
+  natural-language secret or a failed redaction still withholds the note
+  (NOBLIVION-237).
+- `noblivion learning status` shows `candidate_mismatches`: text-free counts of
+  dropped and rejected candidates by class. An exact-quote failure has a detail:
+  `repeated`, `whitespace`, `case`, `typography` or `absent`. Each job keeps a
+  record per page with the cited source IDs (NOBLIVION-237).
+- Pruning keeps the sources of an exhausted job while the job is within
+  `retention_days`, so `noblivion learning retry` can still run it
+  (NOBLIVION-237).
+
 - A change to the learning budget, `enable_consolidation`, `max_attempts`,
   `lease_seconds`, `retry_delay`, `poll_seconds` or `timeout_seconds` in
   `learning.json` no longer fails started jobs with `window configuration

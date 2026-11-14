@@ -169,6 +169,9 @@ def prune(
     - An eligible source older than ``retention_days`` goes when no note, claim, draft or
       live job uses it. Conflict decisions also pin their cited sources: inspection
       revalidates those citations against the source text.
+    - An exhausted job within ``retention_days`` keeps its sources, like a pending job,
+      so ``noblivion learning retry`` can still run it (NOBLIVION-237). Its pages
+      stay too, because only a job past retention loses them.
     """
     now = time.time() if now is None else now
     late, old = now - pending_days * 86400, now - retention_days * 86400
@@ -235,12 +238,13 @@ def prune(
         "AS source_id FROM learning_decisions d,json_each(d.detail,'$.decision.evidence') e "
         "WHERE d.action='conflict') WHERE typeof(source_id)='text') "
         "AND NOT EXISTS (SELECT 1 FROM learning_job_ranges r JOIN learning_jobs j "
-        "ON j.id=r.job_id WHERE j.status IN ('pending','leased') AND " + _IN_RANGE + ")"
+        "ON j.id=r.job_id WHERE (j.status IN ('pending','leased') "
+        "OR (j.status='exhausted' AND j.updated_at>=?)) AND " + _IN_RANGE + ")"
     )
     counts["source_bytes"] = conn.execute(
-        "SELECT coalesce(sum(length(s.content)),0) " + unused, (old,)
+        "SELECT coalesce(sum(length(s.content)),0) " + unused, (old, old)
     ).fetchone()[0]
     counts["sources"] = conn.execute(
-        "DELETE FROM learning_sources WHERE id IN (SELECT s.id " + unused + ")", (old,)
+        "DELETE FROM learning_sources WHERE id IN (SELECT s.id " + unused + ")", (old, old)
     ).rowcount
     return counts

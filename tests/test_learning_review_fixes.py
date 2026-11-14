@@ -578,8 +578,12 @@ def test_format_retry_still_rejects_unsupported_evidence(ledger):
         ledger, ["not JSON", json.dumps({"version": 1, "candidates": [proposal]})]
     )
     result = worker(ledger, provider).run_once()
-    assert result["permanent"] and len(provider.messages) == 2
+    # NOBLIVION-237: the unsupported candidate is dropped, not stored, and the
+    # page is covered. The drop is counted without its text.
+    assert result["status"] == "done" and len(provider.messages) == 2
     assert ledger.current_notes("demo", "scope") == []
+    dropped = ledger.status()["candidate_mismatches"]["dropped"]
+    assert dropped == {"evidence must be an exact unique quote (absent)": 1}
 
 
 def test_semantic_format_retry_resumes_after_budget_pause(ledger):
@@ -708,7 +712,11 @@ def test_successful_format_retry_survives_post_validation_crash(ledger, stage, c
     ).fetchone()
     progress = json.loads(row["progress"])
     assert progress["format_repair"]["calls"] == 1
-    assert len(progress["format_repair"]["accepted"]) == 1
+    cached = progress["format_repair"]["accepted"]
+    if stage == "extract":  # an extraction page also keeps its raw count (NOBLIVION-237)
+        assert cached["proposed"] == 1 and cached["mismatches"] == []
+        cached = cached["accepted"]
+    assert len(cached) == 1
     assert progress["next_window"] == (0 if stage == "extract" else 1)
     if stage == "semantic":
         assert progress["semantic"]["next_task"] == 0

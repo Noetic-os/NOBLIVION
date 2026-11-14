@@ -9,9 +9,32 @@ import re
 
 from .redaction import NATURAL_SECRET_PATTERN, contains_secret, redact_at_rest
 
+# NOBLIVION-237: older redactors left markers such as "***REDACTED***" in
+# legacy memory files. A marker is not a secret, but contains_secret flags the
+# word, so the read-only note was withheld and every new note of the job then
+# waited on it. Such a note now goes to the model with a neutral omission mark.
+# The unchanged secret check then runs again on the result: a live secret, a
+# natural-language secret or a failed redaction still withholds the note.
+LEGACY_MARKER = re.compile(r"\*{0,3}\[?REDACTED(?:_EMAIL)?\]?\*{0,3}")
+OMISSION_MARK = "[...]"
+
 
 def encoded(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def neutral_note(note):
+    """A read-only note with its legacy markers replaced, or None when still unsafe.
+
+    Only a read-only note qualifies: the model may mark it unchanged or in
+    conflict, never rewrite it, so the replaced text never becomes a stored note.
+    """
+    statement = note.get("statement")
+    if not note.get("read_only") or not isinstance(statement, str):
+        return None
+    result = dict(note, statement=LEGACY_MARKER.sub(OMISSION_MARK, statement))
+    core = {k: v for k, v in result.items() if k not in {"title", "evidence"}}
+    return result if rejection_reason(encoded(core)) is None else None
 
 
 def rejection_reason(text):
@@ -41,6 +64,9 @@ def isolate_notes(notes, *, max_chars):
         ancillary_reason = None
         core = {k: v for k, v in note.items() if k not in {"title", "evidence"}}
         reason = rejection_reason(encoded(core))
+        if reason == "ContextRedactedCandidate" and (neutral := neutral_note(note)):
+            # Visible in status, but the statement is available: no deferral.
+            note, reason, ancillary_reason = neutral, None, "ContextLegacyMarkerReplaced"
         if reason is None:
             if "title" in note and contains_secret(encoded(note["title"])):
                 ancillary_reason = rejection_reason(encoded(note["title"]))

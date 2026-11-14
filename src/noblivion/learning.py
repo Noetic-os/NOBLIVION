@@ -2029,6 +2029,8 @@ class LearningLedger:
                 params.append(value)
         clause = " WHERE " + " AND ".join(where) if where else ""
         reasons, context = {}, {}
+        # Text-free classes of dropped and rejected candidates (NOBLIVION-237).
+        mismatches = {"dropped": {}, "rejected": {}}
         actual = {"calls": 0, "seconds": 0.0, "tokens": 0, "reasons": {}}
         outcomes = {"committed": 0, "deferred": 0, "failed": 0}
         for row in self.conn.execute(
@@ -2055,6 +2057,14 @@ class LearningLedger:
             ):
                 reason = item["reason"]
                 context[reason] = context.get(reason, 0) + 1
+            for record in progress.get("candidate_mismatches", []):
+                counts = mismatches.setdefault(str(record.get("outcome")), {})
+                classes = record.get("classes") or []
+                for item in classes:
+                    label = item["class"] + (f" ({item['detail']})" if item.get("detail") else "")
+                    counts[label] = counts.get(label, 0) + item.get("count", 1)
+                if not classes and record.get("error"):
+                    counts[record["error"]] = counts.get(record["error"], 0) + 1
         outcomes["committed"] = self.conn.execute(
             "SELECT count(*) FROM learning_decisions WHERE action IN ('add','update','supersede') "
             "AND job_id IN (SELECT id FROM learning_jobs" + clause + ")",
@@ -2069,6 +2079,7 @@ class LearningLedger:
         return {
             "failure_reasons": reasons,
             "context_rejections": context,
+            "candidate_mismatches": mismatches,
             "provider_actual": actual,
             "outcomes": outcomes,
         }

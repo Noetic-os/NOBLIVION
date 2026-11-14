@@ -34,7 +34,7 @@ from .learning_extract import (
     build_windows,
     contains_secret,
     semantic_targets,
-    validate_response,
+    validate_extraction,
     validate_semantic_response,
 )
 from .learning_pages import CoverageExhausted, ExtractionPages
@@ -51,6 +51,65 @@ CONTINUATION_PROMPT = (
     "already_returned statements must not be emitted again. A response "
     "with twelve candidates signals saturation and requires another page."
 )
+# A job keeps at most this many text-free mismatch records (NOBLIVION-237), so
+# a long job cannot push its progress row past the ledger's size limit.
+MAX_MISMATCH_RECORDS = 600
+
+
+def extraction_outcome(value) -> dict:
+    """Normalize a validated extraction page.
+
+    A format retry cached before NOBLIVION-237 holds the accepted list only. Such
+    a list passed the strict all-or-nothing check, so its raw count is its length.
+    """
+    if isinstance(value, list):
+        return {"accepted": value, "proposed": len(value), "mismatches": []}
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("accepted"), list)
+        or type(value.get("proposed")) is not int
+        or not isinstance(value.get("mismatches"), list)
+    ):
+        raise ValidationError("invalid durable extraction outcome")
+    return value
+
+
+def record_mismatches(
+    state, unit, continuation, outcome, *, proposed, accepted, mismatches, error=None
+):
+    """Keep a text-free class for each dropped or rejected candidate of one page.
+
+    Each record names the page (unit and continuation), so a later measurement can
+    join it to the page spans and the job sources. Classes are fixed validator
+    messages; sources are IDs of validated sources. No conversation text is kept.
+    """
+    if not mismatches and error is None:
+        return
+    records = state.setdefault("candidate_mismatches", [])
+    if len(records) >= MAX_MISMATCH_RECORDS:
+        state["candidate_mismatches_omitted"] = state.get("candidate_mismatches_omitted", 0) + 1
+        return
+    classes = {}
+    for item in mismatches:
+        key = (item["class"], item.get("detail"))
+        entry = classes.setdefault(key, {"class": item["class"], "count": 0, "sources": set()})
+        if item.get("detail"):
+            entry["detail"] = item["detail"]
+        entry["count"] += 1
+        entry["sources"].update(item.get("sources", ()))
+    record = {
+        "unit": unit,
+        "continuation": continuation,
+        "outcome": outcome,
+        "proposed": proposed,
+        "accepted": accepted,
+        "classes": [
+            {**entry, "sources": sorted(entry["sources"])[:8]} for entry in classes.values()
+        ],
+    }
+    if error is not None:
+        record["error"] = error
+    records.append(record)
 
 
 class ProviderError(RuntimeError):
@@ -156,6 +215,10 @@ REQUEST_PROVIDER = ("provider_type", "endpoint", "model", "reasoning_effort")
 # that text changes; started jobs then fail visibly instead of mixing outputs. A
 # test pins the twelve prompt and schema strings to this version. It does not
 # cover validator code, so bump it by hand when acceptance rules change.
+# NOBLIVION-237 keeps version 1 on purpose: it drops a candidate that fails an
+# evidence check instead of the whole response. Every candidate it accepts, the
+# version 1 check accepts with the same result, so old and new pages mix safely.
+# The neutral mark for a legacy redaction marker changes note data, not a prompt.
 EXTRACTION_CONTRACT = 1
 # Releases up to 0.1.24 stored no contract. Their contract is version 1.
 LEGACY_EXTRACTION_CONTRACT = 1
@@ -772,16 +835,27 @@ class LearningWorker:
                         },
                     ]
                     try:
-                        accepted = self._validated_call(
+                        outcome = self._validated_call(
                             job,
                             messages,
-                            lambda raw: validate_response(raw, sources, existing),
+                            lambda raw: validate_extraction(raw, sources, existing),
                             state,
                             f"extract:{unit_index}:{continuation}",
                             EXTRACTION_SCHEMA,
                         )
-                        self._validate_window(accepted, window)
-                    except ValidationError:
+                        outcome = self._validate_window(extraction_outcome(outcome), window)
+                    except ValidationError as exc:
+                        record_mismatches(
+                            state,
+                            unit_index,
+                            continuation,
+                            "rejected",
+                            proposed=getattr(exc, "proposed", None),
+                            accepted=getattr(exc, "accepted", 0),
+                            mismatches=getattr(exc, "mismatches", []),
+                            error=str(exc),
+                        )
+                        self.ledger.checkpoint(job["id"], job["lease_token"], state)
                         pages.save(
                             unit_index,
                             continuation,
@@ -791,6 +865,21 @@ class LearningWorker:
                             "candidate validation failed; no coverage acknowledgement",
                         )
                         raise
+                    accepted, proposed = outcome["accepted"], outcome["proposed"]
+                    if outcome["mismatches"]:
+                        record_mismatches(
+                            state,
+                            unit_index,
+                            continuation,
+                            "dropped",
+                            proposed=proposed,
+                            accepted=len(accepted),
+                            mismatches=outcome["mismatches"],
+                        )
+                        self.ledger.checkpoint(job["id"], job["lease_token"], state)
+                    # Saturation counts the raw proposals: a page of twelve with a
+                    # dropped candidate may still hide more lessons (NOBLIVION-237).
+                    saturated = proposed == 12
                     novel = [
                         d
                         for d in accepted
@@ -802,14 +891,16 @@ class LearningWorker:
                     }
                     exhausted = (
                         len(total) > cfg.max_decisions
-                        or (len(accepted) == 12 and continuation + 1 >= cfg.max_continuations)
-                        or (continuation > 0 and bool(accepted) and not novel)
+                        or (saturated and continuation + 1 >= cfg.max_continuations)
+                        # A continuation that adds nothing new makes no progress,
+                        # also when all twelve of its proposals were dropped.
+                        or (continuation > 0 and not novel and (bool(accepted) or saturated))
                     )
                     status = (
                         "exhausted"
                         if exhausted
                         else "saturated"
-                        if len(accepted) == 12
+                        if saturated
                         else "processed"
                         if previous or accepted
                         else "no_lesson"
@@ -821,6 +912,8 @@ class LearningWorker:
                         if status == "saturated"
                         else "provider reported remaining lessons"
                         if status == "processed"
+                        else "every candidate failed an evidence check"
+                        if outcome["mismatches"]
                         else "provider reported no eligible lesson"
                     )
                     receipt = pages.save(unit_index, continuation, window, accepted, status, reason)
@@ -839,22 +932,38 @@ class LearningWorker:
         return pages.decisions()
 
     @staticmethod
-    def _validate_window(accepted, window):
-        # Full sources establish hashes; exact windows establish what was submitted.
-        for decision in accepted:
-            for evidence in (
+    def _validate_window(outcome, window):
+        """Drop a candidate whose evidence lies outside the submitted window.
+
+        Full sources establish hashes; exact windows establish what was submitted.
+        This is an evidence check of one candidate, so it drops that candidate only.
+        """
+        kept, mismatches = [], list(outcome["mismatches"])
+        for decision in outcome["accepted"]:
+            cited = (
                 decision["evidence"]
                 + decision.get("proof", {}).get("before", [])
                 + decision.get("proof", {}).get("after", [])
                 + decision.get("correction", {}).get("current_evidence", [])
-            ):
-                if not any(
+            )
+            if all(
+                any(
                     str(part["id"]) == str(evidence["source_id"])
                     and evidence["start"] >= part["offset"]
                     and evidence["end"] <= part["offset"] + len(part["content"])
                     for part in window
-                ):
-                    raise ValidationError("evidence was not present in the model window")
+                )
+                for evidence in cited
+            ):
+                kept.append(decision)
+                continue
+            mismatches.append(
+                {
+                    "class": "evidence was not present in the model window",
+                    "sources": sorted({str(e["source_id"]) for e in cited})[:8],
+                }
+            )
+        return {**outcome, "accepted": kept, "mismatches": mismatches}
 
     def _validated_call(self, job, messages, validate, state, step, schema):
         """Retry invalid JSON syntax once, never repair or replay rejected text.
@@ -882,7 +991,7 @@ class LearningWorker:
         ):
             raise ValidationError("invalid durable format retry")
         if "accepted" in repair:
-            if repair["calls"] != 1 or not isinstance(repair["accepted"], list):
+            if repair["calls"] != 1 or not isinstance(repair["accepted"], (list, dict)):
                 raise ValidationError("invalid durable accepted retry")
             return repair["accepted"]
         if repair["calls"] and not state.get("output_limit_hold"):

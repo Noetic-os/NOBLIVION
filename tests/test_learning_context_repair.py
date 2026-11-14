@@ -59,7 +59,7 @@ def test_safe_statement_survives_unsafe_ancillary_fields():
 @pytest.mark.parametrize(
     "text,reason",
     [
-        ("The cobalt setting is [REDACTED].", "ContextRedactedCandidate"),
+        ("The cobalt job reads GH_TOKEN=***REDACTED*** first.", "ContextRedactedCandidate"),
         ("My password is a-fictional-value.", "ContextUnsafeCandidate"),
         ("Safe content. " * 4000, "ContextSizeLimit"),
     ],
@@ -78,7 +78,8 @@ def test_isolation_preserves_explicit_dependency_without_body(text, reason):
 def test_withheld_statement_defers_without_repeating_extraction_and_can_resolve(ledger):
     record = capture(ledger, "new", "The indigo service uses port 8443.")
     note = old_note()
-    note["statement"] = "The cobalt setting is [REDACTED]."
+    # A marker in a key=value position stays withheld (NOBLIVION-237).
+    note["statement"] = "The cobalt job reads GH_TOKEN=***REDACTED*** first."
     notes = [old_note(), note]
     ledger.reconciliation_context = lambda *a, **k: notes
     provider = ScriptedProvider(ledger, [candidate(record, category="fact")], "distinct")

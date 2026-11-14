@@ -259,7 +259,157 @@ def validate_response(raw: str, sources: list[dict], existing_notes=()) -> list[
     Model quotes contain just source_id and quote. We derive hashes and spans.
     A statement must occur verbatim in its evidence. Existing note identifiers
     and revisions are verified against a scoped snapshot supplied by the ledger.
+    An explicit edit uses this strict form. The worker uses validate_extraction.
     """
+    lookup, proposals = _proposals(raw, sources)
+    existing = list(existing_notes)
+    ids = {str(n.get("note_id", n.get("id"))): n for n in existing}
+    return [_candidate(candidate, lookup, existing, ids) for candidate in proposals]
+
+
+# NOBLIVION-237: each of these checks reads only the evidence of one candidate.
+# A failure drops that candidate and keeps the valid rest of the response. Every
+# other failure still rejects the whole response: an authority claim, quoted or
+# injected evidence, an unknown source, a secret or a broken schema. What counts
+# as evidence does not change, so every candidate this accepts, the strict form
+# accepts too, with the same result. Started jobs keep their frozen contract.
+EVIDENCE_FAILURES = frozenset(
+    {
+        "evidence must be an exact unique quote",
+        "statement is not extractive evidence",
+        "human evidence required",
+        "observed fact evidence required",
+        "evidence was not present in the model window",
+    }
+)
+
+
+class ResponseRejected(ValidationError):
+    """A whole response failed. ``mismatches`` classifies its candidates without text."""
+
+    def __init__(self, message: str, mismatches=(), *, proposed=None, accepted=0):
+        super().__init__(message)
+        self.mismatches = list(mismatches)
+        self.proposed = proposed
+        self.accepted = accepted
+
+
+def validate_extraction(raw: str, sources: list[dict], existing_notes=()) -> dict:
+    """Validate each candidate alone; drop one that fails only an evidence check.
+
+    Returns the accepted decisions, the number of raw proposals (saturation counts
+    those) and a text-free class for each dropped candidate. A failure outside
+    EVIDENCE_FAILURES in any candidate raises ResponseRejected, also when it
+    follows a dropped candidate. A dropped candidate is screened for authority
+    and injected evidence that its own failed check did not reach.
+    """
+    lookup, proposals = _proposals(raw, sources)
+    existing = list(existing_notes)
+    ids = {str(n.get("note_id", n.get("id"))): n for n in existing}
+    accepted, mismatches, fatal = [], [], None
+    for candidate in proposals:
+        try:
+            accepted.append(_candidate(candidate, lookup, existing, ids))
+            continue
+        except ValidationError as exc:
+            message = str(exc)
+        if message in EVIDENCE_FAILURES:
+            message = _screen(candidate, lookup) or message
+        mismatches.append(mismatch(message, candidate, lookup))
+        if message not in EVIDENCE_FAILURES and fatal is None:
+            fatal = message
+    if fatal is not None:
+        raise ResponseRejected(fatal, mismatches, proposed=len(proposals), accepted=len(accepted))
+    return {"accepted": accepted, "proposed": len(proposals), "mismatches": mismatches}
+
+
+def references(candidate) -> list[dict]:
+    """Every source reference a candidate names: evidence, correction and proof."""
+    if not isinstance(candidate, dict):
+        return []
+    lists = [candidate.get("evidence")]
+    correction = candidate.get("correction")
+    if isinstance(correction, dict):
+        current = correction.get("current_evidence")
+        lists.append([current] if isinstance(current, dict) else current)
+    proof = candidate.get("proof")
+    if isinstance(proof, dict):
+        lists += [proof.get("before"), proof.get("after")]
+    return [
+        item
+        for items in lists
+        if isinstance(items, list)
+        for item in items
+        if isinstance(item, dict)
+    ]
+
+
+def _screen(candidate, lookup) -> str | None:
+    for field in ("title", "statement"):
+        value = candidate.get(field) if isinstance(candidate, dict) else None
+        if isinstance(value, str) and contains_authority(value):
+            return "memory cannot grant authority"
+    for item in references(candidate):
+        source, quote = lookup.get(str(item.get("source_id"))), item.get("quote")
+        if source is None or not isinstance(quote, str) or not quote:
+            continue
+        start = source["content"].find(quote)
+        if start >= 0 and is_quoted_or_injected(source["content"], start, start + len(quote)):
+            return "quoted or injected evidence"
+    return None
+
+
+def _squash(text: str) -> str:
+    return " ".join(text.split())
+
+
+_TYPOGRAPHY = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-"})
+
+
+def _plain(text: str) -> str:
+    return _squash(re.sub(r"[*_`#>]", "", text.translate(_TYPOGRAPHY)).casefold())
+
+
+def quote_mismatch(candidate, lookup) -> str:
+    """Classify why a quote is not exact and unique. The class holds no text.
+
+    repeated: the exact quote occurs more than once. whitespace: it matches after
+    spaces and line breaks are collapsed. case: it matches after case folding.
+    typography: it matches without quote marks, dashes or Markdown characters.
+    absent: no form matches. unresolved: no reference names a known source.
+    """
+    for item in references(candidate):
+        source, quote = lookup.get(str(item.get("source_id"))), item.get("quote")
+        if source is None or not isinstance(quote, str) or not quote:
+            continue
+        text = source["content"]
+        start = text.find(quote)
+        if start >= 0 and text.find(quote, start + 1) >= 0:
+            return "repeated"
+        if start >= 0:
+            continue
+        if _squash(quote) and _squash(quote) in _squash(text):
+            return "whitespace"
+        if _squash(quote).casefold() in _squash(text).casefold():
+            return "case"
+        if _plain(quote) and _plain(quote) in _plain(text):
+            return "typography"
+        return "absent"
+    return "unresolved"
+
+
+def mismatch(message: str, candidate, lookup) -> dict:
+    """A text-free record of one failed candidate: its class and cited source IDs."""
+    record = {"class": message}
+    if message == "evidence must be an exact unique quote":
+        record["detail"] = quote_mismatch(candidate, lookup)
+    cited = sorted({str(item.get("source_id")) for item in references(candidate)} & set(lookup))
+    if cited:
+        record["sources"] = cited[:8]
+    return record
+
+
+def _proposals(raw: str, sources: list[dict]) -> tuple[dict[str, dict], list]:
     lookup = validate_sources(sources)
     if not isinstance(raw, str) or len(raw) > 262144 or contains_secret(raw):
         raise ValidationError("unsafe response")
@@ -279,189 +429,182 @@ def validate_response(raw: str, sources: list[dict], existing_notes=()) -> list[
     proposals = doc["candidates"]
     if not isinstance(proposals, list) or len(proposals) > 12:
         raise ValidationError("invalid candidate list")
-    existing = list(existing_notes)
-    ids = {str(n.get("note_id", n.get("id"))): n for n in existing}
-    decisions = []
-    for candidate in proposals:
-        _object(
-            candidate,
-            {
-                "action",
-                "logical_key",
-                "category",
-                "title",
-                "statement",
-                "scope",
-                "observed_at",
-                "effective_at",
-                "evidence",
-            },
-            {"note_id", "expected_revision", "correction", "proof"},
+    return lookup, proposals
+
+
+def _candidate(candidate, lookup: dict[str, dict], existing: list, ids: dict) -> dict:
+    _object(
+        candidate,
+        {
+            "action",
+            "logical_key",
+            "category",
+            "title",
+            "statement",
+            "scope",
+            "observed_at",
+            "effective_at",
+            "evidence",
+        },
+        {"note_id", "expected_revision", "correction", "proof"},
+    )
+    action, category = candidate["action"], candidate["category"]
+    if action not in ACTIONS or category not in CATEGORIES:
+        raise ValidationError("invalid action or category")
+    key = _text(candidate["logical_key"], 160)
+    if not _KEY.fullmatch(key):
+        raise ValidationError("invalid logical key")
+    title = _text(candidate["title"], 160)
+    statement = _text(candidate["statement"], 2000)
+    if contains_authority(statement) or contains_authority(title):
+        raise ValidationError("memory cannot grant authority")
+    scope = candidate["scope"]
+    if scope not in {"project", "general"} or (
+        scope == "general" and category not in {"preference", "workflow"}
+    ):
+        raise ValidationError("invalid candidate scope")
+    evidence = _evidence(candidate["evidence"], lookup)
+    primary = [e for e in evidence if statement in e["quote"]]
+    if not primary:
+        raise ValidationError("statement is not extractive evidence")
+    if scope == "general" and not any(
+        re.search(
+            r"(?i)\b(?:all|every|across)\s+(?:my\s+)?projects?\b|\bglobally\b",
+            e["quote"],
         )
-        action, category = candidate["action"], candidate["category"]
-        if action not in ACTIONS or category not in CATEGORIES:
-            raise ValidationError("invalid action or category")
-        key = _text(candidate["logical_key"], 160)
-        if not _KEY.fullmatch(key):
-            raise ValidationError("invalid logical key")
-        title = _text(candidate["title"], 160)
-        statement = _text(candidate["statement"], 2000)
-        if contains_authority(statement) or contains_authority(title):
-            raise ValidationError("memory cannot grant authority")
-        scope = candidate["scope"]
-        if scope not in {"project", "general"} or (
-            scope == "general" and category not in {"preference", "workflow"}
-        ):
-            raise ValidationError("invalid candidate scope")
-        evidence = _evidence(candidate["evidence"], lookup)
-        primary = [e for e in evidence if statement in e["quote"]]
-        if not primary:
-            raise ValidationError("statement is not extractive evidence")
-        if scope == "general" and not any(
-            re.search(
-                r"(?i)\b(?:all|every|across)\s+(?:my\s+)?projects?\b|\bglobally\b",
-                e["quote"],
-            )
-            for e in primary
-        ):
-            raise ValidationError("general scope requires explicit cross-project evidence")
-        if statement.rstrip().endswith("?"):
-            raise ValidationError("a question is not a durable assertion")
-        roles = {lookup[str(e["source_id"])]["role"] for e in primary}
-        if category in {"preference", "workflow", "decision"}:
-            if "user" not in roles:
-                raise ValidationError("human evidence required")
-        elif category == "fact" and not roles & {"user", "tool"}:
-            raise ValidationError("observed fact evidence required")
-        for e in primary:
-            source = lookup[str(e["source_id"])]
-            if source.get("metadata", {}).get("direct_user") is False and source["role"] == "user":
-                raise ValidationError("indirect human evidence")
-        observed = _date(candidate["observed_at"])
-        if observed != max(source_date(lookup[str(e["source_id"])]) for e in evidence):
-            raise ValidationError("observed date does not match evidence")
-        effective = candidate["effective_at"]
-        if effective is not None:
-            effective = _date(effective)
-            if effective != observed and not any(effective in e["quote"] for e in evidence):
-                raise ValidationError("unsupported effective date")
-        result = dict(candidate, title=title, statement=statement, evidence=evidence)
-        previous = ids.get(str(candidate.get("note_id")))
-        matching = [
-            n
-            for n in existing
-            if n.get("scope") == scope
-            and n.get("category") == category
-            and _normalize(n["statement"]) == _normalize(statement)
-        ]
-        if action == "add" and matching:
-            previous = matching[0]
-            result.update(
-                action="unchanged",
-                note_id=previous.get("note_id", previous.get("id")),
-                expected_revision=previous["revision"],
-                logical_key=previous["logical_key"],
-            )
-        elif action != "add":
-            if previous is None:
-                raise ValidationError("unknown reconciliation target")
-            if (
-                key != previous["logical_key"]
-                or scope != previous["scope"]
-                or category != previous["category"]
-            ):
-                raise ValidationError("reconciliation target mismatch")
-            # The host owns the snapshot revision. A model may increment it or
-            # omit it; neither changes which version the final write must fence.
-            result["expected_revision"] = previous["revision"]
-            if action == "unchanged" and _normalize(statement) != _normalize(previous["statement"]):
-                # A model may recognize a paraphrase, but this is not proof of
-                # equivalence. Preserve the current memory as a visible conflict.
-                result.update(action="conflict", reason="paraphrase requires reconciliation")
-        elif any(n.get("logical_key") == key and n.get("scope") == scope for n in existing):
-            raise ValidationError("existing logical key requires reconciliation")
-        cross_root_correction = bool(
-            previous and previous.get("cross_root_general") and action in {"update", "supersede"}
+        for e in primary
+    ):
+        raise ValidationError("general scope requires explicit cross-project evidence")
+    if statement.rstrip().endswith("?"):
+        raise ValidationError("a question is not a durable assertion")
+    roles = {lookup[str(e["source_id"])]["role"] for e in primary}
+    if category in {"preference", "workflow", "decision"}:
+        if "user" not in roles:
+            raise ValidationError("human evidence required")
+    elif category == "fact" and not roles & {"user", "tool"}:
+        raise ValidationError("observed fact evidence required")
+    for e in primary:
+        source = lookup[str(e["source_id"])]
+        if source.get("metadata", {}).get("direct_user") is False and source["role"] == "user":
+            raise ValidationError("indirect human evidence")
+    observed = _date(candidate["observed_at"])
+    if observed != max(source_date(lookup[str(e["source_id"])]) for e in evidence):
+        raise ValidationError("observed date does not match evidence")
+    effective = candidate["effective_at"]
+    if effective is not None:
+        effective = _date(effective)
+        if effective != observed and not any(effective in e["quote"] for e in evidence):
+            raise ValidationError("unsupported effective date")
+    result = dict(candidate, title=title, statement=statement, evidence=evidence)
+    previous = ids.get(str(candidate.get("note_id")))
+    matching = [
+        n
+        for n in existing
+        if n.get("scope") == scope
+        and n.get("category") == category
+        and _normalize(n["statement"]) == _normalize(statement)
+    ]
+    if action == "add" and matching:
+        previous = matching[0]
+        result.update(
+            action="unchanged",
+            note_id=previous.get("note_id", previous.get("id")),
+            expected_revision=previous["revision"],
+            logical_key=previous["logical_key"],
         )
-        if cross_root_correction:
-            result.update(
-                action="conflict", reason="cross-root general correction needs resolution"
-            )
-            result.pop("correction", None)
+    elif action != "add":
+        if previous is None:
+            raise ValidationError("unknown reconciliation target")
         if (
-            previous
-            and previous.get("read_only")
-            and result["action"] not in {"unchanged", "conflict"}
+            key != previous["logical_key"]
+            or scope != previous["scope"]
+            or category != previous["category"]
         ):
-            raise ValidationError("read-only note requires explicit adoption")
-        if result["action"] in {"update", "supersede"}:
-            correction = _object(
-                candidate.get("correction"),
-                {
-                    "previous_statement",
-                    "current_statement",
-                    "current_evidence",
-                },
-                {"previous_evidence"},
-            )
-            if (
-                correction["previous_statement"] != previous["statement"]
-                or correction["current_statement"] != statement
-            ):
-                raise ValidationError("correction values mismatch")
-            # Old provenance comes only from the stored snapshot, never model
-            # reconstruction. New source quotes below remain strictly checked.
-            if not previous.get("evidence"):
-                if not previous.get("evidence_withheld"):
-                    raise ValidationError("previous correction evidence unavailable")
-                result.update(action="conflict", reason="ContextEvidenceDeferred")
-            current_refs = correction["current_evidence"]
-            # Some providers emit a singleton object for this redundant field.
-            # Normalize only the container; every source/quote is still checked.
-            if isinstance(current_refs, dict):
-                current_refs = [current_refs]
-            current = _evidence(current_refs, lookup)
-            if not any(statement in e["quote"] for e in current):
-                raise ValidationError("missing current correction evidence")
-            result["correction"] = dict(
-                correction, previous_evidence=previous["evidence"], current_evidence=current
-            )
-            if result["action"] == "conflict":
-                result.pop("correction", None)
-        elif "correction" in candidate and not cross_root_correction:
-            raise ValidationError("unexpected correction")
-        if category == "proven_fix":
-            proof = _object(candidate.get("proof"), {"before", "after"})
-            before, after = _evidence(proof["before"], lookup), _evidence(proof["after"], lookup)
-            for e in before + after:
+            raise ValidationError("reconciliation target mismatch")
+        # The host owns the snapshot revision. A model may increment it or
+        # omit it; neither changes which version the final write must fence.
+        result["expected_revision"] = previous["revision"]
+        if action == "unchanged" and _normalize(statement) != _normalize(previous["statement"]):
+            # A model may recognize a paraphrase, but this is not proof of
+            # equivalence. Preserve the current memory as a visible conflict.
+            result.update(action="conflict", reason="paraphrase requires reconciliation")
+    elif any(n.get("logical_key") == key and n.get("scope") == scope for n in existing):
+        raise ValidationError("existing logical key requires reconciliation")
+    cross_root_correction = bool(
+        previous and previous.get("cross_root_general") and action in {"update", "supersede"}
+    )
+    if cross_root_correction:
+        result.update(action="conflict", reason="cross-root general correction needs resolution")
+        result.pop("correction", None)
+    if previous and previous.get("read_only") and result["action"] not in {"unchanged", "conflict"}:
+        raise ValidationError("read-only note requires explicit adoption")
+    if result["action"] in {"update", "supersede"}:
+        correction = _object(
+            candidate.get("correction"),
+            {
+                "previous_statement",
+                "current_statement",
+                "current_evidence",
+            },
+            {"previous_evidence"},
+        )
+        if (
+            correction["previous_statement"] != previous["statement"]
+            or correction["current_statement"] != statement
+        ):
+            raise ValidationError("correction values mismatch")
+        # Old provenance comes only from the stored snapshot, never model
+        # reconstruction. New source quotes below remain strictly checked.
+        if not previous.get("evidence"):
+            if not previous.get("evidence_withheld"):
+                raise ValidationError("previous correction evidence unavailable")
+            result.update(action="conflict", reason="ContextEvidenceDeferred")
+        current_refs = correction["current_evidence"]
+        # Some providers emit a singleton object for this redundant field.
+        # Normalize only the container; every source/quote is still checked.
+        if isinstance(current_refs, dict):
+            current_refs = [current_refs]
+        current = _evidence(current_refs, lookup)
+        if not any(statement in e["quote"] for e in current):
+            raise ValidationError("missing current correction evidence")
+        result["correction"] = dict(
+            correction, previous_evidence=previous["evidence"], current_evidence=current
+        )
+        if result["action"] == "conflict":
+            result.pop("correction", None)
+    elif "correction" in candidate and not cross_root_correction:
+        raise ValidationError("unexpected correction")
+    if category == "proven_fix":
+        proof = _object(candidate.get("proof"), {"before", "after"})
+        before, after = _evidence(proof["before"], lookup), _evidence(proof["after"], lookup)
+        for e in before + after:
+            source = lookup[str(e["source_id"])]
+            if source["role"] != "tool" or not source.get("tool_name"):
+                raise ValidationError("fix proof requires tool observations")
+        if {str(e["source_id"]) for e in before} & {str(e["source_id"]) for e in after}:
+            raise ValidationError("fix proof requires distinct observations")
+        if max(lookup[str(e["source_id"])]["observed_at"] for e in before) > min(
+            lookup[str(e["source_id"])]["observed_at"] for e in after
+        ):
+            raise ValidationError("fix observations are out of order")
+        checks = []
+        for items, failing in ((before, True), (after, False)):
+            for e in items:
                 source = lookup[str(e["source_id"])]
-                if source["role"] != "tool" or not source.get("tool_name"):
-                    raise ValidationError("fix proof requires tool observations")
-            if {str(e["source_id"]) for e in before} & {str(e["source_id"]) for e in after}:
-                raise ValidationError("fix proof requires distinct observations")
-            if max(lookup[str(e["source_id"])]["observed_at"] for e in before) > min(
-                lookup[str(e["source_id"])]["observed_at"] for e in after
-            ):
-                raise ValidationError("fix observations are out of order")
-            checks = []
-            for items, failing in ((before, True), (after, False)):
-                for e in items:
-                    source = lookup[str(e["source_id"])]
-                    metadata = source.get("metadata", {})
-                    code = metadata.get("exit_code")
-                    command = metadata.get("command")
-                    if type(code) is not int or (code != 0) != failing:
-                        raise ValidationError("fix proof lacks observed failure or success")
-                    if not isinstance(command, str) or not command.strip():
-                        raise ValidationError("fix proof lacks the executed check")
-                    checks.append((source["tool_name"], command))
-            if len(set(checks)) != 1:
-                raise ValidationError("fix proof checks differ")
-            result["proof"] = {"before": before, "after": after}
-        elif "proof" in candidate:
-            raise ValidationError("unexpected fix proof")
-        decisions.append(result)
-    return decisions
+                metadata = source.get("metadata", {})
+                code = metadata.get("exit_code")
+                command = metadata.get("command")
+                if type(code) is not int or (code != 0) != failing:
+                    raise ValidationError("fix proof lacks observed failure or success")
+                if not isinstance(command, str) or not command.strip():
+                    raise ValidationError("fix proof lacks the executed check")
+                checks.append((source["tool_name"], command))
+        if len(set(checks)) != 1:
+            raise ValidationError("fix proof checks differ")
+        result["proof"] = {"before": before, "after": after}
+    elif "proof" in candidate:
+        raise ValidationError("unexpected fix proof")
+    return result
 
 
 SYSTEM_PROMPT = """Extract only lasting, evidence-backed memories from conversation data.
