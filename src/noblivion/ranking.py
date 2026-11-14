@@ -64,6 +64,15 @@ GATE_MIN_UNITS = 20
 GATE_INFORMATIVE_MASS = 0.5
 GATE_RARE_MASS = 0.1
 GATE_MIN_WORDS = 2
+# The rare-word rule passes a prompt on one rare word. An off-topic prompt passed it too: one of
+# its ordinary words ("capital", "translate") is rare in a notes pool, and its other words are
+# not in the pool at all. So the rule also needs the top row to reach this share of the score
+# that the query can reach (``score_share``); each word of the query that the pool does not hold
+# lowers the share. Measured with ``tools/eval_keyword_gate.py`` on the 5,000-note scale
+# fixture: the off-topic prompts that passed the rule had 0.05 to 0.104 (four or five unknown
+# words); the on-topic one-rare-word prompts had 0.59 and up, 0.23 and up with one unknown
+# word, 0.14 and up with two. 0.12 sits between 0.104 and 0.14: two unknown words still pass.
+GATE_MIN_SCORE_SHARE = 0.12
 _MARKER_LINE_RE = re.compile(r"^\[(?:claude_code_md|transcript_mined): [^\]\n]*\][ \t]*$", re.M)
 
 
@@ -208,6 +217,36 @@ def label_boost(labels: Sequence[str], query_tokens: Iterable[str]) -> float:
     return min(found, LABEL_BOOST_MAX_LABELS) * LABEL_BOOST
 
 
+def score_share(
+    index: bm25.BM25 | inverted.PoolView,
+    top: PoolRow,
+    terms: Iterable[str],
+    tokens: Sequence[str],
+) -> float:
+    """The BM25 score of ``top`` for ``terms`` over the most the query can score (NOBLIVION-153):
+    every term at its idf with full term saturation, and every word of the query that is not a
+    stop word and that the pool does not hold at the idf of a word in one unit (the highest idf
+    of the pool). 0.0 to 1.0; each word counts once."""
+    terms = set(terms)
+    k1 = index.k1
+    n = index.n
+    if isinstance(index, inverted.PoolView):
+        got = index.unit_score(top.slot, terms)
+        idf = {w: index.idf_of(w) for w in terms}
+    else:
+        tf: dict[str, int] = {}
+        for word in top.tokens:
+            tf[word] = tf.get(word, 0) + 1
+        dl = len(top.tokens)
+        norm = k1 * (1 - index.b + index.b * dl / index.avgdl) if index.avgdl else 0.0
+        idf = {w: index.idf.get(w, 0.0) for w in terms}
+        got = sum(idf[w] * tf[w] * (k1 + 1) / (tf[w] + norm) for w in terms if tf.get(w))
+    unknown = {w for w in tokens if w not in bm25.STOP_WORDS and not index.df[w]}
+    one = max(0.0, math.log(n - 1 + 0.5) - math.log(1.5))
+    most = (k1 + 1) * (sum(idf.values()) + one * len(unknown))
+    return got / most if most > 0 else 0.0
+
+
 def keyword_gate(
     ranked: RankResult,
     index: bm25.BM25 | inverted.PoolView,
@@ -217,8 +256,9 @@ def keyword_gate(
     """The relevance gate of keyword-only mode (NOBLIVION-153). Without a cosine no floor can
     judge a row, so any prompt with a word in common got its rows. The gate keeps the rows
     only when the top row holds at least ``GATE_MIN_WORDS`` informative words of the query, or
-    when every term of the query that the pool knows is rare and in the top row (a short
-    prompt with one rare word), or when a label of the top row is named by the query; else it
+    when every term of the query that the pool knows is rare and in the top row and the top row
+    reaches ``GATE_MIN_SCORE_SHARE`` of the score the query can reach (a short prompt with one
+    rare word, ``score_share``), or when a label of the top row is named by the query; else it
     returns no row.
 
     A stop word is not a term for the gate unless the query has no other term. ``tokens`` are
@@ -242,7 +282,11 @@ def keyword_gate(
     rare = min(index.df_cut(GATE_RARE_MASS), cap)
     if sum(1 for w in shared if index.df[w] <= informative) >= GATE_MIN_WORDS:
         return ranked
-    if terms and all(w in shared and index.df[w] <= rare for w in terms):
+    if (
+        terms
+        and all(w in shared and index.df[w] <= rare for w in terms)
+        and score_share(index, top, terms, tokens) >= GATE_MIN_SCORE_SHARE
+    ):
         return ranked
     return RankResult(ranked.mode, [], ranked.pool_size)
 

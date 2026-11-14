@@ -275,6 +275,20 @@ class PoolView:
                     out[i] += idf * freq * (k1 + 1) / (freq + norm[i])
         return out
 
+    def unit_score(self, slot: int, words: Iterable[str]) -> float:
+        """The BM25 score of one unit of the pool for ``words``, each word once. 0.0 for a
+        unit that is not in the pool."""
+        i = self.pos.get(slot)
+        if i is None:
+            return 0.0
+        norm = self._norms()[i]
+        total = 0.0
+        for word in set(words):
+            freq = self.index.term_freq(slot, word)
+            if freq:
+                total += self.idf_of(word) * freq * (self.k1 + 1) / (freq + norm)
+        return total
+
     def real_terms(self, query_tokens: Iterable[str]) -> set[str]:
         """As ``bm25.BM25.real_terms``, over this pool."""
         n = self.n

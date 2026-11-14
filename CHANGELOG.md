@@ -12,6 +12,14 @@ All notable changes to NOBLIVION. The format follows
   (`the`, `between`, `until`) a score only where it is rare, in at most 1 of 20
   files, as the store's match rule does. A row that shares only `the` with the
   prompt no longer gets a keyword rank it did not earn (NOBLIVION-82).
+- In keyword-only mode (no embedder) the prompt index no longer gives rows to an off-topic
+  prompt that shares one rare ordinary word with a note ("capital", "translate") while its other
+  words are in no note. The rare-word rule of the relevance gate now also needs the top row to
+  reach 0.12 of the BM25 score that the query can reach, where a word the pool does not hold
+  counts at the highest idf (`GATE_MIN_SCORE_SHARE`). On the 5,000-note scale fixture the
+  off-topic prompts with 0 rows went from 85 of 100 to 95 of 100 (19 of 20 in each project);
+  no on-topic set lost a hit. Hybrid answers and the search route are unchanged.
+  `tools/eval_keyword_gate.py` measures it (NOBLIVION-153).
 
 ## 0.1.24 - 2026-11-14
 

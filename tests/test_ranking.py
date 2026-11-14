@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from noblivion import bm25, db, embedding, ranking
+from noblivion import bm25, db, embedding, inverted, ranking
 from store_helpers import FakeEmbedder, add_memory, change_memory, embed_memory, soft_delete
 
 
@@ -605,8 +605,15 @@ def test_the_gate_keeps_the_rows_for_two_informative_words():
 
 def test_the_gate_keeps_the_rows_for_one_rare_word_alone():
     assert len(_gate("u3", 3).hits) == 1
-    # Words that the pool does not hold do not count against it.
-    assert len(_gate("please explain u3 xyzzy", 3).hits) == 1
+    assert len(_gate("what does u15 do", 15).hits) == 1  # stop words do not count
+    # Up to two words that the pool does not hold keep the share at or over the threshold.
+    assert len(_gate("u15 xyzzy plugh", 15).hits) == 1
+
+
+def test_the_gate_drops_a_rare_word_among_words_the_pool_does_not_hold():
+    # Three unknown words next to one rare word: the top row holds too small a share of what
+    # the query can score (NOBLIVION-153).
+    assert _gate("please explain u15 xyzzy", 15).hits == []
 
 
 def test_the_gate_drops_the_rows_for_a_rare_word_next_to_a_common_one():
@@ -636,6 +643,76 @@ def test_the_gate_leaves_hybrid_answers_and_small_pools_alone():
     small = rows[:19]
     index = bm25.BM25([list(r.tokens) for r in small])
     assert len(_gate("mid", 0, rows=small, index=index).hits) == 1
+
+
+def _gate_store(conn, n: int = 30):
+    """A notes pool: ``n`` notes on deploy work, and one on the capital budget of the team."""
+    for i in range(n):
+        add_memory(conn, f"note_{i:02d}", f"deploy the service and check the build alpha{i}")
+    add_memory(conn, "capital_budget", "the capital budget of the team is fixed in march")
+    add_memory(
+        conn,
+        "relay_config",
+        "relay_routes.yaml holds the routes of the relay",
+        labels='["relay_routes.yaml"]',
+    )
+    index = ranking.RankIndex()
+    index.refresh(conn)
+    return index
+
+
+OFF_TOPIC = "What is the capital of France and how many people live there?"
+
+
+def test_the_gate_drops_an_off_topic_prompt_with_one_rare_shared_word(conn):
+    index = _gate_store(conn)
+    # "capital" is in one note; France, many, people and live are in none.
+    gated = index.rank(OFF_TOPIC, project="claude_code", top_k=5, gate=True)
+    assert gated.mode == "keyword" and gated.hits == []
+    # The search route asks for no gate: its answer is the same as before.
+    plain = index.rank(OFF_TOPIC, project="claude_code", top_k=5)
+    assert plain.hits and plain.hits[0].row.path == "capital_budget.md"
+
+
+def test_the_gate_keeps_the_rows_for_an_on_topic_two_word_prompt(conn):
+    index = _gate_store(conn)
+    for query in ("capital budget", "how big is the capital budget this year"):
+        hits = index.rank(query, project="claude_code", top_k=5, gate=True).hits
+        assert hits and hits[0].row.path == "capital_budget.md"
+
+
+def test_the_gate_keeps_the_rows_for_a_label_among_unknown_words(conn):
+    index = _gate_store(conn)
+    query = "Please look at relay_routes.yaml and tell me what it does."
+    hits = index.rank(query, project="claude_code", top_k=5, gate=True).hits
+    assert hits and hits[0].row.path == "relay_config.md"
+
+
+def test_the_gate_leaves_a_small_pool_alone(conn):
+    index = _gate_store(conn, n=10)  # 12 notes: under GATE_MIN_UNITS
+    hits = index.rank(OFF_TOPIC, project="claude_code", top_k=5, gate=True).hits
+    assert hits and hits[0].row.path == "capital_budget.md"
+
+
+def test_the_score_share_is_the_same_for_the_pool_view_and_bm25():
+    rows, index = _gate_pool()
+    inv = inverted.InvertedIndex()
+    slots = [inv.add(list(r.tokens)) for r in rows]
+    view = inverted.PoolView(inv, slots)
+    rows = [
+        ranking.PoolRow(**{**r.__dict__, "slot": slot})
+        for r, slot in zip(rows, slots)  # noqa: B905 - 3.9 lane
+    ]
+    for query, top in (("u3", 3), ("u3 xyzzy", 3), ("mid mid2 all", 0), ("mid u7 nothing", 7)):
+        tokens = bm25.tokenize(query)
+        terms = index.real_terms(tokens)
+        a = ranking.score_share(index, rows[top], terms, tokens)
+        b = ranking.score_share(view, rows[top], terms, tokens)
+        assert 0.0 < a <= 1.0 and a == pytest.approx(b)
+    # A word that the pool does not hold halves the share of one rare word.
+    one = ranking.score_share(index, rows[3], {"u3"}, ["u3"])
+    two = ranking.score_share(index, rows[3], {"u3"}, ["u3", "xyzzy"])
+    assert two == pytest.approx(one / 2)
 
 
 def test_the_gate_is_applied_only_when_asked(conn):
