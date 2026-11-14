@@ -747,8 +747,13 @@ def found(text: str, lesson: str, rule: str, title: str = "") -> tuple[bool, int
     return seen, None
 
 
-def check(name: str, passed: bool, rank: int | None = None) -> dict[str, Any]:
-    return {"check": name, "pass": bool(passed), "rank": rank}
+def check(name: str, passed: bool, rank: int | None = None, matched: str = "") -> dict[str, Any]:
+    """One check. ``matched`` names an equivalent lesson of a dated bench amendment
+    when that lesson, not the case lesson, was found."""
+    out: dict[str, Any] = {"check": name, "pass": bool(passed), "rank": rank}
+    if matched:
+        out["matched"] = matched
+    return out
 
 
 def verdict(case: Mapping[str, Any], checks: Sequence[Mapping[str, Any]]) -> bool:
@@ -815,18 +820,49 @@ class Gate0:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return str(path)
 
-    def note_fields(self, lesson: str, cwd: str) -> tuple[str, str]:
-        """``(rule, name)`` of a note. Two project folders can hold a file of the
-        same name: the folder of the case first, then the home folder."""
+    def note_file(self, lesson: str, cwd: str) -> Path | None:
+        """The file of a note. Two project folders can hold a file of the same name:
+        the folder of the case first, then the home folder."""
         folders = [slugify(cwd), slugify(self.frozen_home)]
         for slug in folders + [p.parent.name for p in sorted(self.suite.projects.glob("*/memory"))]:
             path = self.suite.projects / slug / "memory" / lesson
             if path.is_file():
-                text = path.read_text(encoding="utf-8", errors="replace")
-                fields = [re.search(rf"^{k}:\s*(.*)$", text, re.M) for k in ("rule", "name")]
-                rule, name = (m.group(1).strip().strip('"') if m else "" for m in fields)
-                return rule, name
-        return "", ""
+                return path
+        return None
+
+    def note_fields(self, lesson: str, cwd: str) -> tuple[str, str]:
+        """``(rule, name)`` of a note."""
+        path = self.note_file(lesson, cwd)
+        if path is None:
+            return "", ""
+        text = path.read_text(encoding="utf-8", errors="replace")
+        fields = [re.search(rf"^{k}:\s*(.*)$", text, re.M) for k in ("rule", "name")]
+        rule, name = (m.group(1).strip().strip('"') if m else "" for m in fields)
+        return rule, name
+
+    def find(
+        self, text: str, case: Mapping[str, Any], keys: tuple[str, str]
+    ) -> tuple[bool, int | None, str]:
+        """``found()`` for the case lesson, then for each equivalent lesson that a
+        dated bench amendment names for the case. The lowest rank wins. The third
+        value names the equivalent lesson when it, not the case lesson, matched."""
+        lesson = case.get("lesson") or ""
+        if not lesson:
+            return False, None, ""
+        seen, rank = found(text, lesson, *keys)
+        best: tuple[bool, int | None, str] = (seen, rank, "")
+        for other in case.get("equivalent_lessons") or []:
+            if self.note_file(other, case["cwd"]) is None:
+                raise SystemExit(
+                    f"gate 0 amendment: equivalent lesson {other} of case {case['id']} "
+                    "is not in the frozen memory"
+                )
+            seen, rank = found(text, other, *self.note_fields(other, case["cwd"]))
+            if not seen:
+                continue
+            if not best[0] or (rank is not None and (best[1] is None or rank < best[1])):
+                best = (seen, rank, other)
+        return best
 
     def prompt_rows(self, sid: str, prompt: str, cwd: str, cache: Path | None = None) -> str:
         env, mapped = self.env_of(cwd)
@@ -958,38 +994,32 @@ class Gate0:
         prompts = [case["prompt"]] if case.get("prompt") else []
         prompts = prompts or [case.get("late_prompt_context") or (case.get("session") or ["x"])[0]]
         if scenario in ("W1", "W2", "W3", "W5", "W6") and case.get("prompt") and lesson:
-            seen, rank = found(self.prompt_rows(sid, case["prompt"], cwd), lesson, *keys)
-            out.append(check("prompt_rows", seen, rank))
+            hit = self.find(self.prompt_rows(sid, case["prompt"], cwd), case, keys)
+            out.append(check("prompt_rows", *hit))
         if case.get("late_prompt_context") and lesson:
             text = self.prompt_rows(sid + "L", case["late_prompt_context"], cwd)
-            seen, rank = found(text, lesson, *keys)
-            out.append(check("late_prompt_rows(info)", seen, rank))
+            out.append(check("late_prompt_rows(info)", *self.find(text, case, keys)))
         for i, query in enumerate(case.get("recall_queries") or []):
-            seen, rank = found(self.pull(query, cwd), lesson, *keys)
-            out.append(check(f"pull_recall[{i}]", seen, rank))
+            out.append(check(f"pull_recall[{i}]", *self.find(self.pull(query, cwd), case, keys)))
         if scenario == "W9":
             return out + self.credential(case, sid, prompts)
         for i, command in enumerate(case.get("hazard_commands") or []):
             text = self.guard(f"{sid}G{i}", "Bash", {"command": command}, prompts, cwd)
             text = model_text("PreToolUse", text)
-            seen, rank = found(text, lesson, *keys) if lesson else (False, None)
-            out.append(check(f"guard_bash[{i}]", seen, rank))
+            out.append(check(f"guard_bash[{i}]", *self.find(text, case, keys)))
         for i, call in enumerate(case.get("guard_tool_calls") or []):
             tool_input = {"file_path": call["file_path"], "new_string": "x", "old_string": "y"}
             text = self.guard(f"{sid}E{i}", call["tool"], tool_input, prompts, cwd)
             text = model_text("PreToolUse", text)
-            seen, rank = found(text, lesson, *keys) if lesson else (False, None)
-            out.append(check(f"guard_edit[{i}]", seen, rank))
+            out.append(check(f"guard_edit[{i}]", *self.find(text, case, keys)))
         if case.get("failing"):
             text = model_text(
                 "PostToolUseFailure", self.error_recall(sid, case["failing"], prompts, cwd)
             )
-            seen, rank = found(text, lesson, *keys)
-            out.append(check("error_recall", seen, rank))
+            out.append(check("error_recall", *self.find(text, case, keys)))
         if scenario == "W5":
             text = model_text("SubagentStart", self.subagent(sid + "S", case))
-            seen, rank = found(text, lesson, *keys)
-            out.append(check("subagent_start_rules", seen, rank))
+            out.append(check("subagent_start_rules", *self.find(text, case, keys)))
         if scenario == "W4":
             out.extend(self.compaction(case, sid + "P"))
         return out
@@ -1218,6 +1248,9 @@ class Suite:
         self.write_config()
         if self.bench:
             names = ["gate0/candidates.json", "gate0/candidates_reserve.json"]
+            names += sorted(
+                "gate0/" + p.name for p in (self.bench / "gate0").glob("amendments_*.json")
+            )
             names.append("test4/results/test4.jsonl")
             files = [(n, self.bench / n) for n in names if (self.bench / n).is_file()]
             self.inputs["bench_digest"] = tree_digest(files)
@@ -1750,6 +1783,17 @@ class Suite:
 
     # -- the frozen delivery checks --------------------------------------------
 
+    def amendments(self) -> dict[str, list[str]]:
+        """The equivalent lessons of the dated bench amendments
+        (``gate0/amendments_*.json``), by case id. The frozen case files stay as
+        they are; an amendment only adds."""
+        out: dict[str, list[str]] = {}
+        for path in sorted((self.bench / "gate0").glob("amendments_*.json")):  # type: ignore[operator]
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            for case_id, lessons in (doc.get("equivalent_lessons") or {}).items():
+                out.setdefault(case_id, []).extend(lessons)
+        return out
+
     def cases(self) -> list[dict[str, Any]]:
         out = []
         for name, reserve in (("candidates.json", False), ("candidates_reserve.json", True)):
@@ -1757,6 +1801,13 @@ class Suite:
             if path.is_file():
                 for case in json.loads(path.read_text(encoding="utf-8")):
                     out.append({**case, "reserve": reserve})
+        extra = self.amendments()
+        unknown = sorted(set(extra) - {c["id"] for c in out})
+        if unknown:
+            raise SystemExit("gate 0 amendment names unknown cases: " + ", ".join(unknown))
+        for case in out:
+            if case["id"] in extra:
+                case["equivalent_lessons"] = extra[case["id"]]
         return out
 
     def gate(self) -> Gate0:
@@ -1782,6 +1833,8 @@ class Suite:
                 "checks": checks,
             }
         report = self.gate_report(results)
+        gate0 = self.bench / "gate0"
+        report["amendments"] = sorted(p.name for p in gate0.glob("amendments_*.json"))
         states = fail_states(read_lines(self.data / "cache" / "recall.log"))
         report["hook_states"] = dict(states)
         report["status"] = self.states_verdict(states)

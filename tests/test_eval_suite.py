@@ -843,3 +843,71 @@ def test_a_build_without_the_tool_can_be_measured(world, broken_build) -> None:
     doc = json.loads((world / "other-build" / "result.json").read_text(encoding="utf-8"))
     assert doc["build"]["label"] == "other"
     assert doc["build"]["version"]
+
+
+def amended_gate(tool, rows: str, notes: set[str]):
+    gate = object.__new__(tool.Gate0)
+    gate.note_fields = lambda lesson, cwd: ("", "")
+    gate.note_file = lambda lesson, cwd: Path("/x") / lesson if lesson in notes else None
+    gate.prompt_rows = lambda *a, **k: ""
+    gate.guard = lambda *a, **k: json.dumps({"hookSpecificOutput": {"additionalContext": rows}})
+    return gate
+
+
+AMENDED_CASE = {
+    "id": "t2",
+    "W": "W1",
+    "lesson": "lesson_a.md",
+    "cwd": "/tmp",
+    "hazard_commands": ["git worktree add /tmp/w"],
+}
+
+
+def test_gate0_counts_an_equivalent_lesson_of_an_amendment() -> None:
+    """NOBLIVION-228: a dated bench amendment names an equivalent lesson for a
+    case. The check passes on it and records which lesson matched."""
+    tool = load_tool()
+    gate = amended_gate(tool, "- [id 1] x (other)\n- [id 2] y (lesson_b)\n", {"lesson_b.md"})
+    plain = gate.case(AMENDED_CASE)
+    assert plain[0] == {"check": "guard_bash[0]", "pass": False, "rank": None}
+    amended = gate.case({**AMENDED_CASE, "equivalent_lessons": ["lesson_b.md"]})
+    assert amended[0] == {
+        "check": "guard_bash[0]",
+        "pass": True,
+        "rank": 2,
+        "matched": "lesson_b.md",
+    }
+    assert tool.verdict(AMENDED_CASE, amended) is True
+
+
+def test_gate0_prefers_the_case_lesson_at_a_better_rank() -> None:
+    tool = load_tool()
+    gate = amended_gate(tool, "- [id 1] x (lesson_a)\n- [id 2] y (lesson_b)\n", {"lesson_b.md"})
+    checks = gate.case({**AMENDED_CASE, "equivalent_lessons": ["lesson_b.md"]})
+    assert checks[0] == {"check": "guard_bash[0]", "pass": True, "rank": 1}
+
+
+def test_gate0_refuses_an_equivalent_lesson_that_is_not_in_the_memory() -> None:
+    tool = load_tool()
+    gate = amended_gate(tool, "- [id 1] x (other)\n", set())
+    with pytest.raises(SystemExit, match="not in the frozen memory"):
+        gate.case({**AMENDED_CASE, "equivalent_lessons": ["lesson_b.md"]})
+
+
+def test_cases_read_the_amendments_and_refuse_an_unknown_case(tmp_path) -> None:
+    tool = load_tool()
+    gate0 = tmp_path / "gate0"
+    gate0.mkdir()
+    (gate0 / "candidates.json").write_text(json.dumps([{"id": "1b", "W": "W1"}]))
+    suite_obj = object.__new__(tool.Suite)
+    suite_obj.bench = tmp_path
+    assert "equivalent_lessons" not in suite_obj.cases()[0]
+    (gate0 / "amendments_2000-01-01.json").write_text(
+        json.dumps({"equivalent_lessons": {"1b": ["lesson_b.md"]}})
+    )
+    assert suite_obj.cases()[0]["equivalent_lessons"] == ["lesson_b.md"]
+    (gate0 / "amendments_2000-01-02.json").write_text(
+        json.dumps({"equivalent_lessons": {"9z": ["lesson_c.md"]}})
+    )
+    with pytest.raises(SystemExit, match="unknown cases: 9z"):
+        suite_obj.cases()

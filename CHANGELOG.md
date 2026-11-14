@@ -8,6 +8,13 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Gate 0 of `tools/eval_suite.py` reads dated bench amendments
+  (`gate0/amendments_*.json`). An amendment can name an equivalent lesson for a
+  case; a check then passes on that lesson too and records it in a `matched`
+  key. The frozen case files stay unchanged, the amendment files count in the
+  bench digest, and an amendment that names an unknown case or a note that is
+  not in the memory stops the run (NOBLIVION-228).
+
 - Gate 0 of `tools/eval_suite.py` reads the rows the model sees in the JSON
   output of the guard, error recall and subagent hooks. A found lesson now has a
   rank on those checks; before, the rank was always empty. Pass counts do not
