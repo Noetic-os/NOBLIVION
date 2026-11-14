@@ -62,7 +62,8 @@ _LIST_KEYS = frozenset(
     "memory_dirs labels.ticket_prefixes labels.service_prefixes "
     "recall.shared_roots guard.generic_args_extra guard.evidence_stop_extra "
     "continuity.decision_files continuity.open_files stop.shared_checkouts "
-    "stop.worktree_prefixes stop.deploy_hosts recall.nudge_tools recall.nudge_commands".split()
+    "stop.worktree_prefixes stop.deploy_hosts stop.notify_phrases recall.nudge_tools "
+    "recall.nudge_commands".split()
 )
 _TEXT_KEYS = frozenset(
     "namespace global_memory_dir store.bin embedding.model "

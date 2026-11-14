@@ -12,6 +12,10 @@ All notable changes to NOBLIVION. The format follows
   (`the`, `between`, `until`) a score only where it is rare, in at most 1 of 20
   files, as the store's match rule does. A row that shares only `the` with the
   prompt no longer gets a keyword rank it did not earn (NOBLIVION-82).
+- The doctor knows the `stop.notify_phrases` config key (a list of regular expressions for
+  the `notify` stop check), so a valid config no longer warns `config_unknown_keys`. The test
+  that scans the hooks for the keys they read now also finds a read through a module alias
+  such as `_CFG` (NOBLIVION-230).
 
 ## 0.1.24 - 2026-11-14
 

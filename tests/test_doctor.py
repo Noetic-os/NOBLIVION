@@ -941,14 +941,17 @@ def test_darwin_child_wait_timeout_stops_child_and_closes_pipe(tmp_path, monkeyp
 def test_every_config_key_a_hook_reads_is_known_to_doctor():
     """A hook switch that the doctor does not know makes a valid config warn
     ``config_unknown_keys`` (NOBLIVION-225). Scan the hooks for the dotted keys
-    they read and require each one in ``KNOWN_KEYS``."""
+    they read and require each one in ``KNOWN_KEYS``. A hook may read the config
+    through a module alias (``_CFG.string_list("stop.notify_phrases")``), so the
+    scan takes any name before the method (NOBLIVION-230)."""
     import re
 
     from noblivion import doctor
 
     hooks = Path(__file__).resolve().parents[1] / "hooks"
     patterns = (
-        r'hook_config\.(?:get|switch|string_list)\(\s*"([a-z_]+\.[a-z_]+)"',
+        r'\b(?:hook_config|_?[A-Za-z]*[Cc][Ff][Gg]|config)\.(?:get|switch|string_list)'
+        r'\(\s*"([a-z_]+\.[a-z_]+)"',
         r'\b[A-Z_]*KEY[A-Z_]*\s*=\s*"([a-z_]+\.[a-z_]+)"',
         r'[A-Z_]+_KEY\s*=\s*"[^"]*",\s*"([a-z_]+\.[a-z_]+)"',
         r'"NOBLIVION_[A-Z_]+",\s*"([a-z_]+\.[a-z_]+)"',
@@ -973,3 +976,5 @@ def test_nudge_and_reminder_keys_validate():
     assert doctor._valid("stop.reminders", "notify,lesson")
     assert doctor._valid("stop.reminders", ["notify"])
     assert not doctor._valid("stop.reminders", 3)
+    assert doctor._valid("stop.notify_phrases", [r"\bstill to do\b"])
+    assert not doctor._valid("stop.notify_phrases", "still to do")
