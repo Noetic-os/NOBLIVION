@@ -20,6 +20,10 @@ All notable changes to NOBLIVION. The format follows
   off-topic prompts with 0 rows went from 85 of 100 to 95 of 100 (19 of 20 in each project);
   no on-topic set lost a hit. Hybrid answers and the search route are unchanged.
   `tools/eval_keyword_gate.py` measures it (NOBLIVION-153).
+- The doctor knows the `stop.notify_phrases` config key (a list of regular expressions for
+  the `notify` stop check), so a valid config no longer warns `config_unknown_keys`. The test
+  that scans the hooks for the keys they read now also finds a read through a module alias
+  such as `_CFG` (NOBLIVION-230).
 
 ## 0.1.24 - 2026-11-14
 
