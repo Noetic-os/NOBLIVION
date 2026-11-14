@@ -8,6 +8,18 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- The store runs up to `budget.max_concurrency` learning worker loops, so model
+  calls run in parallel on a model server that serves several requests at once.
+  Before, the store ran one loop and `max_concurrency` only limited
+  reservations. Each loop claims jobs through the job lease with its own
+  database connection. One supervisor prunes, projects and indexes. A change
+  of `max_concurrency` in `learning.json` takes effect without a restart, up
+  and down. The loops of one store take turns for call slots, and a started
+  job uses the current budget on its next call, so a scale-up or a scale-down
+  does not defer a started job with `BudgetExceeded`. A worker that waits for
+  a call slot renews its job lease. The default stays 1, and at most 16 loops
+  run (NOBLIVION-242).
+
 ## 0.1.25 - 2026-11-14
 
 - One extraction candidate that fails a check of its own values no longer ends

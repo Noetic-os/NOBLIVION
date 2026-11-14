@@ -70,6 +70,33 @@ a job needing several calls can wait for the next budget window. The provider
 also supports `"reasoning_effort": "none"`. Measure that setting with the selected
 local model before using it. Neither example enables a remote or paid provider.
 
+### Parallel model calls
+
+`budget.max_concurrency` sets how many worker loops the store runs, and so how
+many model calls run at once. The default is 1. A model server that serves
+several requests at once (continuous batching) can then run several jobs at
+the same time. Set the value to the number of requests the server can serve
+at once, or lower. The store starts at most 16 worker loops; a value of 0 runs
+no worker.
+
+- Each worker loop claims a job through the job lease and uses its own
+  database connection, so no two loops run the same job.
+- One supervisor reads `learning.json` every 5 seconds, prunes, writes the
+  accepted notes to the memory folders and indexes them. The worker loops do
+  not do this work.
+- A change of `max_concurrency` takes effect on the next read, up and down,
+  with no restart. After a scale-down, a loop above the new count ends after
+  its current job. Until then, the loops take turns for the calls, so a
+  started job waits for a free call instead of a `BudgetExceeded` deferral.
+- A worker that waits for a free call keeps its job lease alive. When the
+  store stops or learning is turned off during the wait, the worker gives the
+  job back with `LearningWorkerStopped`. The job keeps its attempt and its
+  progress.
+- Each call reserves its budget in one database transaction, so parallel calls
+  never spend past `max_calls`, `max_tokens`, `max_seconds` or `max_cost`.
+  The ledger also refuses a call when `max_concurrency` reservations are open
+  in the database, from all processes together.
+
 ### Context and output deferrals
 
 Existing notes are checked separately. A safe statement stays available when an

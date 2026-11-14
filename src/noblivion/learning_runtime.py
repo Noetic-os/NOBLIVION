@@ -11,10 +11,13 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
 import time
+import uuid
+from collections.abc import Callable
 from pathlib import Path
 
-from noblivion.learning import LearningLedger
+from noblivion.learning import LearningLedger, LeaseLost
 
 log = logging.getLogger("noblivion.learning")
 
@@ -151,29 +154,230 @@ def prune_options(settings: dict) -> dict | None:
     return {key: value for key, value in block.items() if key != "enabled"}
 
 
-def run(store) -> None:
-    """Dedicated bounded worker. A bad pass never kills the retry loop."""
-    last_prune = float("-inf")
-    while not store._jobs_stop.is_set():
+PASS_INTERVAL = 5.0
+# A hard bound on worker threads, whatever budget.max_concurrency says.
+MAX_WORKERS = 16
+# How often a worker that waits for a call slot renews its job lease.
+SLOT_WAIT_SECONDS = 5.0
+
+
+def worker_count(settings: dict | None) -> int:
+    """The number of worker loops: budget.max_concurrency, 0 when learning is off."""
+    if not settings or settings.get("enabled") is not True:
+        return 0
+    _, _, budget = worker_options(settings)
+    return max(0, min(MAX_WORKERS, math.ceil(budget.max_concurrency)))
+
+
+class CallSlots:
+    """The model calls that may run at once in this store, resizable at run time.
+
+    The ledger counts reservations across processes (``reserve`` refuses at
+    ``max_concurrency``). These slots make the workers of one store wait for
+    each other in turn, so a scale-down or a scale-up never turns a busy slot
+    into a ``BudgetExceeded`` deferral of a started job.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._limit = 0
+        self._used = 0
+
+    @property
+    def limit(self) -> int:
+        with self._cond:
+            return self._limit
+
+    @property
+    def used(self) -> int:
+        with self._cond:
+            return self._used
+
+    def set_limit(self, limit: int) -> None:
+        with self._cond:
+            self._limit = limit
+            self._cond.notify_all()
+
+    def acquire(self, stop: threading.Event, renew: Callable[[], None]) -> bool:
+        """Take a slot. False when the store stops or the limit falls to 0.
+
+        ``renew`` runs between waits, outside the lock, to keep the job lease.
+        """
+        while True:
+            with self._cond:
+                if self._used < self._limit:
+                    self._used += 1
+                    return True
+                if stop.is_set() or self._limit <= 0:
+                    return False
+                self._cond.wait(SLOT_WAIT_SECONDS)
+                if self._used < self._limit:
+                    self._used += 1
+                    return True
+            renew()
+
+    def release(self) -> None:
+        with self._cond:
+            self._used = max(0, self._used - 1)
+            self._cond.notify_all()
+
+
+class PooledLedger(LearningLedger):
+    """A worker's ledger: each model call holds one call slot from reserve to settle."""
+
+    def __init__(self, conn, pool: LearningPool):
+        super().__init__(conn)
+        self._pool = pool
+        self._held = False
+
+    def reserve(self, job_id: str, lease_token: str, *, limits, **estimates):
+        if not self._held:
+            lease_seconds = self._pool.lease_seconds
+
+            def renew() -> None:
+                self.renew_lease(job_id, lease_token, lease_seconds)
+
+            if not self._pool.slots.acquire(self._pool.stop, renew):
+                # A stop or a scale-down to 0 while this job waits: give the job
+                # back at once, keep its attempt, and write nothing more.
+                self.defer(job_id, lease_token, retry_delay=0, error="LearningWorkerStopped")
+                raise LeaseLost("learning worker stopped")
+            self._held = True
+        # The current budget, not the one read when the job started: a limit
+        # that changed while the job ran applies to its next call.
+        current = self._pool.budget or limits
         try:
-            settings = load_settings(store.data_dir)
-            if not settings["scopes"]:
-                store._jobs_stop.wait(5.0)
-                continue
-            with store.connection() as conn:
+            return super().reserve(job_id, lease_token, limits=current, **estimates)
+        except BaseException:
+            self.release()
+            raise
+
+    def settle(self, reservation_id: str, **actuals) -> None:
+        try:
+            super().settle(reservation_id, **actuals)
+        finally:
+            self.release()
+
+    def release(self) -> None:
+        """Free the call slot. Safe to call when no slot is held."""
+        if self._held:
+            self._held = False
+            self._pool.slots.release()
+
+
+class LearningPool:
+    """Up to ``budget.max_concurrency`` worker loops for one store (NOBLIVION-242).
+
+    One supervisor reads learning.json, prunes, projects and indexes. Each
+    worker loop claims jobs through the ledger lease with its own database
+    connection and the latest settings the supervisor published.
+    """
+
+    def __init__(self, store):
+        self.store = store
+        self.stop: threading.Event = store._jobs_stop
+        self.slots = CallSlots()
+        self.settings: dict | None = None
+        self.budget = None
+        self.lease_seconds: float = 120.0
+        self.poll_seconds: float = PASS_INTERVAL
+        self.desired = 0
+        self._threads: dict[int, threading.Thread] = {}
+        self._last_prune = float("-inf")
+
+    def update(self, settings: dict | None) -> None:
+        """Publish one settings snapshot and start or retire worker loops."""
+        desired = 0
+        try:
+            desired = worker_count(settings)
+            if desired:
+                _, worker, budget = worker_options(settings)
+                self.budget, self.lease_seconds = budget, worker.lease_seconds
+                self.poll_seconds = worker.poll_seconds
+        except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
+            desired = 0
+        self.settings = settings if desired else None
+        self.desired = desired
+        self.slots.set_limit(desired)
+        for index in range(desired):
+            thread = self._threads.get(index)
+            if thread is None or not thread.is_alive():
+                thread = threading.Thread(
+                    target=self._work,
+                    args=(index,),
+                    name=f"noblivion-learning-{index}",
+                    daemon=True,
+                )
+                self._threads[index] = thread
+                thread.start()
+
+    def alive(self) -> int:
+        return sum(thread.is_alive() for thread in self._threads.values())
+
+    def _work(self, index: int) -> None:
+        """One worker loop. A loop above the current count ends after its job."""
+        worker_id = f"learning-{uuid.uuid4().hex}-{index}"
+        while not self.stop.is_set():
+            settings = self.settings
+            if settings is None or index >= self.desired:
+                return
+            result: dict = {"status": "failed"}
+            ledger = None
+            try:
+                with self.store.connection() as conn:
+                    ledger = PooledLedger(conn, self)
+                    result = run_once(ledger, settings, worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - pending work survives this pass
+                log.error("learning pass failed: %s", type(exc).__name__)
+            finally:
+                if ledger is not None:
+                    ledger.release()
+            if result.get("status") != "done":
+                self.stop.wait(self.poll_seconds)
+
+    def pass_once(self) -> None:
+        """Read the settings, prune, publish them to the workers, project and index."""
+        try:
+            settings = load_settings(self.store.data_dir)
+        except Exception as exc:  # noqa: BLE001 - an invalid file stops the workers
+            self.update(None)
+            log.error("learning pass failed: %s", type(exc).__name__)
+            return
+        if not settings["scopes"]:
+            self.update(None)
+            return
+        try:
+            with self.store.connection() as conn:
                 ledger = LearningLedger(conn)
                 options = prune_options(settings)
-                if options is not None and time.monotonic() - last_prune >= PRUNE_INTERVAL:
-                    last_prune = time.monotonic()
+                if options is not None and time.monotonic() - self._last_prune >= PRUNE_INTERVAL:
+                    self._last_prune = time.monotonic()
                     counts = ledger.prune(**options)
                     if any(counts.values()):
                         log.info("learning prune: %s", json.dumps(counts, sort_keys=True))
-                if settings.get("enabled") is True:
-                    run_once(ledger, settings)
-                project_and_index(store, ledger, settings)
+                self.update(settings)
+                project_and_index(self.store, ledger, settings)
         except Exception as exc:  # noqa: BLE001 - pending work survives this pass
             log.error("learning pass failed: %s", type(exc).__name__)
-        store._jobs_stop.wait(5.0)
+
+    def shutdown(self, timeout: float = 0.0) -> None:
+        """Stop starting calls; join the loops when a timeout is given."""
+        self.desired = 0
+        self.slots.set_limit(0)
+        deadline = time.monotonic() + timeout
+        for thread in self._threads.values():
+            thread.join(max(0.0, deadline - time.monotonic()))
+
+
+def run(store) -> None:
+    """The supervisor: one pass every 5 s. A bad pass never kills the loop."""
+    pool = LearningPool(store)
+    try:
+        while not store._jobs_stop.is_set():
+            pool.pass_once()
+            store._jobs_stop.wait(PASS_INTERVAL)
+    finally:
+        pool.shutdown()
 
 
 def worker_options(settings: dict):
@@ -192,13 +396,14 @@ def worker_options(settings: dict):
     return provider, worker, budget
 
 
-def run_once(ledger: LearningLedger, settings: dict):
+def run_once(ledger: LearningLedger, settings: dict, *, worker_id: str | None = None):
     """Construct an explicitly configured local worker; no provider fallback."""
     from noblivion.learning_worker import LearningWorker
 
     worker = LearningWorker(
         ledger,
         *worker_options(settings),
+        worker_id=worker_id,
         allowed_scopes={(s["project"], s["root"]) for s in settings["scopes"]},
     )
     return worker.run_once()
