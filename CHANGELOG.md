@@ -8,6 +8,11 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- The hook re-rank and the store's keyword values for it give a stop word
+  (`the`, `between`, `until`) a score only where it is rare, in at most 1 of 20
+  files, as the store's match rule does. A row that shares only `the` with the
+  prompt no longer gets a keyword rank it did not earn (NOBLIVION-82).
+
 ## 0.1.24 - 2026-11-14
 
 - The doctor knows the `recall.nudge`, `recall.nudge_shadow`, `recall.nudge_tools`,
