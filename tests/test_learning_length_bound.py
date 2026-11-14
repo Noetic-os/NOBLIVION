@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """A window that ends on the output token cap splits and the job ends (NOBLIVION-245)."""
 
+import hashlib
 import json
 from dataclasses import replace
 
@@ -13,6 +14,7 @@ from noblivion.learning_pages import LENGTH_REJECTED
 from noblivion.learning_worker import (
     LENGTH_SPLIT_DEPTH,
     MAX_RETURNED_DEFERRALS,
+    PIECE_STRIDE,
     LearningWorker,
     ProviderError,
     ProviderResponse,
@@ -25,6 +27,9 @@ EMPTY = '{"version":1,"candidates":[]}'
 LIMITS = replace(BudgetLimits(), max_calls=1000, max_seconds=100000, max_tokens=10**8)
 # The progress keys of a job deferred on length by the release before this fix,
 # dumped from that release with the same job (plain length, length on the retry).
+# A cap that the deepest pieces of a window fit. Windows grow with the contract
+# (NOBLIVION-241), and the split depth stays the same.
+CAP = 3000 * module.WINDOW_SCALE[module.EXTRACTION_CONTRACT]
 OLD_LENGTH_KEYS = {
     "call_configuration",
     "context_exclusions",
@@ -87,7 +92,7 @@ def receipts(ledger):
 
 def test_length_on_large_windows_splits_until_they_fit_and_the_job_ends(ledger):
     capture(ledger, "new", "Routine context. " * 1100)
-    provider = CappedProvider(ledger, cap=3000)
+    provider = CappedProvider(ledger, cap=CAP)
     run = LearningWorker(ledger, provider, WorkerSettings(), LIMITS)
     assert run.run_once()["status"] == "done"
     status, _, progress = job_row(ledger)
@@ -97,7 +102,7 @@ def test_length_on_large_windows_splits_until_they_fit_and_the_job_ends(ledger):
     assert provider.results.count("length") == splits > 0
     assert provider.results.count("success") == len(receipts(ledger))
     assert all(
-        size <= 3000
+        size <= CAP
         for size, result in zip(provider.sizes, provider.results, strict=True)
         if result == "success"
     )
@@ -377,3 +382,52 @@ def test_job_deferred_on_length_after_a_saturated_page_resumes_and_keeps_it(ledg
     assert all(size < 3000 for size, _, _ in seen[old_calls:])
     assert [r["continuation"] for r in receipts(ledger)] == [0, 64, 128]
     assert [n["statement"] for n in ledger.current_notes("demo", "scope")] == [FACT]
+
+
+def capture_turn(ledger, user_text, assistant_text):
+    """One batch with a user part and an assistant part, so one window of two parts."""
+    records = [
+        {
+            "source_id": ident,
+            "source_hash": hashlib.sha256(text.encode()).hexdigest(),
+            "content": text,
+            "role": role,
+            "observed_at": observed,
+            "metadata": {},
+        }
+        for ident, text, role, observed in (
+            ("asks", user_text, "user", "2026-01-02T12:00:00Z"),
+            ("narrates", assistant_text, "assistant", "2026-01-02T12:00:01Z"),
+        )
+    ]
+    ledger.capture_batch(
+        {
+            "batch_id": "batch-turn",
+            "namespace": "demo",
+            "root": "scope",
+            "source_client": "codex",
+            "session_id": "review-session",
+            "records": records,
+        }
+    )
+
+
+def test_split_piece_without_eligible_evidence_gets_a_receipt_and_no_call(ledger):
+    # NOBLIVION-241: under contract 2 the no-call receipt is per piece, so the
+    # assistant half of a split window gets no model call.
+    capture_turn(ledger, "User asks about routine context. " * 60, "Assistant narration. " * 80)
+    provider = CappedProvider(ledger, cap=2500)
+    run = LearningWorker(ledger, provider, WorkerSettings(), LIMITS)
+    assert run.run_once()["status"] == "done"
+    _, _, progress = job_row(ledger)
+    assert progress["execution_configuration"]["contract"] == 2
+    assert progress["length_splits"] == {"0": [0]}
+    # The whole window ends on length, then only the user piece is called.
+    assert provider.results == ["length", "success"]
+    rows = {r["continuation"]: (r["status"], r["reason"]) for r in receipts(ledger)}
+    assert sorted(rows) == [PIECE_STRIDE, 2 * PIECE_STRIDE]
+    assert rows[2 * PIECE_STRIDE] == (
+        "no_lesson",
+        "no tool or direct user text in the window; no model call",
+    )
+    assert rows[PIECE_STRIDE] == ("no_lesson", "provider reported no eligible lesson")

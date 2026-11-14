@@ -88,7 +88,7 @@ WINDOWS = [[{"source_id": "source-1", "offset": 0, "text": "x"}]]
 # semantic prompt and schema, the batch limits and the window scale.
 CONTRACT_TEXT = {
     1: "d36896fdc03a381cefca3212199a2e5afae95d357f5a703085e3c5bf9c392e99",
-    2: "4e3f1a2944c64beb7d5846a037031e1ef747875b4e1cbc893c5b5fb191027dfc",
+    2: "2f619bf75a9c87e331d199a63ee244df59cddc739b746a4133fcb6f757f67311",
 }
 
 

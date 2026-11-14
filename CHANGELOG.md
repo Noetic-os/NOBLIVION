@@ -20,16 +20,19 @@ All notable changes to NOBLIVION. The format follows
   most 24 times per job. After that each deferral counts an attempt, so the job
   ends (NOBLIVION-245).
 - New learning jobs need fewer model calls (NOBLIVION-241). They start under
-  extraction contract version 2: a window holds three times `window_chars`, a
-  window with no tool text and no direct user text gets a `no_lesson` receipt
-  with no model call, and one semantic call compares up to 8 candidates and 64
-  (candidate, target) pairs. Every pair still needs one explicit relation, and
-  every evidence and secret check stays. A job measured about 57 calls
+  extraction contract version 2: a window holds two times `window_chars`, a
+  window or split piece with no tool text and no direct user text gets a
+  `no_lesson` receipt with no model call, and one semantic call compares up to
+  8 candidates and 64 (candidate, target) pairs. Every pair still needs one
+  explicit relation, and every evidence and secret check stays. A job measured about 57 calls
   (median) and 87 (p90) under version 1. On 470 recorded jobs of a live store
-  the simulated median falls from about 67 to about 15 calls per job (p90 123
-  to 30) at today's note count. A job that an older release froze but that has
+  the simulated median falls from about 67 to about 19 calls per job (p90 123
+  to 35) at today's note count. Three times `window_chars` gave 3 `length`
+  results and 4 rejected replies in 30 window calls on the local model; two
+  times gave 1 and 3. A job that an older release froze but that has
   no partial work (no completed window, page receipt, semantic stage,
-  decision, format retry or output-limit hold) freezes again under version 2
+  decision, format retry, output-limit hold, length split or rejected window)
+  freezes again under version 2
   when a worker leases it, so the waiting backlog also needs fewer calls. A
   job with partial work keeps contract version 1 and resumes with version 1
   windows and calls. Consolidation and draft jobs keep version 1.

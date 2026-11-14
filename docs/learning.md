@@ -139,6 +139,9 @@ plan and the job fingerprint do not change: the split is recorded per window in
 the job progress as `length_splits`, and a piece stores its page receipts at
 continuation `64 * piece + continuation`. A job that an older release deferred
 on `length` resumes with the split and does not send the held request again.
+Extraction contract version 2 keeps the same three levels. So its smallest piece
+is twice as large: about 3,000 characters of a 24,000-character window. Version
+1 windows of 12,000 characters had no `length` result in 32 measured calls.
 
 For a semantic or derivation call, a `Provider:length` result holds the exact
 request. Automatic attempts with the same request remain deferred and make no
@@ -187,11 +190,15 @@ starts. A started job with partial work always resumes under its own version.
 A new job starts under the newest version. The worker supports versions 1 and 2. Version 2
 (NOBLIVION-241) needs fewer model calls per job:
 
-- A window holds three times `window_chars`. With the default 12,000 characters
-  a window holds 36,000 characters, and the overlap stays at `overlap_chars`.
-  On recorded jobs of a live store the median job needs 7 windows instead of
-  25.
-- A window that holds no tool text and no direct user text gets a `no_lesson`
+- A window holds two times `window_chars`. With the default 12,000 characters
+  a window holds 24,000 characters, and the overlap stays at `overlap_chars`.
+  On recorded jobs of a live store the median job needs 11 windows instead of
+  25. Three times `window_chars` was measured first, on the local model: 3
+  `length` results and 4 rejected replies in 30 window calls. Two times gave 1
+  `length` result and 3 rejected replies in 30 calls; version 1 windows gave 0
+  and 3 in 32 calls.
+- A window, or a piece of a split window, that holds no tool text and no direct
+  user text gets a `no_lesson`
   receipt with the reason `no tool or direct user text in the window; no model
   call`. The model is not called, because the evidence checks cannot accept a
   candidate from such a window. A window with only tool output is still sent:
@@ -206,8 +213,8 @@ batched semantic prompt and schema. Consolidation and draft jobs use only
 version 1 text, so they freeze version 1. A job that 0.1.28 or an older release
 started resumes as version 1 when it has partial work: same windows, one
 semantic call per comparison task. Partial work is a completed window, a page
-receipt, a semantic stage, a decision, a pending format retry or an output-limit
-hold. A version 1 job with none of these freezes again under the newest version
+receipt, a semantic stage, a decision, a pending format retry, an output-limit
+hold, a length split (`length_splits`) or a rejected window. A version 1 job with none of these freezes again under the newest version
 when a worker leases it, so it also needs fewer calls; its progress records
 `refrozen_from: 1`. A version 1 job whose freeze no longer matches the
 configuration still fails with `window configuration changed during a job`.
@@ -215,9 +222,11 @@ configuration still fails with `window configuration changed during a job`.
 The version 2 semantic stage stores a digest of its batches when it starts. A
 resume builds the batches again; if the digest differs, the job fails with
 `semantic batches changed during a job` instead of skipping or repeating
-comparisons. A semantic stage without a digest resumes and gets one. A window of 36,000 characters with 24,000 characters of existing notes
-needs about 20,000 input tokens. Keep `window_chars` at a value whose triple,
-plus the existing notes and the output limit, fits the model context.
+comparisons. A semantic stage without a digest resumes and gets one.
+
+A window of 24,000 characters with 24,000 characters of existing notes needs
+about 16,000 input tokens. Keep `window_chars` at a value whose double, plus the
+existing notes and the output limit, fits the model context.
 
 The number of semantic comparisons grows with the number of notes in the
 scope: each new candidate is compared with every managed note. Batching cuts

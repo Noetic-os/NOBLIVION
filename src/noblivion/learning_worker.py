@@ -335,9 +335,13 @@ PARTIAL_WORK = (
     "format_repair",
     "output_limit_hold",
     "candidate_mismatches",
+    # NOBLIVION-245: split slots address pieces of the frozen windows. Under
+    # other windows they would split other text.
+    "length_splits",
+    "rejected_windows",
 )
 # Characters per window are window_chars times this factor.
-WINDOW_SCALE = {1: 1, 2: 3}
+WINDOW_SCALE = {1: 1, 2: 2}
 # The exact configuration shape frozen by releases up to 0.1.24.
 LEGACY_SETTINGS = (
     "max_attempts",
@@ -992,8 +996,8 @@ class LearningWorker:
         """True when a job frozen under an older contract has no partial work.
 
         Such a job has no completed window, no page receipt, no semantic stage,
-        no decision, no format retry and no output-limit hold, so nothing in
-        it depends on its frozen windows. It may freeze again under the newest
+        no decision, no format retry, no output-limit hold and no length split,
+        so nothing in it depends on its frozen windows. It may freeze again under the newest
         contract. A job with any partial work keeps its frozen contract, and a
         job whose freeze no longer matches still fails visibly (NOBLIVION-236).
         """
@@ -1075,6 +1079,23 @@ class LearningWorker:
             if receipt is None:
                 if pages.count() >= cfg.max_pages:
                     raise CoverageExhausted("extraction page limit reached; coverage incomplete")
+                if (
+                    continuation == 0
+                    and job.get("contract", LEGACY_EXTRACTION_CONTRACT) >= 2
+                    and not learnable_window(piece)
+                ):
+                    # No part of this piece can hold accepted evidence, so a model
+                    # call cannot add a note. The receipt still covers the piece.
+                    pages.save(
+                        unit_index,
+                        page,
+                        piece,
+                        [],
+                        "no_lesson",
+                        "no tool or direct user text in the window; no model call",
+                    )
+                    # The resume path below reads the saved receipt and goes on.
+                    continue
                 previous = [
                     d
                     for row in pages._rows()

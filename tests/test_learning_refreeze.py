@@ -17,7 +17,7 @@ from noblivion.learning_worker import ProviderError, ProviderResponse, WorkerSet
 from test_learning_fewer_calls import Oracle, many_candidates, progress, run
 from test_learning_review_fixes import capture
 
-LONG = "Routine context. " * 1100  # three contract 1 windows, one of contract 2
+LONG = "Routine context. " * 1100  # two contract 1 windows, one of contract 2
 
 
 @pytest.fixture
@@ -62,7 +62,7 @@ def test_job_frozen_with_no_work_freezes_again_under_contract_2(ledger, monkeypa
     assert after["execution_configuration"]["contract"] == 2
     assert after["call_configuration"]["contract"] == 2
     assert after["execution_fingerprint"] != frozen["execution_fingerprint"]
-    # Contract 2 windows (three times larger) and batched semantic calls.
+    # Contract 2 windows (twice as large) and batched semantic calls.
     assert provider.offsets == [0] and "semantic" not in provider.calls
     assert provider.calls.count("batch") == 2
 
@@ -122,6 +122,9 @@ def test_page_receipt_alone_keeps_contract_1(ledger, monkeypatch):
         {"semantic": {"next_batch": 0}},
         {"dependency_deferred": True},
         {"candidate_mismatches": []},
+        {"output_limit_hold": "call-key"},
+        {"length_splits": {"0": [0]}},
+        {"rejected_windows": [0]},
     ],
 )
 def test_any_partial_work_marker_keeps_contract_1(ledger, monkeypatch, marker):
@@ -133,25 +136,6 @@ def test_any_partial_work_marker_keeps_contract_1(ledger, monkeypatch, marker):
     sources = ledger._job_sources(job_id)
     assert worker._may_refreeze({"id": job_id}, state, sources) is False
     assert worker._may_refreeze({"id": job_id}, progress(ledger), sources) is True
-
-
-def test_output_limit_hold_keeps_contract_1(ledger, monkeypatch):
-    capture(ledger, "long", LONG)
-
-    class Length(Oracle):
-        def complete(self, messages, **kwargs):
-            self.calls.append("length")
-            raise ProviderError("length", tokens=10)
-
-    provider = Length()
-    first, frozen = freeze_under_contract_1(ledger, monkeypatch, provider)
-    assert first["error"] == "Provider:length" and frozen["output_limit_hold"]
-    result = run(ledger, provider)
-    # The hold stays under contract 1 and repeats no call.
-    assert result["error"] == "Provider:length" and provider.calls == ["length"]
-    after = progress(ledger)
-    assert "refrozen_from" not in after
-    assert after["execution_configuration"] == frozen["execution_configuration"]
 
 
 def test_changed_configuration_with_no_work_still_fails_visibly(ledger, monkeypatch):
@@ -185,3 +169,39 @@ def test_new_job_is_not_marked_as_refrozen(ledger):
     )
     assert run(ledger, provider)["status"] == "done"
     assert "refrozen_from" not in progress(ledger)
+
+
+class LengthFirst(Oracle):
+    """End the first call on the output token cap, then answer as Oracle."""
+
+    def __init__(self):
+        super().__init__()
+        self.cut = False
+
+    def complete(self, messages, **kwargs):
+        if not self.cut:
+            self.cut = True
+            raise ProviderError("length", tokens=10)
+        return super().complete(messages, **kwargs)
+
+
+def test_length_split_without_a_receipt_keeps_contract_1(ledger, monkeypatch):
+    # NOBLIVION-245 split slots address pieces of the contract 1 windows. A
+    # re-freeze would apply them to other windows.
+    capture(ledger, "long", LONG)
+    provider = LengthFirst()
+    # The one allowed call ends on length and splits window 0; the first piece
+    # then has no budget, so no receipt exists.
+    first, frozen = freeze_under_contract_1(ledger, monkeypatch, provider, max_calls=1)
+    assert first["error"] == "BudgetExceeded"
+    assert frozen["length_splits"] == {"0": [0]} and pages(ledger) == 0
+    assert frozen["next_window"] == 0 and "next_continuation" not in frozen
+    assert not set(frozen) & (set(learning_worker.PARTIAL_WORK) - {"length_splits"})
+    worker = learning_worker.LearningWorker(ledger, provider, WorkerSettings(), BudgetLimits())
+    (job_id,) = ledger.conn.execute("SELECT id FROM learning_jobs").fetchone()
+    assert worker._may_refreeze({"id": job_id}, frozen, ledger._job_sources(job_id)) is False
+    assert run(ledger, provider)["status"] == "done"
+    after = progress(ledger)
+    assert "refrozen_from" not in after
+    assert after["execution_configuration"]["contract"] == 1
+    assert after["length_splits"] == {"0": [0]}
