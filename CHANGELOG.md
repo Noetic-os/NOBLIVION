@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.27 - 2026-11-14
+
 - A learning window whose model response fails a response failure class (for
   example an authority claim or quoted evidence) no longer fails the whole
   extraction job. No candidate of the response is stored, as before, and the
