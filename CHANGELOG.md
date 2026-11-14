@@ -10,8 +10,8 @@ All notable changes to NOBLIVION. The format follows
 
 - A learning window whose model output reaches the output token cap no longer
   defers its job every hour without end. The worker splits that window in two
-  halves and goes on with each half. A piece is not split below 2048
-  characters or past three splits. At that floor the piece gets a `rejected`
+  halves and goes on with each half. A single part is not split below
+  2048 characters, and nothing splits past three levels. At that floor the piece gets a `rejected`
   page receipt and the job goes on. A cut-off output is never stored as
   candidates. The window plan and the job fingerprint stay the same, so a
   started job goes on. A job that an older release deferred on this result

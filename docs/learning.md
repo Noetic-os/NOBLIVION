@@ -130,8 +130,9 @@ All provider inputs still pass the complete secret check.
 A `Provider:length` result means the model output reached the output token
 cap. The cut-off output is never kept. For an extraction window, the worker
 splits that window in two halves and goes on with each half. A half that also
-ends on `length` splits again. A piece is not split below 2048 characters or
-past three splits (eight pieces). At that floor the piece gets a `rejected`
+ends on `length` splits again. A window of several parts splits between parts. A
+single part splits in the middle, but not below 2048 characters. Nothing splits
+past three levels (eight pieces). At that floor the piece gets a `rejected`
 page receipt, its unit index goes into `rejected_windows`, and the job goes on.
 So one window makes at most 15 calls that end on `length`. The frozen window
 plan and the job fingerprint do not change: the split is recorded per window in

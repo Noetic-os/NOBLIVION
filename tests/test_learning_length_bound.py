@@ -269,3 +269,89 @@ def test_explicit_retry_renews_the_deferral_count(ledger):
     ledger.retry(job_id)
     assert "returned_deferrals" not in job_row(ledger)[2]
     assert run.run_once()["status"] == "deferred"
+
+
+FACT = "The indigo service uses port 8443."
+
+
+def fact_candidate(record, key="indigo-port", quote=FACT):
+    return candidate(
+        record,
+        key=key,
+        category="fact",
+        statement=FACT,
+        evidence=[{"source_id": record["source_id"], "quote": quote}],
+    )
+
+
+def test_a_piece_after_a_split_stores_its_candidate(ledger):
+    record = capture(ledger, "new", "Routine filler text. " * 230 + FACT)
+    provider = CappedProvider(ledger, cap=3000)
+    scripted = ScriptedProvider(ledger, [], "distinct")
+    pieces = []
+
+    def complete(messages, **kwargs):
+        payload = json.loads(messages[-1]["content"])
+        if "sources" not in payload:
+            return scripted.complete(messages, **kwargs)
+        window = payload["sources"]
+        if sum(len(part["content"]) for part in window) > 3000:
+            raise ProviderError("length", tokens=2048)
+        pieces.append(window[0]["offset"])
+        found = any(FACT in part["content"] for part in window)
+        body = {"version": 1, "candidates": [fact_candidate(record)] if found else []}
+        return ProviderResponse(json.dumps(body), 10)
+
+    provider.complete = complete
+    result = LearningWorker(ledger, provider, WorkerSettings(), LIMITS).run_once()
+    assert result["status"] == "done" and len(pieces) == 2 and pieces[1] > 0
+    assert [n["statement"] for n in ledger.current_notes("demo", "scope")] == [FACT]
+
+
+def test_job_deferred_on_length_after_a_saturated_page_resumes_and_keeps_it(ledger, monkeypatch):
+    record = capture(ledger, "new", FACT + " Routine filler text." * 240)
+    seen = []
+    # Twelve proposals saturate the page. Eleven quote text that is not in the
+    # source, so they are dropped, and one candidate is kept.
+    page = [fact_candidate(record)] + [
+        fact_candidate(record, key=f"missing-{index}", quote=f"Missing quote {index}.")
+        for index in range(11)
+    ]
+    scripted = ScriptedProvider(ledger, [], "distinct")
+
+    def complete(messages, **kwargs):
+        payload = json.loads(messages[-1]["content"])
+        if "sources" not in payload:
+            return scripted.complete(messages, **kwargs)
+        size = sum(len(part["content"]) for part in payload["sources"])
+        seen.append((size, payload["continuation"], payload["already_returned"]))
+        if size > 3000 and payload["continuation"] == 0:
+            return ProviderResponse(json.dumps({"version": 1, "candidates": page}), 10)
+        if size > 3000:
+            raise ProviderError("length", tokens=2048)
+        return ProviderResponse(EMPTY, 10)
+
+    provider = ScriptedProvider(ledger, [])
+    provider.complete = complete
+
+    def old_release(piece, slot):
+        raise ProviderError("length")
+
+    monkeypatch.setattr(module, "splittable", old_release)
+    run = LearningWorker(ledger, provider, WorkerSettings(), LIMITS)
+    assert run.run_once()["status"] == "deferred"
+    _, _, progress = job_row(ledger)
+    assert progress["next_continuation"] == 1 and "output_limit_hold" in progress
+    assert [r["status"] for r in receipts(ledger)] == ["saturated"]
+    old_calls = len(seen)
+
+    monkeypatch.undo()
+    ready(ledger)
+    upgraded = LearningWorker(ledger, provider, WorkerSettings(), LIMITS)
+    assert upgraded.run_once()["status"] == "done"
+    # The held page is not sent again. Both halves start at continuation 0 and
+    # get the kept candidate of the saturated page as already returned.
+    assert [(c, r) for _, c, r in seen[old_calls:]] == [(0, [FACT]), (0, [FACT])]
+    assert all(size < 3000 for size, _, _ in seen[old_calls:])
+    assert [r["continuation"] for r in receipts(ledger)] == [0, 64, 128]
+    assert [n["statement"] for n in ledger.current_notes("demo", "scope")] == [FACT]
