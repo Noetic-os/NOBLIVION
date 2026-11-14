@@ -127,8 +127,25 @@ alone does not prove that hidden material is unrelated. Corrections whose old
 evidence is withheld become visible conflicts; they never replace the old note.
 All provider inputs still pass the complete secret check.
 
-A `Provider:length` result holds the exact request. Automatic attempts with the
-same request remain deferred and make no model call. Changing only the timeout
+A `Provider:length` result means the model output reached the output token
+cap. The cut-off output is never kept. For an extraction window, the worker
+splits that window in two halves and goes on with each half. A half that also
+ends on `length` splits again. A piece is not split below 2048 characters or
+past three splits (eight pieces). At that floor the piece gets a `rejected`
+page receipt, its unit index goes into `rejected_windows`, and the job goes on.
+So one window makes at most 15 calls that end on `length`. The frozen window
+plan and the job fingerprint do not change: the split is recorded per window in
+the job progress as `length_splits`, and a piece stores its page receipts at
+continuation `64 * piece + continuation`. A job that an older release deferred
+on `length` resumes with the split and does not send the held request again.
+
+For a semantic or derivation call, a `Provider:length` result holds the exact
+request. Automatic attempts with the same request remain deferred and make no
+model call. A deferral of this kind, and a `ContextDependencyDeferred`
+deferral, gives the attempt back at most 24 times per job (about one day at one
+hour each). The job counts them in `returned_deferrals` in its progress. After
+24, each such deferral counts an attempt, so the job ends after at most
+`max_attempts` more runs. An explicit retry renews the count. Changing only the timeout
 does not release this hold. After reviewing the cause, change the output limit,
 model or reasoning mode in the explicit worker configuration, then let the
 pending job resume. The worker retains completed extraction pages and all budget

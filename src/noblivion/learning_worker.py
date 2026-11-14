@@ -133,6 +133,74 @@ class ProviderError(RuntimeError):
         super().__init__("provider output incomplete" if reason == "length" else self.reason)
 
 
+# NOBLIVION-245: a window whose model reply reaches the output token cap
+# ("length") is split in halves, and each half goes on. A piece at depth
+# LENGTH_SPLIT_DEPTH, or with fewer than 2 * LENGTH_SPLIT_MIN_CHARS content
+# characters, is at the floor and is not split again. At the floor the piece gets
+# a rejected receipt (LENGTH_REJECTED) and the job goes on. So one window makes at
+# most 2 ** (LENGTH_SPLIT_DEPTH + 1) - 1 calls that end on length.
+LENGTH_SPLIT_DEPTH = 3
+LENGTH_SPLIT_MIN_CHARS = 1024
+LENGTH_SPLIT_OVERLAP = 256
+# A piece stores its receipts at continuation slot * PIECE_STRIDE + continuation.
+# Slot 0 is the whole window, so an unsplit window keeps its receipt keys.
+# max_continuations is at most 32, so pieces never share a key.
+PIECE_STRIDE = 64
+# The number of one-hour deferrals that give the attempt back, for a length
+# result outside extraction and for ContextDependencyDeferred: 24, so about one
+# day. Past it each deferral counts an attempt, so the job ends after at most
+# max_attempts more runs. An explicit retry renews the count.
+MAX_RETURNED_DEFERRALS = 24
+
+
+def piece_depth(slot: int) -> int:
+    return (slot + 1).bit_length() - 1
+
+
+def split_window(window: list[dict]) -> list[list[dict]]:
+    """Split one window in two halves that together cover all its characters."""
+    if len(window) > 1:
+        half = len(window) // 2
+        return [window[:half], window[half:]]
+    part = window[0]
+    text = part["content"]
+    middle = len(text) // 2
+    overlap = min(LENGTH_SPLIT_OVERLAP, len(text) // 8)
+    left = {**part, "content": text[:middle]}
+    right = {
+        **part,
+        "content": text[middle - overlap :],
+        "offset": part["offset"] + middle - overlap,
+    }
+    return [[left], [right]]
+
+
+def window_piece(window: list[dict], slot: int) -> list[dict]:
+    """The piece of a frozen window at a binary tree slot (0 is the whole window)."""
+    path = []
+    while slot > 0:
+        path.append((slot - 1) % 2)
+        slot = (slot - 1) // 2
+    for side in reversed(path):
+        window = split_window(window)[side]
+    return window
+
+
+def splittable(piece: list[dict], slot: int) -> bool:
+    return piece_depth(slot) < LENGTH_SPLIT_DEPTH and (
+        len(piece) > 1 or len(piece[0]["content"]) >= 2 * LENGTH_SPLIT_MIN_CHARS
+    )
+
+
+def piece_leaves(splits, slot: int = 0):
+    """The unsplit pieces of one window in source order."""
+    if slot in splits:
+        yield from piece_leaves(splits, 2 * slot + 1)
+        yield from piece_leaves(splits, 2 * slot + 2)
+    else:
+        yield slot
+
+
 class DependencyDeferred(RuntimeError):
     """A hidden existing statement may change a proposed write."""
 
@@ -721,13 +789,14 @@ class LearningWorker:
         except DependencyDeferred:
             state["dependency_deferred"] = True
             self.ledger.checkpoint(ident, lease, state)
-            self.ledger.defer(ident, lease, retry_delay=3600, error="ContextDependencyDeferred")
-            return {"status": "deferred", "job_id": ident, "error": "ContextDependencyDeferred"}
+            return self._bounded_defer(ident, lease, "ContextDependencyDeferred")
         except ProviderError as exc:
             reason = "Provider:" + exc.reason
             if exc.reason == "length":
-                self.ledger.defer(ident, lease, retry_delay=3600, error=reason)
-                return {"status": "deferred", "job_id": ident, "error": reason}
+                # An extraction window splits on length (_extract). This path is
+                # for a semantic or derivation call. Its progress is durable:
+                # _call checkpoints the output-limit hold before it raises.
+                return self._bounded_defer(ident, lease, reason)
             self.ledger.fail(
                 ident,
                 lease,
@@ -776,6 +845,20 @@ class LearningWorker:
             )
             return {"status": "failed", "job_id": ident, "error": reason, "permanent": permanent}
 
+    def _bounded_defer(self, ident, lease, error):
+        """Defer by one hour; past MAX_RETURNED_DEFERRALS the attempt counts."""
+        outcome = self.ledger.defer(
+            ident,
+            lease,
+            retry_delay=3600,
+            error=error,
+            cap=MAX_RETURNED_DEFERRALS,
+            max_attempts=self.settings.max_attempts,
+        )
+        if outcome == "deferred":
+            return {"status": "deferred", "job_id": ident, "error": error}
+        return {"status": "failed", "job_id": ident, "error": error, "permanent": False}
+
     def _output_recovery(self, state):
         """Only a recorded length result permits a reviewed provider-limit change."""
         previous = state.get("call_configuration")
@@ -816,158 +899,203 @@ class LearningWorker:
         }
 
     def _extract(self, job, sources, windows, existing, state, pages):
-        from .learning_pages import WINDOW_REJECTED
-
-        cfg = self.settings
         for unit_index in range(state["next_window"], len(windows)):
             window = windows[unit_index]
-            continuation = state.get("next_continuation", 0)
+            # NOBLIVION-245: the frozen plan stays the same. A window that ends on
+            # length gets a split recorded in progress, and its pieces go on.
+            done = set()
             while True:
-                if self.stop is not None and self.stop.is_set():
-                    raise BudgetExceeded("worker stopping")
-                receipt = pages.receipt(unit_index, continuation)
-                if receipt is None:
-                    if pages.count() >= cfg.max_pages:
-                        raise CoverageExhausted(
-                            "extraction page limit reached; coverage incomplete"
-                        )
-                    previous = [
-                        d
-                        for row in pages._rows()
-                        if row["unit_index"] == unit_index
-                        for d in row["candidates"]
-                    ]
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": SYSTEM_PROMPT + CONTINUATION_PROMPT,
-                        },
-                        {
-                            "role": "user",
-                            "content": json.dumps(
-                                {
-                                    "sources": window,
-                                    "existing_notes": existing,
-                                    "already_returned": [d["statement"] for d in previous],
-                                    "continuation": continuation,
-                                },
-                                ensure_ascii=False,
-                                separators=(",", ":"),
-                            ),
-                        },
-                    ]
-                    try:
-                        outcome = self._validated_call(
-                            job,
-                            messages,
-                            lambda raw: validate_extraction(raw, sources, existing),
-                            state,
-                            f"extract:{unit_index}:{continuation}",
-                            EXTRACTION_SCHEMA,
-                        )
-                        outcome = self._validate_window(extraction_outcome(outcome), window)
-                    except ValidationError as exc:
-                        record_mismatches(
-                            state,
-                            unit_index,
-                            continuation,
-                            "rejected",
-                            proposed=getattr(exc, "proposed", None),
-                            accepted=getattr(exc, "accepted", 0),
-                            mismatches=getattr(exc, "mismatches", []),
-                            error=str(exc),
-                        )
-                        self.ledger.checkpoint(job["id"], job["lease_token"], state)
-                        # Only a RESPONSE_FAILURES class marks the window. A schema
-                        # failure or an unclassified failure still fails the job.
-                        unsafe = isinstance(exc, ResponseRejected) and str(exc) in RESPONSE_FAILURES
-                        pages.save(
-                            unit_index,
-                            continuation,
-                            window,
-                            [],
-                            "rejected",
-                            WINDOW_REJECTED
-                            if unsafe
-                            else "candidate validation failed; no coverage acknowledgement",
-                        )
-                        if not unsafe:
-                            raise
-                        # The resume path below reads the saved receipt and
-                        # goes on to the next window (NOBLIVION-244).
-                        continue
-                    accepted, proposed = outcome["accepted"], outcome["proposed"]
-                    if outcome["mismatches"]:
-                        record_mismatches(
-                            state,
-                            unit_index,
-                            continuation,
-                            "dropped",
-                            proposed=proposed,
-                            accepted=len(accepted),
-                            mismatches=outcome["mismatches"],
-                        )
-                        self.ledger.checkpoint(job["id"], job["lease_token"], state)
-                    # Saturation counts the raw proposals: a page of twelve with a
-                    # dropped candidate may still hide more lessons (NOBLIVION-237).
-                    saturated = proposed == 12
-                    novel = [
-                        d
-                        for d in accepted
-                        if d["statement"] not in {prior["statement"] for prior in previous}
-                    ]
-                    total = {
-                        (d["scope"], d["category"], d["statement"].casefold())
-                        for d in pages.decisions() + novel
-                    }
-                    exhausted = (
-                        len(total) > cfg.max_decisions
-                        or (saturated and continuation + 1 >= cfg.max_continuations)
-                        # A continuation that adds nothing new makes no progress,
-                        # also when all twelve of its proposals were dropped.
-                        or (continuation > 0 and not novel and (bool(accepted) or saturated))
-                    )
-                    status = (
-                        "exhausted"
-                        if exhausted
-                        else "saturated"
-                        if saturated
-                        else "processed"
-                        if previous or accepted
-                        else "no_lesson"
-                    )
-                    reason = (
-                        "hard limit or repeated saturated response; coverage incomplete"
-                        if exhausted
-                        else "twelve candidates require continuation"
-                        if status == "saturated"
-                        else "provider reported remaining lessons"
-                        if status == "processed"
-                        else "every candidate failed an evidence check"
-                        if outcome["mismatches"]
-                        else "provider reported no eligible lesson"
-                    )
-                    receipt = pages.save(unit_index, continuation, window, accepted, status, reason)
-                if receipt["status"] == "rejected" and receipt["reason"] == WINDOW_REJECTED:
-                    # The whole reply was rejected and none of it is kept. The
-                    # unit index list stays the same when a resume reads this
-                    # receipt again.
-                    rejected = state.setdefault("rejected_windows", [])
-                    if unit_index not in rejected:
-                        rejected.append(unit_index)
-                elif receipt["status"] in {"exhausted", "rejected"}:
-                    raise CoverageExhausted("extraction receipt is incomplete")
-                state.pop("format_repair", None)
-                if receipt["status"] == "saturated":
-                    continuation += 1
-                    state["next_continuation"] = continuation
-                    self.ledger.checkpoint(job["id"], job["lease_token"], state)
-                    continue
-                state["next_window"] = unit_index + 1
-                state.pop("next_continuation", None)
-                self.ledger.checkpoint(job["id"], job["lease_token"], state)
-                break
+                splits = set(state.get("length_splits", {}).get(str(unit_index), []))
+                slot = next((s for s in piece_leaves(splits) if s not in done), None)
+                if slot is None:
+                    break
+                if self._extract_piece(
+                    job, sources, window, unit_index, slot, existing, state, pages
+                ):
+                    done.add(slot)
+            state["next_window"] = unit_index + 1
+            state.pop("next_continuation", None)
+            self.ledger.checkpoint(job["id"], job["lease_token"], state)
         return pages.decisions()
+
+    def _extract_piece(self, job, sources, window, unit_index, slot, existing, state, pages):
+        """Extract one piece of a window. Return False when the piece was split."""
+        from .learning_pages import CONTINUING_REJECTIONS, LENGTH_REJECTED, WINDOW_REJECTED
+
+        cfg = self.settings
+        piece = window_piece(window, slot)
+        # Slot 0 keeps the cursor and step names of releases before the split.
+        continuation = state.get("next_continuation", 0) if slot == 0 else 0
+        while True:
+            if self.stop is not None and self.stop.is_set():
+                raise BudgetExceeded("worker stopping")
+            page = slot * PIECE_STRIDE + continuation
+            step = (
+                f"extract:{unit_index}:{continuation}"
+                if slot == 0
+                else f"extract:{unit_index}:{slot}:{continuation}"
+            )
+            receipt = pages.receipt(unit_index, page)
+            if receipt is None:
+                if pages.count() >= cfg.max_pages:
+                    raise CoverageExhausted("extraction page limit reached; coverage incomplete")
+                previous = [
+                    d
+                    for row in pages._rows()
+                    if row["unit_index"] == unit_index
+                    for d in row["candidates"]
+                ]
+                messages = [
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT + CONTINUATION_PROMPT,
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "sources": piece,
+                                "existing_notes": existing,
+                                "already_returned": [d["statement"] for d in previous],
+                                "continuation": continuation,
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    },
+                ]
+                try:
+                    outcome = self._validated_call(
+                        job,
+                        messages,
+                        lambda raw: validate_extraction(raw, sources, existing),
+                        state,
+                        step,
+                        EXTRACTION_SCHEMA,
+                    )
+                    outcome = self._validate_window(extraction_outcome(outcome), piece)
+                except ProviderError as exc:
+                    if exc.reason != "length":
+                        raise
+                    # The reply was cut off. Nothing of it is kept as a candidate.
+                    if splittable(piece, slot):
+                        splits = state.setdefault("length_splits", {})
+                        splits[str(unit_index)] = sorted(
+                            set(splits.get(str(unit_index), [])) | {slot}
+                        )
+                        # The pieces are new requests: clear the hold, the format
+                        # retry and the cursor of the whole window in one write.
+                        state.pop("output_limit_hold", None)
+                        state.pop("format_repair", None)
+                        state.pop("next_continuation", None)
+                        self.ledger.checkpoint(job["id"], job["lease_token"], state)
+                        return False
+                    pages.save(unit_index, page, piece, [], "rejected", LENGTH_REJECTED)
+                    # The resume path below reads the saved receipt and goes on.
+                    continue
+                except ValidationError as exc:
+                    record_mismatches(
+                        state,
+                        unit_index,
+                        page,
+                        "rejected",
+                        proposed=getattr(exc, "proposed", None),
+                        accepted=getattr(exc, "accepted", 0),
+                        mismatches=getattr(exc, "mismatches", []),
+                        error=str(exc),
+                    )
+                    self.ledger.checkpoint(job["id"], job["lease_token"], state)
+                    # Only a RESPONSE_FAILURES class marks the window. A schema
+                    # failure or an unclassified failure still fails the job.
+                    unsafe = isinstance(exc, ResponseRejected) and str(exc) in RESPONSE_FAILURES
+                    pages.save(
+                        unit_index,
+                        page,
+                        piece,
+                        [],
+                        "rejected",
+                        WINDOW_REJECTED
+                        if unsafe
+                        else "candidate validation failed; no coverage acknowledgement",
+                    )
+                    if not unsafe:
+                        raise
+                    # The resume path below reads the saved receipt and
+                    # goes on to the next window (NOBLIVION-244).
+                    continue
+                accepted, proposed = outcome["accepted"], outcome["proposed"]
+                if outcome["mismatches"]:
+                    record_mismatches(
+                        state,
+                        unit_index,
+                        page,
+                        "dropped",
+                        proposed=proposed,
+                        accepted=len(accepted),
+                        mismatches=outcome["mismatches"],
+                    )
+                    self.ledger.checkpoint(job["id"], job["lease_token"], state)
+                # Saturation counts the raw proposals: a page of twelve with a
+                # dropped candidate may still hide more lessons (NOBLIVION-237).
+                saturated = proposed == 12
+                novel = [
+                    d
+                    for d in accepted
+                    if d["statement"] not in {prior["statement"] for prior in previous}
+                ]
+                total = {
+                    (d["scope"], d["category"], d["statement"].casefold())
+                    for d in pages.decisions() + novel
+                }
+                exhausted = (
+                    len(total) > cfg.max_decisions
+                    or (saturated and continuation + 1 >= cfg.max_continuations)
+                    # A continuation that adds nothing new makes no progress,
+                    # also when all twelve of its proposals were dropped.
+                    or (continuation > 0 and not novel and (bool(accepted) or saturated))
+                )
+                status = (
+                    "exhausted"
+                    if exhausted
+                    else "saturated"
+                    if saturated
+                    else "processed"
+                    if previous or accepted
+                    else "no_lesson"
+                )
+                reason = (
+                    "hard limit or repeated saturated response; coverage incomplete"
+                    if exhausted
+                    else "twelve candidates require continuation"
+                    if status == "saturated"
+                    else "provider reported remaining lessons"
+                    if status == "processed"
+                    else "every candidate failed an evidence check"
+                    if outcome["mismatches"]
+                    else "provider reported no eligible lesson"
+                )
+                receipt = pages.save(unit_index, page, piece, accepted, status, reason)
+            if receipt["status"] == "rejected" and receipt["reason"] in CONTINUING_REJECTIONS:
+                # The whole reply was rejected and none of it is kept. The
+                # unit index list stays the same when a resume reads this
+                # receipt again.
+                rejected = state.setdefault("rejected_windows", [])
+                if unit_index not in rejected:
+                    rejected.append(unit_index)
+                if receipt["reason"] == LENGTH_REJECTED:
+                    state.pop("output_limit_hold", None)
+            elif receipt["status"] in {"exhausted", "rejected"}:
+                raise CoverageExhausted("extraction receipt is incomplete")
+            state.pop("format_repair", None)
+            if receipt["status"] == "saturated":
+                continuation += 1
+                if slot == 0:
+                    state["next_continuation"] = continuation
+                self.ledger.checkpoint(job["id"], job["lease_token"], state)
+                continue
+            state.pop("next_continuation", None)
+            self.ledger.checkpoint(job["id"], job["lease_token"], state)
+            return True
 
     @staticmethod
     def _validate_window(outcome, window):

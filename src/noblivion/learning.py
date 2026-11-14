@@ -764,19 +764,47 @@ class LearningLedger:
         *,
         retry_delay: float = 3600,
         error: str = "budget unavailable",
-    ) -> None:
-        """Budget denial did not make a provider call and must not exhaust retries."""
+        cap: int | None = None,
+        max_attempts: int = 4,
+    ) -> str:
+        """Budget denial did not make a provider call and must not exhaust retries.
+
+        With ``cap``, the job counts each such deferral in its progress as
+        ``returned_deferrals`` (NOBLIVION-245). Up to ``cap`` deferrals give the
+        attempt back. Past ``cap``, the attempt counts, so the job ends after at
+        most ``max_attempts`` more runs. Return "deferred", "pending" (the attempt
+        counted) or "exhausted".
+        """
         validate_safe_text(error)
         with db.write_tx(self.conn):
-            self.validate_lease(job_id, lease_token)
+            job = self.validate_lease(job_id, lease_token)
+            status, attempts, outcome = "pending", max(0, job["attempts"] - 1), "deferred"
+            stored = job["progress"]
+            if cap is not None:
+                progress = json.loads(stored)
+                count = progress.get("returned_deferrals", 0)
+                count = (count if type(count) is int and count >= 0 else cap) + 1
+                progress["returned_deferrals"] = count
+                if count > cap:
+                    attempts = job["attempts"]
+                    status = outcome = "exhausted" if attempts >= max_attempts else "pending"
+                stored = canonical_json(progress)
             self.conn.execute(
-                "UPDATE learning_jobs SET status='pending',attempts=max(0,attempts-1),"
-                "next_attempt=?,"
+                "UPDATE learning_jobs SET status=?,attempts=?,next_attempt=?,progress=?,"
                 "lease_token=NULL,lease_owner=NULL,lease_until=NULL,last_error=?,"
                 "updated_at=? WHERE id=?",
-                (time.time() + max(0, retry_delay), error[:500], time.time(), job_id),
+                (
+                    status,
+                    attempts,
+                    time.time() + max(0, retry_delay),
+                    stored,
+                    error[:500],
+                    time.time(),
+                    job_id,
+                ),
             )
             self._expire_reservations()
+        return outcome
 
     def retry(self, job_id: str) -> None:
         """Explicit operator recovery; retained budget usage still applies."""
@@ -791,6 +819,8 @@ class LearningLedger:
             # Explicit recovery renews only the bounded format retry. Validated
             # windows, semantic comparisons and durable budget charges remain.
             progress.pop("format_repair", None)
+            # An explicit retry also renews the bounded free deferrals (NOBLIVION-245).
+            progress.pop("returned_deferrals", None)
             from .learning_pages import retry_rejected
 
             retry_rejected(self.conn, job_id)
