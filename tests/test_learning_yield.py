@@ -22,7 +22,13 @@ from noblivion.learning_extract import (
 )
 from noblivion.learning_worker import LearningWorker, ProviderResponse
 from noblivion.redaction import contains_secret
-from test_learning_review_fixes import ScriptedProvider, candidate, capture, worker
+from test_learning_review_fixes import (
+    ScriptedProvider,
+    candidate,
+    capture,
+    semantic_reply,
+    worker,
+)
 
 DAY = 86400
 
@@ -78,10 +84,8 @@ class PagedProvider:
         assert "REDACTED" not in json.dumps(messages)
         payload = json.loads(messages[-1]["content"])
         if "targets" in payload:  # the semantic stage: every target is distinct
-            relations = [
-                {"target_id": n["target_id"], "relation": "distinct"} for n in payload["targets"]
-            ]
-            return ProviderResponse(json.dumps({"version": 1, "relations": relations}), 100)
+            reply = semantic_reply(payload, lambda candidate, target: "distinct")
+            return ProviderResponse(json.dumps(reply), 100)
         self.calls += 1
         candidates = self.pages.pop(0) if self.pages else []
         return ProviderResponse(json.dumps({"version": 1, "candidates": candidates}), 100)

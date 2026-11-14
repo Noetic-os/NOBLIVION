@@ -10,6 +10,7 @@ from noblivion import db
 from noblivion.learning import BudgetLimits, LearningLedger
 from noblivion.learning_pages import coverage
 from noblivion.learning_worker import LearningWorker, ProviderResponse, WorkerSettings
+from test_learning_review_fixes import semantic_reply
 
 
 class DenseProvider:
@@ -24,18 +25,8 @@ class DenseProvider:
         value = json.loads(messages[-1]["content"])
         self.calls.append(value)
         if "sources" not in value:
-            return ProviderResponse(
-                json.dumps(
-                    {
-                        "version": 1,
-                        "relations": [
-                            {"target_id": t["target_id"], "relation": "distinct"}
-                            for t in value["targets"]
-                        ],
-                    }
-                ),
-                50,
-            )
+            reply = semantic_reply(value, lambda candidate, target: "distinct")
+            return ProviderResponse(json.dumps(reply), 50)
         returned = set() if self.repeat else set(value.get("already_returned", []))
         candidates = []
         for source in value["sources"]:

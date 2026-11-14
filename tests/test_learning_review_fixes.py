@@ -9,7 +9,7 @@ from dataclasses import replace
 
 import pytest
 
-from noblivion import db
+from noblivion import db, learning_worker
 from noblivion.learning import BudgetLimits, LearningError, LearningLedger
 from noblivion.learning_extract import (
     EXTRACTION_SCHEMA,
@@ -17,6 +17,7 @@ from noblivion.learning_extract import (
     ValidationError,
     validate_semantic_response,
 )
+from noblivion.learning_semantic import SEMANTIC_BATCH_SCHEMA
 from noblivion.learning_worker import (
     LearningWorker,
     OpenAICompatibleProvider,
@@ -117,14 +118,56 @@ class ScriptedProvider:
             if self.before_semantic:
                 action, self.before_semantic = self.before_semantic, None
                 action()
-            result = {
-                "version": 1,
-                "relations": [
-                    {"target_id": n["target_id"], "relation": self.relation}
-                    for n in payload["targets"]
-                ],
-            }
+            result = semantic_reply(payload, lambda candidate, target: self.relation)
         return ProviderResponse(json.dumps(result), 100)
+
+
+def semantic_reply(payload, relation):
+    """Answer a contract 1 or a contract 2 (batched) semantic request.
+
+    relation(candidate_statement, target_statement) names each pair's relation.
+    """
+    if "candidates" in payload:  # contract 2: several candidates, aliased targets
+        statements = {t["target_id"]: t["statement"] for t in payload["targets"]}
+        return {
+            "version": 2,
+            "results": [
+                {
+                    "item_id": item["item_id"],
+                    "relations": [
+                        {"target_id": t, "relation": relation(item["candidate"], statements[t])}
+                        for t in item["compare"]
+                    ],
+                }
+                for item in payload["candidates"]
+            ],
+        }
+    return {
+        "version": 1,
+        "relations": [
+            {
+                "target_id": t["target_id"],
+                "relation": relation(payload["candidate"], t["statement"]),
+            }
+            for t in payload["targets"]
+        ],
+    }
+
+
+def one_comparison(target_id, relation, contract):
+    """The raw reply to one candidate compared with one target."""
+    if contract == 1:
+        return json.dumps(
+            {"version": 1, "relations": [{"target_id": target_id, "relation": relation}]}
+        )
+    return json.dumps(
+        {
+            "version": 2,
+            "results": [
+                {"item_id": "c1", "relations": [{"target_id": "t1", "relation": relation}]}
+            ],
+        }
+    )
 
 
 def worker(ledger, provider, **limits):
@@ -586,7 +629,9 @@ def test_format_retry_still_rejects_unsupported_evidence(ledger):
     assert dropped == {"evidence must be an exact unique quote (absent)": 1}
 
 
-def test_semantic_format_retry_resumes_after_budget_pause(ledger):
+@pytest.mark.parametrize("contract", [1, 2])
+def test_semantic_format_retry_resumes_after_budget_pause(ledger, monkeypatch, contract):
+    monkeypatch.setattr(learning_worker, "EXTRACTION_CONTRACT", contract)
     old = seed(ledger, capture(ledger, "old", "Keep responses short."))
     new = capture(ledger, "new", "I prefer concise replies.")
     provider = FormatProvider(
@@ -594,12 +639,7 @@ def test_semantic_format_retry_resumes_after_budget_pause(ledger):
         [
             json.dumps({"version": 1, "candidates": [candidate(new, key="other-key")]}),
             "```json\n{}]}",
-            json.dumps(
-                {
-                    "version": 1,
-                    "relations": [{"target_id": old["note_id"], "relation": "equivalent"}],
-                }
-            ),
+            one_comparison(old["note_id"], "equivalent", contract),
         ],
     )
     assert worker(ledger, provider, max_calls=2).run_once()["status"] == "deferred"
@@ -607,7 +647,8 @@ def test_semantic_format_retry_resumes_after_budget_pause(ledger):
     ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0")
     result = worker(ledger, provider, max_calls=2).run_once()
     assert result["status"] == "done" and result["results"][0]["action"] == "conflict"
-    assert provider.schemas == [EXTRACTION_SCHEMA, SEMANTIC_SCHEMA, SEMANTIC_SCHEMA]
+    semantic = SEMANTIC_SCHEMA if contract == 1 else SEMANTIC_BATCH_SCHEMA
+    assert provider.schemas == [EXTRACTION_SCHEMA, semantic, semantic]
     assert len(ledger.current_notes("demo", "scope")) == 1
 
 
@@ -665,12 +706,16 @@ def test_explicit_retry_clears_only_consumed_format_marker(ledger):
     assert ledger.conn.execute("SELECT count(*) FROM learning_budget").fetchone()[0] == 2
 
 
+@pytest.mark.parametrize("contract", [1, 2])
 @pytest.mark.parametrize("stage", ["extract", "semantic"])
 @pytest.mark.parametrize("crash_point", ["after_cache_commit", "before_cursor_commit"])
-def test_successful_format_retry_survives_post_validation_crash(ledger, stage, crash_point):
+def test_successful_format_retry_survives_post_validation_crash(
+    ledger, monkeypatch, stage, crash_point, contract
+):
     class SimulatedCrash(BaseException):
         pass
 
+    monkeypatch.setattr(learning_worker, "EXTRACTION_CONTRACT", contract)
     old = None
     if stage == "semantic":
         old = seed(ledger, capture(ledger, "old", "Keep responses short."))
@@ -679,12 +724,7 @@ def test_successful_format_retry_survives_post_validation_crash(ledger, stage, c
     if stage == "extract":
         responses = ["not JSON", extraction]
     else:
-        comparison = json.dumps(
-            {
-                "version": 1,
-                "relations": [{"target_id": old["note_id"], "relation": "equivalent"}],
-            }
-        )
+        comparison = one_comparison(old["note_id"], "equivalent", contract)
         responses = [extraction, "not JSON", comparison]
     provider = FormatProvider(ledger, responses)
     expected_calls = len(responses)
@@ -694,7 +734,13 @@ def test_successful_format_retry_survives_post_validation_crash(ledger, stage, c
     def interrupted(job_id, lease, state):
         nonlocal cached
         repair = state.get("format_repair", {})
-        step = "extract:0:0" if stage == "extract" else "semantic:0"
+        step = (
+            "extract:0:0"
+            if stage == "extract"
+            else "semantic:0"
+            if contract == 1
+            else "semantic-batch:0"
+        )
         accepted = repair.get("step") == step and "accepted" in repair
         if cached and not repair and crash_point == "before_cursor_commit":
             raise SimulatedCrash
@@ -719,7 +765,8 @@ def test_successful_format_retry_survives_post_validation_crash(ledger, stage, c
     assert len(cached) == 1
     assert progress["next_window"] == (0 if stage == "extract" else 1)
     if stage == "semantic":
-        assert progress["semantic"]["next_task"] == 0
+        cursor = "next_task" if contract == 1 else "next_batch"
+        assert progress["semantic"].get(cursor, 0) == 0
     assert len(provider.messages) == expected_calls
 
     # A new connection and worker recover after the crashed worker's lease

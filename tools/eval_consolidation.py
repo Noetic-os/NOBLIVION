@@ -95,7 +95,22 @@ class FixedProvider:
             self.failed = True
             raise OSError("injected provider outage")
         payload = json.loads(messages[-1]["content"])
-        if "sources" not in payload:
+        if "sources" not in payload and "candidates" in payload:
+            # Extraction contract 2 compares several candidates in one call.
+            response = {
+                "version": 2,
+                "results": [
+                    {
+                        "item_id": item["item_id"],
+                        "relations": [
+                            {"target_id": target, "relation": "distinct"}
+                            for target in item["compare"]
+                        ],
+                    }
+                    for item in payload["candidates"]
+                ],
+            }
+        elif "sources" not in payload:
             response = {
                 "version": 1,
                 "relations": [

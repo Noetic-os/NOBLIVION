@@ -7,10 +7,11 @@ from dataclasses import asdict, fields, replace
 
 import pytest
 
-from noblivion import db, learning_extract, learning_synthesis, learning_worker
+from noblivion import db, learning_extract, learning_semantic, learning_synthesis, learning_worker
 from noblivion.learning import BudgetLimits, LearningLedger
 from noblivion.learning_synthesis import _legacy_runtime_matches, _runtime_fingerprint
 from noblivion.learning_worker import (
+    DERIVATION_CONTRACT,
     EXTRACTION_CONTRACT,
     POLICY_BUDGETS,
     POLICY_SETTINGS,
@@ -83,7 +84,12 @@ SOURCES = [{"id": "source-1", "sha256": "a" * 64}]
 WINDOWS = [[{"source_id": "source-1", "offset": 0, "text": "x"}]]
 # The prompt and schema text of each extraction contract version. Change a
 # prompt or schema only together with EXTRACTION_CONTRACT and a new entry here.
-CONTRACT_TEXT = {1: "d36896fdc03a381cefca3212199a2e5afae95d357f5a703085e3c5bf9c392e99"}
+# Version 2 (NOBLIVION-241) keeps every version 1 string and adds the batched
+# semantic prompt and schema, the batch limits and the window scale.
+CONTRACT_TEXT = {
+    1: "d36896fdc03a381cefca3212199a2e5afae95d357f5a703085e3c5bf9c392e99",
+    2: "4e3f1a2944c64beb7d5846a037031e1ef747875b4e1cbc893c5b5fb191027dfc",
+}
 
 
 @pytest.fixture
@@ -145,7 +151,7 @@ def test_every_configuration_key_is_classified():
     assert set(configured()) == {"contract", "settings", "budgets", *REQUEST_PROVIDER}
 
 
-def test_contract_text_is_pinned_to_its_version():
+def contract_text(version):
     text = [
         learning_extract.SYSTEM_PROMPT,
         learning_worker.CONTINUATION_PROMPT,
@@ -160,14 +166,31 @@ def test_contract_text_is_pinned_to_its_version():
         learning_synthesis.EQUIVALENCE_PROMPT,
         learning_synthesis.EQUIVALENCE_SCHEMA,
     ]
-    digest = hashlib.sha256(json.dumps(text, sort_keys=True).encode()).hexdigest()
-    assert CONTRACT_TEXT.get(EXTRACTION_CONTRACT) == digest, (
+    if version >= 2:
+        text += [
+            learning_semantic.SEMANTIC_BATCH_PROMPT,
+            learning_semantic.SEMANTIC_BATCH_SCHEMA,
+            learning_semantic.MAX_BATCH_ITEMS,
+            learning_semantic.MAX_BATCH_PAIRS,
+            learning_worker.WINDOW_SCALE[2],
+        ]
+    return hashlib.sha256(json.dumps(text, sort_keys=True).encode()).hexdigest()
+
+
+@pytest.mark.parametrize("version", learning_worker.SUPPORTED_CONTRACTS)
+def test_contract_text_is_pinned_to_its_version(version):
+    # A started job resumes under its own version, so every supported version
+    # must keep its exact text, not only the newest one.
+    assert CONTRACT_TEXT.get(version) == contract_text(version), (
         "a learning prompt or schema changed: bump EXTRACTION_CONTRACT and pin the new text"
     )
+    assert EXTRACTION_CONTRACT == max(learning_worker.SUPPORTED_CONTRACTS)
 
 
 def test_live_legacy_job_matches_its_own_file():
-    assert configured() == {**LIVE_0_1_24, "contract": EXTRACTION_CONTRACT}
+    # configured() is the derivation configuration, which stays version 1.
+    assert DERIVATION_CONTRACT == 1
+    assert configured() == {**LIVE_0_1_24, "contract": DERIVATION_CONTRACT}
     assert execution_matches(legacy_progress(LIVE_0_1_24), SOURCES, WINDOWS, configured())
 
 
@@ -213,9 +236,15 @@ def test_request_change_still_fails_a_legacy_job(change):
     )
 
 
-def test_contract_change_fails_a_legacy_job(monkeypatch):
-    monkeypatch.setattr(learning_worker, "EXTRACTION_CONTRACT", 2)
-    assert not execution_matches(legacy_progress(LIVE_0_1_24), SOURCES, WINDOWS, configured())
+def test_contract_change_fails_a_legacy_job():
+    """A legacy job never matches a version 2 configuration.
+
+    The worker therefore resolves such a job to version 1 (NOBLIVION-241); it
+    never re-freezes it under version 2.
+    """
+    current = {**configured(), "contract": 2}
+    assert not execution_matches(legacy_progress(LIVE_0_1_24), SOURCES, WINDOWS, current)
+    assert execution_matches(legacy_progress(LIVE_0_1_24), SOURCES, WINDOWS, configured())
 
 
 def test_changed_sources_or_windows_fail_a_legacy_job():
@@ -288,10 +317,17 @@ class Pages:
 
 
 def budget_paused_job(ledger, provider):
-    """A two-window job that used its one-call budget on the first window."""
+    """A two-window job that used its one-call budget on the first window.
+
+    It starts under contract 1, as every job started by 0.1.25 or older did.
+    """
     capture(ledger, "new", "Routine context. " * 1100)
     limits = replace(BudgetLimits(), max_calls=1, max_seconds=1000, max_tokens=200000)
-    result = LearningWorker(ledger, provider, WorkerSettings(), limits).run_once()
+    newest, learning_worker.EXTRACTION_CONTRACT = learning_worker.EXTRACTION_CONTRACT, 1
+    try:
+        result = LearningWorker(ledger, provider, WorkerSettings(), limits).run_once()
+    finally:
+        learning_worker.EXTRACTION_CONTRACT = newest
     assert result["status"] == "deferred" and result["error"] == "BudgetExceeded"
     assert provider.offsets == [0]
     ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE status='pending'")
