@@ -2098,6 +2098,10 @@ class LearningLedger:
         outcomes = {"committed": 0, "deferred": 0, "failed": 0}
         # Windows whose whole model reply was rejected; the job went on (NOBLIVION-244).
         rejected_windows = 0
+        # Candidates not stored because a check could not validate them, and the
+        # semantic re-asks spent (NOBLIVION-240). Counts and classes only.
+        rejected_candidates: dict[str, int] = {}
+        semantic_reasks = 0
         for row in self.conn.execute(
             "SELECT id,status,last_error,progress FROM learning_jobs" + clause, params
         ):
@@ -2113,6 +2117,16 @@ class LearningLedger:
                 outcomes["deferred"] += 1
             progress = json.loads(row["progress"])
             rejected_windows += len(progress.get("rejected_windows", []))
+            semantic = progress.get("semantic") or {}
+            for label, count in (
+                ("semantic comparison not validated", len(semantic.get("rejected", []))),
+                ("inconsistent window decisions", progress.get("inconsistent_decisions", 0)),
+            ):
+                if count:
+                    rejected_candidates[label] = rejected_candidates.get(label, 0) + count
+            semantic_reasks += sum(
+                item.get("failures", 0) for item in (semantic.get("reasks") or {}).values()
+            )
             metrics = progress.get("provider_metrics", {})
             for key in ("calls", "seconds", "tokens"):
                 actual[key] += metrics.get(key, 0)
@@ -2147,6 +2161,8 @@ class LearningLedger:
             "context_rejections": context,
             "candidate_mismatches": mismatches,
             "rejected_windows": rejected_windows,
+            "rejected_candidates": rejected_candidates,
+            "semantic_reasks": semantic_reasks,
             "provider_actual": actual,
             "outcomes": outcomes,
         }
