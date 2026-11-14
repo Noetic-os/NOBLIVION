@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.28 - 2026-11-14
+
 - A learning window whose model output reaches the output token cap no longer
   defers its job every hour without end. The worker splits that window in two
   halves and goes on with each half. A single part is not split below 2048
