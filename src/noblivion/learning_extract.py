@@ -267,19 +267,68 @@ def validate_response(raw: str, sources: list[dict], existing_notes=()) -> list[
     return [_candidate(candidate, lookup, existing, ids) for candidate in proposals]
 
 
-# NOBLIVION-237: each of these checks reads only the evidence of one candidate.
-# A failure drops that candidate and keeps the valid rest of the response. Every
-# other failure still rejects the whole response: an authority claim, quoted or
-# injected evidence, an unknown source, a secret or a broken schema. What counts
-# as evidence does not change, so every candidate this accepts, the strict form
-# accepts too, with the same result. Started jobs keep their frozen contract.
-EVIDENCE_FAILURES = frozenset(
+# NOBLIVION-237: each of these checks reads only the values of one candidate:
+# its text, key, scope, dates, evidence, reconciliation target, correction and
+# proof. A failure drops that candidate and keeps the valid rest of the response.
+# A dropped candidate is never stored, so a drop is never less safe than a
+# rejection. These failures still reject the whole response:
+# - the response itself: a secret, invalid JSON, the envelope, the version or
+#   the candidate list (_proposals);
+# - the schema of a candidate: its fields, field types and enum values (_shape);
+# - RESPONSE_FAILURES in any candidate, also in a dropped one (_screen).
+# A message in no set also rejects the whole response (fail closed). What a
+# candidate needs to be accepted does not change, so every candidate this
+# accepts, the strict form accepts too, with the same result.
+CANDIDATE_FAILURES = frozenset(
     {
+        # Values of one candidate. The schema pass already checked their types,
+        # so a text or date failure here is a length, blank or format failure,
+        # and a field failure is in a nested correction or proof object.
+        "missing required fields",
+        "unknown fields",
+        "invalid text field",
+        "invalid date",
+        "invalid evidence list",
+        "invalid logical key",
+        "invalid candidate scope",
+        # Evidence of one candidate.
         "evidence must be an exact unique quote",
         "statement is not extractive evidence",
+        "general scope requires explicit cross-project evidence",
+        "a question is not a durable assertion",
         "human evidence required",
         "observed fact evidence required",
+        "indirect human evidence",
+        "observed date does not match evidence",
+        "unsupported effective date",
         "evidence was not present in the model window",
+        # Reconciliation target, correction and proof of one candidate.
+        "unknown reconciliation target",
+        "reconciliation target mismatch",
+        "existing logical key requires reconciliation",
+        "read-only note requires explicit adoption",
+        "correction values mismatch",
+        "previous correction evidence unavailable",
+        "missing current correction evidence",
+        "unexpected correction",
+        "fix proof requires tool observations",
+        "fix proof requires distinct observations",
+        "fix observations are out of order",
+        "fix proof lacks observed failure or success",
+        "fix proof lacks the executed check",
+        "fix proof checks differ",
+        "unexpected fix proof",
+    }
+)
+# A secret, an authority claim, quoted or injected evidence or an invented source
+# ID shows an unsafe or untrustworthy response, not one bad candidate.
+RESPONSE_FAILURES = frozenset(
+    {
+        "secret-bearing field",
+        "memory cannot grant authority",
+        "quoted or injected evidence",
+        "unknown evidence source",
+        "evidence span mismatch",
     }
 )
 
@@ -295,13 +344,14 @@ class ResponseRejected(ValidationError):
 
 
 def validate_extraction(raw: str, sources: list[dict], existing_notes=()) -> dict:
-    """Validate each candidate alone; drop one that fails only an evidence check.
+    """Validate each candidate alone; drop one that fails only a CANDIDATE_FAILURES check.
 
     Returns the accepted decisions, the number of raw proposals (saturation counts
-    those) and a text-free class for each dropped candidate. A failure outside
-    EVIDENCE_FAILURES in any candidate raises ResponseRejected, also when it
-    follows a dropped candidate. A dropped candidate is screened for authority
-    and injected evidence that its own failed check did not reach.
+    those) and a text-free class for each dropped candidate. A schema failure, a
+    RESPONSE_FAILURES class or an unclassified failure in any candidate raises
+    ResponseRejected, also when it follows a dropped candidate. A dropped
+    candidate is screened for each RESPONSE_FAILURES class that its own failed
+    check did not reach, so the result does not depend on the check order.
     """
     lookup, proposals = _proposals(raw, sources)
     existing = list(existing_notes)
@@ -309,14 +359,21 @@ def validate_extraction(raw: str, sources: list[dict], existing_notes=()) -> dic
     accepted, mismatches, fatal = [], [], None
     for candidate in proposals:
         try:
-            accepted.append(_candidate(candidate, lookup, existing, ids))
-            continue
+            _shape(candidate)
         except ValidationError as exc:
-            message = str(exc)
-        if message in EVIDENCE_FAILURES:
-            message = _screen(candidate, lookup) or message
+            message, dropped = str(exc), False
+        else:
+            try:
+                accepted.append(_candidate(candidate, lookup, existing, ids))
+                continue
+            except ValidationError as exc:
+                message = str(exc)
+            dropped = message in CANDIDATE_FAILURES
+            screened = _screen(candidate, lookup) if dropped else None
+            if screened is not None:
+                message, dropped = screened, False
         mismatches.append(mismatch(message, candidate, lookup))
-        if message not in EVIDENCE_FAILURES and fatal is None:
+        if not dropped and fatal is None:
             fatal = message
     if fatal is not None:
         raise ResponseRejected(fatal, mismatches, proposed=len(proposals), accepted=len(accepted))
@@ -345,13 +402,27 @@ def references(candidate) -> list[dict]:
 
 
 def _screen(candidate, lookup) -> str | None:
+    """Return the first RESPONSE_FAILURES class anywhere in a dropped candidate.
+
+    _candidate stops at its first failure, so a drop can hide a later authority
+    claim, secret, unknown source or injected quote. This checks all of them, in
+    every text field and every evidence, correction and proof reference.
+    """
     for field in ("title", "statement"):
-        value = candidate.get(field) if isinstance(candidate, dict) else None
+        value = candidate.get(field)
         if isinstance(value, str) and contains_authority(value):
             return "memory cannot grant authority"
-    for item in references(candidate):
-        source, quote = lookup.get(str(item.get("source_id"))), item.get("quote")
-        if source is None or not isinstance(quote, str) or not quote:
+    items = references(candidate)
+    texts = [candidate.get(f) for f in ("logical_key", "title", "statement")]
+    texts += [item.get("quote") for item in items]
+    if any(isinstance(text, str) and contains_secret(text) for text in texts):
+        return "secret-bearing field"
+    for item in items:
+        if str(item.get("source_id")) not in lookup:
+            return "unknown evidence source"
+    for item in items:
+        source, quote = lookup[str(item.get("source_id"))], item.get("quote")
+        if not isinstance(quote, str) or not quote:
             continue
         start = source["content"].find(quote)
         if start >= 0 and is_quoted_or_injected(source["content"], start, start + len(quote)):
@@ -432,7 +503,14 @@ def _proposals(raw: str, sources: list[dict]) -> tuple[dict[str, dict], list]:
     return lookup, proposals
 
 
-def _candidate(candidate, lookup: dict[str, dict], existing: list, ids: dict) -> dict:
+def _shape(candidate) -> None:
+    """Check the schema of one candidate: its fields, field types and enum values.
+
+    A failure means the response broke its schema, so it rejects the whole
+    response. _candidate makes each check here unconditionally, so a schema
+    failure was always a rejection; only its class changes. Nested correction
+    and proof objects are checked later, because their need depends on values.
+    """
     _object(
         candidate,
         {
@@ -449,8 +527,31 @@ def _candidate(candidate, lookup: dict[str, dict], existing: list, ids: dict) ->
         {"note_id", "expected_revision", "correction", "proof"},
     )
     action, category = candidate["action"], candidate["category"]
-    if action not in ACTIONS or category not in CATEGORIES:
+    if not (isinstance(action, str) and action in ACTIONS) or not (
+        isinstance(category, str) and category in CATEGORIES
+    ):
         raise ValidationError("invalid action or category")
+    if candidate["scope"] not in ("project", "general"):
+        raise ValidationError("invalid candidate scope")
+    if not all(isinstance(candidate[f], str) for f in ("logical_key", "title", "statement")):
+        raise ValidationError("invalid text field")
+    effective = candidate["effective_at"]
+    if not isinstance(candidate["observed_at"], str) or not (
+        effective is None or isinstance(effective, str)
+    ):
+        raise ValidationError("invalid date")
+    evidence = candidate["evidence"]
+    if not isinstance(evidence, list) or not 1 <= len(evidence) <= 8:
+        raise ValidationError("invalid evidence list")
+    for item in evidence:
+        _object(item, {"source_id", "quote"})
+        if not isinstance(item["quote"], str):
+            raise ValidationError("invalid text field")
+
+
+def _candidate(candidate, lookup: dict[str, dict], existing: list, ids: dict) -> dict:
+    _shape(candidate)
+    action, category = candidate["action"], candidate["category"]
     key = _text(candidate["logical_key"], 160)
     if not _KEY.fullmatch(key):
         raise ValidationError("invalid logical key")
@@ -459,9 +560,7 @@ def _candidate(candidate, lookup: dict[str, dict], existing: list, ids: dict) ->
     if contains_authority(statement) or contains_authority(title):
         raise ValidationError("memory cannot grant authority")
     scope = candidate["scope"]
-    if scope not in {"project", "general"} or (
-        scope == "general" and category not in {"preference", "workflow"}
-    ):
+    if scope == "general" and category not in {"preference", "workflow"}:
         raise ValidationError("invalid candidate scope")
     evidence = _evidence(candidate["evidence"], lookup)
     primary = [e for e in evidence if statement in e["quote"]]

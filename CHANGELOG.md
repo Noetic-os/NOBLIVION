@@ -8,15 +8,22 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
-- One extraction candidate that fails an evidence check no longer ends the
-  whole learning job. The worker drops that candidate and keeps the valid rest
-  of the model response. The checks are: exact unique quote, statement in the
-  evidence, human evidence, observed-fact evidence and evidence inside the model
-  window. An authority claim, quoted or injected evidence, an unknown source or
-  a broken schema still rejects the whole response. What counts as evidence
-  does not change, and an explicit edit keeps the strict check. Saturation
-  counts the raw proposals, so a page of twelve with a dropped candidate still
-  asks for the rest. Started jobs keep their frozen fingerprint (NOBLIVION-237).
+- One extraction candidate that fails a check of its own values no longer ends
+  the whole learning job. The worker drops that candidate and keeps the valid
+  rest of the model response. These checks drop: text length, logical key,
+  scope, the evidence checks (exact unique quote, statement in the evidence,
+  general-scope evidence, no question, human, direct-human and observed-fact
+  evidence, evidence inside the model window), the observed and effective
+  dates, the reconciliation target, the correction and the fix proof. These
+  still reject the whole response: a secret, invalid JSON, the response
+  envelope, the candidate schema (fields, field types, enum values), an
+  authority claim, quoted or injected evidence and an unknown source. A dropped
+  candidate is checked for these too, in all its fields and references, so the
+  order of checks or evidence items does not change the result. What a
+  candidate needs to be accepted does not change, and an explicit edit keeps the
+  strict check. Saturation counts the raw proposals, so a page of twelve with a
+  dropped candidate still asks for the rest. Started jobs keep their frozen
+  fingerprint (NOBLIVION-237).
 - A read-only legacy note that holds only an old redaction marker, such as
   `***REDACTED***`, goes to the model with the neutral mark `[...]`. Before,
   the secret check withheld the note and every new note of the job waited on
@@ -26,10 +33,14 @@ All notable changes to NOBLIVION. The format follows
 - `noblivion learning status` shows `candidate_mismatches`: text-free counts of
   dropped and rejected candidates by class. An exact-quote failure has a detail:
   `repeated`, `whitespace`, `case`, `typography` or `absent`. Each job keeps a
-  record per page with the cited source IDs (NOBLIVION-237).
-- Pruning keeps the sources of an exhausted job while the job is within
-  `retention_days`, so `noblivion learning retry` can still run it
+  record per page with the cited source IDs. The records of one job use at
+  most 256 KiB, so they cannot push the progress row past its 1 MiB limit
   (NOBLIVION-237).
+- Pruning keeps the sources of an exhausted job while the job is within
+  `retention_days`, so `noblivion learning retry` can still run it. Retry does
+  not reset the age of the job: the next prune cancels a retried job that is
+  still pending when its creation and its newest capture are older than
+  `pending_days` (14 days by default) (NOBLIVION-237).
 
 - A change to the learning budget, `enable_consolidation`, `max_attempts`,
   `lease_seconds`, `retry_delay`, `poll_seconds` or `timeout_seconds` in

@@ -129,11 +129,14 @@ The existing `budget` totals remain conservative reservations, including unknown
 usage after a crash or transport failure. `outcomes` separates committed decisions,
 deferred jobs, exhausted failures and corrections deferred as visible conflicts.
 `candidate_mismatches` counts dropped and rejected extraction candidates by class,
-without text. A candidate that fails only an evidence check (exact unique quote,
-statement in the evidence, human or observed-fact evidence, evidence inside the
-model window) is dropped, and the valid rest of the response is kept. Any other
-failure, such as an authority claim or quoted or injected evidence, rejects the
-whole response and the job. An exact-quote failure has a detail: `repeated`,
+without text. A candidate that fails a check of its own values is dropped, and
+the valid rest of the response is kept. These are the text length, logical key,
+scope, evidence, date, reconciliation target, correction and fix proof checks.
+These failures reject the whole response and the job: a secret, invalid JSON,
+the response envelope, the candidate schema (fields, field types, enum values),
+an authority claim, quoted or injected evidence and an unknown source. A dropped
+candidate is checked for them too, in all its fields and references. The
+records of one job use at most 256 KiB. An exact-quote failure has a detail: `repeated`,
 `whitespace`, `case`, `typography` or `absent`. The progress row of each job keeps
 one record per page (`unit`, `continuation`) with the cited source IDs, so a
 measurement can join it to the page spans. `context_rejections` also counts
@@ -250,10 +253,12 @@ Capture is cheap to start and bounded in size (NOBLIVION-143):
 
 Pruning deletes data, so it is off until you ask. Run `noblivion learning prune` to count what it
 would drop (nothing is changed), and add `--apply` to drop it. It cancels pending extraction jobs
-whose latest update is older than `--pending-days` (14), drops expired source links, budget rows and
-extraction pages of terminal jobs after `--retention-days` (14), and drops old eligible sources that no
-note, claim, draft, conflict or live job uses. An exhausted job within `--retention-days` keeps
-its sources and pages, so `noblivion learning retry` can still run it. Audit-linked job rows and
+whose creation and newest capture are older than `--pending-days` (14), drops expired source links,
+budget rows and extraction pages of terminal jobs after `--retention-days` (14), and drops old
+eligible sources that no note, claim, draft, conflict or live job uses. An exhausted job within
+`--retention-days` keeps its sources and pages, so `noblivion learning retry` can still run it.
+Retry does not reset the age of the job: when its creation and its newest capture are older than
+`--pending-days`, the next prune cancels the retried job while it is still pending. Audit-linked job rows and
 batch receipts remain.
 Excluded and forgotten sources stay, because their hash blocks the same text. To run it hourly
 in the store worker, add

@@ -38,6 +38,7 @@ from .learning_extract import (
     validate_semantic_response,
 )
 from .learning_pages import CoverageExhausted, ExtractionPages
+from .learning_values import canonical_json
 
 LOG = logging.getLogger(__name__)
 _FORMAT_RETRY = (
@@ -51,9 +52,16 @@ CONTINUATION_PROMPT = (
     "already_returned statements must not be emitted again. A response "
     "with twelve candidates signals saturation and requires another page."
 )
-# A job keeps at most this many text-free mismatch records (NOBLIVION-237), so
-# a long job cannot push its progress row past the ledger's size limit.
-MAX_MISMATCH_RECORDS = 600
+# The text-free mismatch records of one job use at most this many encoded bytes
+# (NOBLIVION-237). The ledger refuses a progress row over 1 MiB. This leaves three
+# quarters of the row for the rest of the progress (budget metrics, context
+# exclusions, a cached format retry, semantic state). A count limit is not enough:
+# a record with twelve classes and long source IDs takes about 4 KB.
+MAX_MISMATCH_BYTES = 256 * 1024
+
+
+def _encoded_size(value) -> int:
+    return len(canonical_json(value).encode("utf-8"))
 
 
 def extraction_outcome(value) -> dict:
@@ -86,9 +94,6 @@ def record_mismatches(
     if not mismatches and error is None:
         return
     records = state.setdefault("candidate_mismatches", [])
-    if len(records) >= MAX_MISMATCH_RECORDS:
-        state["candidate_mismatches_omitted"] = state.get("candidate_mismatches_omitted", 0) + 1
-        return
     classes = {}
     for item in mismatches:
         key = (item["class"], item.get("detail"))
@@ -109,6 +114,10 @@ def record_mismatches(
     }
     if error is not None:
         record["error"] = error
+    # Measure the list as the ledger serializes it, with the new record included.
+    if _encoded_size(records + [record]) > MAX_MISMATCH_BYTES:
+        state["candidate_mismatches_omitted"] = state.get("candidate_mismatches_omitted", 0) + 1
+        return
     records.append(record)
 
 
@@ -215,9 +224,10 @@ REQUEST_PROVIDER = ("provider_type", "endpoint", "model", "reasoning_effort")
 # that text changes; started jobs then fail visibly instead of mixing outputs. A
 # test pins the twelve prompt and schema strings to this version. It does not
 # cover validator code, so bump it by hand when acceptance rules change.
-# NOBLIVION-237 keeps version 1 on purpose: it drops a candidate that fails an
-# evidence check instead of the whole response. Every candidate it accepts, the
-# version 1 check accepts with the same result, so old and new pages mix safely.
+# NOBLIVION-237 keeps version 1 on purpose: it drops a candidate that fails a
+# check of its own values instead of the whole response. Every candidate it
+# accepts, the version 1 check accepts with the same result, so old and new pages
+# mix safely.
 # The neutral mark for a legacy redaction marker changes note data, not a prompt.
 EXTRACTION_CONTRACT = 1
 # Releases up to 0.1.24 stored no contract. Their contract is version 1.

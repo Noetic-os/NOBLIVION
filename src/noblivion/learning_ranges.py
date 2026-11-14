@@ -171,7 +171,9 @@ def prune(
       revalidates those citations against the source text.
     - An exhausted job within ``retention_days`` keeps its sources, like a pending job,
       so ``noblivion learning retry`` can still run it (NOBLIVION-237). Its pages
-      stay too, because only a job past retention loses them.
+      stay too, because only a job past retention loses them. Retry does not reset
+      the job's age, so the first rule cancels a retried, still pending job whose
+      creation and newest capture are older than ``pending_days``.
     """
     now = time.time() if now is None else now
     late, old = now - pending_days * 86400, now - retention_days * 86400
