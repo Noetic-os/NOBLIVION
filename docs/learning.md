@@ -104,8 +104,10 @@ Budget limits, `enable_consolidation`, `max_attempts`, `lease_seconds`,
 uses their current values on its next call. So you can raise the budget while
 jobs wait with `BudgetExceeded`. Jobs that releases up to 0.1.24 started also
 continue: their stored configuration proves the frozen value, and only its
-request part is compared (NOBLIVION-236). After such a job resumes, it carries
-the new fingerprint shape, so an older release would fail it.
+request part is compared (NOBLIVION-236). Such a job keeps its original freeze,
+so 0.1.24 still accepts it under its original `learning.json`. A job that this
+release starts, or that an output-limit recovery freezes again, carries the
+request-only shape, and 0.1.24 fails it.
 
 Learning status includes `failure_reasons`, `context_rejections`, `outcomes`, and
 `provider_actual`. Provider reasons are `length`, `incomplete`, `empty`, `timeout`,
