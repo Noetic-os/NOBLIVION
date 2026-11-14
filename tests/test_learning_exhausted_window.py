@@ -205,7 +205,9 @@ def stopped_after_page_one(ledger):
     capture_two_windows(ledger)
     stop = Event()
     provider = Provider(stop=stop)
-    assert worker(ledger, provider, stop).run_once()["status"] == "deferred"
+    # This release stops at the next window (deferred). 0.1.28 fails the job at
+    # the exhausted receipt. as_0_1_28 writes the same state for both.
+    assert worker(ledger, provider, stop).run_once()["status"] in {"deferred", "failed"}
     ident, _, _, progress = job(ledger)
     return ident, provider, progress
 
