@@ -72,9 +72,11 @@ jobs:
         run: uv run python tools/eval_thresholds.py --check
 
   # The full suite on macOS: the docs name Linux and macOS as supported.
+  # The suite takes 13 to 15 minutes on main (2026-11-14), so 15 cut runs that
+  # shared the runners with a second pull request.
   test-macos:
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
