@@ -183,8 +183,8 @@ def validate_semantic_batch(raw: str, batch: dict) -> list[list[dict]]:
     if not isinstance(results, list) or len(results) != len(candidates):
         raise ValidationError("incomplete semantic comparison")
     aliases = {}
-    for item, candidate in zip(batch["items"], candidates, strict=True):
-        for real, alias in zip(item["target_ids"], candidate["compare"], strict=True):
+    for item, candidate in zip(batch["items"], candidates):  # noqa: B905 - 3.9 lane
+        for real, alias in zip(item["target_ids"], candidate["compare"]):  # noqa: B905 - 3.9 lane
             aliases[alias] = real
     by_item = {}
     for result in results:

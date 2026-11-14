@@ -1332,7 +1332,7 @@ class LearningWorker:
                     f"semantic-batch:{index}",
                     SEMANTIC_BATCH_SCHEMA,
                 )
-                for item, relations in zip(batch["items"], answers, strict=True):
+                for item, relations in zip(batch["items"], answers):  # noqa: B905 - 3.9 lane
                     candidate = results[item["candidate_index"]]
                     if candidate["action"] == "add":
                         _apply_relations(candidate, relations, stage["notes"])
