@@ -92,6 +92,7 @@ def capture(store, count, text=LONG):
     with store.connection() as conn:
         ledger = LearningLedger(conn)
         for index in range(count):
+            text_i = text.format(index=index)
             ledger.capture_batch(
                 {
                     "batch_id": f"batch-{index}",
@@ -102,9 +103,9 @@ def capture(store, count, text=LONG):
                     "records": [
                         {
                             "source_id": f"source-{index}",
-                            "source_hash": hashlib.sha256(text.encode()).hexdigest(),
+                            "source_hash": hashlib.sha256(text_i.encode()).hexdigest(),
                             "role": "user",
-                            "content": text,
+                            "content": text_i,
                             "observed_at": "2026-01-02T12:00:00Z",
                         }
                     ],
@@ -186,10 +187,13 @@ def test_default_is_one_worker_and_one_call(tmp_path, pool_env):
     assert provider.peak == 1
 
 
-def test_parallel_calls_never_exceed_the_call_budget(tmp_path, pool_env):
+@pytest.mark.parametrize(
+    "limit", [{"max_calls": 3}, {"max_seconds": 180}, {"max_tokens": 30000}], ids=str
+)
+def test_parallel_calls_never_exceed_the_budget(tmp_path, pool_env, limit):
     store, pool, provider = pool_env
     capture(store, 8, text=SHORT)
-    write_settings(tmp_path, 4, max_calls=3)
+    write_settings(tmp_path, 4, **limit)
     provider.gate.set()
     pool.pass_once()
 
@@ -202,9 +206,19 @@ def test_parallel_calls_never_exceed_the_call_budget(tmp_path, pool_env):
         return done + deferred == len(jobs)
 
     wait_for(settled)
-    used = rows(store, "SELECT count(*) n,coalesce(sum(tokens),0) t FROM learning_budget")[0]
-    assert used["n"] == 3 and len(provider.starts) == 3
-    assert len(rows(store, "SELECT id FROM learning_jobs WHERE status='done'")) == 3
+    used = rows(
+        store,
+        "SELECT count(*) n,sum(tokens) t,sum(seconds) s,max(tokens) e FROM learning_budget",
+    )[0]
+    done = rows(store, "SELECT id FROM learning_jobs WHERE status='done'")
+    assert 1 <= used["n"] < 8 and len(provider.starts) == used["n"] == len(done)
+    if "max_seconds" in limit:
+        assert used["s"] <= 180
+    if "max_tokens" in limit:
+        # Within the limit, and no room was left for one more call.
+        assert used["t"] <= 30000 < used["t"] + used["e"]
+    if "max_calls" in limit or "max_seconds" in limit:
+        assert used["n"] == 3
 
 
 def test_scale_down_from_three_to_one_without_deferral(tmp_path, pool_env):
@@ -241,6 +255,73 @@ def test_scale_up_mid_job_uses_the_current_limit(tmp_path, pool_env):
     assert_each_job_leased_once(store)
 
 
+class NoteProvider(GatedProvider):
+    """Proposes the whole source as one note; every semantic target is distinct."""
+
+    def __init__(self):
+        super().__init__()
+        self.semantic = 0
+
+    def complete(self, messages, **kwargs):
+        payload = json.loads(messages[-1]["content"])
+        if "targets" in payload:
+            with self.lock:
+                self.semantic += 1
+            relations = [
+                {"target_id": n["target_id"], "relation": "distinct"} for n in payload["targets"]
+            ]
+            return ProviderResponse(json.dumps({"version": 1, "relations": relations}), 50)
+        super().complete(messages, **kwargs)
+        (source,) = payload["sources"]
+        if payload["continuation"]:
+            return ProviderResponse('{"version":1,"candidates":[]}', 50)
+        candidate = {
+            "action": "add",
+            "logical_key": "rule-" + source["id"],
+            "category": "preference",
+            "scope": "project",
+            "title": "Rule " + source["id"],
+            "statement": source["content"],
+            "observed_at": "2026-01-02",
+            "effective_at": None,
+            "evidence": [{"source_id": source["id"], "quote": source["content"]}],
+        }
+        return ProviderResponse(json.dumps({"version": 1, "candidates": [candidate]}), 50)
+
+
+def test_parallel_jobs_in_one_root_all_write_their_notes(tmp_path, pool_env, monkeypatch):
+    store, pool, _ = pool_env
+    provider = NoteProvider()
+    monkeypatch.setattr(
+        learning_runtime,
+        "worker_options",
+        lambda settings: (
+            provider,
+            WorkerSettings(**settings.get("worker", {})),
+            BudgetLimits(**settings.get("budget", {})),
+        ),
+    )
+    capture(store, 4, text="Rule {index} applies to every file.")
+    write_settings(tmp_path, 4)
+    pool.pass_once()
+    wait_for(lambda: provider.peak == 4)
+    provider.gate.set()
+    wait_for(all_done(store, 4))
+    with store.connection() as conn:
+        notes = LearningLedger(conn).current_notes("demo", "example")
+    assert sorted(n["statement"] for n in notes) == [
+        f"Rule {i} applies to every file." for i in range(4)
+    ]
+    # The supervisor writes the notes of all workers to the memory folder.
+    pool.pass_once()
+    folder = tmp_path / "memories" / "example" / "memory"
+    written = "".join(p.read_text(encoding="utf-8") for p in folder.glob("*.md"))
+    assert all(f"Rule {i} applies" in written for i in range(4))
+    # Jobs that add notes in one root at once see the snapshot change and
+    # repeat only the semantic comparison, never the extraction call.
+    assert len(provider.starts) == 4
+
+
 def test_invalid_settings_stop_the_workers(tmp_path, pool_env):
     store, pool, provider = pool_env
     write_settings(tmp_path, 2)
@@ -250,6 +331,24 @@ def test_invalid_settings_stop_the_workers(tmp_path, pool_env):
     pool.pass_once()
     assert pool.desired == 0
     wait_for(lambda: pool.alive() == 0)
+
+
+def test_turning_learning_off_gives_started_jobs_back(tmp_path, pool_env):
+    store, pool, provider = pool_env
+    capture(store, 2)
+    write_settings(tmp_path, 2)
+    pool.pass_once()
+    wait_for(lambda: provider.peak == 2)
+    (tmp_path / "learning.json").write_text("{not json", encoding="utf-8")
+    pool.pass_once()
+    provider.gate.set()
+    wait_for(lambda: pool.alive() == 0)
+    jobs = rows(store, "SELECT status,attempts,last_error,progress FROM learning_jobs")
+    assert [(j["status"], j["attempts"], j["last_error"]) for j in jobs] == [
+        ("pending", 0, "LearningWorkerStopped")
+    ] * 2
+    # The finished first window is kept: the next start resumes after it.
+    assert all(json.loads(j["progress"])["next_window"] == 1 for j in jobs)
 
 
 def claimed_job(store):
