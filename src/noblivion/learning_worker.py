@@ -135,10 +135,13 @@ class ProviderError(RuntimeError):
 
 # NOBLIVION-245: a window whose model reply reaches the output token cap
 # ("length") is split in halves, and each half goes on. A piece at depth
-# LENGTH_SPLIT_DEPTH, or with fewer than 2 * LENGTH_SPLIT_MIN_CHARS content
+# LENGTH_SPLIT_DEPTH, or of one part with fewer than 2 * LENGTH_SPLIT_MIN_CHARS content
 # characters, is at the floor and is not split again. At the floor the piece gets
 # a rejected receipt (LENGTH_REJECTED) and the job goes on. So one window makes at
 # most 2 ** (LENGTH_SPLIT_DEPTH + 1) - 1 calls that end on length.
+# These constants are not in the job fingerprint. A change moves the piece
+# bounds and receipt keys of started jobs, so change them only with a new
+# EXTRACTION_CONTRACT.
 LENGTH_SPLIT_DEPTH = 3
 LENGTH_SPLIT_MIN_CHARS = 1024
 LENGTH_SPLIT_OVERLAP = 256
