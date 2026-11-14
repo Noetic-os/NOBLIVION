@@ -677,6 +677,80 @@ def failure_of(event: Mapping[str, object]) -> Optional[Tuple[str, List[str]]]:
     return None
 
 
+# NOBLIVION-228. A command can fail with an exit code and no error line:
+# ``gh pr checks`` exits 8 while a check is pending and prints only the check
+# table. No line can be quoted, so the quote gate never passes. A lesson about
+# such a failure names the command and its exit. For this failure only, a note is
+# shown when it names the command head (the tool and its subcommand, at least two
+# words) and speaks of an exit code, both in its description or both in its rule:
+# on the gate 0 bench, five notes name ``gh pr checks`` and an exit somewhere in
+# the text, and only the lesson does so in one summary field. A pipeline or a
+# list of statements is skipped: which part exited is not known. A command whose
+# non-zero exit is an answer (``grep`` found nothing, ``diff`` found a change) is
+# skipped too.
+EXIT_HEAD_MIN_WORDS = 2
+EXIT_HEAD_MAX_WORDS = 3
+EXIT_IS_AN_ANSWER = frozenset("grep egrep fgrep rg ag diff cmp test [ [[ false true".split())
+_HEAD_WORD = re.compile(r"[a-z][a-z0-9.-]{0,30}")
+_EXIT_TALK = re.compile(
+    r"\b(?:exit(?:s|ed)?\s+(?:code|status)|non-?zero\s+exit"
+    r"|exit(?:s|ed)?\s+(?:with\s+)?(?:non-?zero|\d+))\b",
+    re.I,
+)
+
+
+def command_head(command: str) -> str:
+    """The tool and its subcommand words (``gh pr checks``) of a one-stage,
+    one-statement command, or ``""``. Words stop at the first flag, number,
+    path or quoted value, so a value never becomes part of the head."""
+    statements = _statements(_strip_heredocs((command or "")[:COMMAND_MAX_CHARS]))
+    if len(statements) != 1 or re.search(r"(?<!\|)\|(?!\|)", statements[0]):
+        return ""
+    words = _command_words(statements[0])
+    if words:
+        words[0] = os.path.basename(words[0])
+    head: List[str] = []
+    for w in words[:EXIT_HEAD_MAX_WORDS]:
+        if not _HEAD_WORD.fullmatch(w):
+            break
+        head.append(w)
+    return " ".join(head) if len(head) >= EXIT_HEAD_MIN_WORDS else ""
+
+
+def exit_only(event: Mapping[str, object]) -> Optional[Tuple[str, str]]:
+    """``(exit code, command head)`` of a Bash failure that has an exit code
+    and no error line, or None."""
+    if str(event.get("tool_name") or "") != "Bash":
+        return None
+    if str(event.get("hook_event_name") or "") != "PostToolUseFailure" or event.get("is_interrupt"):
+        return None
+    err = event.get("error")
+    if not isinstance(err, str) or not err.strip():
+        return None
+    m = _EXIT_LINE.match(err.strip().splitlines()[0].strip())
+    if not m or m.group(1) == "0" or error_lines(err, failed=True):
+        return None
+    raw_ti = event.get("tool_input")
+    command = raw_ti.get("command") if isinstance(raw_ti, dict) else None
+    if not isinstance(command, str):
+        return None
+    head = command_head(command)
+    if head.split(" ", 1)[0] in EXIT_IS_AN_ANSWER:
+        return None
+    return (m.group(1), head) if head else None
+
+
+def names_exit_of(mem: Mapping[str, object], head: str) -> bool:
+    """The note's description or its rule names the command head and speaks
+    of an exit code."""
+    named = re.compile(rf"(?<![\w-]){re.escape(head)}(?![\w-])")
+    for key in ("description", "rule"):
+        text = re.sub(r"\s+", " ", str(mem.get(key) or "").replace("`", "")).lower()
+        if named.search(text) and _EXIT_TALK.search(text):
+            return True
+    return False
+
+
 # --------------------------------------------------------------------------
 # query: clean and redact
 # --------------------------------------------------------------------------
@@ -1331,10 +1405,16 @@ def decide(
     here, under the session lock, only when there is something to print."""
     t0 = time.time()
     fail = failure_of(event)
+    head = ""
     if fail is None:
-        return "", None
-    kind, lines = fail
-    query = query_of(lines)
+        bare = exit_only(event)
+        if bare is None:
+            return "", None
+        kind, head = f"exit:{bare[0]}", bare[1]
+        query = f"{head} exit code {bare[0]}"
+    else:
+        kind, lines = fail
+        query = query_of(lines)
     if len(tokens(query)) < 2:
         return "", None
     folder = memory_dir(env, event.get("cwd"))
@@ -1354,14 +1434,18 @@ def decide(
         "event": str(event.get("hook_event_name") or ""),
         "kind": kind,
         "source": source,
-        "query": query,
+        # The command head is a part of the command, so it is not logged.
+        "query": "exit code only" if head else query,
     }
     if store_error:
         rec["store_error"] = store_error
     if not hits:
         rec.update(decision="no-hit", ids=[], ms=int((time.time() - t0) * 1000))
         return "", rec
-    quoted = [(s, m) for s, m in hits if passes_quote_gate(m, query, index.is_rare)]
+    if head:
+        quoted = [(s, m) for s, m in hits if names_exit_of(m, head)]
+    else:
+        quoted = [(s, m) for s, m in hits if passes_quote_gate(m, query, index.is_rare)]
     if not quoted:
         rec.update(
             decision="no-quote",
