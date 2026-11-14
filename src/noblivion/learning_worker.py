@@ -37,7 +37,7 @@ from .learning_extract import (
     validate_extraction,
     validate_semantic_response,
 )
-from .learning_pages import CoverageExhausted, ExtractionPages
+from .learning_pages import CoverageExhausted, ExtractionPages, coverage
 from .learning_semantic import (
     MAX_BATCH_ITEMS,
     SEMANTIC_BATCH_PROMPT,
@@ -240,8 +240,10 @@ REQUEST_PROVIDER = ("provider_type", "endpoint", "model", "reasoning_effort")
 # NOBLIVION-241 adds version 2 for new extraction jobs. It needs fewer model
 # calls: a window holds WINDOW_SCALE times window_chars, a window with no tool
 # part and no direct user part gets a no_lesson receipt with no call, and one
-# semantic call compares several candidates. Each started job keeps the version
-# it froze, so a version 1 job resumes with version 1 windows and calls.
+# semantic call compares several candidates. A started job with partial work
+# keeps the version it froze, so it resumes with version 1 windows and calls. A
+# job frozen under version 1 with no partial work freezes again under the newest
+# version when a worker leases it (see LearningWorker._may_refreeze).
 EXTRACTION_CONTRACT = 2
 # Releases up to 0.1.24 stored no contract. Their contract is version 1.
 LEGACY_EXTRACTION_CONTRACT = 1
@@ -250,6 +252,17 @@ SUPPORTED_CONTRACTS = (1, 2)
 # Consolidation and draft jobs use only version 1 text, which version 2 keeps
 # unchanged. They freeze version 1, so their started stages keep matching.
 DERIVATION_CONTRACT = 1
+# Progress keys that show partial work of an extraction job. A job with one of
+# them never freezes again under a newer contract.
+PARTIAL_WORK = (
+    "semantic",
+    "semantic_exclusions",
+    "deferred_decisions",
+    "dependency_deferred",
+    "format_repair",
+    "output_limit_hold",
+    "candidate_mismatches",
+)
 # Characters per window are window_chars times this factor.
 WINDOW_SCALE = {1: 1, 2: 3}
 # The exact configuration shape frozen by releases up to 0.1.24.
@@ -675,6 +688,13 @@ class LearningWorker:
                 return run_derivation(self.ledger, job, self._validated_call)
             sources = job["sources"]
             progress = job.get("progress") or {}
+            if self._may_refreeze(job, progress, sources):
+                # A job frozen under an older contract that has done no work
+                # yet starts again as a new job under the newest contract.
+                progress = {key: progress[key] for key in ("provider_metrics",) if key in progress}
+                progress["refrozen_from"] = self._job_contract(job["progress"], sources)
+                state = dict(progress)
+                job["progress"] = progress
             # The contract decides the windows and the request shape, so it is
             # resolved before either is hashed (NOBLIVION-241).
             contract = self._job_contract(progress, sources)
@@ -879,6 +899,39 @@ class LearningWorker:
             if execution_matches(progress, sources, windows, self._configuration(contract)):
                 return contract
         return hint
+
+    def _may_refreeze(self, job, progress, sources) -> bool:
+        """True when a job frozen under an older contract has no partial work.
+
+        Such a job has no completed window, no page receipt, no semantic stage,
+        no decision, no format retry and no output-limit hold, so nothing in
+        it depends on its frozen windows. It may freeze again under the newest
+        contract. A job with any partial work keeps its frozen contract, and a
+        job whose freeze no longer matches still fails visibly (NOBLIVION-236).
+        """
+        if progress.get("execution_fingerprint", progress.get("fingerprint")) is None:
+            return False
+        conn = getattr(self.ledger, "conn", None)
+        if conn is None or coverage(conn, job["id"]):
+            return False
+        if (
+            progress.get("next_window", 0) != 0
+            or progress.get("next_continuation", 0) != 0
+            or progress.get("decisions")
+            or any(key in progress for key in PARTIAL_WORK)
+        ):
+            return False
+        try:
+            contract = self._job_contract(progress, sources)
+        except ValidationError:
+            return False
+        if contract >= EXTRACTION_CONTRACT:
+            return False
+        try:
+            windows = self.windows(sources, contract)
+        except ValidationError:
+            return False
+        return execution_matches(progress, sources, windows, self._configuration(contract))
 
     def _configuration(self, contract=DERIVATION_CONTRACT):
         return {

@@ -186,8 +186,9 @@ def test_job_frozen_without_a_contract_resumes_as_contract_1(ledger):
     old.pop("contract")
     windows = worker.windows(sources, 1)
     frozen = learning_worker.input_fingerprint(sources, windows, old)
+    # The first window is done, so the job has partial work and keeps contract 1.
     state = {
-        "next_window": 0,
+        "next_window": 1,
         "decisions": [],
         "execution_configuration": old,
         "execution_fingerprint": frozen,
@@ -200,7 +201,8 @@ def test_job_frozen_without_a_contract_resumes_as_contract_1(ledger):
     )
     assert worker._job_contract(state, sources) == 1
     assert run(ledger, provider)["status"] == "done"
-    assert provider.offsets[:2] == [0, 4000] and len(provider.offsets) > 2
+    assert provider.offsets[:1] == [4000] and len(provider.offsets) > 1
+    assert "refrozen_from" not in progress(ledger)
 
 
 def test_unknown_stored_contract_fails_visibly(ledger):
