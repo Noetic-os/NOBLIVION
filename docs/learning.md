@@ -143,8 +143,9 @@ coverage limits (pages, continuations, decisions), the provider type, endpoint,
 model and reasoning mode, and the version of the learning prompts and schemas.
 A change to any of these fails a started job with `window configuration changed
 during a job`, so outputs of two configurations never mix in one job. A new
-release that adds a contract version does not fail a started job: the job keeps
-its own version (see Extraction contract versions below).
+release that adds a contract version does not fail a started job: a job with
+partial work keeps its own version, and a job with no work yet freezes again
+under the newest version (see Extraction contract versions below).
 
 Budget limits, `enable_consolidation`, `max_attempts`, `lease_seconds`,
 `retry_delay`, `poll_seconds` and `timeout_seconds` are policy. A started job
@@ -164,8 +165,8 @@ job that resumes on this release is frozen again in the request-only shape.
 ### Extraction contract versions
 
 Each extraction job freezes the version of the extraction contract when it
-starts. A started job always resumes under its own version. A new job starts
-under the newest version. The worker supports versions 1 and 2. Version 2
+starts. A started job with partial work always resumes under its own version.
+A new job starts under the newest version. The worker supports versions 1 and 2. Version 2
 (NOBLIVION-241) needs fewer model calls per job:
 
 - A window holds three times `window_chars`. With the default 12,000 characters
@@ -185,8 +186,18 @@ under the newest version. The worker supports versions 1 and 2. Version 2
 Version 2 keeps every version 1 prompt and schema unchanged and adds only the
 batched semantic prompt and schema. Consolidation and draft jobs use only
 version 1 text, so they freeze version 1. A job that 0.1.25 or an older release
-started resumes as version 1: same windows, one semantic call per comparison
-task. A window of 36,000 characters with 24,000 characters of existing notes
+started resumes as version 1 when it has partial work: same windows, one
+semantic call per comparison task. Partial work is a completed window, a page
+receipt, a semantic stage, a decision, a pending format retry or an output-limit
+hold. A version 1 job with none of these freezes again under the newest version
+when a worker leases it, so it also needs fewer calls; its progress records
+`refrozen_from: 1`. A version 1 job whose freeze no longer matches the
+configuration still fails with `window configuration changed during a job`.
+
+The version 2 semantic stage stores a digest of its batches when it starts. A
+resume builds the batches again; if the digest differs, the job fails with
+`semantic batches changed during a job` instead of skipping or repeating
+comparisons. A semantic stage without a digest resumes and gets one. A window of 36,000 characters with 24,000 characters of existing notes
 needs about 20,000 input tokens. Keep `window_chars` at a value whose triple,
 plus the existing notes and the output limit, fits the model context.
 
@@ -195,8 +206,8 @@ scope: each new candidate is compared with every managed note. Batching cuts
 the calls for these comparisons by up to 8 times, but the count still grows
 with the note count.
 
-A downgrade to 0.1.25 fails each extraction job that started under contract
-version 2 with `window configuration changed during a job`, before any
+A downgrade to 0.1.25 fails each extraction job that started or froze again
+under contract version 2 with `window configuration changed during a job`, before any
 provider call. A job that names a contract version this release does not know
 fails with `unsupported extraction contract`. To recover, upgrade again,
 then run `noblivion learning retry <id>` for each failed job.

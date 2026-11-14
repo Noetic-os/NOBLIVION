@@ -42,9 +42,15 @@ All notable changes to NOBLIVION. The format follows
   every evidence and secret check stays. A job measured about 57 calls
   (median) and 87 (p90) under version 1. On 470 recorded jobs of a live store
   the simulated median falls from about 67 to about 15 calls per job (p90 123
-  to 30) at today's note count. Jobs that an older release started keep contract
-  version 1 and resume with version 1 windows and calls. Consolidation and
-  draft jobs keep version 1.
+  to 30) at today's note count. A job that an older release froze but that has
+  no partial work (no completed window, page receipt, semantic stage,
+  decision, format retry or output-limit hold) freezes again under version 2
+  when a worker leases it, so the waiting backlog also needs fewer calls. A
+  job with partial work keeps contract version 1 and resumes with version 1
+  windows and calls. Consolidation and draft jobs keep version 1.
+- A version 2 job whose semantic batches differ on resume from the batches it
+  started with fails with `semantic batches changed during a job`. Before, the
+  stored batch counter could skip or repeat comparisons (NOBLIVION-241).
 
 ## 0.1.25 - 2026-11-14
 
