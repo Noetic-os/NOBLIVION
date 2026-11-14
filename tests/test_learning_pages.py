@@ -207,7 +207,9 @@ def test_explicit_retry_repairs_rejected_page_without_replaying_accepted_pages(t
         payload = json.loads(messages[-1]["content"])
         if payload.get("continuation") == 1 and not rejected:
             rejected = True
-            return ProviderResponse('{"version":1,"candidates":[{}]}', 50)
+            # An unsupported version fails the job. A ResponseRejected reply
+            # would only mark the window rejected (NOBLIVION-244).
+            return ProviderResponse('{"version":2,"candidates":[]}', 50)
         return original(messages, **kwargs)
 
     provider.complete = reject_second
@@ -217,6 +219,31 @@ def test_explicit_retry_repairs_rejected_page_without_replaying_accepted_pages(t
     assert run(ledger, provider)["status"] == "done"
     assert len(ledger.current_notes("fixture", "root")) == 15
     assert len([call for call in provider.calls if "sources" in call]) == 2
+    conn.close()
+
+
+def test_rejected_continuation_marks_the_window_and_keeps_earlier_pages(tmp_path):
+    # NOBLIVION-244: a ResponseRejected reply on a continuation stores nothing of
+    # that reply. The window is marked rejected and the job is done. Candidates of
+    # the earlier, separately validated page of the window stay.
+    conn = db.open_db(tmp_path / "continuation.db", create=True)
+    ledger, job_id = seed(conn, 15)
+    provider = DenseProvider()
+    original = provider.complete
+
+    def reject_continuation(messages, **kwargs):
+        payload = json.loads(messages[-1]["content"])
+        if payload.get("continuation") == 1:
+            provider.calls.append(payload)
+            return ProviderResponse('{"version":1,"candidates":[{}]}', 50)
+        return original(messages, **kwargs)
+
+    provider.complete = reject_continuation
+    assert run(ledger, provider)["status"] == "done"
+    assert [r["status"] for r in coverage(conn, job_id)] == ["saturated", "rejected"]
+    assert len(ledger.current_notes("fixture", "root")) == 12
+    progress = json.loads(conn.execute("SELECT progress FROM learning_jobs").fetchone()[0])
+    assert progress["rejected_windows"] == [0] and "next_continuation" not in progress
     conn.close()
 
 

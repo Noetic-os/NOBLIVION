@@ -30,6 +30,7 @@ from .learning_extract import (
     SEMANTIC_SCHEMA,
     SYSTEM_PROMPT,
     ResponseFormatError,
+    ResponseRejected,
     ValidationError,
     build_windows,
     contains_secret,
@@ -58,6 +59,10 @@ CONTINUATION_PROMPT = (
 # exclusions, a cached format retry, semantic state). A count limit is not enough:
 # a record with twelve classes and long source IDs takes about 4 KB.
 MAX_MISMATCH_BYTES = 256 * 1024
+# NOBLIVION-244: the reason of a receipt for a window whose model reply was
+# rejected as a whole. The receipt holds no candidate. The job goes on with the
+# next window. A rejected receipt with any other reason still fails the job.
+WINDOW_REJECTED = "unsafe response rejected; no candidate kept; job continues"
 
 
 def _encoded_size(value) -> int:
@@ -874,15 +879,22 @@ class LearningWorker:
                             error=str(exc),
                         )
                         self.ledger.checkpoint(job["id"], job["lease_token"], state)
+                        unsafe = isinstance(exc, ResponseRejected)
                         pages.save(
                             unit_index,
                             continuation,
                             window,
                             [],
                             "rejected",
-                            "candidate validation failed; no coverage acknowledgement",
+                            WINDOW_REJECTED
+                            if unsafe
+                            else "candidate validation failed; no coverage acknowledgement",
                         )
-                        raise
+                        if not unsafe:
+                            raise
+                        # The resume path below reads the saved receipt and
+                        # goes on to the next window (NOBLIVION-244).
+                        continue
                     accepted, proposed = outcome["accepted"], outcome["proposed"]
                     if outcome["mismatches"]:
                         record_mismatches(
@@ -935,7 +947,14 @@ class LearningWorker:
                         else "provider reported no eligible lesson"
                     )
                     receipt = pages.save(unit_index, continuation, window, accepted, status, reason)
-                if receipt["status"] in {"exhausted", "rejected"}:
+                if receipt["status"] == "rejected" and receipt["reason"] == WINDOW_REJECTED:
+                    # The whole reply was rejected and none of it is kept. The
+                    # unit index list stays the same when a resume reads this
+                    # receipt again.
+                    rejected = state.setdefault("rejected_windows", [])
+                    if unit_index not in rejected:
+                        rejected.append(unit_index)
+                elif receipt["status"] in {"exhausted", "rejected"}:
                     raise CoverageExhausted("extraction receipt is incomplete")
                 state.pop("format_repair", None)
                 if receipt["status"] == "saturated":
