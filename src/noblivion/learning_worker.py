@@ -581,6 +581,13 @@ class OpenAICompatibleProvider:
             raise ProviderError("invalid") from exc
 
 
+def batches_digest(batches: list[dict]) -> str:
+    """The identity of the semantic batches of one job, in their order."""
+    return hashlib.sha256(
+        json.dumps(batches, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def _apply_relations(candidate: dict, relations: list[dict], notes: list[dict]) -> None:
     """The first relation that is not distinct turns an add into a visible conflict."""
     blocked = next((r for r in relations if r["relation"] != "distinct"), None)
@@ -1310,6 +1317,17 @@ class LearningWorker:
         if len(batches) > 512:
             raise ValidationError("semantic reconciliation exceeds bounded task count")
         results = stage["decisions"]
+        # The digest binds next_batch to the batches it counts. A resume that
+        # builds other batches, for example after a change of the batch limits,
+        # fails visibly instead of skipping or repeating comparisons. Progress
+        # from before the digest has none; it resumes and gets one now.
+        digest = batches_digest(batches)
+        stored = stage.get("batch_digest")
+        if stored is None:
+            stage["batch_digest"] = digest
+            self.ledger.checkpoint(job["id"], job["lease_token"], state)
+        elif stored != digest:
+            raise ValidationError("semantic batches changed during a job")
         start = stage.get("next_batch", 0)
         if type(start) is not int or not 0 <= start <= len(batches):
             raise ValidationError("invalid durable semantic progress")

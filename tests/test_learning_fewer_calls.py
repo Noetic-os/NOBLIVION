@@ -383,3 +383,69 @@ def test_contract_2_job_paused_inside_the_semantic_stage_resumes(ledger):
     # The first batch is not asked again; ten contract 1 calls became two.
     assert provider.calls == ["extract", "batch", "batch"]
     assert sum(r["action"] == "conflict" for r in result["results"]) == 5
+
+
+def pause_inside_semantic_stage(ledger, provider):
+    first = run(ledger, provider, max_calls=2)
+    assert first["status"] == "deferred" and first["error"] == "BudgetExceeded"
+    ledger.conn.execute("UPDATE learning_budget SET created_at=created_at-86401")
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0")
+    return progress(ledger)
+
+
+def store_progress(ledger, state):
+    ledger.conn.execute("UPDATE learning_jobs SET progress=?", (json.dumps(state),))
+
+
+def test_semantic_stage_stores_the_digest_of_its_batches(ledger):
+    adds = many_candidates(ledger, 11)
+    provider = Oracle(adds)
+    stage = pause_inside_semantic_stage(ledger, provider)["semantic"]
+    assert stage["next_batch"] == 1
+    digest = stage["batch_digest"]
+    assert len(digest) == 64 and set(digest) <= set("0123456789abcdef")
+    # The resume rebuilds the same batches, so the stored digest matches.
+    assert run(ledger, provider)["status"] == "done"
+    assert provider.calls == ["extract", "batch", "batch"]
+
+
+def test_changed_batches_on_resume_fail_the_job_visibly(ledger, monkeypatch):
+    adds = many_candidates(ledger, 11)
+    provider = Oracle(adds)
+    pause_inside_semantic_stage(ledger, provider)
+    calls = len(provider.calls)
+    original = learning_worker.semantic_batches
+    # A resume that packs fewer candidates per call builds other batches.
+    monkeypatch.setattr(
+        learning_worker,
+        "semantic_batches",
+        lambda tasks, **kwargs: original(tasks, **{**kwargs, "max_items": 4}),
+    )
+    result = run(ledger, provider)
+    assert result["status"] == "failed" and result["permanent"] is True
+    assert len(provider.calls) == calls
+    row = ledger.conn.execute("SELECT status, last_error FROM learning_jobs").fetchone()
+    assert row[0] == "exhausted"
+    assert row[1] == "ValidationError: semantic batches changed during a job"
+
+
+def test_edited_batch_digest_fails_the_job_visibly(ledger):
+    adds = many_candidates(ledger, 11)
+    provider = Oracle(adds)
+    state = pause_inside_semantic_stage(ledger, provider)
+    state["semantic"]["batch_digest"] = "0" * 64
+    store_progress(ledger, state)
+    result = run(ledger, provider)
+    assert result["status"] == "failed" and result["permanent"] is True
+
+
+def test_semantic_progress_without_a_digest_still_resumes(ledger):
+    adds = many_candidates(ledger, 11)
+    provider = Oracle(adds)
+    state = pause_inside_semantic_stage(ledger, provider)
+    del state["semantic"]["batch_digest"]
+    store_progress(ledger, state)
+    result = run(ledger, provider)
+    assert result["status"] == "done"
+    assert provider.calls == ["extract", "batch", "batch"]
+    assert sum(r["action"] == "conflict" for r in result["results"]) == 5
