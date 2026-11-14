@@ -14,7 +14,6 @@ import time
 from . import db
 from .learning_extract import ValidationError, contains_secret
 
-
 # NOBLIVION-244: the reason of a receipt for a window whose model reply failed a
 # RESPONSE_FAILURES check. The receipt holds no candidate, and the job goes on
 # with the next window. A rejected receipt with any other reason fails the job.
