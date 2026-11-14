@@ -102,12 +102,23 @@ during a job`, so outputs of two configurations never mix in one job.
 Budget limits, `enable_consolidation`, `max_attempts`, `lease_seconds`,
 `retry_delay`, `poll_seconds` and `timeout_seconds` are policy. A started job
 uses their current values on its next call. So you can raise the budget while
-jobs wait with `BudgetExceeded`. Jobs that releases up to 0.1.24 started also
-continue: their stored configuration proves the frozen value, and only its
-request part is compared (NOBLIVION-236). Such a job keeps its original freeze,
-so 0.1.24 still accepts it under its original `learning.json`. A job that this
-release starts, or that an output-limit recovery freezes again, carries the
-request-only shape, and 0.1.24 fails it.
+jobs wait with `BudgetExceeded`.
+
+Extraction jobs that releases up to 0.1.24 started also continue: their stored
+configuration proves the frozen value, and only its request part is compared
+(NOBLIVION-236). Such a job keeps its original freeze, so 0.1.24 still accepts
+it under its original `learning.json`.
+
+Derivation (consolidate and draft) jobs differ. A derivation job that 0.1.24
+started and that made no model call stored only a hash. It continues only while
+the configuration is unchanged, so a budget change still fails it. A derivation
+job that resumes on this release is frozen again in the request-only shape.
+
+A downgrade to 0.1.24 fails each job that this release froze: every job it
+started, every resumed derivation job and every job frozen again by an
+output-limit recovery. The failure happens before any provider call, and the
+job keeps its progress and page receipts. To recover, upgrade again, then run
+`noblivion learning retry <id>` for each failed job.
 
 Learning status includes `failure_reasons`, `context_rejections`, `outcomes`, and
 `provider_actual`. Provider reasons are `length`, `incomplete`, `empty`, `timeout`,

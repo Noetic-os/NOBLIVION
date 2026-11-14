@@ -152,9 +152,10 @@ POLICY_BUDGETS = frozenset(
     {"window_seconds", "max_calls", "max_tokens", "max_seconds", "max_cost", "max_concurrency"}
 )
 REQUEST_PROVIDER = ("provider_type", "endpoint", "model", "reasoning_effort")
-# Version of the prompts, schemas and validators of every learning request. Bump
-# it when a request or its acceptance rules change; started jobs then fail
-# visibly instead of mixing outputs. A test pins the prompt and schema text.
+# Version of the prompt and schema text of every learning request. Bump it when
+# that text changes; started jobs then fail visibly instead of mixing outputs. A
+# test pins the twelve prompt and schema strings to this version. It does not
+# cover validator code, so bump it by hand when acceptance rules change.
 EXTRACTION_CONTRACT = 1
 # Releases up to 0.1.24 stored no contract. Their contract is version 1.
 LEGACY_EXTRACTION_CONTRACT = 1
