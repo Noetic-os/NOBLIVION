@@ -21,7 +21,8 @@ from noblivion.learning import (
 )
 from noblivion.learning_worker import ProviderResponse, WorkerSettings
 
-LONG = "Routine context. " * 300  # two extraction windows of 4096 characters
+# Two extraction windows of contract 2: 3 x 4096 characters each (NOBLIVION-241).
+LONG = "Routine context. " * 900
 SHORT = "Use short sentences in every project."
 
 
@@ -270,6 +271,20 @@ class NoteProvider(GatedProvider):
 
     def complete(self, messages, **kwargs):
         payload = json.loads(messages[-1]["content"])
+        if "candidates" in payload:
+            # Contract 2 (NOBLIVION-241): one call compares several candidates.
+            with self.lock:
+                self.semantic += 1
+            results = [
+                {
+                    "item_id": item["item_id"],
+                    "relations": [
+                        {"target_id": target, "relation": "distinct"} for target in item["compare"]
+                    ],
+                }
+                for item in payload["candidates"]
+            ]
+            return ProviderResponse(json.dumps({"version": 2, "results": results}), 50)
         if "targets" in payload:
             with self.lock:
                 self.semantic += 1
