@@ -336,3 +336,29 @@ def test_an_explicit_retry_of_a_job_exhausted_on_a_semantic_answer_finishes(
     assert status == "done"
     for key in ("fingerprint", "execution_fingerprint", "execution_configuration"):
         assert progress[key] == started[key]
+
+
+def test_a_budget_stop_between_a_bad_answer_and_its_re_ask_resumes_with_the_re_ask(ledger):
+    seed_note(ledger)
+    lessons = two_lessons(ledger)
+    failure = "invalid semantic target"
+
+    def answer(task, prompt):
+        return bad(task, failure) if task["candidate"] == FIRST else good(task)
+
+    provider = SemanticProvider(lessons, answer)
+    # One extraction call and one semantic call fit; the re-ask waits on the budget.
+    paused = worker(ledger, provider, replace(LIMITS, max_calls=2)).run_once()
+    assert paused["status"] == "deferred", job_row(ledger)
+    _, _, _, progress = job_row(ledger)
+    assert progress["semantic"]["reasks"] == {"0": {"failures": 1, "error": failure}}
+    assert len(provider.semantic) == 1
+    ledger.conn.execute("UPDATE learning_budget SET created_at=created_at-86401")
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0")
+    result = worker(ledger, provider).run_once()
+    assert result["status"] == "done", job_row(ledger)
+    asked = [prompt for statement, prompt in provider.semantic if statement == FIRST]
+    # The resumed call is the re-ask, and the bound holds across both runs.
+    assert failure in asked[1]
+    assert len(asked) == 1 + MAX_SEMANTIC_REASKS
+    assert statements(ledger) == sorted([OLD, SECOND])
