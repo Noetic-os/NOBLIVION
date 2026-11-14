@@ -39,7 +39,7 @@ from .learning_extract import (
     validate_extraction,
     validate_semantic_response,
 )
-from .learning_pages import WINDOW_REJECTED, CoverageExhausted, ExtractionPages
+from .learning_pages import CoverageExhausted, ExtractionPages
 from .learning_values import canonical_json
 
 LOG = logging.getLogger(__name__)
@@ -816,6 +816,8 @@ class LearningWorker:
         }
 
     def _extract(self, job, sources, windows, existing, state, pages):
+        from .learning_pages import WINDOW_REJECTED
+
         cfg = self.settings
         for unit_index in range(state["next_window"], len(windows)):
             window = windows[unit_index]
