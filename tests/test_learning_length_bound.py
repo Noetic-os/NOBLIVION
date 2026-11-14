@@ -147,16 +147,38 @@ def test_cut_off_reply_at_the_floor_keeps_no_candidate(ledger):
     assert not ledger.current_notes("demo", "scope")
 
 
-def test_retry_keeps_a_length_rejected_receipt(ledger):
-    from noblivion.learning_pages import retry_rejected
+def test_explicit_retry_keeps_a_length_rejected_piece_and_does_not_call_it_again(ledger):
+    capture(ledger, "new", "w" * 3000)
+    sent = []
+    state = {"stop": True}
 
-    capture(ledger, "new", "The indigo service uses port 8443.")
-    assert worker(ledger, CappedProvider(ledger, cap=0)).run_once()["status"] == "done"
-    retry_rejected(
-        ledger.conn,
-        ledger.conn.execute("SELECT id FROM learning_jobs ORDER BY rowid DESC").fetchone()[0],
-    )
-    assert len(receipts(ledger)) == 1
+    def complete(messages, **kwargs):
+        window = json.loads(messages[-1]["content"])["sources"]
+        sent.append(window[0]["offset"])
+        if window[0]["offset"] == 0:
+            # The whole window, then the left half at the floor.
+            raise ProviderError("length", tokens=2048)
+        if state.pop("stop", False):
+            raise RuntimeError("provider down")
+        return ProviderResponse(EMPTY, 10)
+
+    provider = ScriptedProvider(ledger, [])
+    provider.complete = complete
+    run = LearningWorker(ledger, provider, WorkerSettings(max_attempts=1), LIMITS)
+    assert run.run_once()["status"] == "failed"
+    status, _, progress = job_row(ledger)
+    assert status == "exhausted" and progress["length_splits"] == {"0": [0]}
+    assert [(r["continuation"], r["reason"]) for r in receipts(ledger)] == [(64, LENGTH_REJECTED)]
+    assert len(sent) == 3
+    job_id = ledger.conn.execute("SELECT id FROM learning_jobs ORDER BY rowid DESC").fetchone()[0]
+    ledger.retry(job_id)
+    assert run.run_once()["status"] == "done"
+    # Only the right half is sent again. The rejected left half keeps its receipt.
+    assert len(sent) == 4 and sent[3] > 0
+    assert [(r["continuation"], r["status"]) for r in receipts(ledger)] == [
+        (64, "rejected"),
+        (128, "no_lesson"),
+    ]
 
 
 @pytest.mark.parametrize("format_retry", [False, True])
