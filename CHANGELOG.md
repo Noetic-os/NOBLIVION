@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.25 - 2026-11-14
+
 - One extraction candidate that fails a check of its own values no longer ends
   the whole learning job. The worker drops that candidate and keeps the valid
   rest of the model response. These checks drop: text length, logical key,
