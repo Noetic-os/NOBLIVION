@@ -8,6 +8,15 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- One exhausted extraction window no longer fails a whole learning job. When a
+  continuation page drops all twelve of its candidates, that window stops with
+  an `exhausted` page receipt, and the job goes on with its next window, as for
+  a rejected window. No dropped candidate is stored. The job progress and
+  `learning status` show the count as `exhausted_windows`. The hard decision
+  limit still ends the job. The job fingerprint stays the same, so started
+  jobs go on, and an explicit retry of a job that an older release exhausted
+  this way finishes (NOBLIVION-247).
+
 ## 0.1.28 - 2026-11-14
 
 - A learning window whose model output reaches the output token cap no longer

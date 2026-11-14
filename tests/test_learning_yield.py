@@ -270,7 +270,8 @@ def test_repeated_saturated_pages_of_dropped_candidates_stop_as_no_progress(ledg
         bad.append(item)
     provider = PagedProvider([bad, bad, bad])
     result = worker(ledger, provider).run_once()
-    assert result["status"] == "failed" and provider.calls == 2
+    # NOBLIVION-247: the window stops with no third call, and the job goes on.
+    assert result["status"] == "done" and provider.calls == 2
     statuses = [
         r[0]
         for r in ledger.conn.execute(
@@ -278,6 +279,7 @@ def test_repeated_saturated_pages_of_dropped_candidates_stop_as_no_progress(ledg
         )
     ]
     assert statuses == ["saturated", "exhausted"]
+    assert ledger.current_notes("demo", "scope") == []
 
 
 def test_all_dropped_page_is_no_lesson_with_a_visible_reason(ledger):

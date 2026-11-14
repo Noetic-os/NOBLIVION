@@ -2098,6 +2098,9 @@ class LearningLedger:
         outcomes = {"committed": 0, "deferred": 0, "failed": 0}
         # Windows whose whole model reply was rejected; the job went on (NOBLIVION-244).
         rejected_windows = 0
+        # Windows that stopped on a continuation with every candidate dropped;
+        # the job went on (NOBLIVION-247).
+        exhausted_windows = 0
         for row in self.conn.execute(
             "SELECT id,status,last_error,progress FROM learning_jobs" + clause, params
         ):
@@ -2113,6 +2116,7 @@ class LearningLedger:
                 outcomes["deferred"] += 1
             progress = json.loads(row["progress"])
             rejected_windows += len(progress.get("rejected_windows", []))
+            exhausted_windows += len(progress.get("exhausted_windows", []))
             metrics = progress.get("provider_metrics", {})
             for key in ("calls", "seconds", "tokens"):
                 actual[key] += metrics.get(key, 0)
@@ -2147,6 +2151,7 @@ class LearningLedger:
             "context_rejections": context,
             "candidate_mismatches": mismatches,
             "rejected_windows": rejected_windows,
+            "exhausted_windows": exhausted_windows,
             "provider_actual": actual,
             "outcomes": outcomes,
         }

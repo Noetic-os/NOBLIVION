@@ -24,6 +24,13 @@ WINDOW_REJECTED = "unsafe response rejected; no candidate kept; job continues"
 LENGTH_REJECTED = "output reached the token cap at the smallest window; no candidate kept"
 # A rejected receipt with one of these reasons lets the job go on.
 CONTINUING_REJECTIONS = frozenset({WINDOW_REJECTED, LENGTH_REJECTED})
+# NOBLIVION-247: the reason of an exhausted receipt for a continuation that
+# dropped all twelve of its proposals. The window makes no more progress, so its
+# coverage is incomplete. The receipt holds no candidate, and the job goes on.
+WINDOW_EXHAUSTED = "continuation dropped every candidate; window coverage incomplete; job continues"
+# The reason of every exhausted receipt before NOBLIVION-247. It also marks the
+# hard decision limit, which still ends the job.
+LEGACY_EXHAUSTED = "hard limit or repeated saturated response; coverage incomplete"
 
 
 class CoverageExhausted(ValidationError):

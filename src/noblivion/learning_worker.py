@@ -923,7 +923,13 @@ class LearningWorker:
 
     def _extract_piece(self, job, sources, window, unit_index, slot, existing, state, pages):
         """Extract one piece of a window. Return False when the piece was split."""
-        from .learning_pages import CONTINUING_REJECTIONS, LENGTH_REJECTED, WINDOW_REJECTED
+        from .learning_pages import (
+            CONTINUING_REJECTIONS,
+            LEGACY_EXHAUSTED,
+            LENGTH_REJECTED,
+            WINDOW_EXHAUSTED,
+            WINDOW_REJECTED,
+        )
 
         cfg = self.settings
         piece = window_piece(window, slot)
@@ -1050,8 +1056,12 @@ class LearningWorker:
                     (d["scope"], d["category"], d["statement"].casefold())
                     for d in pages.decisions() + novel
                 }
+                hard = len(total) > cfg.max_decisions
+                # NOBLIVION-247: a continuation that dropped all twelve proposals
+                # makes no progress. Only this window stops; the job goes on.
+                stalled = not hard and continuation > 0 and saturated and not accepted
                 exhausted = (
-                    len(total) > cfg.max_decisions
+                    hard
                     or (saturated and continuation + 1 >= cfg.max_continuations)
                     # A continuation that adds nothing new makes no progress,
                     # also when all twelve of its proposals were dropped.
@@ -1067,7 +1077,9 @@ class LearningWorker:
                     else "no_lesson"
                 )
                 reason = (
-                    "hard limit or repeated saturated response; coverage incomplete"
+                    WINDOW_EXHAUSTED
+                    if stalled
+                    else LEGACY_EXHAUSTED
                     if exhausted
                     else "twelve candidates require continuation"
                     if status == "saturated"
@@ -1087,6 +1099,13 @@ class LearningWorker:
                     rejected.append(unit_index)
                 if receipt["reason"] == LENGTH_REJECTED:
                     state.pop("output_limit_hold", None)
+            elif receipt["status"] == "exhausted" and self._window_exhausted(receipt, pages):
+                # Like a rejected window: the incomplete coverage stays visible
+                # in the receipt and in the progress, and the job goes on. The
+                # list stays the same when a resume reads this receipt again.
+                exhausted_windows = state.setdefault("exhausted_windows", [])
+                if unit_index not in exhausted_windows:
+                    exhausted_windows.append(unit_index)
             elif receipt["status"] in {"exhausted", "rejected"}:
                 raise CoverageExhausted("extraction receipt is incomplete")
             state.pop("format_repair", None)
@@ -1099,6 +1118,27 @@ class LearningWorker:
             state.pop("next_continuation", None)
             self.ledger.checkpoint(job["id"], job["lease_token"], state)
             return True
+
+    def _window_exhausted(self, receipt, pages):
+        """True for an exhausted receipt that ends only its window (NOBLIVION-247).
+
+        A receipt saved before NOBLIVION-247 has the legacy reason for every
+        cause. Only the all-dropped continuation has no candidate on a page past
+        continuation 0, so that shape alone continues. The hard decision limit
+        always ends the job.
+        """
+        from .learning_pages import LEGACY_EXHAUSTED, WINDOW_EXHAUSTED
+
+        total = {(d["scope"], d["category"], d["statement"].casefold()) for d in pages.decisions()}
+        if len(total) > self.settings.max_decisions:
+            return False
+        if receipt["reason"] == WINDOW_EXHAUSTED:
+            return True
+        return (
+            receipt["reason"] == LEGACY_EXHAUSTED
+            and not receipt["candidates"]
+            and receipt["continuation"] % PIECE_STRIDE > 0
+        )
 
     @staticmethod
     def _validate_window(outcome, window):
