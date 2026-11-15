@@ -8,24 +8,13 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
-- A learning window whose model output reaches the output token cap no longer
-  defers its job every hour without end. The worker splits that window in two
-  halves and goes on with each half. A single part is not split below 2048
-  characters, and nothing splits past three levels. At that floor the piece
-  gets a `rejected` page receipt and the job goes on. A cut-off output is never
-  stored as candidates. The window plan and the job fingerprint stay the same, so a
-  started job goes on. A job that an older release deferred on this result
-  resumes with the split. A deferral that gives the attempt back, for a length
-  result of a semantic call or for `ContextDependencyDeferred`, now happens at
-  most 24 times per job. After that each deferral counts an attempt, so the job
-  ends (NOBLIVION-245).
 - New learning jobs need fewer model calls (NOBLIVION-241). They start under
   extraction contract version 2: a window holds two times `window_chars`, a
   window or split piece with no tool text and no direct user text gets a
   `no_lesson` receipt with no model call, and one semantic call compares up to
   8 candidates and 64 (candidate, target) pairs. Every pair still needs one
-  explicit relation, and every evidence and secret check stays. A job measured about 57 calls
-  (median) and 87 (p90) under version 1. On 470 recorded jobs of a live store
+  explicit relation, and every evidence and secret check stays. A job measured about 57
+  calls (median) and 87 (p90) under version 1. On 470 recorded jobs of a live store
   the simulated median falls from about 67 to about 19 calls per job (p90 123
   to 35) at today's note count. Three times `window_chars` gave 3 `length`
   results and 4 rejected replies in 30 window calls on the local model; two
@@ -39,6 +28,67 @@ All notable changes to NOBLIVION. The format follows
 - A version 2 job whose semantic batches differ on resume from the batches it
   started with fails with `semantic batches changed during a job`. Before, the
   stored batch counter could skip or repeat comparisons (NOBLIVION-241).
+- A version 2 semantic batch whose answer parses but does not match the
+  batch is asked again up to 2 times, as in version 1. Past that bound the
+  candidates of that batch are not stored, and the job goes on. A version 2
+  job keeps its finished batch comparisons when another job stores notes, as
+  version 1 does (NOBLIVION-250).
+
+## 0.1.30 - 2026-11-15
+
+- A learning job no longer starts its semantic stage again from the first
+  comparison when another job in the same root stores notes. The job keeps
+  each comparison whose note is still current with the same revision. It
+  compares only with new or revised notes. A candidate that a removed or
+  revised note blocked is compared again with all current notes. The refresh
+  builds the comparisons for every current note. The write transaction still
+  stores an add only when its snapshot equals the current note set. The job progress and `learning status` show
+  `semantic_restarts` and `semantic_reused`. The job fingerprint stays the
+  same, so started jobs keep their progress, also a stage that 0.1.29 saved
+  (NOBLIVION-250).
+- Learning no longer stops 30 minutes after the last prompt. The store does
+  not stop for idle while one of its learning workers holds a job, or while a
+  pending job can run now within the budget. A job that no worker can take
+  (paused, scope not enabled, budget spent, no attempts left) does not keep the
+  store up. At a clean stop (SIGTERM or idle) the store gives back the jobs
+  its workers hold: each job is pending again, keeps its progress, and does
+  not lose an attempt. Before, each stop cost each leased job one attempt
+  through "lease expired" (NOBLIVION-248).
+
+## 0.1.29 - 2026-11-15
+
+- One exhausted extraction window no longer fails a whole learning job. When a
+  continuation page drops all twelve of its candidates, that window stops with
+  an `exhausted` page receipt, and the job goes on with its next window, as for
+  a rejected window. No dropped candidate is stored. The job progress and
+  `learning status` show the count as `exhausted_windows`. The hard decision
+  limit still ends the job. The job fingerprint stays the same, so started
+  jobs go on, and an explicit retry of a job that an older release exhausted
+  this way finishes (NOBLIVION-247).
+- One bad semantic comparison answer no longer fails a whole learning job. An
+  answer that parses but does not match its task, for example "invalid semantic
+  target" or "incomplete semantic comparison", is asked again up to two times
+  with a fixed note. Each call is charged to the budget. After the last try the
+  one affected candidate is not stored, and the job goes on. When two windows
+  give one logical key two different decisions, all decisions with that key are
+  dropped, and the job goes on. The job progress and `learning status` show
+  the counts (`semantic_reasks`, `rejected_candidates`) without candidate text.
+  The job fingerprint stays the same, so started and retried jobs go on
+  (NOBLIVION-240).
+
+## 0.1.28 - 2026-11-14
+
+- A learning window whose model output reaches the output token cap no longer
+  defers its job every hour without end. The worker splits that window in two
+  halves and goes on with each half. A single part is not split below 2048
+  characters, and nothing splits past three levels. At that floor the piece
+  gets a `rejected` page receipt and the job goes on. A cut-off output is never
+  stored as candidates. The window plan and the job fingerprint stay the same, so a
+  started job goes on. A job that an older release deferred on this result
+  resumes with the split. A deferral that gives the attempt back, for a length
+  result of a semantic call or for `ContextDependencyDeferred`, now happens at
+  most 24 times per job. After that each deferral counts an attempt, so the job
+  ends (NOBLIVION-245).
 
 ## 0.1.27 - 2026-11-14
 

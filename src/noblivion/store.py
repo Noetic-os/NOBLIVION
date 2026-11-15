@@ -47,6 +47,11 @@ LOOPBACK = "127.0.0.1"  # fixed in code, not in config (section 15.3)
 SERVICE = "noblivion"
 DRAIN_TIMEOUT_S = 5.0
 JOB_JOIN_TIMEOUT_S = 60.0
+# How long a stop waits for the learning supervisor: up to 5 s for its workers
+# (learning_runtime.STOP_JOIN_SECONDS), then the lease release (NOBLIVION-248).
+LEARNING_JOIN_TIMEOUT_S = 10.0
+# How often an idle store asks whether learning work keeps it up (NOBLIVION-248).
+LEARNING_CHECK_S = 1.0
 JOB_TICK_S = 0.5
 # A backfill pass that raised runs again after this wait, also with periodic
 # scans off and no content change (NOBLIVION-77).
@@ -211,6 +216,9 @@ class Store:
         self._last_request = clock()
         self._threads: list[threading.Thread] = []
         self._model_thread: threading.Thread | None = None
+        # The learning worker pool, set by learning_runtime.run (NOBLIVION-248).
+        self._learning_pool = None
+        self._learning_check = (float("-inf"), False)
         self._stat_cache: indexer.StatCache = {}
         self._cut_logged: set[str] = set()  # files stored by their head, logged at info once
         self.stop_reason = ""
@@ -671,7 +679,7 @@ class Store:
         while not self._stop.wait(tick):
             if self._signal_stop_reason:
                 self.request_stop(self._signal_stop_reason)
-            elif idle_limit and self.idle_for() >= idle_limit:
+            elif idle_limit and self.idle_for() >= idle_limit and not self._learning_busy():
                 self.request_stop("idle")
             elif not self.data_dir.is_dir():
                 # An uninstall deleted the data dir: stop and make nothing
@@ -687,12 +695,39 @@ class Store:
         self.close()
         return EXIT_OK
 
+    def _learning_busy(self) -> bool:
+        """Learning work keeps an idle store up (NOBLIVION-248).
+
+        A job that this store's workers lease, or a pending job that can run
+        now within the budget, counts as activity. Checked once a second.
+        """
+        pool = self._learning_pool
+        if pool is None:
+            return False
+        checked, busy = self._learning_check
+        now = time.monotonic()
+        if now - checked < LEARNING_CHECK_S:
+            return busy
+        try:
+            busy = bool(pool.busy())
+        except Exception as exc:  # noqa: BLE001 - a failed check never keeps the store up
+            log.warning("learning activity check failed: %s", type(exc).__name__)
+            busy = False
+        self._learning_check = (now, busy)
+        return busy
+
     def _stop_jobs(self) -> None:
-        """Ask the jobs thread to end after its current batch, and wait for it."""
+        """Ask the jobs and learning threads to end, and wait for them.
+
+        The learning supervisor gives back the jobs its workers still lease,
+        with no attempt charged, before the store closes (NOBLIVION-248).
+        """
         self._jobs_stop.set()
         for thread in self._threads:
             if thread.name == "noblivion-jobs":
                 thread.join(JOB_JOIN_TIMEOUT_S)
+            elif thread.name == "noblivion-learning":
+                thread.join(LEARNING_JOIN_TIMEOUT_S)
 
     def close(self) -> None:
         """Finish open requests (5 s), stop the jobs after their current batch,

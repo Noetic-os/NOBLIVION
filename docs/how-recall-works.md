@@ -28,7 +28,8 @@ a Claude Code prompt.
 4. The store binds to `127.0.0.1` on a free port that the system picks
    (config key `port`, default `0`). It writes the port and its process id
    to `store.json` in the data dir. The hooks read the port from there.
-5. When no request comes for 30 minutes, the store stops.
+5. When no request comes for 30 minutes, the store stops. Learning work that
+   can run now keeps the store up until it is done.
 
 A hook that finds no store also asks for a start, at most once every 30
 seconds. The hook does not wait for the start. It prints nothing for this

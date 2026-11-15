@@ -103,6 +103,15 @@ no worker.
 - When the store stops, a worker that waits for a call slot takes no slot, so
   no new call starts. A call that has started runs to its end or dies with the
   process; its reservation stays and counts against the budget.
+- The store does not stop for idle while one of its workers holds a job, or
+  while a pending job can run now: it is due, it has attempts left, its scope
+  is enabled and not paused, and the budget window has room for one more call.
+  A job that no worker can take does not keep the store up. At a clean stop
+  (SIGTERM or idle) the store waits up to 5 seconds for its workers, then gives
+  back each job they still hold: the job is pending again with
+  `LearningWorkerStopped`, keeps its progress, and gets back the attempt that
+  its claim counted. Before 0.1.30 the lease expired instead, and each stop
+  cost each leased job one attempt (NOBLIVION-248).
 - A worker loop claims its next job as soon as the last one is done. It waits
   `worker.poll_seconds` only when no job was done. So jobs run back to back,
   with no 5 second pause, also at `max_concurrency` 1.
@@ -111,9 +120,16 @@ no worker.
   for each call, because each call reserves that time and a call that ends
   sooner gives none of it back.
 - Jobs that add notes to one root at the same time see the notes of the other
-  jobs appear. Such a job repeats its semantic comparison against the new
-  notes, and each repeat is one more model call. It never repeats its
-  extraction calls.
+  jobs appear. Such a job keeps its finished semantic comparisons. It compares
+  each candidate again only with the notes that are new or have a new
+  revision. A removed note needs no new comparison. A candidate that a removed
+  or revised note blocked gets a fresh comparison with all current notes. Each
+  new comparison is one more model call. The job never repeats its extraction
+  calls. The refresh builds the comparisons for every current note. The write
+  transaction stores an add only when its snapshot equals the current note
+  set, as before. The job progress and learning
+  status count the changed note sets in `semantic_restarts` and the kept
+  comparisons in `semantic_reused` (NOBLIVION-250).
 
 ### Context and output deferrals
 
@@ -273,7 +289,13 @@ own. Learning status counts these windows in `rejected_windows`, and
 `noblivion learning retry` keeps their receipts. The other response failures
 (the candidate schema, an unclassified failure, a secret in the raw response,
 invalid JSON after the format retry, the envelope and the version) still fail
-the job, as before. The
+the job, as before. When a continuation page proposes twelve candidates and
+all twelve are dropped, the window makes no more progress. That page gets an
+`exhausted` receipt with no candidate, its unit index goes into
+`exhausted_windows` in the job progress, and the job goes on with the next
+window. The candidates of the earlier pages of the window stay. Learning
+status counts these windows in `exhausted_windows`. The hard decision limit
+(`max_decisions`) still ends the job. The
 records of one job use at most 256 KiB. An exact-quote failure has a detail: `repeated`,
 `whitespace`, `case`, `typography` or `absent`. The progress row of each job keeps
 one record per page (`unit`, `continuation`) with the cited source IDs, so a

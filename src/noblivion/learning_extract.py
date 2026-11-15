@@ -35,6 +35,15 @@ class ResponseFormatError(ValidationError):
     """Only invalid JSON syntax permits a bounded, newly generated response."""
 
 
+class SemanticAnswerRejected(ValidationError):
+    """A parsed semantic answer does not match its task (NOBLIVION-240).
+
+    Examples: a missing or unknown target, a relation outside the closed set,
+    or a wrong version. The worker asks again a bounded number of times. The
+    message is a fixed class and never holds candidate or answer text.
+    """
+
+
 def _schema_object(properties: dict, required: list[str] | None = None) -> dict:
     return {
         "type": "object",
@@ -822,9 +831,18 @@ preference for brief answers may be equivalent even with different titles.
 
 
 def semantic_targets(
-    decisions: list[dict], notes: list[dict], *, max_chars: int = 16000, max_tasks: int = 512
+    decisions: list[dict],
+    notes: list[dict],
+    *,
+    max_chars: int = 16000,
+    max_tasks: int = 512,
+    skip: dict[str, list[str]] | None = None,
 ) -> list[dict]:
-    """Bound each comparison, covering all supplied managed notes and batch adds."""
+    """Bound each comparison, covering all supplied managed notes and batch adds.
+
+    ``skip`` maps a candidate index (as text) to the target ids that already
+    have a valid comparison. Those targets get no new task (NOBLIVION-250).
+    """
     tasks = []
     for index, decision in enumerate(decisions):
         if decision["action"] != "add":
@@ -839,6 +857,9 @@ def semantic_targets(
                 targets.append(
                     {"target_id": f"candidate:{prior_index}", "statement": prior["statement"]}
                 )
+        if skip and skip.get(str(index)):
+            done = set(skip[str(index)])
+            targets = [target for target in targets if target["target_id"] not in done]
         group, size = [], len(decision["statement"])
         for target in targets:
             length = len(json.dumps(target, ensure_ascii=False))
@@ -870,20 +891,24 @@ def validate_semantic_response(raw: str, task: dict) -> list[dict]:
         raise ResponseFormatError("invalid semantic JSON") from exc
     except (ValueError, TypeError, RecursionError) as exc:
         raise ValidationError("invalid semantic JSON") from exc
-    _object(parsed, {"version", "relations"})
-    if type(parsed["version"]) is not int or parsed["version"] != 1:
-        raise ValidationError("invalid semantic version")
-    relations = parsed["relations"]
-    if not isinstance(relations, list) or len(relations) != len(task["targets"]):
-        raise ValidationError("incomplete semantic comparison")
-    expected = {target["target_id"] for target in task["targets"]}
-    seen = set()
-    for relation in relations:
-        _object(relation, {"target_id", "relation"})
-        target = relation["target_id"]
-        if not isinstance(target, str) or target not in expected or target in seen:
-            raise ValidationError("invalid semantic target")
-        if relation["relation"] not in {"equivalent", "contradicts", "distinct", "uncertain"}:
-            raise ValidationError("invalid semantic relation")
-        seen.add(target)
+    try:
+        _object(parsed, {"version", "relations"})
+        if type(parsed["version"]) is not int or parsed["version"] != 1:
+            raise ValidationError("invalid semantic version")
+        relations = parsed["relations"]
+        if not isinstance(relations, list) or len(relations) != len(task["targets"]):
+            raise ValidationError("incomplete semantic comparison")
+        expected = {target["target_id"] for target in task["targets"]}
+        seen = set()
+        for relation in relations:
+            _object(relation, {"target_id", "relation"})
+            target = relation["target_id"]
+            if not isinstance(target, str) or target not in expected or target in seen:
+                raise ValidationError("invalid semantic target")
+            if relation["relation"] not in {"equivalent", "contradicts", "distinct", "uncertain"}:
+                raise ValidationError("invalid semantic relation")
+            seen.add(target)
+    except ValidationError as exc:
+        # The answer parsed but does not match the task. The class is fixed text.
+        raise SemanticAnswerRejected(str(exc)) from exc
     return relations

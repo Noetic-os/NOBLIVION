@@ -221,18 +221,17 @@ def test_semantic_stage_resumes_after_budget_pause_without_reextracting(ledger):
     assert len(ledger.current_notes("demo", "scope")) == 1
 
 
-def test_changed_snapshot_defers_without_repeating_extraction(ledger):
+def test_changed_snapshot_compares_again_without_repeating_extraction(ledger):
+    # NOBLIVION-250: the worker sees the revised note before the commit and
+    # compares the candidate again with it in the same run. Before 0.1.30 the
+    # job deferred first and then repeated the whole semantic stage.
     original = seed(ledger, capture(ledger, "old", "Keep responses short."))
     new = capture(ledger, "new", "Use green terminal text.")
     provider = ScriptedProvider(ledger, [candidate(new, key="terminal")], relations="distinct")
     provider.before_semantic = lambda: ledger.edit(original["note_id"], 1, title="Updated title")
     run = worker(ledger, provider, max_calls=10, max_seconds=600)
     first = run.run_once()
-    assert first["status"] == "deferred" and first["error"] == "SemanticSnapshotChanged"
-    assert len(ledger.current_notes("demo", "scope")) == 1
-    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0")
-    second = run.run_once()
-    assert second["status"] == "done"
+    assert first["status"] == "done"
     assert provider.calls == ["extract", "semantic", "semantic"]
     assert len(ledger.current_notes("demo", "scope")) == 2
 

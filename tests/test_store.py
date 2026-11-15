@@ -25,7 +25,17 @@ from pathlib import Path
 
 import pytest
 
-from noblivion import __version__, config, db, embedding, indexer, launcher, rest, store
+from noblivion import (
+    __version__,
+    config,
+    db,
+    embedding,
+    indexer,
+    launcher,
+    learning_runtime,
+    rest,
+    store,
+)
 from store_helpers import (
     REMOTE_MODEL,
     FakeEmbedder,
@@ -761,11 +771,19 @@ def test_second_store_is_refused_by_the_lock(tmp_path):
 
 def test_a_replacement_store_waits_until_a_busy_old_store_has_stopped(tmp_path):
     # NOBLIVION-57 review: after SIGTERM the old store finishes open requests
-    # (5 s), waits for the jobs thread (60 s), each model thread (1 s) and the
-    # database (5 s). The new store waited 10 s for the lock, gave up and
-    # exited 0, so no store ran. A fake clock: the old store holds the lock
-    # for its longest stop, and the new store must still get it.
-    stop_s = store.DRAIN_TIMEOUT_S + store.JOB_JOIN_TIMEOUT_S + 2 * 1.0 + db.BUSY_TIMEOUT_MS / 1000
+    # (5 s), waits for the jobs thread (60 s), the learning supervisor (10 s,
+    # NOBLIVION-248), each model thread (1 s) and the database (5 s). The new
+    # store waited 10 s for the lock, gave up and exited 0, so no store ran.
+    # A fake clock: the old store holds the lock for its longest stop, and the
+    # new store must still get it.
+    stop_s = (
+        store.DRAIN_TIMEOUT_S
+        + store.JOB_JOIN_TIMEOUT_S
+        + store.LEARNING_JOIN_TIMEOUT_S
+        + 2 * 1.0
+        + db.BUSY_TIMEOUT_MS / 1000
+    )
+    assert store.LEARNING_JOIN_TIMEOUT_S > learning_runtime.STOP_JOIN_SECONDS
     assert launcher.RESTART_LOCK_WAIT_S > stop_s + 5.0  # a margin for the checkpoint
     lock = tmp_path / config.STORE_LOCK_FILE
     old = store.acquire_lock(lock)

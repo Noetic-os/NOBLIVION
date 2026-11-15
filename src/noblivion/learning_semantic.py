@@ -13,6 +13,7 @@ import json
 
 from .learning_extract import (
     ResponseFormatError,
+    SemanticAnswerRejected,
     ValidationError,
     _duplicate_keys,
     _object,
@@ -165,7 +166,8 @@ def validate_semantic_batch(raw: str, batch: dict) -> list[list[dict]]:
 
     Returns, per batch item in order, the relations in reply order with the
     real target IDs. Any missing, extra, repeated or unknown ID rejects the
-    whole reply, as in contract 1.
+    whole reply, as in contract 1. Such a reply raises SemanticAnswerRejected,
+    so the worker asks again; an unsafe reply and invalid JSON do not.
     """
     if not isinstance(raw, str) or len(raw) > 65536 or contains_secret(raw):
         raise ValidationError("unsafe semantic response")
@@ -175,41 +177,46 @@ def validate_semantic_batch(raw: str, batch: dict) -> list[list[dict]]:
         raise ResponseFormatError("invalid semantic JSON") from exc
     except (ValueError, TypeError, RecursionError) as exc:
         raise ValidationError("invalid semantic JSON") from exc
-    _object(parsed, {"version", "results"})
-    if type(parsed["version"]) is not int or parsed["version"] != 2:
-        raise ValidationError("invalid semantic version")
-    results = parsed["results"]
-    candidates = batch["request"]["candidates"]
-    if not isinstance(results, list) or len(results) != len(candidates):
-        raise ValidationError("incomplete semantic comparison")
-    aliases = {}
-    for item, candidate in zip(batch["items"], candidates):  # noqa: B905 - 3.9 lane
-        for real, alias in zip(item["target_ids"], candidate["compare"]):  # noqa: B905 - 3.9 lane
-            aliases[alias] = real
-    by_item = {}
-    for result in results:
-        _object(result, {"item_id", "relations"})
-        item_id = result["item_id"]
-        if not isinstance(item_id, str) or item_id in by_item:
-            raise ValidationError("invalid semantic item")
-        by_item[item_id] = result["relations"]
-    output = []
-    for candidate in candidates:
-        relations = by_item.get(candidate["item_id"])
-        expected = set(candidate["compare"])
-        if not isinstance(relations, list) or len(relations) != len(expected):
+    try:
+        _object(parsed, {"version", "results"})
+        if type(parsed["version"]) is not int or parsed["version"] != 2:
+            raise ValidationError("invalid semantic version")
+        results = parsed["results"]
+        candidates = batch["request"]["candidates"]
+        if not isinstance(results, list) or len(results) != len(candidates):
             raise ValidationError("incomplete semantic comparison")
-        seen, mapped = set(), []
-        for relation in relations:
-            _object(relation, {"target_id", "relation"})
-            target = relation["target_id"]
-            if not isinstance(target, str) or target not in expected or target in seen:
-                raise ValidationError("invalid semantic target")
-            if relation["relation"] not in RELATIONS:
-                raise ValidationError("invalid semantic relation")
-            seen.add(target)
-            mapped.append({"target_id": aliases[target], "relation": relation["relation"]})
-        output.append(mapped)
-    if set(by_item) != {candidate["item_id"] for candidate in candidates}:
-        raise ValidationError("invalid semantic item")
+        aliases = {}
+        for item, candidate in zip(batch["items"], candidates):  # noqa: B905 - 3.9 lane
+            for real, alias in zip(item["target_ids"], candidate["compare"]):  # noqa: B905 - 3.9 lane
+                aliases[alias] = real
+        by_item = {}
+        for result in results:
+            _object(result, {"item_id", "relations"})
+            item_id = result["item_id"]
+            if not isinstance(item_id, str) or item_id in by_item:
+                raise ValidationError("invalid semantic item")
+            by_item[item_id] = result["relations"]
+        output = []
+        for candidate in candidates:
+            relations = by_item.get(candidate["item_id"])
+            expected = set(candidate["compare"])
+            if not isinstance(relations, list) or len(relations) != len(expected):
+                raise ValidationError("incomplete semantic comparison")
+            seen, mapped = set(), []
+            for relation in relations:
+                _object(relation, {"target_id", "relation"})
+                target = relation["target_id"]
+                if not isinstance(target, str) or target not in expected or target in seen:
+                    raise ValidationError("invalid semantic target")
+                if relation["relation"] not in RELATIONS:
+                    raise ValidationError("invalid semantic relation")
+                seen.add(target)
+                mapped.append({"target_id": aliases[target], "relation": relation["relation"]})
+            output.append(mapped)
+        if set(by_item) != {candidate["item_id"] for candidate in candidates}:
+            raise ValidationError("invalid semantic item")
+    except ValidationError as exc:
+        # The answer parsed but does not match the batch. The class is fixed
+        # text, so the worker can ask again (NOBLIVION-240).
+        raise SemanticAnswerRejected(str(exc)) from exc
     return output

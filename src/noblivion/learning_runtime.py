@@ -159,6 +159,10 @@ PASS_INTERVAL = 5.0
 MAX_WORKERS = 16
 # How often a worker that waits for a call slot renews its job lease.
 SLOT_WAIT_SECONDS = 5.0
+# At a store stop, how long the supervisor waits for the worker loops before it
+# gives back the jobs that they still lease. A model call in flight is not
+# waited for: its job goes back to pending (NOBLIVION-248).
+STOP_JOIN_SECONDS = 5.0
 
 
 def worker_count(settings: dict | None) -> int:
@@ -234,6 +238,12 @@ class PooledLedger(LearningLedger):
         self._pool = pool
         self._held = False
 
+    def claim(self, worker_id: str, lease_seconds: float = 120, max_attempts: int = 4):
+        # A stopping store takes no new job: its leases are given back at the stop.
+        if self._pool.stop.is_set():
+            return None
+        return super().claim(worker_id, lease_seconds=lease_seconds, max_attempts=max_attempts)
+
     def reserve(self, job_id: str, lease_token: str, *, limits, **estimates):
         if not self._held:
             lease_seconds = self._pool.lease_seconds
@@ -285,7 +295,11 @@ class LearningPool:
         self.budget = None
         self.lease_seconds: float = 120.0
         self.poll_seconds: float = PASS_INTERVAL
+        self.max_attempts = 4
+        self.call_seconds = 60.0
         self.desired = 0
+        # The lease owner of each worker loop this pool started (NOBLIVION-248).
+        self.worker_ids: set[str] = set()
         self._threads: dict[int, threading.Thread] = {}
         self._last_prune = float("-inf")
 
@@ -298,6 +312,8 @@ class LearningPool:
                 _, worker, budget = worker_options(settings)
                 self.budget, self.lease_seconds = budget, worker.lease_seconds
                 self.poll_seconds = worker.poll_seconds
+                self.max_attempts = worker.max_attempts
+                self.call_seconds = worker.timeout_seconds
         except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
             desired = 0
         self.settings = settings if desired else None
@@ -321,6 +337,7 @@ class LearningPool:
     def _work(self, index: int) -> None:
         """One worker loop. A loop above the current count ends after its job."""
         worker_id = f"learning-{uuid.uuid4().hex}-{index}"
+        self.worker_ids.add(worker_id)
         while not self.stop.is_set():
             settings = self.settings
             if settings is None or index >= self.desired:
@@ -364,24 +381,55 @@ class LearningPool:
         except Exception as exc:  # noqa: BLE001 - pending work survives this pass
             log.error("learning pass failed: %s", type(exc).__name__)
 
+    def busy(self) -> bool:
+        """True while a worker of this pool holds a job, or a job can run now.
+
+        The store does not stop for idle while this is true (NOBLIVION-248).
+        """
+        settings = self.settings
+        scopes = {(s["project"], s["root"]) for s in settings["scopes"]} if settings else set()
+        with self.store.connection() as conn:
+            return LearningLedger(conn).work_open(
+                set(self.worker_ids),
+                scopes,
+                max_attempts=self.max_attempts,
+                limits=self.budget if settings else None,
+                call_seconds=self.call_seconds,
+            )
+
     def shutdown(self, timeout: float = 0.0) -> None:
-        """Stop starting calls; join the loops when a timeout is given."""
+        """Stop starting calls; join the loops when a timeout is given.
+
+        At a store stop, the jobs that this pool's workers still lease go back
+        to pending with no attempt charged (NOBLIVION-248). Before, each stop
+        cost each leased job one attempt through "lease expired".
+        """
         self.desired = 0
         self.slots.set_limit(0)
         deadline = time.monotonic() + timeout
         for thread in self._threads.values():
             thread.join(max(0.0, deadline - time.monotonic()))
+        if not self.stop.is_set() or not self.worker_ids:
+            return
+        try:
+            with self.store.connection() as conn:
+                count = LearningLedger(conn).release_leases(set(self.worker_ids))
+            if count:
+                log.info("learning stop: %d leased job(s) given back", count)
+        except Exception as exc:  # noqa: BLE001 - the lease then expires as before
+            log.error("learning stop: lease release failed: %s", type(exc).__name__)
 
 
 def run(store) -> None:
     """The supervisor: one pass every 5 s. A bad pass never kills the loop."""
     pool = LearningPool(store)
+    store._learning_pool = pool
     try:
         while not store._jobs_stop.is_set():
             pool.pass_once()
             store._jobs_stop.wait(PASS_INTERVAL)
     finally:
-        pool.shutdown()
+        pool.shutdown(timeout=STOP_JOIN_SECONDS)
 
 
 def worker_options(settings: dict):

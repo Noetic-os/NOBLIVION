@@ -167,7 +167,7 @@ not a database namespace. It does not separate the two clients' searches.
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
 | `NOBLIVION_PORT` | `port` | `0` | The TCP port on `127.0.0.1`. `0` lets the system pick a free port; the store writes the real port to `store.json`, and the hooks read it from there. A fixed port fails when another program uses it. The store never moves to another port by itself. |
-| `NOBLIVION_IDLE_EXIT_S` | `idle_exit_s` | `1800` | The store stops after this many seconds with no request. `0` means never. |
+| `NOBLIVION_IDLE_EXIT_S` | `idle_exit_s` | `1800` | The store stops after this many seconds with no request. `0` means never. A learning job that a worker of the store holds, or a pending job that can run now within the budget, keeps the store up. |
 | `NOBLIVION_INDEX_INTERVAL_S` | `index.interval_s` | `30` | Seconds between two scans of the memory folders. `0` turns the periodic scan off. |
 | none | `index.delete_grace_days` | `14` | Days a deleted note stays in the database before the store removes it. |
 | `NOBLIVION_LOG_LEVEL` | `log_level` | `info` | `debug`, `info`, `warning` or `error`. Only `debug` writes query text to the log. |
