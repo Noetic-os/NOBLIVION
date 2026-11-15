@@ -120,9 +120,16 @@ no worker.
   for each call, because each call reserves that time and a call that ends
   sooner gives none of it back.
 - Jobs that add notes to one root at the same time see the notes of the other
-  jobs appear. Such a job repeats its semantic comparison against the new
-  notes, and each repeat is one more model call. It never repeats its
-  extraction calls.
+  jobs appear. Such a job keeps its finished semantic comparisons. It compares
+  each candidate again only with the notes that are new or have a new
+  revision. A removed note needs no new comparison. A candidate that a removed
+  or revised note blocked gets a fresh comparison with all current notes. Each
+  new comparison is one more model call. The job never repeats its extraction
+  calls. The refresh builds the comparisons for every current note. The write
+  transaction stores an add only when its snapshot equals the current note
+  set, as before. The job progress and learning
+  status count the changed note sets in `semantic_restarts` and the kept
+  comparisons in `semantic_reused` (NOBLIVION-250).
 
 ### Context and output deferrals
 

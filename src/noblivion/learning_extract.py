@@ -831,9 +831,17 @@ preference for brief answers may be equivalent even with different titles.
 
 
 def semantic_targets(
-    decisions: list[dict], notes: list[dict], *, max_chars: int = 16000
+    decisions: list[dict],
+    notes: list[dict],
+    *,
+    max_chars: int = 16000,
+    skip: dict[str, list[str]] | None = None,
 ) -> list[dict]:
-    """Bound each comparison, covering all supplied managed notes and batch adds."""
+    """Bound each comparison, covering all supplied managed notes and batch adds.
+
+    ``skip`` maps a candidate index (as text) to the target ids that already
+    have a valid comparison. Those targets get no new task (NOBLIVION-250).
+    """
     tasks = []
     for index, decision in enumerate(decisions):
         if decision["action"] != "add":
@@ -848,6 +856,9 @@ def semantic_targets(
                 targets.append(
                     {"target_id": f"candidate:{prior_index}", "statement": prior["statement"]}
                 )
+        if skip and skip.get(str(index)):
+            done = set(skip[str(index)])
+            targets = [target for target in targets if target["target_id"] not in done]
         group, size = [], len(decision["statement"])
         for target in targets:
             length = len(json.dumps(target, ensure_ascii=False))
