@@ -170,6 +170,44 @@ _SEMANTIC_REASK = (
 SEMANTIC_UNVALIDATED = "semantic comparison not validated"
 
 
+def _lesson(decision: dict) -> tuple:
+    return (decision["scope"], decision["category"], decision["statement"].casefold())
+
+
+def _same_lesson(a: dict, b: dict) -> bool:
+    return a == b or (_lesson(a) == _lesson(b) and a.get("note_id") == b.get("note_id"))
+
+
+def merge_window_decisions(decisions: list[dict]) -> tuple[list[dict], set]:
+    """Remove repeats of one lesson and drop every logical key that conflicts.
+
+    Overlap and continuations can repeat a lesson. NOBLIVION-240: two windows
+    that give one logical key two different lessons do not fail the job. The
+    conflicting keys are found over all decisions first, and every decision
+    with such a key is dropped. Only then are repeats removed. So the result
+    does not depend on the order of the windows, and a key with no conflict is
+    never lost because its lesson repeated under a dropped key.
+    """
+    by_key: dict[tuple, list[dict]] = {}
+    for decision in decisions:
+        by_key.setdefault((decision["scope"], decision["logical_key"]), []).append(decision)
+    conflicting = {
+        key
+        for key, group in by_key.items()
+        if any(not _same_lesson(group[0], other) for other in group[1:])
+    }
+    unique: dict[tuple, dict] = {}
+    for decision in decisions:
+        key = (decision["scope"], decision["logical_key"])
+        if key in conflicting:
+            continue
+        # The same lesson under another key, or a repeat under this key.
+        if any(_same_lesson(kept, decision) for kept in unique.values()):
+            continue
+        unique[key] = decision
+    return list(unique.values()), conflicting
+
+
 def piece_depth(slot: int) -> int:
     return (slot + 1).bit_length() - 1
 
@@ -766,35 +804,7 @@ class LearningWorker:
             self.ledger.checkpoint(ident, lease, state)
             pages = ExtractionPages(self.ledger, job, state, fingerprint)
             decisions = self._extract(job, sources, windows, existing, state, pages)
-            # Overlap can repeat identical candidates. Conflicting proposals in
-            # one batch fail closed instead of depending on their order.
-            unique, conflicting = {}, set()
-            for decision in decisions:
-                key = (decision["scope"], decision["logical_key"])
-                semantic = (
-                    decision["scope"],
-                    decision["category"],
-                    decision["statement"].casefold(),
-                )
-                duplicate = next(
-                    (
-                        d
-                        for d in unique.values()
-                        if (d["scope"], d["category"], d["statement"].casefold()) == semantic
-                    ),
-                    None,
-                )
-                if duplicate is not None and duplicate.get("note_id") == decision.get("note_id"):
-                    continue
-                if key in unique and unique[key] != decision:
-                    # NOBLIVION-240: two windows disagree on one logical key. A
-                    # re-ask cannot help, because the receipts are fixed. Drop
-                    # every decision with that key, so the order does not matter,
-                    # and record only a count.
-                    conflicting.add(key)
-                    continue
-                unique[key] = decision
-            decisions = [d for k, d in unique.items() if k not in conflicting]
+            decisions, conflicting = merge_window_decisions(decisions)
             # The receipts are fixed, so a resume computes the same count.
             if conflicting:
                 state["inconsistent_decisions"] = len(conflicting)
