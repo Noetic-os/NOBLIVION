@@ -211,7 +211,13 @@ own. Learning status counts these windows in `rejected_windows`, and
 `noblivion learning retry` keeps their receipts. The other response failures
 (the candidate schema, an unclassified failure, a secret in the raw response,
 invalid JSON after the format retry, the envelope and the version) still fail
-the job, as before. The
+the job, as before. When a continuation page proposes twelve candidates and
+all twelve are dropped, the window makes no more progress. That page gets an
+`exhausted` receipt with no candidate, its unit index goes into
+`exhausted_windows` in the job progress, and the job goes on with the next
+window. The candidates of the earlier pages of the window stay. Learning
+status counts these windows in `exhausted_windows`. The hard decision limit
+(`max_decisions`) still ends the job. The
 records of one job use at most 256 KiB. An exact-quote failure has a detail: `repeated`,
 `whitespace`, `case`, `typography` or `absent`. The progress row of each job keeps
 one record per page (`unit`, `continuation`) with the cited source IDs, so a
