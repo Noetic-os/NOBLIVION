@@ -103,7 +103,7 @@ exits with code 1.
 | `bind failed on port N: Address already in use` | Another program uses the port. This happens only with a fixed `port`. | Stop that program, or set `port` (or `NOBLIVION_PORT`) to `0` (the default: the system picks a free port) or to another port. |
 | `another store runs; exiting` | A store already holds `store.lock`. | Nothing. The running store serves the hooks. |
 | `schema: ...` | The database is from a newer version, or is damaged. | Update the plugin, or move `noblivion.db` away and run `noblivion index` to build a new one. Trust history is in the old file. |
-| `store stopping: idle` | The store had no request for 30 minutes. | Nothing. The next prompt starts it again. |
+| `store stopping: idle` | The store had no request for 30 minutes, and no learning job could run. | Nothing. The next prompt starts it again. |
 | `not installed: no database at ...` | There is no `noblivion.db`, and `install.sh` has not run for this data dir. The store makes no new database then (NOBLIVION-28). | Type `/noblivion:setup`, or run `install.sh`. |
 | `store stopping: data dir removed` | The data dir was deleted, for example by `claude plugin uninstall`. The store stopped and made nothing. | Nothing, or install again. |
 

@@ -722,6 +722,81 @@ class LearningLedger:
             )
             self._expire_reservations()
 
+    def work_open(
+        self,
+        owners,
+        scopes,
+        *,
+        max_attempts: int,
+        limits: BudgetLimits | None = None,
+        call_seconds: float = 0.0,
+    ) -> bool:
+        """True while learning work keeps an idle store up (NOBLIVION-248).
+
+        A live lease of one of ``owners`` counts. A pending job counts only when
+        a claim would take it now (due, attempts left, scope enabled, not paused)
+        and the budget window has room for one more call. A job that no worker
+        can take never keeps the store up.
+        """
+        now = time.time()
+        owners = sorted(owners)
+        if owners:
+            marks = ",".join("?" * len(owners))
+            if self.conn.execute(
+                "SELECT 1 FROM learning_jobs WHERE status='leased' AND lease_until>? "
+                f"AND lease_owner IN ({marks}) LIMIT 1",
+                (now, *owners),
+            ).fetchone():
+                return True
+        if not scopes or limits is None:
+            return False
+        used = self.conn.execute(
+            "SELECT count(*) calls,coalesce(sum(tokens),0) tokens,"
+            "coalesce(sum(seconds),0) seconds,coalesce(sum(cost),0) cost "
+            "FROM learning_budget WHERE created_at>=?",
+            (now - limits.window_seconds,),
+        ).fetchone()
+        if (
+            used["calls"] + 1 > limits.max_calls
+            or used["tokens"] >= limits.max_tokens
+            or used["seconds"] + call_seconds > limits.max_seconds
+            or used["cost"] > limits.max_cost  # a local model call costs 0
+        ):
+            return False
+        for row in self.conn.execute(
+            "SELECT project,root,session_id FROM learning_jobs WHERE status='pending' "
+            "AND next_attempt<=? AND attempts<? ORDER BY created_at,id LIMIT 64",
+            (now, max_attempts),
+        ).fetchall():
+            if (row["project"], row["root"]) not in scopes:
+                continue
+            controls = self.effective_controls(row["project"], row["root"], row["session_id"])
+            if controls["contribute"] and not controls["paused"]:
+                return True
+        return False
+
+    def release_leases(self, owners, error: str = "LearningWorkerStopped") -> int:
+        """Give back every job that ``owners`` lease, with no attempt charged.
+
+        A clean store stop calls this for its own workers (NOBLIVION-248). The
+        claim counted the attempt, so this takes it back, as a deferral does.
+        The job keeps its durable progress. A call still in flight keeps its
+        reservation, which then counts as uncertain.
+        """
+        owners = sorted(owners)
+        if not owners:
+            return 0
+        validate_safe_text(error)
+        marks = ",".join("?" * len(owners))
+        now = time.time()
+        with db.write_tx(self.conn):
+            return self.conn.execute(
+                "UPDATE learning_jobs SET status='pending',attempts=max(0,attempts-1),"
+                "next_attempt=?,lease_token=NULL,lease_owner=NULL,lease_until=NULL,"
+                f"last_error=?,updated_at=? WHERE status='leased' AND lease_owner IN ({marks})",
+                (now, error, now, *owners),
+            ).rowcount
+
     def renew_lease(self, job_id: str, lease_token: str, lease_seconds: float) -> None:
         """Keep a current lease alive while its worker waits for a call slot.
 

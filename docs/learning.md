@@ -103,6 +103,15 @@ no worker.
 - When the store stops, a worker that waits for a call slot takes no slot, so
   no new call starts. A call that has started runs to its end or dies with the
   process; its reservation stays and counts against the budget.
+- The store does not stop for idle while one of its workers holds a job, or
+  while a pending job can run now: it is due, it has attempts left, its scope
+  is enabled and not paused, and the budget window has room for one more call.
+  A job that no worker can take does not keep the store up. At a clean stop
+  (SIGTERM or idle) the store waits up to 5 seconds for its workers, then gives
+  back each job they still hold: the job is pending again with
+  `LearningWorkerStopped`, keeps its progress, and gets back the attempt that
+  its claim counted. Before 0.1.30 the lease expired instead, and each stop
+  cost each leased job one attempt (NOBLIVION-248).
 - A worker loop claims its next job as soon as the last one is done. It waits
   `worker.poll_seconds` only when no job was done. So jobs run back to back,
   with no 5 second pause, also at `max_concurrency` 1.

@@ -8,6 +8,15 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Learning no longer stops 30 minutes after the last prompt. The store does
+  not stop for idle while one of its learning workers holds a job, or while a
+  pending job can run now within the budget. A job that no worker can take
+  (paused, scope not enabled, budget spent, no attempts left) does not keep the
+  store up. At a clean stop (SIGTERM or idle) the store gives back the jobs
+  its workers hold: each job is pending again, keeps its progress, and does
+  not lose an attempt. Before, each stop cost each leased job one attempt
+  through "lease expired" (NOBLIVION-248).
+
 ## 0.1.29 - 2026-11-15
 
 - One exhausted extraction window no longer fails a whole learning job. When a
