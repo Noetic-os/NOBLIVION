@@ -846,12 +846,9 @@ class LearningWorker:
             # Preserve page receipts; only the comparison snapshot is stale.
             # NOBLIVION-250: a stage whose note set changed keeps its valid
             # comparisons; the next run compares only the new or revised notes.
+            # Any other cause (the note set did not change) drops the stage.
             stage = state.get("semantic")
-            if (
-                not isinstance(stage, dict)
-                or job.get("kind", "extract") != "extract"
-                or stage.get("snapshot") == self._semantic_snapshot(job)
-            ):
+            if not isinstance(stage, dict) or stage.get("snapshot") == self._semantic_snapshot(job):
                 state.pop("semantic", None)
             state.pop("derivation", None)
             state.pop("format_repair", None)

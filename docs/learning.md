@@ -116,8 +116,9 @@ no worker.
   revision. A removed note needs no new comparison. A candidate that a removed
   or revised note blocked gets a fresh comparison with all current notes. Each
   new comparison is one more model call. The job never repeats its extraction
-  calls. An add is stored only when its comparisons cover every current note:
-  the write transaction checks this, as before. The job progress and learning
+  calls. The refresh builds the comparisons for every current note. The write
+  transaction stores an add only when its snapshot equals the current note
+  set, as before. The job progress and learning
   status count the changed note sets in `semantic_restarts` and the kept
   comparisons in `semantic_reused` (NOBLIVION-250).
 

@@ -318,3 +318,35 @@ def test_stage_checkpointed_by_0_1_29_resumes(ledger, setup, change):
     after = progress(ledger, setup["job"])
     assert (after["fingerprint"], after["execution_fingerprint"]) == fingerprint
     assert after.get("semantic_restarts", 0) == int(change)
+
+
+def test_other_snapshot_refusal_drops_the_stage_and_ends(ledger, setup, monkeypatch):
+    """The note set did not change, so the stage cannot be refreshed: drop it."""
+    provider = Provider({"Prefer tabs": setup["candidates"]})
+    real_finish = ledger.finish
+    refusals = []
+
+    def finish_without_snapshot(job_id, lease, decisions, **kwargs):
+        if not refusals:
+            refusals.append(1)
+            # learning.py refuses an automatic add with no semantic snapshot.
+            decisions = [
+                {k: v for k, v in d.items() if k != "semantic_snapshot"} for d in decisions
+            ]
+        return real_finish(job_id, lease, decisions, **kwargs)
+
+    monkeypatch.setattr(ledger, "finish", finish_without_snapshot)
+    first = worker(ledger, provider, max_calls=50).run_once()
+    assert first["status"] == "deferred" and first["error"] == "SemanticSnapshotChanged"
+    state = progress(ledger, setup["job"])
+    assert "semantic" not in state and "semantic_restarts" not in state
+    assert len(provider.targets) == 2
+    provider.targets.clear()
+    second = resume(ledger, provider, setup["job"])
+    # A fresh stage compares everything once, and the job ends: no defer loop.
+    assert second["status"] == "done"
+    assert [r["action"] for r in second["results"]] == ["add", "add"]
+    assert as_sets(provider.targets) == [
+        {setup["n1"], setup["n2"]},
+        {setup["n1"], setup["n2"], "candidate:0"},
+    ]
