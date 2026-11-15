@@ -2105,6 +2105,10 @@ class LearningLedger:
         # semantic re-asks spent (NOBLIVION-240). Counts and classes only.
         rejected_candidates: dict[str, int] = {}
         semantic_reasks = 0
+        # Semantic stages that met a changed note set, and the comparisons they
+        # kept instead of asking again (NOBLIVION-250).
+        semantic_restarts = 0
+        semantic_reused = 0
         for row in self.conn.execute(
             "SELECT id,status,last_error,progress FROM learning_jobs" + clause, params
         ):
@@ -2121,6 +2125,8 @@ class LearningLedger:
             progress = json.loads(row["progress"])
             rejected_windows += len(progress.get("rejected_windows", []))
             exhausted_windows += len(progress.get("exhausted_windows", []))
+            semantic_restarts += progress.get("semantic_restarts", 0)
+            semantic_reused += progress.get("semantic_reused", 0)
             semantic = progress.get("semantic") or {}
             for label, count in (
                 ("semantic comparison not validated", len(semantic.get("rejected", []))),
@@ -2168,6 +2174,8 @@ class LearningLedger:
             "exhausted_windows": exhausted_windows,
             "rejected_candidates": rejected_candidates,
             "semantic_reasks": semantic_reasks,
+            "semantic_restarts": semantic_restarts,
+            "semantic_reused": semantic_reused,
             "provider_actual": actual,
             "outcomes": outcomes,
         }

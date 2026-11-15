@@ -8,6 +8,17 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- A learning job no longer starts its semantic stage again from the first
+  comparison when another job in the same root stores notes. The job keeps
+  each comparison whose note is still current with the same revision. It
+  compares only with new or revised notes. A candidate that a removed or
+  revised note blocked is compared again with all current notes. An add is
+  still stored only when its comparisons cover every current note, checked in
+  the write transaction. The job progress and `learning status` show
+  `semantic_restarts` and `semantic_reused`. The job fingerprint stays the
+  same, so started jobs keep their progress, also a stage that 0.1.29 saved
+  (NOBLIVION-250).
+
 ## 0.1.29 - 2026-11-15
 
 - One exhausted extraction window no longer fails a whole learning job. When a

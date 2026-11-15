@@ -844,7 +844,15 @@ class LearningWorker:
             return {"status": "failed", "job_id": ident, "error": reason, "permanent": False}
         except SemanticSnapshotChanged:
             # Preserve page receipts; only the comparison snapshot is stale.
-            state.pop("semantic", None)
+            # NOBLIVION-250: a stage whose note set changed keeps its valid
+            # comparisons; the next run compares only the new or revised notes.
+            stage = state.get("semantic")
+            if (
+                not isinstance(stage, dict)
+                or job.get("kind", "extract") != "extract"
+                or stage.get("snapshot") == self._semantic_snapshot(job)
+            ):
+                state.pop("semantic", None)
             state.pop("derivation", None)
             state.pop("format_repair", None)
             self.ledger.checkpoint(ident, lease, state)
@@ -1356,40 +1364,14 @@ class LearningWorker:
         A semantic judgment can prevent a write, never authorize a correction.
         Equivalent, contradictory or uncertain candidates become visible conflicts.
         Each completed comparison is durable so budget pauses do not repeat it.
+        When another job changes the note set, the valid comparisons stay, and
+        only the new or revised notes get new comparisons (NOBLIVION-250).
         """
         if not any(d["action"] == "add" for d in decisions):
             return decisions
         stage = state.get("semantic")
         if stage is None:
-            managed = self.ledger.semantic_notes(
-                job["project"], job["root"], session_id=job.get("session_id", "")
-            )
-            snapshot = sorted([[n["note_id"], n["revision"]] for n in managed])
-            notes = [
-                {
-                    key: n[key]
-                    for key in ("note_id", "revision", "statement", "scope", "read_only")
-                    if key in n
-                }
-                for n in managed
-            ]
-            present = {n["note_id"] for n in notes}
-            notes.extend(n for n in context if n.get("read_only") and n["note_id"] not in present)
-            # Each semantic target gets a bound; never truncate the revision
-            # snapshot to the subset whose bodies were safe to submit.
-            safe_notes, exclusions = [], []
-            for note in notes:
-                kept, rejected = isolate_notes(
-                    [note], max_chars=min(self.settings.max_existing_chars, 16000) - 2400
-                )
-                safe_notes.extend(kept)
-                exclusions.extend(rejected)
-            notes = safe_notes
-            state["semantic_exclusions"] = exclusions
-            dependent = dependent_decisions(decisions, exclusions)
-            if dependent:
-                state["deferred_decisions"] = dependent
-                raise DependencyDeferred()
+            notes, snapshot = self._semantic_notes(job, decisions, context, state)
             stage = {
                 "notes": notes,
                 "snapshot": snapshot,
@@ -1398,8 +1380,125 @@ class LearningWorker:
             }
             state["semantic"] = stage
             self.ledger.checkpoint(job["id"], job["lease_token"], state)
+        max_chars = min(self.settings.max_existing_chars, 16000)
+        while True:
+            if stage["snapshot"] != self._semantic_snapshot(job):
+                stage = self._refresh_semantic(job, decisions, context, state, stage, max_chars)
+            self._semantic_round(job, decisions, stage, state, max_chars)
+            # The commit checks the snapshot again in its write transaction.
+            if stage["snapshot"] == self._semantic_snapshot(job):
+                break
+        results = stage["decisions"]
+        for candidate in results:
+            if candidate["action"] == "add":
+                candidate["semantic_snapshot"] = stage["snapshot"]
+        stage["complete"] = True
+        self.ledger.checkpoint(job["id"], job["lease_token"], state)
+        return [c for c in results if c["action"] != SEMANTIC_UNVALIDATED]
+
+    def _semantic_snapshot(self, job: dict) -> list:
+        """The sorted [note_id, revision] pairs of the current semantic note set."""
+        managed = self.ledger.semantic_notes(
+            job["project"], job["root"], session_id=job.get("session_id", "")
+        )
+        return sorted([[n["note_id"], n["revision"]] for n in managed])
+
+    def _semantic_notes(
+        self, job: dict, decisions: list[dict], context: list[dict], state: dict
+    ) -> tuple[list[dict], list]:
+        """Return the bounded comparison notes and the snapshot of all managed notes."""
+        managed = self.ledger.semantic_notes(
+            job["project"], job["root"], session_id=job.get("session_id", "")
+        )
+        snapshot = sorted([[n["note_id"], n["revision"]] for n in managed])
+        notes = [
+            {
+                key: n[key]
+                for key in ("note_id", "revision", "statement", "scope", "read_only")
+                if key in n
+            }
+            for n in managed
+        ]
+        present = {n["note_id"] for n in notes}
+        notes.extend(n for n in context if n.get("read_only") and n["note_id"] not in present)
+        # Each semantic target gets a bound; never truncate the revision
+        # snapshot to the subset whose bodies were safe to submit.
+        safe_notes, exclusions = [], []
+        for note in notes:
+            kept, rejected = isolate_notes(
+                [note], max_chars=min(self.settings.max_existing_chars, 16000) - 2400
+            )
+            safe_notes.extend(kept)
+            exclusions.extend(rejected)
+        state["semantic_exclusions"] = exclusions
+        dependent = dependent_decisions(decisions, exclusions)
+        if dependent:
+            state["deferred_decisions"] = dependent
+            raise DependencyDeferred()
+        return safe_notes, snapshot
+
+    def _refresh_semantic(self, job, decisions, context, state, stage, max_chars):
+        """Keep the valid comparisons of a stage whose note set changed (NOBLIVION-250).
+
+        A comparison stays valid while its target note has the same revision. A
+        comparison with another candidate always stays valid. A candidate that a
+        removed or revised note blocked gets a fresh comparison with all notes,
+        because its later tasks were skipped. The new stage covers every current
+        note: its tasks are all targets minus the kept comparisons.
+        """
         tasks = semantic_targets(
-            decisions, stage["notes"], max_chars=min(self.settings.max_existing_chars, 16000)
+            decisions, stage["notes"], max_chars=max_chars, skip=stage.get("covered")
+        )
+        done: dict[int, set[str]] = {}
+        for key, ids in (stage.get("covered") or {}).items():
+            done.setdefault(int(key), set()).update(ids)
+        for task in tasks[: stage["next_task"]]:
+            done.setdefault(task["candidate_index"], set()).update(
+                target["target_id"] for target in task["targets"]
+            )
+        before = {str(n["note_id"]): n.get("revision") for n in stage["notes"]}
+        notes, snapshot = self._semantic_notes(job, decisions, context, state)
+        after = {str(n["note_id"]): n.get("revision") for n in notes}
+
+        def valid(target_id: str) -> bool:
+            if target_id not in before:
+                return target_id.startswith("candidate:")
+            return target_id in after and after[target_id] == before[target_id]
+
+        results = stage["decisions"]
+        covered, reused = {}, 0
+        for index, decision in enumerate(decisions):
+            if decision["action"] != "add":
+                continue
+            result = results[index]
+            if result["action"] == "conflict":
+                review = result.get("semantic_review") or {}
+                if not valid(str(review.get("target_id"))):
+                    results[index] = dict(decision)
+                continue
+            if result["action"] != "add":
+                continue  # not validated: never stored, no new comparison
+            kept = sorted(target for target in done.get(index, ()) if valid(target))
+            if kept:
+                covered[str(index)] = kept
+                reused += len(kept)
+        fresh = {"notes": notes, "snapshot": snapshot, "next_task": 0, "decisions": results}
+        if covered:
+            fresh["covered"] = covered
+        if stage.get("rejected"):
+            fresh["rejected"] = stage["rejected"]
+        state["semantic"] = fresh
+        state["semantic_restarts"] = state.get("semantic_restarts", 0) + 1
+        state["semantic_reused"] = state.get("semantic_reused", 0) + reused
+        # Task numbers start again, so a format retry of an old task is void.
+        state.pop("format_repair", None)
+        self.ledger.checkpoint(job["id"], job["lease_token"], state)
+        return fresh
+
+    def _semantic_round(self, job, decisions, stage, state, max_chars) -> None:
+        """Run the open tasks of the stage; each finished task is durable."""
+        tasks = semantic_targets(
+            decisions, stage["notes"], max_chars=max_chars, skip=stage.get("covered")
         )
         results = stage["decisions"]
         for index in range(stage["next_task"], len(tasks)):
@@ -1437,12 +1536,6 @@ class LearningWorker:
             stage["next_task"] = index + 1
             state.pop("format_repair", None)
             self.ledger.checkpoint(job["id"], job["lease_token"], state)
-        for candidate in results:
-            if candidate["action"] == "add":
-                candidate["semantic_snapshot"] = stage["snapshot"]
-        stage["complete"] = True
-        self.ledger.checkpoint(job["id"], job["lease_token"], state)
-        return [c for c in results if c["action"] != SEMANTIC_UNVALIDATED]
 
     def _semantic_answer(self, job, task, index, stage, state):
         """Return validated relations, or None past the bounded re-asks.
