@@ -16,6 +16,16 @@ All notable changes to NOBLIVION. The format follows
   limit still ends the job. The job fingerprint stays the same, so started
   jobs go on, and an explicit retry of a job that an older release exhausted
   this way finishes (NOBLIVION-247).
+- One bad semantic comparison answer no longer fails a whole learning job. An
+  answer that parses but does not match its task, for example "invalid semantic
+  target" or "incomplete semantic comparison", is asked again up to two times
+  with a fixed note. Each call is charged to the budget. After the last try the
+  one affected candidate is not stored, and the job goes on. When two windows
+  give one logical key two different decisions, all decisions with that key are
+  dropped, and the job goes on. The job progress and `learning status` show
+  the counts (`semantic_reasks`, `rejected_candidates`) without candidate text.
+  The job fingerprint stays the same, so started and retried jobs go on
+  (NOBLIVION-240).
 
 ## 0.1.28 - 2026-11-14
 

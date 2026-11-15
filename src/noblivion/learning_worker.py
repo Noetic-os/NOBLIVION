@@ -32,6 +32,7 @@ from .learning_extract import (
     SYSTEM_PROMPT,
     ResponseFormatError,
     ResponseRejected,
+    SemanticAnswerRejected,
     ValidationError,
     build_windows,
     contains_secret,
@@ -154,6 +155,57 @@ PIECE_STRIDE = 64
 # day. Past it each deferral counts an attempt, so the job ends after at most
 # max_attempts more runs. An explicit retry renews the count.
 MAX_RETURNED_DEFERRALS = 24
+# NOBLIVION-240: a semantic answer that parses but does not match its task (for
+# example "invalid semantic target") is asked again up to this many times, with
+# a fixed corrective note. Past the bound the one affected candidate is not
+# stored, and the job goes on. A module constant, not a setting, so the
+# execution fingerprint of a started job stays the same.
+MAX_SEMANTIC_REASKS = 2
+_SEMANTIC_REASK = (
+    "\nA previous answer to this comparison was rejected: {error}. Answer again "
+    "from the task below (try {attempt}). Return exactly one relation object for "
+    "each listed target_id, use each target_id once, and use no other target_id."
+)
+# Text-free reason class of a candidate that the worker does not store.
+SEMANTIC_UNVALIDATED = "semantic comparison not validated"
+
+
+def _lesson(decision: dict) -> tuple:
+    return (decision["scope"], decision["category"], decision["statement"].casefold())
+
+
+def _same_lesson(a: dict, b: dict) -> bool:
+    return a == b or (_lesson(a) == _lesson(b) and a.get("note_id") == b.get("note_id"))
+
+
+def merge_window_decisions(decisions: list[dict]) -> tuple[list[dict], set]:
+    """Remove repeats of one lesson and drop every logical key that conflicts.
+
+    Overlap and continuations can repeat a lesson. NOBLIVION-240: two windows
+    that give one logical key two different lessons do not fail the job. The
+    conflicting keys are found over all decisions first, and every decision
+    with such a key is dropped. Only then are repeats removed. So the result
+    does not depend on the order of the windows, and a key with no conflict is
+    never lost because its lesson repeated under a dropped key.
+    """
+    by_key: dict[tuple, list[dict]] = {}
+    for decision in decisions:
+        by_key.setdefault((decision["scope"], decision["logical_key"]), []).append(decision)
+    conflicting = {
+        key
+        for key, group in by_key.items()
+        if any(not _same_lesson(group[0], other) for other in group[1:])
+    }
+    unique: dict[tuple, dict] = {}
+    for decision in decisions:
+        key = (decision["scope"], decision["logical_key"])
+        if key in conflicting:
+            continue
+        # The same lesson under another key, or a repeat under this key.
+        if any(_same_lesson(kept, decision) for kept in unique.values()):
+            continue
+        unique[key] = decision
+    return list(unique.values()), conflicting
 
 
 def piece_depth(slot: int) -> int:
@@ -752,30 +804,12 @@ class LearningWorker:
             self.ledger.checkpoint(ident, lease, state)
             pages = ExtractionPages(self.ledger, job, state, fingerprint)
             decisions = self._extract(job, sources, windows, existing, state, pages)
-            # Overlap can repeat identical candidates. Conflicting proposals in
-            # one batch fail closed instead of depending on their order.
-            unique = {}
-            for decision in decisions:
-                key = (decision["scope"], decision["logical_key"])
-                semantic = (
-                    decision["scope"],
-                    decision["category"],
-                    decision["statement"].casefold(),
-                )
-                duplicate = next(
-                    (
-                        d
-                        for d in unique.values()
-                        if (d["scope"], d["category"], d["statement"].casefold()) == semantic
-                    ),
-                    None,
-                )
-                if duplicate is not None and duplicate.get("note_id") == decision.get("note_id"):
-                    continue
-                if key in unique and unique[key] != decision:
-                    raise ValidationError("inconsistent window decisions")
-                unique[key] = decision
-            decisions = list(unique.values())
+            decisions, conflicting = merge_window_decisions(decisions)
+            # The receipts are fixed, so a resume computes the same count.
+            if conflicting:
+                state["inconsistent_decisions"] = len(conflicting)
+            else:
+                state.pop("inconsistent_decisions", None)
             dependent = dependent_decisions(decisions, exclusions)
             if dependent:
                 state["deferred_decisions"] = dependent
@@ -1374,18 +1408,16 @@ class LearningWorker:
             if candidate["action"] == "add":
                 if self.stop is not None and self.stop.is_set():
                     raise BudgetExceeded("worker stopping")
-                relations = self._validated_call(
-                    job,
-                    [
-                        {"role": "system", "content": SEMANTIC_PROMPT},
-                        {"role": "user", "content": json.dumps(task, ensure_ascii=False)},
-                    ],
-                    lambda raw, task=task: validate_semantic_response(raw, task),
-                    state,
-                    f"semantic:{index}",
-                    SEMANTIC_SCHEMA,
+                relations = self._semantic_answer(job, task, index, stage, state)
+                if relations is None:
+                    # NOBLIVION-240: no validated comparison, so the candidate is
+                    # never stored. Its later tasks are skipped, and the job goes
+                    # on. Only its index and a fixed class are kept.
+                    candidate["action"] = SEMANTIC_UNVALIDATED
+                    stage.setdefault("rejected", []).append(task["candidate_index"])
+                blocked = relations and next(
+                    (r for r in relations if r["relation"] != "distinct"), None
                 )
-                blocked = next((r for r in relations if r["relation"] != "distinct"), None)
                 if blocked:
                     candidate.update(
                         action="conflict",
@@ -1410,7 +1442,48 @@ class LearningWorker:
                 candidate["semantic_snapshot"] = stage["snapshot"]
         stage["complete"] = True
         self.ledger.checkpoint(job["id"], job["lease_token"], state)
-        return results
+        return [c for c in results if c["action"] != SEMANTIC_UNVALIDATED]
+
+    def _semantic_answer(self, job, task, index, stage, state):
+        """Return validated relations, or None past the bounded re-asks.
+
+        stage["reasks"] counts the failed answers of each task. The count is
+        saved before the next request, so a resume sends that re-ask, not the
+        first request again. A crash during a call sends the same call again,
+        as for every other call. Every call goes through _call, so the budget
+        charges it. Other failures (an unsafe answer, a format retry that fails
+        again) still fail the job.
+        """
+        reasks = stage.setdefault("reasks", {})
+        while True:
+            record = reasks.get(str(index), {"failures": 0, "error": ""})
+            failures = record["failures"]
+            if type(failures) is not int or not 0 <= failures <= MAX_SEMANTIC_REASKS + 1:
+                raise ValidationError("invalid durable semantic re-ask")
+            if failures > MAX_SEMANTIC_REASKS:
+                return None
+            prompt = SEMANTIC_PROMPT
+            step = f"semantic:{index}"
+            if failures:
+                prompt += _SEMANTIC_REASK.format(error=record["error"], attempt=failures + 1)
+                step += f":reask:{failures}"
+            try:
+                return self._validated_call(
+                    job,
+                    [
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": json.dumps(task, ensure_ascii=False)},
+                    ],
+                    lambda raw, task=task: validate_semantic_response(raw, task),
+                    state,
+                    step,
+                    SEMANTIC_SCHEMA,
+                )
+            except SemanticAnswerRejected as exc:
+                reasks[str(index)] = {"failures": failures + 1, "error": str(exc)}
+                # The next request is new: renew its one format retry.
+                state.pop("format_repair", None)
+                self.ledger.checkpoint(job["id"], job["lease_token"], state)
 
     def run_forever(self, stop: Event) -> None:
         """Keep independent jobs alive after one failure; shutdown is bounded."""
