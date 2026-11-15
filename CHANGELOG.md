@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.29 - 2026-11-15
+
 - One exhausted extraction window no longer fails a whole learning job. When a
   continuation page drops all twelve of its candidates, that window stops with
   an `exhausted` page receipt, and the job goes on with its next window, as for
