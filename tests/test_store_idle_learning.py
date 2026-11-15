@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -172,7 +173,7 @@ def test_work_open_counts_only_jobs_a_claim_would_take(tmp_path):
         root = write_learning(st)
         capture(st, root)
         scopes = {(st.namespace, root)}
-        limits = BudgetLimits(max_calls=10, max_seconds=1000)
+        limits = BudgetLimits(max_calls=10, max_seconds=1000, max_cost=1.0)
         with st.connection() as conn:
             ledger = LearningLedger(conn)
 
@@ -197,5 +198,29 @@ def test_work_open_counts_only_jobs_a_claim_would_take(tmp_path):
             assert ledger.release_leases({"worker-a"}) == 1
             row = conn.execute("SELECT status,attempts,lease_token FROM learning_jobs").fetchone()
             assert tuple(row) == ("pending", 0, None)
+            # The budget clauses, each with a passing neighbour.
+            assert not open_(limits=replace(limits, max_calls=0))
+            job_id = conn.execute("SELECT id FROM learning_jobs").fetchone()[0]
+            now = time.time()
+            conn.execute(
+                "INSERT INTO learning_budget VALUES (?,?,?,?,?,?,'settled',?,?)",
+                ("spent", job_id, "old-lease", 100, 1.0, 0.5, now, now),
+            )
+            conn.commit()
+            assert not open_(limits=replace(limits, max_calls=1))  # one call used
+            assert open_(limits=replace(limits, max_calls=2))
+            assert not open_(limits=replace(limits, max_tokens=100))  # token limit reached
+            assert open_(limits=replace(limits, max_tokens=101))
+            assert not open_(limits=replace(limits, max_cost=0.4))  # cost limit passed
+            assert open_(limits=replace(limits, max_cost=0.5))  # a local call costs 0
+            # A lease of this store that already expired is not given back:
+            # the claim counts it as "lease expired", as before.
+            expired = ledger.claim("worker-c", lease_seconds=0.05)
+            assert expired is not None
+            time.sleep(0.1)
+            assert not open_(owners={"worker-c"}, scopes=set(), limits=None)
+            assert ledger.release_leases({"worker-c"}) == 0
+            row = conn.execute("SELECT status,attempts FROM learning_jobs").fetchone()
+            assert tuple(row) == ("leased", 1)
     finally:
         st.close()

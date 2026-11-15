@@ -47,6 +47,9 @@ LOOPBACK = "127.0.0.1"  # fixed in code, not in config (section 15.3)
 SERVICE = "noblivion"
 DRAIN_TIMEOUT_S = 5.0
 JOB_JOIN_TIMEOUT_S = 60.0
+# How long a stop waits for the learning supervisor: up to 5 s for its workers
+# (learning_runtime.STOP_JOIN_SECONDS), then the lease release (NOBLIVION-248).
+LEARNING_JOIN_TIMEOUT_S = 10.0
 # How often an idle store asks whether learning work keeps it up (NOBLIVION-248).
 LEARNING_CHECK_S = 1.0
 JOB_TICK_S = 0.5
@@ -721,8 +724,10 @@ class Store:
         """
         self._jobs_stop.set()
         for thread in self._threads:
-            if thread.name in {"noblivion-jobs", "noblivion-learning"}:
+            if thread.name == "noblivion-jobs":
                 thread.join(JOB_JOIN_TIMEOUT_S)
+            elif thread.name == "noblivion-learning":
+                thread.join(LEARNING_JOIN_TIMEOUT_S)
 
     def close(self) -> None:
         """Finish open requests (5 s), stop the jobs after their current batch,

@@ -42,8 +42,9 @@ PROOF_PREFIX = "noblivion-health:"
 PROBE_TIMEOUT_S = 0.3
 SPAWN_STAMP_MAX_AGE_S = 30.0
 # How long a new store waits for the lock of the store it replaces. The old
-# store may need up to about 71 s to stop after SIGTERM: 5 s for open
-# requests, 60 s for the jobs thread to end its batch, 1 s per model thread
+# store may need up to about 81 s to stop after SIGTERM: 5 s for open
+# requests, 60 s for the jobs thread to end its batch, 10 s for the learning
+# supervisor to give back its leases (NOBLIVION-248), 1 s per model thread
 # and 5 s for the database. A shorter wait gave up while the old store still
 # stopped, and no store ran (NOBLIVION-57). A test checks this sum against the
 # store's constants.

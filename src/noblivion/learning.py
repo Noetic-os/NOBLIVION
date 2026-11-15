@@ -781,7 +781,9 @@ class LearningLedger:
         A clean store stop calls this for its own workers (NOBLIVION-248). The
         claim counted the attempt, so this takes it back, as a deferral does.
         The job keeps its durable progress. A call still in flight keeps its
-        reservation, which then counts as uncertain.
+        reservation, which then counts as uncertain. A lease that already
+        expired is left to the claim, which counts it as "lease expired": its
+        worker lost the job before the stop, so no attempt is given back.
         """
         owners = sorted(owners)
         if not owners:
@@ -793,8 +795,9 @@ class LearningLedger:
             return self.conn.execute(
                 "UPDATE learning_jobs SET status='pending',attempts=max(0,attempts-1),"
                 "next_attempt=?,lease_token=NULL,lease_owner=NULL,lease_until=NULL,"
-                f"last_error=?,updated_at=? WHERE status='leased' AND lease_owner IN ({marks})",
-                (now, error, now, *owners),
+                "last_error=?,updated_at=? WHERE status='leased' AND lease_until>? "
+                f"AND lease_owner IN ({marks})",
+                (now, error, now, now, *owners),
             ).rowcount
 
     def renew_lease(self, job_id: str, lease_token: str, lease_seconds: float) -> None:
