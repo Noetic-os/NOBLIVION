@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Contract 2 semantic batches keep the NOBLIVION-250 and NOBLIVION-240 rules.
 
 A peer commit mid-stage keeps the finished batch comparisons, and a batch
