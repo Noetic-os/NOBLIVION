@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.30 - 2026-11-15
+
 - A learning job no longer starts its semantic stage again from the first
   comparison when another job in the same root stores notes. The job keeps
   each comparison whose note is still current with the same revision. It
