@@ -238,6 +238,24 @@ def test_contract_3_job_compares_the_nearest_notes_only(ledger, count):
     assert service.calls == count + 3  # no stored vectors here: each note is embedded
 
 
+def test_the_stored_stage_keeps_the_snapshot_once(ledger):
+    """One snapshot copy per add made a large job exceed the progress size limit."""
+    seed_notes(ledger, 20)
+    provider = Provider(new_job(ledger))
+    assert worker(ledger, provider, Service()).run_once()["status"] == "done"
+    stage = job_row(ledger)[4]["semantic"]
+    assert len(stage["snapshot"]) == 20
+    assert all("semantic_snapshot" not in d for d in stage["decisions"])
+    # The commit still got the snapshot of each add.
+    details = [
+        json.loads(row[0])["decision"]
+        for row in ledger.conn.execute(
+            "SELECT detail FROM learning_decisions WHERE job_id=?", (job_row(ledger)[0],)
+        )
+    ]
+    assert len(details) == 3 and all(d["semantic_snapshot"] == stage["snapshot"] for d in details)
+
+
 def test_stored_note_vectors_are_read_not_embedded_again(ledger):
     seed_notes(ledger, 2)
     note = ledger.current_notes("demo", "scope")[0]

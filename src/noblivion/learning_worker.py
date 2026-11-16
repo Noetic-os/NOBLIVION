@@ -1809,13 +1809,16 @@ class LearningWorker:
             # The commit checks the snapshot again in its write transaction.
             if stage["snapshot"] == self._semantic_snapshot(job):
                 break
-        results = stage["decisions"]
-        for candidate in results:
-            if candidate["action"] == "add":
-                candidate["semantic_snapshot"] = stage["snapshot"]
         stage["complete"] = True
         self.ledger.checkpoint(job["id"], job["lease_token"], state)
-        return [c for c in results if c["action"] != SEMANTIC_UNVALIDATED]
+        # Each add carries the snapshot to the commit, but the stored stage
+        # keeps it once: one copy per add made the progress of a job with many
+        # adds and notes exceed its size limit (NOBLIVION-243).
+        return [
+            {**c, "semantic_snapshot": stage["snapshot"]} if c["action"] == "add" else c
+            for c in stage["decisions"]
+            if c["action"] != SEMANTIC_UNVALIDATED
+        ]
 
     def _semantic_snapshot(self, job: dict) -> list:
         """The sorted [note_id, revision] pairs of the current semantic note set."""

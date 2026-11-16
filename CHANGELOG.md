@@ -39,6 +39,10 @@ All notable changes to NOBLIVION. The format follows
   bounded task count". So `noblivion learning retry --root <root> --error
   "ValidationError: semantic reconciliation exceeds bounded task count"` can
   now finish such jobs.
+- The stored semantic stage of a learning job keeps the note snapshot once,
+  not one copy per new add (NOBLIVION-243). With about 50 adds and 275 notes
+  the copies made the job progress exceed its 1 MiB limit, and the job failed
+  with `LearningError` after all its semantic calls.
 
 ## 0.1.33 - 2026-11-16
 
