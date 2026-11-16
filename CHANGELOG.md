@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.31 - 2026-11-16
+
 - New learning jobs need fewer model calls (NOBLIVION-241). They start under
   extraction contract version 2: a window holds two times `window_chars`, a
   window or split piece with no tool text and no direct user text gets a
