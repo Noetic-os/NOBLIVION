@@ -648,6 +648,22 @@ class LearningLedger:
             )
             return reservation
 
+    def provider_answered_since(self, since: float) -> bool:
+        """True when a model call of this store got a real answer at or after ``since``.
+
+        settle marks a reservation "settled" only when the call returned an
+        answer or a measured token count, so such a row is a real answer from
+        the provider. A call that got no answer settles as "uncertain"
+        (NOBLIVION-255).
+        """
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM learning_budget WHERE status='settled' AND updated_at>=? LIMIT 1",
+                (since,),
+            ).fetchone()
+            is not None
+        )
+
     def settle(
         self,
         reservation_id: str,

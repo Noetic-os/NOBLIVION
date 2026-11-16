@@ -18,10 +18,13 @@ All notable changes to NOBLIVION. The format follows
   `Provider:unavailable`: the job waits and keeps its attempt, and the worker
   loops pause, as for a refused connection. If it gets an answer, the server is
   up and the request itself is too slow, so the timeout still counts an
-  attempt. The check does not use `GET /health` or `GET /v1/models`, because a
+  attempt. A busy server can keep the one-token request in its queue, so a
+  check with no answer makes the call `Provider:unavailable` only when no call
+  of the store got a real answer in the time of one call and one check before
+  it. The check does not use `GET /health` or `GET /v1/models`, because a
   server can answer those and still hang on completions. The check runs inside
   the budget reservation of the call that timed out, and its time counts in
-  that call's measured seconds.
+  that call's measured seconds and in `provider_metrics.seconds` of the job.
 
 ## 0.1.32 - 2026-11-16
 

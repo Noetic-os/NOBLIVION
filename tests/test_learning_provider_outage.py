@@ -28,10 +28,12 @@ from noblivion.learning import BudgetLimits, LearningError, LearningLedger
 from noblivion.learning_runtime import LearningPool
 from noblivion.learning_worker import (
     MAX_RETURNED_DEFERRALS,
+    PROBE_TIMEOUT_SECONDS,
     UNAVAILABLE_MAX_DELAY,
     LearningWorker,
     OpenAICompatibleProvider,
     ProviderError,
+    ProviderResponse,
     WorkerSettings,
     provider_answered,
 )
@@ -436,6 +438,9 @@ class FakeEndpoint(http.server.ThreadingHTTPServer):
     mode "hung": every request waits and never gets an answer.
     mode "probe": a one-token request gets an answer; any other request hangs.
     mode "up": every request gets a valid empty extraction answer.
+    mode "busy": one request at a time, like a server with one slot. A request
+    whose text holds LARGE keeps the slot for ``hold`` seconds before it
+    answers; every other request answers at once when it gets the slot.
     With ``health`` set, GET /health and GET /v1/models answer in every mode.
     """
 
@@ -446,6 +451,11 @@ class FakeEndpoint(http.server.ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), FakeHandler)
         self.mode, self.health, self.seen = "hung", False, []
         self.release = threading.Event()
+        self.slot, self.hold = threading.Lock(), 0.0
+
+    def handle_error(self, request, client_address):
+        # A late answer to a client that gave up fails to write; that is expected.
+        pass
 
     @property
     def url(self):
@@ -478,9 +488,15 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
             self.hang()
 
     def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        raw = self.rfile.read(int(self.headers["Content-Length"]))
+        body = json.loads(raw)
         self.server.seen.append(("POST", self.path, body.get("max_tokens")))
         mode = self.server.mode
+        if mode == "busy":
+            with self.server.slot:
+                if b"LARGE" in raw:
+                    time.sleep(self.server.hold)
+                return self.reply(body)
         if self.path != "/v1/chat/completions" or mode == "hung":
             return self.hang()
         if mode == "probe" and body["max_tokens"] == 1:
@@ -488,6 +504,12 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
             return self.answer({"choices": [reply], "usage": {"total_tokens": 9}})
         if mode == "probe":
             return self.hang()
+        self.reply(body)
+
+    def reply(self, body):
+        if body["max_tokens"] == 1:
+            reply = {"finish_reason": "length", "message": {"content": "Sure"}}
+            return self.answer({"choices": [reply], "usage": {"total_tokens": 9}})
         content = json.dumps({"version": 1, "candidates": []})
         reply = {"finish_reason": "stop", "message": {"content": content}}
         self.answer({"choices": [reply], "usage": {"total_tokens": 100}})
@@ -679,3 +701,112 @@ def test_the_probe_is_false_only_when_the_completions_path_does_not_answer(exc, 
     method, url, body, timeout = sent[0]
     assert (method, url, timeout) == ("POST", "http://127.0.0.1:1234/v1/chat/completions", 7)
     assert body["max_tokens"] == 1 and body["model"] == "sample"
+
+
+def test_a_slow_request_on_a_busy_server_still_counts_attempts_and_no_pool_hold(
+    ledger, endpoint, monkeypatch
+):
+    """One server slot: the probe waits behind the slow request and gets no answer.
+
+    The other worker loop got real answers between the slow calls, so the server
+    is up. The slow job uses its attempts, and the pool never holds.
+    """
+    probe, timeout = 0.25, 0.6
+    monkeypatch.setattr(module, "PROBE_TIMEOUT_SECONDS", probe)
+    endpoint.mode, endpoint.hold = "busy", timeout + probe + 0.25
+    clock = [1000.0]
+
+    class PoolTime:
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+        def monotonic(self):
+            return clock[0]
+
+    monkeypatch.setattr("noblivion.learning_runtime.time", PoolTime())
+    stop = FakeStop(clock)
+    capture(ledger, "a", "LARGE request that the server is too slow to answer.", root="a")
+    settings = WorkerSettings(timeout_seconds=timeout)
+    worker = LearningWorker(ledger, local_provider(endpoint), settings, LIMITS)
+    pool = LearningPool(SimpleNamespace(_jobs_stop=stop))
+    holds, results = [], []
+
+    def run_once(*args, **kwargs):
+        # Two loops take turns: a small job of a new root, then the slow job.
+        holds.append((pool._provider_hold_until, pool.provider_unreachable_since))
+        turn = len(holds)
+        ledger.conn.execute(
+            "UPDATE learning_jobs SET next_attempt=? WHERE status='pending' AND root='a'",
+            (10**12 if turn % 2 else 0,),
+        )
+        if turn % 2:
+            capture(ledger, f"b{turn}", f"Keep replies short in {turn}.", root=f"b{turn}")
+        if turn == 2 * settings.max_attempts:
+            stop.set()
+        results.append(worker.run_once())
+        return results[-1]
+
+    class Store:
+        @contextlib.contextmanager
+        def connection(self):
+            yield object()
+
+    monkeypatch.setattr("noblivion.learning_runtime.run_once", run_once)
+    monkeypatch.setattr(
+        "noblivion.learning_runtime.PooledLedger",
+        lambda conn, pool: SimpleNamespace(release=lambda: None),
+    )
+    pool.store = Store()
+    pool.settings, pool.desired, pool.poll_seconds, pool.retry_delay = {}, 1, 5.0, 30.0
+    pool._work(0)
+    assert [r["status"] for r in results[0::2]] == ["done"] * settings.max_attempts
+    assert [r.get("error") for r in results[1::2]] == ["Provider:timeout"] * settings.max_attempts
+    # Every slow call was probed, and the probe got no answer in time.
+    assert len(endpoint.posts(max_tokens=1)) == settings.max_attempts
+    assert holds == [(0.0, None)] * len(holds)
+    assert pool._provider_hold_until == 0 and pool.provider_unreachable_since is None
+    status, attempts, error = ledger.conn.execute(
+        "SELECT status,attempts,last_error FROM learning_jobs WHERE root='a'"
+    ).fetchone()
+    assert (status, attempts, error) == ("exhausted", settings.max_attempts, "Provider:timeout")
+
+
+class TimeoutProvider(ScriptedProvider):
+    """Every call times out, or answers ``late`` seconds after its deadline."""
+
+    def __init__(self, ledger, late=0.0):
+        super().__init__(ledger, [])
+        self.late, self.probes = late, []
+
+    def complete(self, messages, *, timeout, **kwargs):
+        if self.late:
+            time.sleep(timeout + self.late)
+            return ProviderResponse(json.dumps({"version": 1, "candidates": []}), 10)
+        raise ProviderError("timeout")
+
+    def probe(self, *, timeout):
+        self.probes.append(timeout)
+        return False
+
+
+@pytest.mark.parametrize("call_timeout, probe_timeout", [(60.0, 20.0), (5.0, 5.0)])
+def test_the_probe_waits_at_most_twenty_seconds_and_never_longer_than_the_call(
+    ledger, call_timeout, probe_timeout
+):
+    assert PROBE_TIMEOUT_SECONDS == 20.0
+    capture(ledger, "a", "Keep replies short.")
+    provider = TimeoutProvider(ledger)
+    run = LearningWorker(ledger, provider, WorkerSettings(timeout_seconds=call_timeout), LIMITS)
+    assert run.run_once()["error"] == "Provider:unavailable"
+    assert provider.probes == [probe_timeout]
+
+
+def test_an_answer_after_the_deadline_counts_an_attempt_with_no_probe(ledger):
+    capture(ledger, "a", "Keep replies short.")
+    provider = TimeoutProvider(ledger, late=0.05)
+    run = LearningWorker(ledger, provider, WorkerSettings(timeout_seconds=0.05), LIMITS)
+    result = run.run_once()
+    assert (result["status"], result["error"]) == ("failed", "Provider:timeout")
+    # The server answered, late: there is nothing to probe.
+    assert provider.probes == []
+    assert rows(ledger)[0][:3] == ("pending", 1, "Provider:timeout")

@@ -187,8 +187,13 @@ UNAVAILABLE_MAX_DELAY = 900.0
 # the worker sends a one-token request to the same path and model, with at most
 # this many seconds (and never more than timeout_seconds). No answer in time, or
 # an outage error, makes the call Provider:unavailable. An answer keeps the
-# timeout, which counts an attempt. A module constant, not a setting, so the
-# configuration and the fingerprint of a started job stay the same.
+# timeout, which counts an attempt. A busy server can also leave the probe in
+# its queue past the deadline. So a probe with no answer makes the call
+# Provider:unavailable only when no call of the store got a real answer in the
+# time of one call and one probe before the probe began. If one did, the server
+# is up and busy, and the timeout counts an attempt. A module constant, not a
+# setting, so the configuration and the fingerprint of a started job stay the
+# same.
 PROBE_TIMEOUT_SECONDS = 20.0
 # Provider errors where no answer came back from the provider.
 _NO_ANSWER_ERRORS = frozenset({"Provider:unavailable", "Provider:timeout", "Provider:transport"})
@@ -1672,18 +1677,25 @@ class LearningWorker:
         and hide the timeout. The probe adds at most PROBE_TIMEOUT_SECONDS, not
         another timeout_seconds, and its few tokens fall inside the reservation
         of the call. A provider with no probe keeps the timeout as it is.
+
+        A probe with no answer is not enough: a busy server can keep it in its
+        queue. If any call of the store got a real answer in the time of one
+        call and one probe before the probe began, or during the probe, the
+        server is up, and the timeout counts an attempt.
         """
         probe = getattr(self.provider, "probe", None)
         if probe is None:
             return False
         seconds = min(PROBE_TIMEOUT_SECONDS, self.settings.timeout_seconds)
+        since = time.time() - self.settings.timeout_seconds - seconds
         # The reservation kept the lease for timeout_seconds + 30 s, and the
         # call used the timeout. Keep the lease for the probe as well.
         self.ledger.renew_lease(job["id"], job["lease_token"], seconds + 30)
         try:
-            return not probe(timeout=seconds)
+            answered = probe(timeout=seconds)
         except Exception:  # noqa: BLE001 - an unknown probe fault proves no outage
             return False
+        return not answered and not self.ledger.provider_answered_since(since)
 
     def _semantic(
         self, job: dict, decisions: list[dict], context: list[dict], state: dict
