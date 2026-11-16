@@ -17,24 +17,56 @@ from .redaction import NATURAL_SECRET_PATTERN, contains_secret, redact_at_rest
 # natural-language secret or a failed redaction still withholds the note.
 LEGACY_MARKER = re.compile(r"\*{0,3}\[?REDACTED(?:_EMAIL)?\]?\*{0,3}")
 OMISSION_MARK = "[...]"
+# NOBLIVION-258: after a key the omission mark reads as a value
+# (``TOKEN=[...]``, ``Authorization: Bearer [...]``, ``user:[...]@host``), so
+# the swapped note still failed the check and the job waited until it gave up.
+# Then each line that holds a marker, or fails the secret check on its own, is
+# replaced by this line as a whole. It is no value: no key, ``=``, ``:`` or ``@``.
+WITHHELD_LINE = "[line withheld]"
 
 
 def encoded(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def neutral_note(note):
-    """A read-only note with its legacy markers replaced, or None when still unsafe.
+def _core_passes(note):
+    core = {k: v for k, v in note.items() if k not in {"title", "evidence"}}
+    return rejection_reason(encoded(core)) is None
 
-    Only a read-only note qualifies: the model may mark it unchanged or in
-    conflict, never rewrite it, so the replaced text never becomes a stored note.
+
+def neutral_note(note):
+    """A read-only note with its legacy markers neutralised and the status reason.
+
+    None when the note is still unsafe. Only a read-only note qualifies: the
+    model may mark it unchanged or in conflict, never rewrite it, so the
+    neutral text never becomes a stored note.
+
+    First the markers are replaced by the omission mark. If that text fails,
+    the lines are withheld instead, but only when the raw statement has no
+    secret signal other than its markers: the redactor leaves it unchanged, no
+    natural-language secret and no failed redaction. The result must then pass
+    the unchanged check on the raw statement and on the encoded note.
     """
     statement = note.get("statement")
     if not note.get("read_only") or not isinstance(statement, str):
         return None
-    result = dict(note, statement=LEGACY_MARKER.sub(OMISSION_MARK, statement))
-    core = {k: v for k, v in result.items() if k not in {"title", "evidence"}}
-    return result if rejection_reason(encoded(core)) is None else None
+    swapped = dict(note, statement=LEGACY_MARKER.sub(OMISSION_MARK, statement))
+    if _core_passes(swapped):
+        return swapped, "ContextLegacyMarkerReplaced"
+    if (
+        redact_at_rest(statement) != statement
+        or re.search(NATURAL_SECRET_PATTERN, statement)
+        or "REDACTION_FAILED" in statement
+    ):
+        return None
+    withheld = "\n".join(
+        WITHHELD_LINE if LEGACY_MARKER.search(line) or contains_secret(line) else line
+        for line in statement.split("\n")
+    )
+    result = dict(note, statement=withheld)
+    if contains_secret(withheld) or not _core_passes(result):
+        return None
+    return result, "ContextLegacyLineWithheld"
 
 
 def rejection_reason(text):
@@ -66,7 +98,7 @@ def isolate_notes(notes, *, max_chars):
         reason = rejection_reason(encoded(core))
         if reason == "ContextRedactedCandidate" and (neutral := neutral_note(note)):
             # Visible in status, but the statement is available: no deferral.
-            note, reason, ancillary_reason = neutral, None, "ContextLegacyMarkerReplaced"
+            (note, ancillary_reason), reason = neutral, None
         if reason is None:
             if "title" in note and contains_secret(encoded(note["title"])):
                 ancillary_reason = rejection_reason(encoded(note["title"]))

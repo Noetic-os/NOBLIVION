@@ -338,8 +338,9 @@ def test_legacy_marker_note_is_sent_with_a_neutral_mark(marker):
         "The password is fictional-value-9 and the key is ***REDACTED***.",
         # A failed redaction.
         "***REDACTION_FAILED_TEXT_WITHHELD*** and ***REDACTED***",
-        # The redactor reads the omission mark as a value: stay withheld.
-        "The job reads GH_TOKEN=***REDACTED*** first.",
+        # The redactor reads the omission mark as a value, and the withheld
+        # line as the token of the header on the line above (NOBLIVION-258).
+        "curl -H 'Authorization: Bearer\n***REDACTED***' https://example.com\nGH_TOKEN=[REDACTED]",
     ],
 )
 def test_a_real_secret_still_withholds_the_note(statement):

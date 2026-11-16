@@ -57,16 +57,18 @@ def test_safe_statement_survives_unsafe_ancillary_fields():
 
 
 @pytest.mark.parametrize(
-    "text,reason",
+    "text,reason,read_only",
     [
-        ("The cobalt job reads GH_TOKEN=***REDACTED*** first.", "ContextRedactedCandidate"),
-        ("My password is a-fictional-value.", "ContextUnsafeCandidate"),
-        ("Safe content. " * 4000, "ContextSizeLimit"),
+        # A read-only note with this marker line is sent with the line withheld
+        # (NOBLIVION-258); a managed note with a marker stays withheld.
+        ("The cobalt job reads GH_TOKEN=***REDACTED*** first.", "ContextRedactedCandidate", False),
+        ("My password is a-fictional-value.", "ContextUnsafeCandidate", True),
+        ("Safe content. " * 4000, "ContextSizeLimit", True),
     ],
 )
-def test_isolation_preserves_explicit_dependency_without_body(text, reason):
+def test_isolation_preserves_explicit_dependency_without_body(text, reason, read_only):
     unsafe = old_note()
-    unsafe["statement"] = text
+    unsafe.update(statement=text, read_only=read_only)
     safe, excluded = isolate_notes([old_note(), unsafe], max_chars=24000)
     assert len(safe) == 1 and excluded[0]["reason"] == reason
     assert excluded[0]["note_id"] == "legacy:123" and excluded[0]["revision"] == 1
@@ -78,8 +80,8 @@ def test_isolation_preserves_explicit_dependency_without_body(text, reason):
 def test_withheld_statement_defers_without_repeating_extraction_and_can_resolve(ledger):
     record = capture(ledger, "new", "The indigo service uses port 8443.")
     note = old_note()
-    # A marker in a key=value position stays withheld (NOBLIVION-237).
-    note["statement"] = "The cobalt job reads GH_TOKEN=***REDACTED*** first."
+    # A managed note with a marker stays withheld (NOBLIVION-237, NOBLIVION-258).
+    note.update(statement="The cobalt job reads GH_TOKEN=***REDACTED*** first.", read_only=False)
     notes = [old_note(), note]
     ledger.reconciliation_context = lambda *a, **k: notes
     provider = ScriptedProvider(ledger, [candidate(record, category="fact")], "distinct")

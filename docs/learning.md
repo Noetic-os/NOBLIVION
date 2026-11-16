@@ -308,7 +308,16 @@ records of one job use at most 256 KiB. An exact-quote failure has a detail: `re
 one record per page (`unit`, `continuation`) with the cited source IDs, so a
 measurement can join it to the page spans. `context_rejections` also counts
 `ContextLegacyMarkerReplaced`: a read-only legacy note whose only finding was an
-old redaction marker, sent with the neutral mark `[...]` instead.
+old redaction marker, sent with the neutral mark `[...]` instead. After a key
+the mark reads as a value (`TOKEN=[...]`, `Authorization: Bearer [...]`,
+`user:[...]@host`). Then each line of the note that holds a marker, or fails
+the secret check on its own, is replaced by the line `[line withheld]`, and
+`context_rejections` counts `ContextLegacyLineWithheld`. This needs a raw
+statement that the redactor leaves unchanged, with no natural-language secret
+and no failed redaction, and the result must pass the secret check as raw text
+and as encoded note. Otherwise the note stays withheld as before. A job that
+waits on such a note (`ContextDependencyDeferred`) builds its context again
+when it resumes.
 
 Before enabling paused learning, verify provider readiness and budgets, capture
 cadence and retention, and one bounded capture-to-accepted-note-to-recall path.

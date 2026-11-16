@@ -25,6 +25,23 @@ All notable changes to NOBLIVION. The format follows
   batch digest it stored before its first batch call, so the new batches do
   not fail it with "semantic batches changed during a job".
 
+- A read-only legacy note whose only secret signal is an old redaction marker
+  after a key no longer makes its learning job wait until it is exhausted
+  (NOBLIVION-258). The neutral mark `[...]` reads as a value there
+  (`TOKEN=[...]`, `Authorization: Bearer [...]`, `user:[...]@host`), so the
+  note stayed withheld and every new note of the job in that scope waited on
+  it (`ContextDependencyDeferred`). When the mark fails, each line of the note
+  that holds a marker, or fails the secret check on its own, is now replaced by
+  the line `[line withheld]`. The raw statement must be one that the redactor
+  leaves unchanged, with no natural-language secret and no failed redaction,
+  and the result must pass the unchanged secret check as raw text and as
+  encoded note; otherwise the note stays withheld as before. Learning status
+  counts these notes as `ContextLegacyLineWithheld`. A note that is not
+  read-only, or holds any other secret signal, is withheld as before. A
+  waiting job builds its context again when it resumes, so no job fingerprint
+  changes; jobs that were exhausted this way can be retried with
+  `noblivion learning retry --root <root> --error ContextDependencyDeferred`.
+
 ## 0.1.34 - 2026-11-16
 
 - `noblivion_recall` can read the older version of a corrected note
