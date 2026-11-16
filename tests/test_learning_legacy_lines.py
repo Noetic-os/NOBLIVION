@@ -175,6 +175,9 @@ def test_a_note_that_is_not_read_only_stays_withheld():
         "TOKEN=[REDACTED]\nThe password is fictional-value-9 for now.",
         # A failed redaction.
         "TOKEN=[REDACTED]\n***REDACTION_FAILED_TEXT_WITHHELD***",
+        # A natural-language secret split across two lines: withholding the
+        # marker line would hide it, but the note is unsafe from the start.
+        "The password for the job\n is [REDACTED] now",
     ],
 )
 def test_an_unsafe_note_stays_withheld(statement):
