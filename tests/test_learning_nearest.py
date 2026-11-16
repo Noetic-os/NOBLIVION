@@ -409,8 +409,8 @@ class FirstEquivalent(Provider):
 
 
 class FirstRejected(Provider):
-    """The first semantic answer is rejected: invalid JSON, or a batch answer
-    with no result, which waits for a re-ask."""
+    """The first semantic answer is rejected: invalid JSON, or an answer that
+    parses but does not match its task, which waits for a re-ask."""
 
     def __init__(self, candidates, broken):
         super().__init__(candidates)
@@ -421,12 +421,28 @@ class FirstRejected(Provider):
         response = super().complete(messages, **kwargs)
         if before or not self.targets:
             return response
-        if self.broken == "format_repair":
+        if self.broken.endswith("format_repair"):
             return replace(response, content="{not json")
-        return replace(response, content=json.dumps({"version": 2, "results": []}))
+        body = json.loads(response.content)
+        if "results" in body:
+            body["results"] = []  # a batch answer with no result
+        else:
+            body["relations"][0]["target_id"] = "invented-target"
+        return replace(response, content=json.dumps(body))
 
 
-@pytest.mark.parametrize("kept", ["stage", "covered", "conflict", "format_repair", "batch_reask"])
+@pytest.mark.parametrize(
+    "kept",
+    [
+        "stage",
+        "covered",
+        "conflict",
+        "format_repair",
+        "batch_format_repair",
+        "reask",
+        "batch_reask",
+    ],
+)
 def test_an_old_job_with_an_answered_comparison_keeps_the_full_comparison(
     ledger, monkeypatch, kept
 ):
@@ -434,10 +450,10 @@ def test_an_old_job_with_an_answered_comparison_keeps_the_full_comparison(
     refresh, or a rejected answer that waits for its format retry or re-ask."""
     seed_notes(ledger, 20)
     lines = [f"Lesson {word} holds for every build." for word in "abc"]
-    contract = 2 if kept == "batch_reask" else 1
+    contract = 2 if kept.startswith("batch_") else 1
     if kept == "conflict":
         provider = FirstEquivalent(new_job(ledger, lines))
-    elif kept in ("format_repair", "batch_reask"):
+    elif kept.endswith(("format_repair", "reask")):
         provider = FirstRejected(new_job(ledger, lines), kept)
     else:
         provider = Provider(new_job(ledger, lines))
@@ -447,6 +463,15 @@ def test_an_old_job_with_an_answered_comparison_keeps_the_full_comparison(
     if kept == "format_repair":
         assert before["format_repair"]["step"] == "semantic:0"
         assert before["semantic"]["next_task"] == 0
+    elif kept == "batch_format_repair":
+        # The step of a contract 2 batch, not "semantic:<n>".
+        assert before["format_repair"]["step"] == "semantic-batch:0"
+        assert before["semantic"].get("next_batch", 0) == 0
+        assert not before["semantic"].get("batch_reasks")
+    elif kept == "reask":
+        # Only the re-ask of task 0 holds the stage.
+        assert before["semantic"]["reasks"]["0"]["failures"] == 1
+        assert before["semantic"]["next_task"] == 0 and "format_repair" not in before
     elif kept == "batch_reask":
         assert before["semantic"]["batch_reasks"]["0"]["failures"] == 1
         assert before["semantic"].get("next_batch", 0) == 0

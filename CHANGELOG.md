@@ -17,8 +17,9 @@ All notable changes to NOBLIVION. The format follows
   answered comparison keeps the full comparison; an answer that a refresh kept
   (in `covered`, or a candidate a comparison turned into a conflict or left
   unvalidated) counts as answered, and so does a rejected answer that waits for
-  its re-ask or format retry, because these name a task or batch by its index. The job keeps its contract, windows, stored
-  extraction answers and frozen fingerprint. The stage records the switch in
+  its re-ask or format retry, because these name a task or batch by its index.
+  The job keeps its contract, windows, stored extraction answers and frozen
+  fingerprint. The stage records the switch in
   `nearest_upgrade`, and a refresh after a note-set change selects again
   instead of returning to the full comparison. A contract 2 stage drops the
   batch digest it stored before its first batch call, so the new batches do

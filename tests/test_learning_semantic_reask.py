@@ -526,6 +526,7 @@ def test_a_candidate_with_more_than_16_targets_is_not_stored_if_one_task_fails(
 ):
     # The full comparison of contract 1, which a started job with an answer
     # keeps. With no answer it would take the nearest 16 notes (NOBLIVION-257).
+    # The job runs in one run_once, so no setup phase exists to limit this to.
     monkeypatch.setattr(learning_worker.LearningWorker, "_bound_stage", lambda *args: None)
     seed_many(ledger, 17)
     lessons = two_lessons(ledger)

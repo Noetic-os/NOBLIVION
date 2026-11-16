@@ -284,14 +284,15 @@ def _stage_started(stage: dict) -> bool:
 def _stage_answered(stage: dict, decisions: list[dict], state: dict) -> bool:
     """True when a semantic stage holds an answer that still counts (NOBLIVION-257).
 
-    It counts the progress of the current stage (_stage_started), a rejected
-    batch answer that waits for its re-ask (``batch_reasks``), a pending format
-    retry of a semantic call, and what a refresh kept from an earlier stage
-    (NOBLIVION-250): the comparisons in ``covered``, and each add that a
-    comparison turned into a conflict or left unvalidated. A re-ask and a format
-    retry name a task or batch by its index, so they bind the stage to its tasks.
+    The caller checks _stage_started first, so this covers a stage that is not
+    started: a rejected batch answer that waits for its re-ask
+    (``batch_reasks``), a pending format retry of a semantic call, and what a
+    refresh kept from an earlier stage (NOBLIVION-250): the comparisons in
+    ``covered``, and each add that a comparison turned into a conflict or left
+    unvalidated. A re-ask and a format retry name a task or batch by its index,
+    so they bind the stage to its tasks.
     """
-    if _stage_started(stage) or stage.get("covered") or stage.get("batch_reasks"):
+    if stage.get("covered") or stage.get("batch_reasks"):
         return True
     repair = state.get("format_repair")
     if isinstance(repair, dict) and str(repair.get("step", "")).startswith("semantic"):
@@ -1996,6 +1997,9 @@ class LearningWorker:
             self.ledger.checkpoint(job["id"], job["lease_token"], state)
             return
         if _stage_started(stage):
+            # Reachable: contract 2 batch packing is not monotone, so no selection
+            # may fit 512 batches where the full one does; a refreshed stage then
+            # runs the full one.
             if stage.get("nearest_upgrade"):
                 raise ValidationError("invalid durable semantic selection")
             return
