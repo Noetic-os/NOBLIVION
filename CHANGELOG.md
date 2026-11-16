@@ -8,6 +8,16 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- A provider outage no longer exhausts learning jobs (NOBLIVION-253). A
+  refused, reset or unreachable connection and a 429 or 5xx answer are now
+  `Provider:unavailable`. The job waits with a delay that grows from
+  `retry_delay` to 15 minutes and keeps its attempt, for up to 200 such waits.
+  The worker loops pause together while the provider is down. A 4xx answer
+  still counts an attempt as `Provider:transport`. `noblivion learning status`
+  shows `provider` as `unreachable` with the waiting job count, and
+  `noblivion learning retry --error <code>` retries every exhausted job of a
+  scope with that last error.
+
 ## 0.1.31 - 2026-11-16
 
 - New learning jobs need fewer model calls (NOBLIVION-241). They start under
