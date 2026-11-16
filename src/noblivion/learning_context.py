@@ -44,8 +44,10 @@ def neutral_note(note):
     First the markers are replaced by the omission mark. If that text fails,
     the lines are withheld instead, but only when the raw statement has no
     secret signal other than its markers: the redactor leaves it unchanged, no
-    natural-language secret and no failed redaction. The result must then pass
-    the unchanged check on the raw statement and on the encoded note.
+    natural-language secret, no failed redaction and no "private key" in any
+    case. The result must then pass the unchanged check on the raw statement
+    and on the encoded note, and so must the kept lines without the
+    placeholder lines.
     """
     statement = note.get("statement")
     if not note.get("read_only") or not isinstance(statement, str):
@@ -57,16 +59,33 @@ def neutral_note(note):
         redact_at_rest(statement) != statement
         or re.search(NATURAL_SECRET_PATTERN, statement)
         or "REDACTION_FAILED" in statement
+        # The body of a key block has no marker and passes line by line.
+        or "private key" in statement.lower()
     ):
         return None
-    withheld = "\n".join(
-        WITHHELD_LINE if LEGACY_MARKER.search(line) or contains_secret(line) else line
-        for line in statement.split("\n")
-    )
+    lines = [(line, _line_withheld(line)) for line in statement.split("\n")]
+    withheld = "\n".join(WITHHELD_LINE if held else line for line, held in lines)
+    # A placeholder line must not hide a key and its value on two kept lines
+    # (``Bearer`` and a token, ``Basic`` and a credential): the redactor reads
+    # the placeholder as no value, so the kept lines are checked without it.
+    kept = "\n".join(line for line, held in lines if not held)
     result = dict(note, statement=withheld)
-    if contains_secret(withheld) or not _core_passes(result):
+    if contains_secret(withheld) or contains_secret(kept) or not _core_passes(result):
         return None
     return result, "ContextLegacyLineWithheld"
+
+
+def _line_withheld(line):
+    """True when a line holds a marker or fails the secret check.
+
+    Lines are cut at "\\n" only. Any other line break (``\\r``, U+2028,
+    U+0085) stays inside the line, so a marker withholds the whole run and a
+    kept line is raw text. Each part between such breaks is checked on its
+    own too: a rule that reads a line start (``pass: value``) sees "\\n" only.
+    """
+    return bool(LEGACY_MARKER.search(line)) or any(
+        contains_secret(part) for part in [line, *line.splitlines()]
+    )
 
 
 def rejection_reason(text):

@@ -8,6 +8,7 @@ with any other secret signal stays withheld, as before.
 """
 
 import json
+import re
 
 import pytest
 
@@ -24,7 +25,7 @@ from noblivion.learning_context import (
     rejection_reason,
 )
 from noblivion.learning_worker import ProviderError
-from noblivion.redaction import contains_secret
+from noblivion.redaction import contains_secret, redact_at_rest
 from test_learning_review_fixes import ScriptedProvider, candidate, capture, worker
 
 FAKE_GITHUB_TOKEN = "ghp_" + "Ab3" * 12
@@ -205,6 +206,108 @@ def test_a_raw_secret_signal_besides_the_markers_keeps_the_note_withheld(stateme
     # neutral_note is called directly: the encoded check of isolate_notes may
     # miss these shapes, or it already rejects the note (failed redaction).
     assert neutral_note(legacy(statement)) is None
+
+
+# Synthetic base64 that the redactor masks after a BEGIN line only. The BEGIN
+# lines are split so that no secret scanner reads this file as a key.
+BASE64_LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7Zq8Xy"
+BEGIN_LINE = "-----BEGIN PRIVATE " + "KEY-----"
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        # The marker line between the BEGIN line and the key text cuts the
+        # block: the redactor masks nothing in the raw text. The guard on
+        # "private key" and the check of the kept lines each withhold it.
+        f"{BEGIN_LINE}\n[REDACTED]\n{BASE64_LINE}\n{BASE64_LINE}\nTOKEN=[REDACTED]",
+        # The BEGIN line holds the marker, so only the key text is kept, and
+        # no line of it reads as a key: only the guard withholds it.
+        f"{BEGIN_LINE} TOKEN=[REDACTED]\n{BASE64_LINE}\n{BASE64_LINE}",
+        # The guard reads the words in any case.
+        f"{BEGIN_LINE.title()} TOKEN=[REDACTED]\n{BASE64_LINE}\n{BASE64_LINE}",
+    ],
+)
+def test_a_key_block_stays_withheld(statement):
+    note = legacy(statement)
+    assert rejection_reason(encoded(core(note))) == "ContextRedactedCandidate"
+    assert neutral_note(note) is None
+    safe, excluded = isolate_notes([note], max_chars=24000)
+    assert safe == [] and excluded[0]["reason"] == "ContextRedactedCandidate"
+    assert excluded[0]["statement_available"] is False
+    assert dependent_decisions([{"action": "add", "scope": "project"}], excluded) == [0]
+    assert BASE64_LINE not in json.dumps([safe, excluded])
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "Basic\n[REDACTED]\ndXNlcjpwYXNzd29yZA==\nTOKEN=[REDACTED]",
+        "Bearer\n[REDACTED]\nzQ8vLm2Pw7RtXk4NabcdEFGH12\nTOKEN=[REDACTED]",
+    ],
+)
+def test_a_placeholder_line_does_not_hide_a_key_and_its_value(statement):
+    note = legacy(statement)
+    assert rejection_reason(encoded(core(note))) == "ContextRedactedCandidate"
+    # Precondition: the text with the placeholder passes every other check,
+    # because the redactor reads the placeholder as no value. Only the kept
+    # lines, joined without it, show the key and its value.
+    lines = statement.split("\n")
+    with_placeholder = "\n".join(WITHHELD_LINE if "REDACTED" in line else line for line in lines)
+    assert not contains_secret(with_placeholder)
+    assert rejection_reason(encoded(core(dict(note, statement=with_placeholder)))) is None
+    assert contains_secret("\n".join(line for line in lines if "REDACTED" not in line))
+    assert neutral_note(note) is None
+    safe, excluded = isolate_notes([note], max_chars=24000)
+    assert safe == [] and excluded[0]["statement_available"] is False
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected"),
+    [
+        # Lines are cut at "\n" only. The "\r" of a withheld line goes with
+        # it; a kept line keeps its own.
+        (
+            "Service on 8443.\r\nTOKEN=[REDACTED]\r\nRestart.",
+            f"Service on 8443.\r\n{WITHHELD_LINE}\nRestart.",
+        ),
+        # Any other line break stays inside the line, so the marker withholds
+        # the whole run: no part of it is kept because of how it was cut.
+        ("Service on 8443. TOKEN=[REDACTED] Restart.", WITHHELD_LINE),
+        ("Service on 8443.\u0085TOKEN=[REDACTED]\u0085Restart.", WITHHELD_LINE),
+        (
+            "Service on 8443.\rTOKEN=[REDACTED]\rRestart.\nCheck the logs.",
+            f"{WITHHELD_LINE}\nCheck the logs.",
+        ),
+    ],
+)
+def test_lines_are_cut_at_the_newline_only(statement, expected):
+    result = neutral_note(legacy(statement))
+    assert result is not None
+    assert result[0]["statement"] == expected
+    assert result[1] == "ContextLegacyLineWithheld"
+
+
+@pytest.mark.parametrize("line_break", ["\r", " ", "\u0085"])
+def test_a_part_after_another_line_break_is_checked_as_a_line(line_break):
+    statement = f"Deploy notes.{line_break}  pass: Zq8hunter2example\nTOKEN=[REDACTED]"
+    # Precondition: the redactor reads a line start after "\n" only, so the
+    # raw statement and its first line pass; the part after the break fails.
+    assert redact_at_rest(statement) == statement
+    assert not contains_secret(statement.split("\n")[0])
+    assert contains_secret("  pass: Zq8hunter2example")
+    result = neutral_note(legacy(statement))
+    assert result is not None
+    assert result[0]["statement"] == f"{WITHHELD_LINE}\n{WITHHELD_LINE}"
+    assert "Zq8hunter2example" not in json.dumps(result)
+
+
+def test_the_placeholder_reads_as_no_value():
+    # After a key the placeholder must not be read as a value, nor be one.
+    assert not set(WITHHELD_LINE) & set("=:@")
+    assert not re.search(r"(?i)token|secret|pass|key|auth|bearer|basic", WITHHELD_LINE)
+    assert WITHHELD_LINE.splitlines() == [WITHHELD_LINE]
+    assert not contains_secret(WITHHELD_LINE)
 
 
 def test_a_line_that_fails_on_its_own_is_withheld(monkeypatch):
