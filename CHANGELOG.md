@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.34 - 2026-11-16
+
 - `noblivion_recall` can read the older version of a corrected note
   (NOBLIVION-189). `history: true` with one `fetch_id` of a current note
   returns the archived notes that its `supersedes:` line replaced. The fetch
