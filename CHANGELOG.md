@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.32 - 2026-11-16
+
 - A provider outage no longer exhausts learning jobs (NOBLIVION-253). A
   refused, reset or unreachable connection and a 429, 502, 503 or 504 answer
   are now `Provider:unavailable`. The job waits with a delay that grows from
