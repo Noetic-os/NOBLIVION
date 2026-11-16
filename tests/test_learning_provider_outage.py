@@ -1,15 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""A provider outage does not use up the attempts of learning jobs (NOBLIVION-253)."""
+"""A provider outage does not use up the attempts of learning jobs.
+
+NOBLIVION-253: refused connections and outage status codes. NOBLIVION-255: a
+provider that accepts the connection and never answers.
+"""
 
 import contextlib
 import errno
 import http.client
+import http.server
 import io
 import json
 import socket
 import ssl
+import threading
 import time
 import urllib.error
+import urllib.request
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -418,3 +425,257 @@ def test_retry_by_error_retries_only_matching_exhausted_jobs_of_the_scope(ledger
     args.job_id = "x"
     with pytest.raises(LearningError):
         learning_cli._run(ledger, args)
+
+
+# NOBLIVION-255: a provider that accepts the connection and never answers.
+
+
+class FakeEndpoint(http.server.ThreadingHTTPServer):
+    """A loopback chat completions endpoint with a switchable fault mode.
+
+    mode "hung": every request waits and never gets an answer.
+    mode "probe": a one-token request gets an answer; any other request hangs.
+    mode "up": every request gets a valid empty extraction answer.
+    With ``health`` set, GET /health and GET /v1/models answer in every mode.
+    """
+
+    daemon_threads = True
+    block_on_close = False
+
+    def __init__(self):
+        super().__init__(("127.0.0.1", 0), FakeHandler)
+        self.mode, self.health, self.seen = "hung", False, []
+        self.release = threading.Event()
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.server_address[1]}"
+
+    def posts(self, max_tokens=None):
+        return [s for s in self.seen if s[0] == "POST" and s[2] == max_tokens]
+
+
+class FakeHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def answer(self, payload):
+        data = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def hang(self):
+        self.server.release.wait(30)
+
+    def do_GET(self):
+        self.server.seen.append(("GET", self.path, None))
+        if self.server.health and self.path in {"/health", "/v1/models"}:
+            self.answer({"status": "ok", "data": [{"id": "sample"}]})
+        else:
+            self.hang()
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.server.seen.append(("POST", self.path, body.get("max_tokens")))
+        mode = self.server.mode
+        if self.path != "/v1/chat/completions" or mode == "hung":
+            return self.hang()
+        if mode == "probe" and body["max_tokens"] == 1:
+            reply = {"finish_reason": "length", "message": {"content": "Sure"}}
+            return self.answer({"choices": [reply], "usage": {"total_tokens": 9}})
+        if mode == "probe":
+            return self.hang()
+        content = json.dumps({"version": 1, "candidates": []})
+        reply = {"finish_reason": "stop", "message": {"content": content}}
+        self.answer({"choices": [reply], "usage": {"total_tokens": 100}})
+
+
+@pytest.fixture
+def endpoint():
+    server = FakeEndpoint()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server
+    server.release.set()
+    server.shutdown()
+    server.server_close()
+
+
+def local_provider(endpoint):
+    return OpenAICompatibleProvider(endpoint.url, "sample", local=True, cost_per_million_tokens=0)
+
+
+# A short real deadline keeps the test fast; the job delays are simulated.
+SHORT = 0.2
+
+
+def run_hung_rounds(ledger, endpoint, monkeypatch, roots, rounds):
+    """Run every job once per round; return the job delays of each round."""
+    monkeypatch.setattr(module, "PROBE_TIMEOUT_SECONDS", SHORT)
+    run = LearningWorker(
+        ledger, local_provider(endpoint), WorkerSettings(timeout_seconds=SHORT), LIMITS
+    )
+    delays = []
+    for _ in range(rounds):
+        ready(ledger)
+        before = time.time()
+        for _ in roots:
+            result = run.run_once()
+            assert result["status"] == "deferred", result
+            assert result["error"] == "Provider:unavailable"
+        delays.append(min(r[4] for r in rows(ledger)) - before)
+    return delays
+
+
+def test_a_hung_provider_for_thirty_minutes_exhausts_no_job(ledger, endpoint, monkeypatch):
+    roots = ("a", "b")
+    for root in roots:
+        capture(ledger, root, f"Keep replies short in scope {root}.", root=root)
+    settings = WorkerSettings()
+    # 30 s, 60 s, ... 900 s: six rounds are more than 30 minutes of outage, and
+    # more rounds than max_attempts, so a timeout that counted would exhaust.
+    delays = run_hung_rounds(ledger, endpoint, monkeypatch, roots, 6)
+    assert sum(delays) >= 1800 - 10 and len(delays) > settings.max_attempts
+    for status, attempts, error, progress, _ in rows(ledger):
+        assert (status, attempts, error) == ("pending", 0, "Provider:unavailable")
+        assert progress["unavailable_deferrals"] == 6 and "unavailable_since" in progress
+        assert progress["provider_metrics"]["reasons"] == {"unavailable": 6}
+    # Every timed-out call got one probe on the completions path.
+    assert len(endpoint.posts(max_tokens=1)) == 6 * len(roots)
+    assert not [s for s in endpoint.seen if s[0] == "GET"]
+    # The probe runs inside the reservation of the call: one budget row per
+    # call, and the measured time holds the call and the probe, not two timeouts.
+    budget = ledger.conn.execute("SELECT seconds FROM learning_budget").fetchall()
+    assert len(budget) == 6 * len(roots)
+    assert all(2 * SHORT * 0.9 <= row[0] < SHORT + 1.5 for row in budget), budget
+    endpoint.mode = "up"
+    endpoint.release.set()
+    run = LearningWorker(ledger, local_provider(endpoint), WorkerSettings(), LIMITS)
+    ready(ledger)
+    assert [run.run_once()["status"] for _ in roots] == ["done", "done"]
+    assert run.run_once()["status"] == "idle"
+
+
+def test_health_and_models_answering_do_not_hide_a_hung_completions_path(
+    ledger, endpoint, monkeypatch
+):
+    endpoint.health = True
+    for path in ("/health", "/v1/models"):
+        with urllib.request.urlopen(endpoint.url + path, timeout=5) as response:
+            assert response.status == 200
+    capture(ledger, "a", "Keep replies short.")
+    settings = WorkerSettings()
+    run_hung_rounds(ledger, endpoint, monkeypatch, ("a",), settings.max_attempts + 1)
+    assert rows(ledger)[0][:3] == ("pending", 0, "Provider:unavailable")
+    probes = endpoint.posts(max_tokens=1)
+    assert probes == [("POST", "/v1/chat/completions", 1)] * (settings.max_attempts + 1)
+
+
+def test_a_timeout_on_a_healthy_provider_still_counts_attempts(ledger, endpoint, monkeypatch):
+    endpoint.mode, endpoint.health = "probe", True
+    capture(ledger, "a", "Keep replies short.")
+    settings = WorkerSettings(timeout_seconds=1.0)
+    run = LearningWorker(ledger, local_provider(endpoint), settings, LIMITS)
+    for _ in range(settings.max_attempts):
+        ready(ledger)
+        result = run.run_once()
+        assert (result["status"], result["error"]) == ("failed", "Provider:timeout")
+    ready(ledger)
+    assert run.run_once()["status"] == "idle"
+    status, attempts, error, progress, _ = rows(ledger)[0]
+    assert (status, attempts, error) == ("exhausted", settings.max_attempts, "Provider:timeout")
+    assert "unavailable_deferrals" not in progress
+    # The probe got its answer each time: the server is up, the request is at fault.
+    assert len(endpoint.posts(max_tokens=1)) == settings.max_attempts
+
+
+def test_a_hung_provider_holds_the_pool_until_it_answers(ledger, endpoint, monkeypatch):
+    monkeypatch.setattr(module, "PROBE_TIMEOUT_SECONDS", SHORT)
+    clock = [1000.0]
+
+    class PoolTime:
+        """Fake only the clock of the pool: the provider deadline stays real."""
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+        def monotonic(self):
+            return clock[0]
+
+    monkeypatch.setattr("noblivion.learning_runtime.time", PoolTime())
+    stop = FakeStop(clock)
+    capture(ledger, "a", "Keep replies short.")
+    worker = LearningWorker(
+        ledger, local_provider(endpoint), WorkerSettings(timeout_seconds=SHORT), LIMITS
+    )
+    pool = LearningPool(SimpleNamespace(_jobs_stop=stop))
+    seen = []
+
+    results = []
+
+    def run_once(*args, **kwargs):
+        seen.append((pool._provider_hold_until, pool.provider_unreachable_since))
+        if len(seen) == 2:
+            # The hold of the first failure is over; the provider is back.
+            endpoint.mode = "up"
+            endpoint.release.set()
+            worker.settings = WorkerSettings()
+            stop.set()
+        ready(ledger)
+        results.append(worker.run_once())
+        return results[-1]
+
+    class Store:
+        @contextlib.contextmanager
+        def connection(self):
+            yield object()
+
+    monkeypatch.setattr("noblivion.learning_runtime.run_once", run_once)
+    monkeypatch.setattr(
+        "noblivion.learning_runtime.PooledLedger",
+        lambda conn, pool: SimpleNamespace(release=lambda: None),
+    )
+    pool.store = Store()
+    pool.settings, pool.desired, pool.poll_seconds, pool.retry_delay = {}, 1, 5.0, 30.0
+    pool._work(0)
+    # The hung call held every loop for retry_delay; the next call came after it.
+    assert [r.get("error") for r in results] == ["Provider:unavailable", None]
+    assert seen[0] == (0.0, None)
+    assert seen[1][0] == 1030.0 and seen[1][1] is not None
+    assert stop.waits == [30]
+    assert rows(ledger)[0][0] == "done"
+    assert pool._provider_hold_until == 0 and pool.provider_unreachable_since is None
+
+
+@pytest.mark.parametrize(
+    "exc, answered",
+    [
+        (TimeoutError(), False),
+        (urllib.error.URLError(TimeoutError()), False),
+        (http_error(503), False),
+        (http_error(429), False),
+        (urllib.error.URLError(ConnectionRefusedError()), False),
+        # Any answer shows that the server is up, also an error status.
+        (http_error(500), True),
+        (http_error(400), True),
+        (None, True),
+    ],
+)
+def test_the_probe_is_false_only_when_the_completions_path_does_not_answer(exc, answered):
+    provider = local_provider(SimpleNamespace(url="http://127.0.0.1:1234"))
+    sent = []
+
+    def open_(request, timeout):
+        sent.append((request.get_method(), request.full_url, json.loads(request.data), timeout))
+        if exc is not None:
+            raise exc
+        return contextlib.nullcontext(io.BytesIO(b"{}"))
+
+    provider.opener = SimpleNamespace(open=open_)
+    assert provider.probe(timeout=7) is answered
+    method, url, body, timeout = sent[0]
+    assert (method, url, timeout) == ("POST", "http://127.0.0.1:1234/v1/chat/completions", 7)
+    assert body["max_tokens"] == 1 and body["model"] == "sample"

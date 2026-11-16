@@ -181,6 +181,15 @@ MAX_RETURNED_DEFERRALS = 24
 MAX_UNAVAILABLE_DEFERRALS = 200
 UNAVAILABLE_COUNTER = "unavailable_deferrals"
 UNAVAILABLE_MAX_DELAY = 900.0
+# NOBLIVION-255: a hung provider accepts the connection and never answers, so
+# each call ends as a timeout. A timeout can also be the fault of the job (a very
+# large request on a healthy server). So after a call timed out with no answer,
+# the worker sends a one-token request to the same path and model, with at most
+# this many seconds (and never more than timeout_seconds). No answer in time, or
+# an outage error, makes the call Provider:unavailable. An answer keeps the
+# timeout, which counts an attempt. A module constant, not a setting, so the
+# configuration and the fingerprint of a started job stay the same.
+PROBE_TIMEOUT_SECONDS = 20.0
 # Provider errors where no answer came back from the provider.
 _NO_ANSWER_ERRORS = frozenset({"Provider:unavailable", "Provider:timeout", "Provider:transport"})
 
@@ -709,7 +718,7 @@ class OpenAICompatibleProvider:
     def complete(
         self, messages: list[dict], *, max_tokens: int, timeout: float, response_schema=None
     ) -> ProviderResponse:
-        body = json.dumps(
+        raw = self._post(
             {
                 "model": self.model,
                 "messages": messages,
@@ -728,8 +737,59 @@ class OpenAICompatibleProvider:
                     else {"type": "json_object"}
                 ),
                 "reasoning_effort": self.reasoning_effort,
-            }
-        ).encode()
+            },
+            timeout,
+        )
+        try:
+            choice = raw["choices"][0]
+            finish = choice["finish_reason"]
+            usage = raw.get("usage", {})
+            tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+            invalid_usage = not isinstance(usage, dict) or (
+                tokens is not None and (type(tokens) is not int or tokens < 0)
+            )
+            if finish == "length":
+                raise ProviderError("length", tokens=None if invalid_usage else tokens)
+            if invalid_usage:
+                raise ProviderError("invalid")
+            if finish != "stop":
+                raise ProviderError("incomplete", tokens=tokens)
+            content = choice["message"]["content"]
+            if not isinstance(content, str):
+                raise ProviderError("invalid", tokens=tokens)
+            if not content.strip():
+                raise ProviderError("empty", tokens=tokens)
+            return ProviderResponse(content, tokens)
+        except (KeyError, IndexError, TypeError, AttributeError) as exc:
+            raise ProviderError("invalid") from exc
+
+    def probe(self, *, timeout: float) -> bool:
+        """True when the chat completions path answers a one-token request.
+
+        NOBLIVION-255: a call that timed out asks this before the job loses an
+        attempt. It uses the same path and model as a real call, not GET /health
+        or /v1/models: a server can answer those and still hang on completions.
+        Any answer counts, also an error status or a reply cut at one token. Only
+        no answer in time or an outage error (see _endpoint_unavailable) is False.
+        """
+        try:
+            self._post(
+                {
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": "Reply with one word."}],
+                    "temperature": 0,
+                    "max_tokens": 1,
+                    "reasoning_effort": self.reasoning_effort,
+                },
+                timeout,
+            )
+        except ProviderError as exc:
+            return exc.reason not in {"timeout", "unavailable"}
+        return True
+
+    def _post(self, payload: dict, timeout: float):
+        """POST one request to the completions path; return the parsed JSON body."""
+        body = json.dumps(payload).encode()
         request = urllib.request.Request(
             self.endpoint, data=body, headers={"Content-Type": "application/json"}, method="POST"
         )
@@ -777,28 +837,7 @@ class OpenAICompatibleProvider:
         finally:
             for conn in getattr(request, "learning_connections", ()):
                 conn.cancel_deadline()
-        try:
-            choice = raw["choices"][0]
-            finish = choice["finish_reason"]
-            usage = raw.get("usage", {})
-            tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
-            invalid_usage = not isinstance(usage, dict) or (
-                tokens is not None and (type(tokens) is not int or tokens < 0)
-            )
-            if finish == "length":
-                raise ProviderError("length", tokens=None if invalid_usage else tokens)
-            if invalid_usage:
-                raise ProviderError("invalid")
-            if finish != "stop":
-                raise ProviderError("incomplete", tokens=tokens)
-            content = choice["message"]["content"]
-            if not isinstance(content, str):
-                raise ProviderError("invalid", tokens=tokens)
-            if not content.strip():
-                raise ProviderError("empty", tokens=tokens)
-            return ProviderResponse(content, tokens)
-        except (KeyError, IndexError, TypeError, AttributeError) as exc:
-            raise ProviderError("invalid") from exc
+        return raw
 
 
 def batches_digest(batches: list[dict]) -> str:
@@ -1590,11 +1629,15 @@ class LearningWorker:
             failure = exc
             if exc.reason == "length":
                 state["output_limit_hold"] = call_key
+            if exc.reason == "timeout" and response is None and self._provider_hangs(job):
+                failure = ProviderError("unavailable")
+                raise failure from exc
             raise
         except Exception:
             failure = ProviderError("transport")
             raise failure from None
         finally:
+            # The elapsed time includes a probe after a timeout (NOBLIVION-255).
             elapsed = max(0.0, time.monotonic() - started)
             usage = response.tokens if response is not None else getattr(failure, "tokens", None)
             metrics = state.setdefault(
@@ -1618,6 +1661,29 @@ class LearningWorker:
                 uncertain=failure is not None and usage is None,
             )
         return response
+
+    def _provider_hangs(self, job: dict) -> bool:
+        """True when a one-token probe gets no answer after a call timed out.
+
+        NOBLIVION-255. The probe runs inside the reservation of the call that
+        timed out, so it holds the same call slot and its time is measured into
+        that settlement; settle keeps the larger of the reserved and the measured
+        values. A second reservation could fail on the budget or on a call slot
+        and hide the timeout. The probe adds at most PROBE_TIMEOUT_SECONDS, not
+        another timeout_seconds, and its few tokens fall inside the reservation
+        of the call. A provider with no probe keeps the timeout as it is.
+        """
+        probe = getattr(self.provider, "probe", None)
+        if probe is None:
+            return False
+        seconds = min(PROBE_TIMEOUT_SECONDS, self.settings.timeout_seconds)
+        # The reservation kept the lease for timeout_seconds + 30 s, and the
+        # call used the timeout. Keep the lease for the probe as well.
+        self.ledger.renew_lease(job["id"], job["lease_token"], seconds + 30)
+        try:
+            return not probe(timeout=seconds)
+        except Exception:  # noqa: BLE001 - an unknown probe fault proves no outage
+            return False
 
     def _semantic(
         self, job: dict, decisions: list[dict], context: list[dict], state: dict

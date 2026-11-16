@@ -8,6 +8,21 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- A hung provider no longer exhausts learning jobs (NOBLIVION-255). A provider
+  that accepts the connection and never answers ended each call as
+  `Provider:timeout`, which counts an attempt, so a job ended after about
+  15 minutes and the worker loops did not pause. Now a call that times out with
+  no answer is followed by a one-token request to the same chat completions
+  path and model, with a deadline of at most 20 seconds. If that request gets
+  no answer either, or meets an outage error, the call is
+  `Provider:unavailable`: the job waits and keeps its attempt, and the worker
+  loops pause, as for a refused connection. If it gets an answer, the server is
+  up and the request itself is too slow, so the timeout still counts an
+  attempt. The check does not use `GET /health` or `GET /v1/models`, because a
+  server can answer those and still hang on completions. The check runs inside
+  the budget reservation of the call that timed out, and its time counts in
+  that call's measured seconds.
+
 ## 0.1.32 - 2026-11-16
 
 - A provider outage no longer exhausts learning jobs (NOBLIVION-253). A
