@@ -8,6 +8,7 @@ are recovered conservatively by the durable ledger.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import http.client
 import json
@@ -136,7 +137,15 @@ class ProviderError(RuntimeError):
     """Allowlisted diagnosis; never retain an HTTP body or exception message."""
 
     def __init__(self, reason="transport", *, tokens=None):
-        allowed = {"incomplete", "length", "empty", "timeout", "transport", "invalid"}
+        allowed = {
+            "incomplete",
+            "length",
+            "empty",
+            "timeout",
+            "transport",
+            "invalid",
+            "unavailable",
+        }
         self.reason = reason if reason in allowed else "transport"
         self.tokens = tokens if type(tokens) is int and tokens >= 0 else None
         super().__init__("provider output incomplete" if reason == "length" else self.reason)
@@ -163,6 +172,15 @@ PIECE_STRIDE = 64
 # day. Past it each deferral counts an attempt, so the job ends after at most
 # max_attempts more runs. An explicit retry renews the count.
 MAX_RETURNED_DEFERRALS = 24
+# NOBLIVION-253: a provider that refuses the connection or answers 429 or 5xx
+# is down; that is not a fault of the job. Such a deferral gives the attempt
+# back with its own count, so an outage does not spend the count above. The
+# delay grows from retry_delay to UNAVAILABLE_MAX_DELAY. 200 deferrals cover
+# about two days at the longest delay; past them each deferral counts an
+# attempt, so a provider that never returns still ends the job.
+MAX_UNAVAILABLE_DEFERRALS = 200
+UNAVAILABLE_COUNTER = "unavailable_deferrals"
+UNAVAILABLE_MAX_DELAY = 900.0
 # NOBLIVION-240: a semantic answer that parses but does not match its task (for
 # example "invalid semantic target") is asked again up to this many times, with
 # a fixed corrective note. Past the bound the one affected candidate is not
@@ -545,6 +563,27 @@ class ProviderResponse:
     tokens: int | None = None
 
 
+_DOWN_ERRNOS = frozenset(
+    {errno.ECONNREFUSED, errno.EHOSTUNREACH, errno.ENETUNREACH, errno.EHOSTDOWN, errno.ENETDOWN}
+)
+
+
+def _endpoint_unavailable(exc: BaseException) -> bool:
+    """True when the endpoint is down, not when it rejected this request.
+
+    A 429 or 5xx answer, a refused, reset or unreachable connection, and a
+    name that does not resolve are outages (NOBLIVION-253). A 4xx answer and an
+    unexpected protocol error stay "transport", so they still count attempts.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code == 429 or 500 <= exc.code <= 599
+    if isinstance(exc, urllib.error.URLError):
+        exc = exc.reason
+    if isinstance(exc, (ConnectionError, socket.gaierror)):
+        return True
+    return isinstance(exc, OSError) and exc.errno in _DOWN_ERRNOS
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise ProviderError("transport")
@@ -708,6 +747,8 @@ class OpenAICompatibleProvider:
                 if timed_out
                 else "invalid"
                 if isinstance(exc, ValueError)
+                else "unavailable"
+                if _endpoint_unavailable(exc)
                 else "transport"
             )
             raise ProviderError(reason) from exc
@@ -922,6 +963,8 @@ class LearningWorker:
                 # for a semantic or derivation call. Its progress is durable:
                 # _call checkpoints the output-limit hold before it raises.
                 return self._bounded_defer(ident, lease, reason)
+            if exc.reason == "unavailable":
+                return self._unavailable_defer(ident, lease, state, reason)
             self.ledger.fail(
                 ident,
                 lease,
@@ -984,6 +1027,28 @@ class LearningWorker:
             error=error,
             cap=MAX_RETURNED_DEFERRALS,
             max_attempts=self.settings.max_attempts,
+        )
+        if outcome == "deferred":
+            return {"status": "deferred", "job_id": ident, "error": error}
+        return {"status": "failed", "job_id": ident, "error": error, "permanent": False}
+
+    def _unavailable_defer(self, ident, lease, state, error):
+        """The provider is down: wait with a growing delay, keep the attempt.
+
+        NOBLIVION-253. The count is separate from returned_deferrals, so an
+        outage does not use up the deferrals of a dependency or length hold.
+        """
+        count = state.get(UNAVAILABLE_COUNTER, 0)
+        count = count if type(count) is int and count >= 0 else 0
+        delay = min(self.settings.retry_delay * 2 ** min(count, 16), UNAVAILABLE_MAX_DELAY)
+        outcome = self.ledger.defer(
+            ident,
+            lease,
+            retry_delay=delay,
+            error=error,
+            cap=MAX_UNAVAILABLE_DEFERRALS,
+            max_attempts=self.settings.max_attempts,
+            counter=UNAVAILABLE_COUNTER,
         )
         if outcome == "deferred":
             return {"status": "deferred", "job_id": ident, "error": error}
@@ -1886,6 +1951,7 @@ class LearningWorker:
     def run_forever(self, stop: Event) -> None:
         """Keep independent jobs alive after one failure; shutdown is bounded."""
         self.stop = stop
+        backoff = 0.0
         while not stop.is_set():
             try:
                 result = self.run_once()
@@ -1893,5 +1959,12 @@ class LearningWorker:
                 # A ledger outage is not permission to bypass accounting.
                 LOG.warning("learning pass failed: %s", type(exc).__name__)
                 result = {"status": "failed"}
+            if result.get("error") == "Provider:unavailable":
+                # NOBLIVION-253: do not claim the next job from a provider that is down.
+                backoff = min(max(self.settings.retry_delay, backoff * 2), UNAVAILABLE_MAX_DELAY)
+                stop.wait(backoff)
+                continue
+            if result.get("job_id"):
+                backoff = 0.0
             if result["status"] != "done":
                 stop.wait(self.settings.poll_seconds)

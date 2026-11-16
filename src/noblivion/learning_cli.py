@@ -65,7 +65,11 @@ def _parser() -> argparse.ArgumentParser:
         if name == "exclude-source":
             command.add_argument("source_id")
         if name == "retry":
-            command.add_argument("job_id")
+            command.add_argument("job_id", nargs="?")
+            command.add_argument(
+                "--error",
+                help="retry every exhausted job of the scope with this exact last error",
+            )
         if name == "prune":
             command.add_argument("--pending-days", type=float, default=14.0)
             command.add_argument("--retention-days", type=float, default=14.0)
@@ -159,8 +163,13 @@ def _run(ledger: LearningLedger, args: argparse.Namespace):
     if args.command == "exclude-source":
         return ledger.exclude_source(args.source_id)
     if args.command == "retry":
-        ledger.retry(args.job_id)
-        return {"job_id": args.job_id, "status": "pending"}
+        if (args.job_id is None) == (args.error is None):
+            raise LearningError("retry needs a job id or --error, not both")
+        if args.job_id is not None:
+            ledger.retry(args.job_id)
+            return {"job_id": args.job_id, "status": "pending"}
+        ids = ledger.retry_by_error(args.project, args.root, args.error)
+        return {"error": args.error, "retried": len(ids), "job_ids": ids}
     if args.command == "prune":
         return ledger.prune(
             pending_days=args.pending_days,

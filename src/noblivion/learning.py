@@ -844,6 +844,7 @@ class LearningLedger:
         error: str = "budget unavailable",
         cap: int | None = None,
         max_attempts: int = 4,
+        counter: str = "returned_deferrals",
     ) -> str:
         """Budget denial did not make a provider call and must not exhaust retries.
 
@@ -851,7 +852,8 @@ class LearningLedger:
         ``returned_deferrals`` (NOBLIVION-245). Up to ``cap`` deferrals give the
         attempt back. Past ``cap``, the attempt counts, so the job ends after at
         most ``max_attempts`` more runs. Return "deferred", "pending" (the attempt
-        counted) or "exhausted".
+        counted) or "exhausted". ``counter`` names the progress key of the count,
+        so one kind of deferral cannot spend the count of another (NOBLIVION-253).
         """
         validate_safe_text(error)
         with db.write_tx(self.conn):
@@ -860,9 +862,9 @@ class LearningLedger:
             stored = job["progress"]
             if cap is not None:
                 progress = json.loads(stored)
-                count = progress.get("returned_deferrals", 0)
+                count = progress.get(counter, 0)
                 count = (count if type(count) is int and count >= 0 else cap) + 1
-                progress["returned_deferrals"] = count
+                progress[counter] = count
                 if count > cap:
                     attempts = job["attempts"]
                     status = outcome = "exhausted" if attempts >= max_attempts else "pending"
@@ -899,6 +901,7 @@ class LearningLedger:
             progress.pop("format_repair", None)
             # An explicit retry also renews the bounded free deferrals (NOBLIVION-245).
             progress.pop("returned_deferrals", None)
+            progress.pop("unavailable_deferrals", None)
             from .learning_pages import retry_rejected
 
             retry_rejected(self.conn, job_id)
@@ -907,6 +910,26 @@ class LearningLedger:
                 "progress=?,updated_at=? WHERE id=? AND status='exhausted'",
                 (canonical_json(progress), time.time(), job_id),
             )
+
+    def retry_by_error(self, project: str, root: str, error: str) -> list[str]:
+        """Retry every exhausted job of one scope with this exact last error.
+
+        After an outage many jobs end with the same error (NOBLIVION-253). Each
+        job goes through retry, so each keeps its own receipts and charges.
+        """
+        if not root:
+            raise LearningError("--root is required for a retry by error")
+        ids = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT id FROM learning_jobs WHERE project=? AND root=? "
+                "AND status='exhausted' AND last_error=? ORDER BY updated_at",
+                (project, root, error),
+            )
+        ]
+        for job_id in ids:
+            self.retry(job_id)
+        return ids
 
     def current_notes(self, project: str, root: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -2260,6 +2283,32 @@ class LearningLedger:
             "outcomes": outcomes,
         }
 
+    def _provider_status(self, where: str, params: list) -> dict[str, Any]:
+        """Jobs that wait because the provider was down (NOBLIVION-253).
+
+        A job keeps Provider:unavailable as its last error until a later run
+        ends it another way, so these jobs show an outage that is not over.
+        """
+        row = self.conn.execute(
+            "SELECT count(*) n,min(updated_at) first,max(updated_at) last FROM learning_jobs"
+            + where
+            + (" AND" if where else " WHERE")
+            + " status IN ('pending','leased') AND last_error='Provider:unavailable'",
+            params,
+        ).fetchone()
+        if not row["n"]:
+            return {"state": "ok"}
+
+        def iso(value: float) -> str:
+            return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(value))
+
+        return {
+            "state": "unreachable",
+            "waiting_jobs": row["n"],
+            "since": iso(row["first"]),
+            "last_failure": iso(row["last"]),
+        }
+
     def status(self, project: str | None = None, root: str | None = None) -> dict[str, Any]:
         where, params = "", []
         if project is not None:
@@ -2272,6 +2321,7 @@ class LearningLedger:
 
         return {
             **self.diagnostics(project, root),
+            "provider": self._provider_status(where, params),
             "consolidation": derivative_status(self, project, root),
             "coverage": coverage(self.conn),
             "conflicts": self._conflict_status(project, root),

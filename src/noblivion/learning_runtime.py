@@ -297,7 +297,13 @@ class LearningPool:
         self.poll_seconds: float = PASS_INTERVAL
         self.max_attempts = 4
         self.call_seconds = 60.0
+        self.retry_delay = 30.0
         self.desired = 0
+        # NOBLIVION-253: one hold for all worker loops while the provider is down.
+        self._provider_lock = threading.Lock()
+        self._provider_backoff = 0.0
+        self._provider_hold_until = 0.0
+        self.provider_unreachable_since: float | None = None
         # The lease owner of each worker loop this pool started (NOBLIVION-248).
         self.worker_ids: set[str] = set()
         self._threads: dict[int, threading.Thread] = {}
@@ -314,6 +320,7 @@ class LearningPool:
                 self.poll_seconds = worker.poll_seconds
                 self.max_attempts = worker.max_attempts
                 self.call_seconds = worker.timeout_seconds
+                self.retry_delay = worker.retry_delay
         except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
             desired = 0
         self.settings = settings if desired else None
@@ -342,6 +349,10 @@ class LearningPool:
             settings = self.settings
             if settings is None or index >= self.desired:
                 return
+            hold = self._provider_hold_until - time.monotonic()
+            if hold > 0:
+                self.stop.wait(hold)
+                continue
             result: dict = {"status": "failed"}
             ledger = None
             try:
@@ -353,8 +364,41 @@ class LearningPool:
             finally:
                 if ledger is not None:
                     ledger.release()
+            if result.get("error") == "Provider:unavailable":
+                self._provider_down()
+                continue
+            if result.get("job_id"):
+                # Any other job result: the provider answered, or the job needed no call.
+                self._provider_up()
             if result.get("status") != "done":
                 self.stop.wait(self.poll_seconds)
+
+    def _provider_down(self) -> None:
+        """Hold every worker loop; the hold doubles each time a new probe fails.
+
+        A loop that failed during a hold another loop set does not double it, so
+        three loops that fail together wait retry_delay, not four times it.
+        """
+        from noblivion.learning_worker import UNAVAILABLE_MAX_DELAY
+
+        now = time.monotonic()
+        with self._provider_lock:
+            if now >= self._provider_hold_until:
+                self._provider_backoff = min(
+                    max(self.retry_delay, self._provider_backoff * 2), UNAVAILABLE_MAX_DELAY
+                )
+                self._provider_hold_until = now + self._provider_backoff
+            if self.provider_unreachable_since is None:
+                self.provider_unreachable_since = time.time()
+                log.warning("learning provider unreachable; workers wait and keep attempts")
+
+    def _provider_up(self) -> None:
+        with self._provider_lock:
+            if self.provider_unreachable_since is not None:
+                log.info("learning provider reachable again")
+            self._provider_backoff = 0.0
+            self._provider_hold_until = 0.0
+            self.provider_unreachable_since = None
 
     def pass_once(self) -> None:
         """Read the settings, prune, publish them to the workers, project and index."""
