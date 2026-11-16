@@ -251,7 +251,8 @@ def test_interrupted_split_resumes_without_repeating_finished_pieces(ledger):
 def dependency_job(ledger):
     record = capture(ledger, "new", "The indigo service uses port 8443.")
     note = old_note()
-    note["statement"] = "The cobalt job reads GH_TOKEN=***REDACTED*** first."
+    # A managed note with a marker stays withheld (NOBLIVION-258).
+    note.update(statement="The cobalt job reads GH_TOKEN=***REDACTED*** first.", read_only=False)
     ledger.reconciliation_context = lambda *a, **k: [old_note(), note]
     provider = ScriptedProvider(ledger, [candidate(record, category="fact")], "distinct")
     return provider, "ContextDependencyDeferred"
