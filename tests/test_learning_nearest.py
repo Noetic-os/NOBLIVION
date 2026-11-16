@@ -2,10 +2,11 @@
 """NOBLIVION-243: the semantic calls of a job do not grow with the note count.
 
 Extraction contract 3 compares each add candidate only with its nearest notes
-and nearest earlier candidates (keyword match plus embedding similarity). A job
-of contract 1 or 2 keeps its full comparison while it fits its task bound. Over
-the bound, with no comparison done yet, it takes the nearest selection instead
-of failing.
+and nearest earlier candidates (keyword match plus embedding similarity). A
+started job of contract 1 or 2 takes the same selection while its semantic stage
+has no answered comparison (NOBLIVION-257). With an answer it keeps its full
+comparison while that fits its task bound. Over the bound, with no comparison
+done in the current stage, it takes the nearest selection instead of failing.
 """
 
 from __future__ import annotations
@@ -407,20 +408,52 @@ class FirstEquivalent(Provider):
         return replace(response, content=json.dumps(body))
 
 
-@pytest.mark.parametrize("kept", ["stage", "covered", "conflict"])
+class FirstRejected(Provider):
+    """The first semantic answer is rejected: invalid JSON, or a batch answer
+    with no result, which waits for a re-ask."""
+
+    def __init__(self, candidates, broken):
+        super().__init__(candidates)
+        self.broken = broken
+
+    def complete(self, messages, **kwargs):
+        before = len(self.targets)
+        response = super().complete(messages, **kwargs)
+        if before or not self.targets:
+            return response
+        if self.broken == "format_repair":
+            return replace(response, content="{not json")
+        return replace(response, content=json.dumps({"version": 2, "results": []}))
+
+
+@pytest.mark.parametrize("kept", ["stage", "covered", "conflict", "format_repair", "batch_reask"])
 def test_an_old_job_with_an_answered_comparison_keeps_the_full_comparison(
     ledger, monkeypatch, kept
 ):
-    """One answer, in the stage, kept in ``covered`` or as a conflict after a refresh."""
+    """One answer, in the stage, kept in ``covered`` or as a conflict after a
+    refresh, or a rejected answer that waits for its format retry or re-ask."""
     seed_notes(ledger, 20)
     lines = [f"Lesson {word} holds for every build." for word in "abc"]
-    cls = FirstEquivalent if kept == "conflict" else Provider
-    provider = cls(new_job(ledger, lines))
-    start_old(ledger, monkeypatch, provider, 1, max_calls=2)
+    contract = 2 if kept == "batch_reask" else 1
+    if kept == "conflict":
+        provider = FirstEquivalent(new_job(ledger, lines))
+    elif kept in ("format_repair", "batch_reask"):
+        provider = FirstRejected(new_job(ledger, lines), kept)
+    else:
+        provider = Provider(new_job(ledger, lines))
+    start_old(ledger, monkeypatch, provider, contract, max_calls=2)
     ident, _, _, _, before = job_row(ledger)
-    # One call answered; a conflict also skips the other tasks of its candidate.
-    assert before["semantic"]["next_task"] >= 1 and len(provider.targets) == 1
-    if kept != "stage":
+    assert len(provider.targets) == 1
+    if kept == "format_repair":
+        assert before["format_repair"]["step"] == "semantic:0"
+        assert before["semantic"]["next_task"] == 0
+    elif kept == "batch_reask":
+        assert before["semantic"]["batch_reasks"]["0"]["failures"] == 1
+        assert before["semantic"].get("next_batch", 0) == 0
+    else:
+        # One call answered; a conflict also skips the other tasks of its candidate.
+        assert before["semantic"]["next_task"] >= 1
+    if kept in ("covered", "conflict"):
         add_note(ledger, "later")
     wake(ledger)
     assert worker(ledger, provider, Service()).run_once()["status"] == "done"
