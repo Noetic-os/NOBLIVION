@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """A provider outage does not use up the attempts of learning jobs (NOBLIVION-253)."""
 
+import contextlib
 import errno
 import http.client
 import io
@@ -25,9 +26,10 @@ from noblivion.learning_worker import (
     OpenAICompatibleProvider,
     ProviderError,
     WorkerSettings,
+    provider_answered,
 )
 from test_learning_context_repair import ready
-from test_learning_review_fixes import ScriptedProvider, capture
+from test_learning_review_fixes import ScriptedProvider, candidate, capture, seed
 
 LIMITS = replace(BudgetLimits(), max_calls=10000, max_seconds=10**7, max_tokens=10**9)
 
@@ -72,7 +74,7 @@ def http_error(code):
     [
         (http_error(502), "unavailable"),
         (http_error(503), "unavailable"),
-        (http_error(500), "unavailable"),
+        (http_error(504), "unavailable"),
         (http_error(429), "unavailable"),
         (urllib.error.URLError(ConnectionRefusedError()), "unavailable"),
         (urllib.error.URLError(socket.gaierror()), "unavailable"),
@@ -80,6 +82,9 @@ def http_error(code):
         (ConnectionResetError(), "unavailable"),
         (http.client.RemoteDisconnected(), "unavailable"),
         # The endpoint answered and rejected this request: the job counts it.
+        # A request that crashes the server (500) must not get the free retries.
+        (http_error(500), "transport"),
+        (http_error(501), "transport"),
         (http_error(400), "transport"),
         (http_error(404), "transport"),
         (urllib.error.URLError(ssl.SSLError()), "transport"),
@@ -164,9 +169,11 @@ def test_past_the_cap_each_outage_deferral_counts_an_attempt(ledger, monkeypatch
     assert statuses == ["deferred"] * 3 + ["failed"] * settings.max_attempts + ["idle"]
     status, attempts, error, progress, _ = rows(ledger)[0]
     assert (status, attempts, error) == ("exhausted", settings.max_attempts, "Provider:unavailable")
+    assert "unavailable_since" in progress
     job_id = ledger.conn.execute("SELECT id FROM learning_jobs").fetchone()[0]
     ledger.retry(job_id)
     assert "unavailable_deferrals" not in rows(ledger)[0][3]
+    assert "unavailable_since" not in rows(ledger)[0][3]
 
 
 def test_a_rejected_request_still_counts_attempts(ledger):
@@ -180,20 +187,188 @@ def test_a_rejected_request_still_counts_attempts(ledger):
     assert MAX_RETURNED_DEFERRALS == 24
 
 
-def test_status_shows_the_outage_and_clears_when_the_provider_answers(ledger):
+def iso(value):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(value))
+
+
+def test_status_shows_the_outage_and_clears_when_the_provider_answers(ledger, monkeypatch):
+    clock = [float(int(time.time()))]
+    monkeypatch.setattr("noblivion.learning.time.time", lambda: clock[0])
     capture(ledger, "a", "Keep replies short.")
     provider = OutageProvider(ledger)
     run = LearningWorker(ledger, provider, WorkerSettings(), LIMITS)
     assert ledger.status("demo", "scope")["provider"] == {"state": "ok"}
+    began = clock[0]
+    run.run_once()
+    # A second deferral of the same job 600 s later must not move since.
+    clock[0] += 600
+    ready(ledger)
     run.run_once()
     shown = ledger.status("demo", "scope")["provider"]
-    assert shown["state"] == "unreachable" and shown["waiting_jobs"] == 1
-    assert shown["since"].endswith("Z") and shown["last_failure"] >= shown["since"]
-    assert ledger.status("demo", "other")["provider"] == {"state": "ok"}
+    assert shown == {
+        "state": "unreachable",
+        "waiting_jobs": 1,
+        "since": iso(began),
+        "last_failure": iso(began + 600),
+    }
+    # The provider is one endpoint for the store: every scope shows the same block.
+    assert ledger.status("demo", "other")["provider"] == shown
+    assert ledger.status()["provider"] == shown
     provider.down = False
     ready(ledger)
     assert run.run_once()["status"] == "done"
     assert ledger.status("demo", "scope")["provider"] == {"state": "ok"}
+
+
+class FlakyProvider(ScriptedProvider):
+    """Follow a script of "down" and "up", one entry per call."""
+
+    def __init__(self, ledger, candidates, script):
+        super().__init__(ledger, candidates)
+        self.script = list(script)
+
+    def complete(self, messages, **kwargs):
+        if self.script.pop(0) == "down":
+            raise ProviderError("unavailable")
+        return super().complete(messages, **kwargs)
+
+
+def test_a_successful_call_resets_the_outage_count_of_the_job(ledger):
+    seed(ledger, capture(ledger, "old", "Keep responses short."))
+    new = capture(ledger, "new", "I prefer concise replies.")
+    # Three outages on the extraction call, then the extraction answers and
+    # the semantic call meets a new outage.
+    provider = FlakyProvider(
+        ledger, [candidate(new, key="different-wording")], ["down"] * 3 + ["up", "down"]
+    )
+    run = LearningWorker(ledger, provider, WorkerSettings(), LIMITS)
+
+    def job(ident):
+        row = ledger.conn.execute(
+            "SELECT progress,next_attempt FROM learning_jobs WHERE id=?", (ident,)
+        ).fetchone()
+        return json.loads(row["progress"]), row["next_attempt"]
+
+    for count in (1, 2, 3):
+        ready(ledger)
+        result = run.run_once()
+        assert result["error"] == "Provider:unavailable"
+        assert job(result["job_id"])[0]["unavailable_deferrals"] == count
+    first_since = job(result["job_id"])[0]["unavailable_since"]
+    ready(ledger)
+    before = time.time()
+    result = run.run_once()
+    assert result["error"] == "Provider:unavailable" and provider.calls == ["extract"]
+    progress, next_attempt = job(result["job_id"])
+    # The new outage starts at retry_delay (30 s), not at 2**3 * 30 s.
+    assert abs(next_attempt - before - 30) < 5, next_attempt - before
+    assert progress["unavailable_deferrals"] == 1
+    assert progress["unavailable_since"] >= before > first_since
+
+
+@pytest.mark.parametrize(
+    "result, answered",
+    [
+        ({"status": "done", "job_id": "j"}, True),
+        ({"status": "failed", "job_id": "j", "error": "Provider:invalid"}, True),
+        ({"status": "deferred", "job_id": "j", "error": "Provider:length"}, True),
+        ({"status": "deferred", "job_id": "j", "error": "Provider:unavailable"}, False),
+        ({"status": "failed", "job_id": "j", "error": "Provider:timeout"}, False),
+        ({"status": "failed", "job_id": "j", "error": "Provider:transport"}, False),
+        ({"status": "deferred", "job_id": "j", "error": "BudgetExceeded"}, False),
+        ({"status": "deferred", "job_id": "j", "error": "ContextDependencyDeferred"}, False),
+        ({"status": "failed"}, False),
+        ({"status": "idle"}, False),
+    ],
+)
+def test_only_a_real_answer_counts_as_the_provider_answering(result, answered):
+    assert provider_answered(result) is answered
+
+
+class FakeStop:
+    """A stop event whose wait advances a fake monotonic clock."""
+
+    def __init__(self, clock, limit=50):
+        self.clock, self.limit, self.waits, self.flag = clock, limit, [], False
+
+    def is_set(self):
+        return self.flag
+
+    def set(self):
+        self.flag = True
+
+    def wait(self, seconds):
+        self.waits.append(seconds)
+        assert len(self.waits) <= self.limit, "the loop does not end"
+        self.clock[0] += seconds
+        return self.flag
+
+
+UNAVAILABLE = {"status": "deferred", "job_id": "j", "error": "Provider:unavailable"}
+TIMEOUT = {"status": "failed", "job_id": "j", "error": "Provider:timeout", "permanent": False}
+DONE = {"status": "done", "job_id": "j", "results": []}
+
+
+def scripted(stop, clock, script, seen):
+    script = list(script)
+
+    def run_once(*args, **kwargs):
+        seen.append(clock[0])
+        result = script.pop(0)
+        if not script:
+            stop.set()
+        return result
+
+    return run_once
+
+
+def test_run_forever_resets_its_delay_only_after_a_real_answer(ledger):
+    clock = [0.0]
+    stop = FakeStop(clock)
+    run = LearningWorker(ledger, ScriptedProvider(ledger, []), WorkerSettings(), LIMITS)
+    seen = []
+    run.run_once = scripted(
+        stop, clock, [UNAVAILABLE, TIMEOUT, UNAVAILABLE, DONE, UNAVAILABLE], seen
+    )
+    run.run_forever(stop)
+    # A timeout is no answer: the next outage doubles. A done result resets it.
+    assert stop.waits == [30, 5, 60, 30]
+
+
+def test_the_pool_loop_holds_until_the_hold_ends_and_a_done_result_clears_it(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr("noblivion.learning_runtime.time.monotonic", lambda: clock[0])
+    stop = FakeStop(clock)
+    released = []
+
+    class Store:
+        @contextlib.contextmanager
+        def connection(self):
+            yield object()
+
+    class Ledger:
+        def __init__(self, conn, pool):
+            pass
+
+        def release(self):
+            released.append(True)
+
+    monkeypatch.setattr("noblivion.learning_runtime.PooledLedger", Ledger)
+    seen = []
+    script = [UNAVAILABLE, UNAVAILABLE, TIMEOUT, UNAVAILABLE, DONE, UNAVAILABLE]
+    monkeypatch.setattr("noblivion.learning_runtime.run_once", scripted(stop, clock, script, seen))
+    pool = LearningPool(SimpleNamespace(_jobs_stop=stop))
+    pool.store = Store()
+    pool.settings, pool.desired, pool.poll_seconds, pool.retry_delay = {}, 1, 5.0, 30.0
+    pool._work(0)
+    # 1000: down, hold 30. 1030: down, hold 60. 1090: timeout, no answer, poll
+    # 5 s; the hold keeps its delay. 1095: down, hold 120. 1215: done clears the
+    # hold; no wait. 1215: down, hold 30 again.
+    assert seen == [1000, 1030, 1090, 1095, 1215, 1215]
+    assert stop.waits == [30, 60, 5, 120]
+    assert pool._provider_hold_until - clock[0] == 30
+    assert pool.provider_unreachable_since is not None
+    assert len(released) == len(script)
 
 
 def test_the_pool_holds_every_loop_and_doubles_only_after_a_new_probe(monkeypatch):

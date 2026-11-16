@@ -865,6 +865,10 @@ class LearningLedger:
                 count = progress.get(counter, 0)
                 count = (count if type(count) is int and count >= 0 else cap) + 1
                 progress[counter] = count
+                if counter == "unavailable_deferrals":
+                    # The first deferral of an outage marks when it began for
+                    # this job; later ones keep it (NOBLIVION-253).
+                    progress.setdefault("unavailable_since", time.time())
                 if count > cap:
                     attempts = job["attempts"]
                     status = outcome = "exhausted" if attempts >= max_attempts else "pending"
@@ -902,6 +906,7 @@ class LearningLedger:
             # An explicit retry also renews the bounded free deferrals (NOBLIVION-245).
             progress.pop("returned_deferrals", None)
             progress.pop("unavailable_deferrals", None)
+            progress.pop("unavailable_since", None)
             from .learning_pages import retry_rejected
 
             retry_rejected(self.conn, job_id)
@@ -2283,18 +2288,21 @@ class LearningLedger:
             "outcomes": outcomes,
         }
 
-    def _provider_status(self, where: str, params: list) -> dict[str, Any]:
+    def _provider_status(self) -> dict[str, Any]:
         """Jobs that wait because the provider was down (NOBLIVION-253).
 
         A job keeps Provider:unavailable as its last error until a later run
         ends it another way, so these jobs show an outage that is not over.
+        The provider is one endpoint for the whole store, so this block counts
+        the jobs of every scope and ignores the scope filter of status().
+        ``since`` is the earliest time an outage began for a waiting job
+        (progress.unavailable_since), not the time of its last update.
         """
         row = self.conn.execute(
-            "SELECT count(*) n,min(updated_at) first,max(updated_at) last FROM learning_jobs"
-            + where
-            + (" AND" if where else " WHERE")
-            + " status IN ('pending','leased') AND last_error='Provider:unavailable'",
-            params,
+            "SELECT count(*) n,"
+            "min(coalesce(json_extract(progress,'$.unavailable_since'),updated_at)) first,"
+            "max(updated_at) last FROM learning_jobs "
+            "WHERE status IN ('pending','leased') AND last_error='Provider:unavailable'"
         ).fetchone()
         if not row["n"]:
             return {"state": "ok"}
@@ -2321,7 +2329,7 @@ class LearningLedger:
 
         return {
             **self.diagnostics(project, root),
-            "provider": self._provider_status(where, params),
+            "provider": self._provider_status(),
             "consolidation": derivative_status(self, project, root),
             "coverage": coverage(self.conn),
             "conflicts": self._conflict_status(project, root),

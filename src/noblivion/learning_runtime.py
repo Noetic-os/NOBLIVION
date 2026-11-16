@@ -343,6 +343,8 @@ class LearningPool:
 
     def _work(self, index: int) -> None:
         """One worker loop. A loop above the current count ends after its job."""
+        from noblivion.learning_worker import provider_answered
+
         worker_id = f"learning-{uuid.uuid4().hex}-{index}"
         self.worker_ids.add(worker_id)
         while not self.stop.is_set():
@@ -367,8 +369,9 @@ class LearningPool:
             if result.get("error") == "Provider:unavailable":
                 self._provider_down()
                 continue
-            if result.get("job_id"):
-                # Any other job result: the provider answered, or the job needed no call.
+            if provider_answered(result):
+                # Only a real answer ends the hold. A timeout, a transport error
+                # or a job that made no call leaves the delay as it is.
                 self._provider_up()
             if result.get("status") != "done":
                 self.stop.wait(self.poll_seconds)

@@ -172,8 +172,8 @@ PIECE_STRIDE = 64
 # day. Past it each deferral counts an attempt, so the job ends after at most
 # max_attempts more runs. An explicit retry renews the count.
 MAX_RETURNED_DEFERRALS = 24
-# NOBLIVION-253: a provider that refuses the connection or answers 429 or 5xx
-# is down; that is not a fault of the job. Such a deferral gives the attempt
+# NOBLIVION-253: a provider that refuses the connection or answers 429, 502,
+# 503 or 504 is down; that is not a fault of the job. Such a deferral gives the attempt
 # back with its own count, so an outage does not spend the count above. The
 # delay grows from retry_delay to UNAVAILABLE_MAX_DELAY. 200 deferrals cover
 # about two days at the longest delay; past them each deferral counts an
@@ -181,6 +181,25 @@ MAX_RETURNED_DEFERRALS = 24
 MAX_UNAVAILABLE_DEFERRALS = 200
 UNAVAILABLE_COUNTER = "unavailable_deferrals"
 UNAVAILABLE_MAX_DELAY = 900.0
+# Provider errors where no answer came back from the provider.
+_NO_ANSWER_ERRORS = frozenset({"Provider:unavailable", "Provider:timeout", "Provider:transport"})
+
+
+def provider_answered(result: dict) -> bool:
+    """True when this job result shows that the provider really answered.
+
+    Only such a result ends an outage hold (NOBLIVION-253). A job that made no
+    call, waited for its budget or failed on a timeout or a transport error
+    says nothing about the provider, so the hold keeps its delay.
+    """
+    if result.get("status") == "done":
+        return True
+    error = result.get("error")
+    return (
+        isinstance(error, str) and error.startswith("Provider:") and error not in _NO_ANSWER_ERRORS
+    )
+
+
 # NOBLIVION-240: a semantic answer that parses but does not match its task (for
 # example "invalid semantic target") is asked again up to this many times, with
 # a fixed corrective note. Past the bound the one affected candidate is not
@@ -563,6 +582,7 @@ class ProviderResponse:
     tokens: int | None = None
 
 
+_OUTAGE_STATUS = frozenset({429, 502, 503, 504})
 _DOWN_ERRNOS = frozenset(
     {errno.ECONNREFUSED, errno.EHOSTUNREACH, errno.ENETUNREACH, errno.EHOSTDOWN, errno.ENETDOWN}
 )
@@ -571,12 +591,14 @@ _DOWN_ERRNOS = frozenset(
 def _endpoint_unavailable(exc: BaseException) -> bool:
     """True when the endpoint is down, not when it rejected this request.
 
-    A 429 or 5xx answer, a refused, reset or unreachable connection, and a
-    name that does not resolve are outages (NOBLIVION-253). A 4xx answer and an
-    unexpected protocol error stay "transport", so they still count attempts.
+    A 429, 502, 503 or 504 answer, a refused, reset or unreachable connection,
+    and a name that does not resolve are outages (NOBLIVION-253). Any other 4xx
+    or 5xx answer and an unexpected protocol error stay "transport", so they
+    still count attempts: a request that crashes the server (500) must not get
+    the free outage retries.
     """
     if isinstance(exc, urllib.error.HTTPError):
-        return exc.code == 429 or 500 <= exc.code <= 599
+        return exc.code in _OUTAGE_STATUS
     if isinstance(exc, urllib.error.URLError):
         exc = exc.reason
     if isinstance(exc, (ConnectionError, socket.gaierror)):
@@ -964,7 +986,7 @@ class LearningWorker:
                 # _call checkpoints the output-limit hold before it raises.
                 return self._bounded_defer(ident, lease, reason)
             if exc.reason == "unavailable":
-                return self._unavailable_defer(ident, lease, state, reason)
+                return self._unavailable_defer(ident, lease, reason)
             self.ledger.fail(
                 ident,
                 lease,
@@ -1032,13 +1054,19 @@ class LearningWorker:
             return {"status": "deferred", "job_id": ident, "error": error}
         return {"status": "failed", "job_id": ident, "error": error, "permanent": False}
 
-    def _unavailable_defer(self, ident, lease, state, error):
+    def _unavailable_defer(self, ident, lease, error):
         """The provider is down: wait with a growing delay, keep the attempt.
 
         NOBLIVION-253. The count is separate from returned_deferrals, so an
         outage does not use up the deferrals of a dependency or length hold.
+        The count comes from the stored progress, the same value defer counts
+        on: a derivation keeps its own copy of the progress, so the state of
+        run_once can be older than the row.
         """
-        count = state.get(UNAVAILABLE_COUNTER, 0)
+        row = self.ledger.conn.execute(
+            "SELECT progress FROM learning_jobs WHERE id=?", (ident,)
+        ).fetchone()
+        count = json.loads(row[0]).get(UNAVAILABLE_COUNTER, 0) if row else 0
         count = count if type(count) is int and count >= 0 else 0
         delay = min(self.settings.retry_delay * 2 ** min(count, 16), UNAVAILABLE_MAX_DELAY)
         outcome = self.ledger.defer(
@@ -1554,6 +1582,10 @@ class LearningWorker:
             )
             if time.monotonic() - started > cfg.timeout_seconds:
                 raise ProviderError("timeout", tokens=response.tokens)
+            # The provider answered: a later outage starts at retry_delay again,
+            # and the checkpoint in finally stores this (NOBLIVION-253).
+            state.pop(UNAVAILABLE_COUNTER, None)
+            state.pop("unavailable_since", None)
         except ProviderError as exc:
             failure = exc
             if exc.reason == "length":
@@ -1964,7 +1996,7 @@ class LearningWorker:
                 backoff = min(max(self.settings.retry_delay, backoff * 2), UNAVAILABLE_MAX_DELAY)
                 stop.wait(backoff)
                 continue
-            if result.get("job_id"):
+            if provider_answered(result):
                 backoff = 0.0
             if result["status"] != "done":
                 stop.wait(self.settings.poll_seconds)
