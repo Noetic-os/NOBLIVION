@@ -29,8 +29,10 @@ All notable changes to NOBLIVION. The format follows
   started with fails with `semantic batches changed during a job`. Before, the
   stored batch counter could skip or repeat comparisons (NOBLIVION-241).
 - A version 2 semantic batch whose answer parses but does not match the
-  batch is asked again up to 2 times, as in version 1. Past that bound the
-  candidates of that batch are not stored, and the job goes on. A version 2
+  batch is asked again up to 2 times, as in version 1. Past that bound each
+  task of the batch is asked alone with the version 1 prompt, so one bad item
+  drops only its own candidate. A batch sends only the tasks whose candidate
+  is still an add. A version 2
   job keeps its finished batch comparisons when another job stores notes, as
   version 1 does (NOBLIVION-250).
 

@@ -15,7 +15,12 @@ import pytest
 
 from noblivion import db, learning_worker
 from noblivion.learning import BudgetLimits, LearningLedger
-from noblivion.learning_extract import SEMANTIC_PROMPT, ValidationError, semantic_targets
+from noblivion.learning_extract import (
+    SEMANTIC_PROMPT,
+    SemanticAnswerRejected,
+    ValidationError,
+    semantic_targets,
+)
 from noblivion.learning_semantic import (
     SEMANTIC_BATCH_PROMPT,
     eligible_part,
@@ -361,7 +366,8 @@ def test_incomplete_or_wrong_batch_reply_clears_nothing(damage):
     batch = semantic_batches(tasks_for(3, notes=2))[0]
     value = reply(batch)
     damage(value)
-    with pytest.raises(ValidationError):
+    # A rejection is asked again; any other ValidationError fails the job.
+    with pytest.raises(SemanticAnswerRejected):
         validate_semantic_batch(json.dumps(value), batch)
 
 

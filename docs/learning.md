@@ -240,6 +240,13 @@ resume builds the batches again; if the digest differs, the job fails with
 `semantic batches changed during a job` instead of skipping or repeating
 comparisons. A semantic stage without a digest resumes and gets one.
 
+A batch sends only the tasks whose candidate is still an add. A batch answer
+that parses but does not match the batch is asked again up to 2 times. Past
+that bound, each task of the batch is asked alone with the version 1 prompt,
+with its own 2 re-asks. So one bad item of a batch answer drops only its own
+candidate, as in version 1. The progress row lists the tasks answered alone in
+`fallback_done`, so a resume does not ask them again.
+
 A window of 24,000 characters with 24,000 characters of existing notes needs
 about 16,000 input tokens. Keep `window_chars` at a value whose double, plus the
 existing notes and the output limit, fits the model context.

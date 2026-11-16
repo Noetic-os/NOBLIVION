@@ -1625,7 +1625,15 @@ class LearningWorker:
         done: dict[int, set[str]] = {}
         for key, ids in (stage.get("covered") or {}).items():
             done.setdefault(int(key), set()).update(ids)
-        for task in tasks[: stage["next_task"]]:
+        finished = [*tasks[: stage["next_task"]]]
+        # Contract 2: tasks answered alone after a rejected batch, before the
+        # batch itself counts in next_task.
+        for i in stage.get("fallback_done", ()):
+            if type(i) is not int or not 0 <= i < len(tasks):
+                raise ValidationError("invalid durable semantic progress")
+            if i >= stage["next_task"]:
+                finished.append(tasks[i])
+        for task in finished:
             done.setdefault(task["candidate_index"], set()).update(
                 target["target_id"] for target in task["targets"]
             )
@@ -1687,25 +1695,8 @@ class LearningWorker:
                     # on. Only its index and a fixed class are kept.
                     candidate["action"] = SEMANTIC_UNVALIDATED
                     stage.setdefault("rejected", []).append(task["candidate_index"])
-                blocked = relations and next(
-                    (r for r in relations if r["relation"] != "distinct"), None
-                )
-                if blocked:
-                    candidate.update(
-                        action="conflict",
-                        reason="semantic " + blocked["relation"],
-                        semantic_review={
-                            "target_id": blocked["target_id"],
-                            "relation": blocked["relation"],
-                        },
-                    )
-                    target = next(
-                        (n for n in stage["notes"] if str(n["note_id"]) == blocked["target_id"]),
-                        None,
-                    )
-                    if target is not None:
-                        candidate["note_id"] = target["note_id"]
-                        candidate["expected_revision"] = target["revision"]
+                else:
+                    _apply_relations(candidate, relations, stage["notes"])
             stage["next_task"] = index + 1
             state.pop("format_repair", None)
             self.ledger.checkpoint(job["id"], job["lease_token"], state)
@@ -1783,30 +1774,73 @@ class LearningWorker:
         start = stage.get("next_batch", 0)
         if type(start) is not int or not 0 <= start <= len(batches):
             raise ValidationError("invalid durable semantic progress")
-        for index in range(start, len(batches)):
+        offset = 0
+        for index in range(len(batches)):
+            if index < start:
+                offset += len(batches[index]["items"])
+                continue
             batch = batches[index]
-            if any(results[i["candidate_index"]]["action"] == "add" for i in batch["items"]):
+            # Only the tasks whose candidate is still an add are sent. The
+            # batches hold consecutive tasks, so offset is the global index of
+            # the first task of this batch.
+            live = [
+                offset + position
+                for position, item in enumerate(batch["items"])
+                if results[item["candidate_index"]]["action"] == "add"
+            ]
+            offset += len(batch["items"])
+            if live:
                 if self.stop is not None and self.stop.is_set():
                     raise BudgetExceeded("worker stopping")
+                if len(live) < len(batch["items"]):
+                    # A subset of one batch always fits in one batch.
+                    (batch,) = semantic_batches(
+                        [tasks[i] for i in live], max_chars=max_chars, max_items=len(live)
+                    )
                 answers = self._semantic_batch_answer(job, batch, index, stage, state)
-                for item, relations in zip(  # noqa: B905 - 3.9 lane
-                    batch["items"], answers or [None] * len(batch["items"])
-                ):
-                    candidate = results[item["candidate_index"]]
-                    if candidate["action"] != "add":
-                        continue
-                    if relations is None:
-                        # NOBLIVION-240 for contract 2: past the bounded re-asks
-                        # no candidate of the batch has a validated comparison,
-                        # so none is stored. The job goes on.
-                        candidate["action"] = SEMANTIC_UNVALIDATED
-                        stage.setdefault("rejected", []).append(item["candidate_index"])
-                    else:
-                        _apply_relations(candidate, relations, stage["notes"])
+                if answers is None:
+                    # Past the bounded re-asks of the batch, each task is asked
+                    # alone, as in contract 1. So one bad item of a batch answer
+                    # cannot drop the other candidates of the batch.
+                    self._semantic_batch_fallback(job, tasks, live, stage, state)
+                else:
+                    for item, relations in zip(batch["items"], answers):  # noqa: B905 - 3.9 lane
+                        candidate = results[item["candidate_index"]]
+                        # A candidate split over several tasks keeps its first conflict.
+                        if candidate["action"] == "add":
+                            _apply_relations(candidate, relations, stage["notes"])
             stage["next_batch"] = index + 1
             # A refresh after a peer commit reads next_task: the batches hold
             # consecutive tasks, so this counts the tasks already compared.
             stage["next_task"] = sum(len(b["items"]) for b in batches[: index + 1])
+            state.pop("format_repair", None)
+            self.ledger.checkpoint(job["id"], job["lease_token"], state)
+
+    def _semantic_batch_fallback(self, job, tasks, live, stage, state):
+        """Ask each still-add task of a rejected batch alone, as in contract 1.
+
+        stage["reasks"] keeps the bounded re-asks of each task under its global
+        index, and stage["fallback_done"] the tasks already answered, so a
+        resume does not ask a finished task again. A task past its own bound
+        is not stored (NOBLIVION-240).
+        """
+        results = stage["decisions"]
+        done = stage.setdefault("fallback_done", [])
+        if not isinstance(done, list) or any(type(i) is not int for i in done):
+            raise ValidationError("invalid durable semantic progress")
+        for task_index in live:
+            candidate = results[tasks[task_index]["candidate_index"]]
+            if task_index in done or candidate["action"] != "add":
+                continue
+            if self.stop is not None and self.stop.is_set():
+                raise BudgetExceeded("worker stopping")
+            relations = self._semantic_answer(job, tasks[task_index], task_index, stage, state)
+            if relations is None:
+                candidate["action"] = SEMANTIC_UNVALIDATED
+                stage.setdefault("rejected", []).append(tasks[task_index]["candidate_index"])
+            else:
+                _apply_relations(candidate, relations, stage["notes"])
+            done.append(task_index)
             state.pop("format_repair", None)
             self.ledger.checkpoint(job["id"], job["lease_token"], state)
 
