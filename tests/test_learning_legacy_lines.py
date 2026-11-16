@@ -262,6 +262,27 @@ def test_a_placeholder_line_does_not_hide_a_key_and_its_value(statement):
     assert safe == [] and excluded[0]["statement_available"] is False
 
 
+def test_the_kept_lines_also_pass_as_encoded_note():
+    marker_line = "TOKEN=[REDACTED]"
+    statement = (
+        f"Rotate the password\n{marker_line}\nthen restart the cobalt service after\n"
+        "it is Zq8hunter2example"
+    )
+    note = legacy(statement)
+    assert rejection_reason(encoded(core(note))) == "ContextRedactedCandidate"
+    # Precondition: the natural-language rule reads across lines in the
+    # encoded note only. With the placeholder the key word and the value are
+    # too far apart; the kept lines pass as raw text and fail as encoded note.
+    with_placeholder = statement.replace(marker_line, WITHHELD_LINE)
+    kept = statement.replace(f"{marker_line}\n", "")
+    assert rejection_reason(encoded(core(dict(note, statement=with_placeholder)))) is None
+    assert not contains_secret(with_placeholder) and not contains_secret(kept)
+    assert rejection_reason(encoded(core(dict(note, statement=kept)))) is not None
+    assert neutral_note(note) is None
+    safe, excluded = isolate_notes([note], max_chars=24000)
+    assert safe == [] and excluded[0]["statement_available"] is False
+
+
 @pytest.mark.parametrize(
     ("statement", "expected"),
     [

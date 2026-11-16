@@ -68,9 +68,16 @@ def neutral_note(note):
     # A placeholder line must not hide a key and its value on two kept lines
     # (``Bearer`` and a token, ``Basic`` and a credential): the redactor reads
     # the placeholder as no value, so the kept lines are checked without it.
+    # As encoded note too: there the natural-language rule reads across lines,
+    # and the placeholder pushes the key word and the value apart.
     kept = "\n".join(line for line, held in lines if not held)
     result = dict(note, statement=withheld)
-    if contains_secret(withheld) or contains_secret(kept) or not _core_passes(result):
+    if (
+        contains_secret(withheld)
+        or contains_secret(kept)
+        or not _core_passes(result)
+        or not _core_passes(dict(note, statement=kept))
+    ):
         return None
     return result, "ContextLegacyLineWithheld"
 
