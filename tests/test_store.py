@@ -30,6 +30,7 @@ from noblivion import (
     config,
     db,
     embedding,
+    history,
     indexer,
     launcher,
     learning_runtime,
@@ -609,6 +610,43 @@ def test_fetch_other_namespace_and_archived(running):
             (db.utc_now(), rev, top["id"]),
         )
     assert running.get(f"/api/memories/fetch/{top['id']}")[1]["reason"].startswith("no memory")
+
+
+def test_history_fetch_reads_the_replaced_note_and_changes_nothing_else(running):
+    # NOBLIVION-189. Ordinary answers before and after a historical fetch are the same bytes.
+    root = "-work-proj-demo"
+    old_id = running.get("/api/memories/index?q=pytest+venv")[1]["results"][0]["id"]
+    folder = running.store.settings.memory_dirs[0]
+    (folder / "feedback_venv_v2.md").write_text(
+        "---\nname: venv v2\ndescription: use uv run pytest\n"
+        "supersedes: feedback_tests_use_venv\n---\nRun pytest with uv run.\n",
+        encoding="utf-8",
+    )
+
+    with running.store.connection() as conn:
+        assert running.store.scan_once(conn).superseded == 1
+    assert running.get(f"/api/memories/fetch/{old_id}")[1]["reason"] is not None
+    hits = running.get("/api/memories/index?q=pytest+venv")[1]["results"]
+    new_id = next(h["id"] for h in hits if h["source"] == "feedback_venv_v2.md")
+    plain = [
+        f"/api/memories/index?q=pytest+venv&root={root}",
+        f"/api/memories/search?q=pytest+venv&root={root}",
+        f"/api/memories/fetch/{new_id}?root={root}",
+        f"/api/memories/fetch/{old_id}?root={root}",
+        f"/api/memories/fetch/{new_id}?root={root}&history=0",
+    ]
+    before = [running.request("GET", p)[1] for p in plain]
+    assert before[2] == before[4]  # history=0 is the ordinary fetch
+    status, body = running.get(f"/api/memories/fetch/{new_id}?root={root}&history=1")
+    assert status == 200 and body["reason"] is None
+    assert [(i["id"], i["source"]) for i in body["history"]] == [
+        (old_id, "feedback_tests_use_venv.md")
+    ]
+    assert "Run pytest with the venv python" in body["history"][0]["text"]
+    assert running.get(f"/api/memories/fetch/{new_id}?history=1")[1]["history"] == []  # no root
+    other = running.get(f"/api/memories/fetch/{new_id}?root=-other&history=1")[1]
+    assert other["history"] == [] and other["reason"] == history.NO_HISTORY_REASON
+    assert [running.request("GET", p)[1] for p in plain] == before
 
 
 # -- answer helpers -----------------------------------------------------------------

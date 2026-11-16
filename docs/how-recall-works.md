@@ -384,11 +384,29 @@ Claude Code can call `noblivion_recall` with these arguments:
 | `chunk` | With one `fetch_id`: the number of one section to read. |
 | `section` | With one `fetch_id`: words. The section that best matches them is read. Use `chunk` or `section`, not both. |
 | `include_mined` | `true` lists the ranked index with the transcript-mined notes. Default `false`. |
+| `history` | With one `fetch_id` of a current note: read the older notes that its `supersedes:` line replaced. |
 
 Give `query` or `fetch_id`, not both. `chunk` and `section` go with
 `fetch_id` only. An opened note starts with
 `GROUNDED MEMORY <id>:`. The trust flush reads this line to record that the
 note was used.
+
+A historical fetch (`history: true`) starts with
+`HISTORICAL MEMORY <old id>, replaced by <id>:`. It records no use and
+changes no later search. It returns an older note only when all of these
+are true:
+
+- The current note is live, in the exact project and root of the request,
+  and its file on disk still holds the indexed bytes.
+- The current note names the older note in `supersedes:`. One step only: the
+  fetch does not follow a chain.
+- The older note is archived, not deleted, in the same project and root, and
+  its file on disk still holds the indexed bytes with an active `status:`.
+- A learning note, current or older, is still active in the learning ledger,
+  and memory use is allowed for the root and the session.
+
+Every refusal gives the same answer, so the answer does not tell whether a
+refused note exists. Ordinary search and fetch never return an archived note.
 
 ## Other recall hooks
 
