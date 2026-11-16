@@ -41,6 +41,13 @@ from .learning_extract import (
     validate_extraction,
     validate_semantic_response,
 )
+from .learning_nearest import (
+    FALLBACK_SELECTIONS,
+    MODE_HYBRID,
+    MODE_KEYWORD,
+    candidate_key,
+    nearest_targets,
+)
 from .learning_pages import CoverageExhausted, ExtractionPages, coverage
 from .learning_semantic import (
     MAX_BATCH_ITEMS,
@@ -233,11 +240,45 @@ _SEMANTIC_BATCH_REASK = (
 )
 
 
+# NOBLIVION-243: the nearest-target selection needs a vector for each add
+# candidate. When the embedding model is set up but gives none (it still loads,
+# or a call fails or times out), the job waits EMBEDDING_RETRY_DELAY seconds.
+# Up to MAX_EMBEDDING_DEFERRALS such waits (about one day) give the attempt
+# back; past them each wait counts an attempt. An explicit retry renews the count.
+EMBEDDING_RETRY_DELAY = 300.0
+MAX_EMBEDDING_DEFERRALS = 288
+EMBEDDING_COUNTER = "embedding_deferrals"
+# The time limit of one embedding call of the semantic selection. A background
+# job can wait longer than a search answer.
+EMBEDDING_TIMEOUT_S = 30.0
+# The task limit for counting the tasks of a stage before its bound is checked.
+UNBOUNDED_TASKS = 1 << 40
+
+
 def _max_semantic_tasks(job: dict) -> int:
     """The task bound of a job: contract 2 packs up to MAX_BATCH_ITEMS per call."""
     if job.get("contract", LEGACY_EXTRACTION_CONTRACT) >= 2:
         return 512 * MAX_BATCH_ITEMS
     return 512
+
+
+def _over_bound(job: dict, tasks: list[dict], max_chars: int) -> bool:
+    """True when these tasks fail the task or batch bound of the job."""
+    if len(tasks) > _max_semantic_tasks(job):
+        return True
+    if job.get("contract", LEGACY_EXTRACTION_CONTRACT) >= 2:
+        return len(semantic_batches(tasks, max_chars=max_chars)) > 512
+    return False
+
+
+def _stage_started(stage: dict) -> bool:
+    """True when a semantic stage holds a comparison answer or a re-ask."""
+    return bool(
+        stage.get("next_task", 0)
+        or stage.get("next_batch", 0)
+        or stage.get("fallback_done")
+        or stage.get("reasks")
+    )
 
 
 # Text-free reason class of a candidate that the worker does not store.
@@ -332,6 +373,10 @@ def piece_leaves(splits, slot: int = 0):
 
 class DependencyDeferred(RuntimeError):
     """A hidden existing statement may change a proposed write."""
+
+
+class EmbeddingDeferred(RuntimeError):
+    """The embedding model is set up but gave no vector now (NOBLIVION-243)."""
 
 
 @dataclass(frozen=True)
@@ -435,11 +480,19 @@ REQUEST_PROVIDER = ("provider_type", "endpoint", "model", "reasoning_effort")
 # keeps the version it froze, so it resumes with version 1 windows and calls. A
 # job frozen under version 1 with no partial work freezes again under the newest
 # version when a worker leases it (see LearningWorker._may_refreeze).
-EXTRACTION_CONTRACT = 2
+# NOBLIVION-243 adds version 3. It has the windows and batches of version 2, but
+# compares each add candidate only with its nearest notes and earlier candidates
+# (learning_nearest), so the semantic calls of a job no longer grow with the
+# note count. A job of version 1 or 2 with partial work keeps its version. When
+# its full comparison exceeds its task bound and no comparison has run yet, it
+# takes the same nearest selection instead of failing (LearningWorker._bound_stage).
+EXTRACTION_CONTRACT = 3
 # Releases up to 0.1.24 stored no contract. Their contract is version 1.
 LEGACY_EXTRACTION_CONTRACT = 1
 # Every version this worker can run. A started job continues under its own one.
-SUPPORTED_CONTRACTS = (1, 2)
+SUPPORTED_CONTRACTS = (1, 2, 3)
+# The first version that always compares with the nearest targets only.
+NEAREST_CONTRACT = 3
 # Consolidation and draft jobs use only version 1 text, which version 2 keeps
 # unchanged. They freeze version 1, so their started stages keep matching.
 DERIVATION_CONTRACT = 1
@@ -459,7 +512,7 @@ PARTIAL_WORK = (
     "rejected_windows",
 )
 # Characters per window are window_chars times this factor.
-WINDOW_SCALE = {1: 1, 2: 2}
+WINDOW_SCALE = {1: 1, 2: 2, 3: 2}
 # The exact configuration shape frozen by releases up to 0.1.24.
 LEGACY_SETTINGS = (
     "max_attempts",
@@ -880,11 +933,15 @@ class LearningWorker:
         *,
         worker_id: str | None = None,
         allowed_scopes: set[tuple[str, str]] | None = None,
+        embedding=None,
     ):
         self.ledger = ledger
         self.provider = provider
         self.settings = settings
         self.budget_limits = budget_limits
+        # The store's EmbeddingService, or None: the semantic selection then
+        # uses keyword order only (NOBLIVION-243).
+        self.embedding = embedding
         self.worker_id = worker_id or "learning-" + uuid.uuid4().hex
         self.allowed_scopes = allowed_scopes
         self.stop: Event | None = None
@@ -1022,6 +1079,21 @@ class LearningWorker:
             state["dependency_deferred"] = True
             self.ledger.checkpoint(ident, lease, state)
             return self._bounded_defer(ident, lease, "ContextDependencyDeferred")
+        except EmbeddingDeferred:
+            self.ledger.checkpoint(ident, lease, state)
+            error = "SemanticEmbeddingUnavailable"
+            outcome = self.ledger.defer(
+                ident,
+                lease,
+                retry_delay=EMBEDDING_RETRY_DELAY,
+                error=error,
+                cap=MAX_EMBEDDING_DEFERRALS,
+                max_attempts=cfg.max_attempts,
+                counter=EMBEDDING_COUNTER,
+            )
+            if outcome == "deferred":
+                return {"status": "deferred", "job_id": ident, "error": error}
+            return {"status": "failed", "job_id": ident, "error": error, "permanent": False}
         except ProviderError as exc:
             reason = "Provider:" + exc.reason
             if exc.reason == "length":
@@ -1700,7 +1772,11 @@ class LearningWorker:
     def _semantic(
         self, job: dict, decisions: list[dict], context: list[dict], state: dict
     ) -> list[dict]:
-        """Compare all managed notes, including zero lexical overlap, before adds.
+        """Compare the managed notes, including zero lexical overlap, before adds.
+
+        Contract 3 compares each add with its nearest notes and earlier adds
+        only; contracts 1 and 2 compare all of them while they fit their task
+        bound (_bound_stage, NOBLIVION-243).
 
         A semantic judgment can prevent a write, never authorize a correction.
         Equivalent, contradictory or uncertain candidates become visible conflicts.
@@ -1725,6 +1801,7 @@ class LearningWorker:
         while True:
             if stage["snapshot"] != self._semantic_snapshot(job):
                 stage = self._refresh_semantic(job, decisions, context, state, stage, max_chars)
+            self._bound_stage(job, decisions, stage, state, max_chars)
             if job.get("contract", LEGACY_EXTRACTION_CONTRACT) >= 2:
                 self._semantic_batched(job, decisions, stage, state, max_chars)
             else:
@@ -1790,13 +1867,19 @@ class LearningWorker:
         because its later tasks were skipped. The new stage covers every current
         note: its tasks are all targets minus the kept comparisons.
         """
-        tasks = semantic_targets(
-            decisions,
-            stage["notes"],
-            max_chars=max_chars,
-            max_tasks=_max_semantic_tasks(job),
-            skip=stage.get("covered"),
-        )
+        if stage["next_task"] or stage.get("fallback_done"):
+            tasks = semantic_targets(
+                decisions,
+                stage["notes"],
+                max_chars=max_chars,
+                max_tasks=_max_semantic_tasks(job),
+                skip=stage.get("covered"),
+                nearest=stage.get("nearest"),
+            )
+        else:
+            # No task has an answer yet, so no task is finished. A stage that
+            # exceeds its bound is not built (NOBLIVION-243).
+            tasks = []
         done: dict[int, set[str]] = {}
         for key, ids in (stage.get("covered") or {}).items():
             done.setdefault(int(key), set()).update(ids)
@@ -1851,10 +1934,110 @@ class LearningWorker:
         self.ledger.checkpoint(job["id"], job["lease_token"], state)
         return fresh
 
+    def _bound_stage(self, job, decisions, stage, state, max_chars) -> None:
+        """Store the nearest-target selection of a stage that needs one (NOBLIVION-243).
+
+        Contract 3 selects the nearest targets of each add candidate once per
+        stage, before the first comparison. Contracts 1 and 2 keep the full
+        comparison while it fits their task bound, so their task lists stay as
+        before. A stage of theirs over the bound failed with "semantic
+        reconciliation exceeds bounded task count" before any comparison. Such
+        a stage, while it has no answer, takes the nearest selection instead
+        (the smaller one when the first still exceeds the bound). The selection
+        is stored, so a resume builds the same tasks.
+        """
+        if "nearest" in stage:
+            return
+        contract = job.get("contract", LEGACY_EXTRACTION_CONTRACT)
+        if contract >= NEAREST_CONTRACT:
+            if _stage_started(stage):
+                raise ValidationError("invalid durable semantic selection")
+            vectors, mode = self._semantic_vectors(job, decisions, stage["notes"])
+            stage["nearest"] = nearest_targets(decisions, stage["notes"], vectors)
+            stage["selection"] = mode
+            self.ledger.checkpoint(job["id"], job["lease_token"], state)
+            return
+        if _stage_started(stage):
+            return
+        full = semantic_targets(
+            decisions,
+            stage["notes"],
+            max_chars=max_chars,
+            max_tasks=UNBOUNDED_TASKS,
+            skip=stage.get("covered"),
+        )
+        if not _over_bound(job, full, max_chars):
+            return
+        vectors, mode = self._semantic_vectors(job, decisions, stage["notes"])
+        for notes_limit, candidates_limit in FALLBACK_SELECTIONS:
+            selection = nearest_targets(
+                decisions,
+                stage["notes"],
+                vectors,
+                notes_limit=notes_limit,
+                candidates_limit=candidates_limit,
+            )
+            tasks = semantic_targets(
+                decisions,
+                stage["notes"],
+                max_chars=max_chars,
+                max_tasks=UNBOUNDED_TASKS,
+                skip=stage.get("covered"),
+                nearest=selection,
+            )
+            if not _over_bound(job, tasks, max_chars):
+                stage["nearest"] = selection
+                stage["selection"] = mode
+                stage["bound_fallback"] = [notes_limit, candidates_limit]
+                self.ledger.checkpoint(job["id"], job["lease_token"], state)
+                return
+        # Even the smaller selection exceeds the bound: the round fails visibly.
+
+    def _semantic_vectors(self, job, decisions, notes):
+        """Normalized vectors for the nearest selection, and the selection mode.
+
+        A note uses its stored vector of the current model. A note with none
+        yet, and each add candidate, is embedded now. No embedding service, a
+        service with no model or a failed one, and a remote model that may not
+        receive transcript-derived text all mean keyword order (None). A model
+        that is set up but gives no vector now defers the job (EmbeddingDeferred).
+        """
+        from .embedding import STATE_FAILED, STATE_NONE
+
+        service = self.embedding
+        if service is None or getattr(service, "state", STATE_NONE) in (STATE_NONE, STATE_FAILED):
+            return None, MODE_KEYWORD
+        embedder = getattr(service, "embedder", None)
+        if embedder is not None and embedder.remote and not service.include_mined:
+            return None, MODE_KEYWORD
+        model = service.model_id
+        if model is None:
+            raise EmbeddingDeferred()
+        vectors = self.ledger.note_vectors(job["project"], [n["note_id"] for n in notes], model)
+
+        def embed(text: str) -> list[float]:
+            vector = service.embed_query(text, EMBEDDING_TIMEOUT_S, self.ledger.conn)
+            if vector is None or service.model_id != model:
+                raise EmbeddingDeferred()
+            return vector
+
+        for note in notes:
+            if str(note["note_id"]) not in vectors:
+                vectors[str(note["note_id"])] = embed(note["statement"])
+        for index, decision in enumerate(decisions):
+            if decision["action"] == "add":
+                vectors[candidate_key(index)] = embed(decision["statement"])
+        return vectors, MODE_HYBRID
+
     def _semantic_round(self, job, decisions, stage, state, max_chars) -> None:
         """Run the open tasks of the stage; each finished task is durable."""
         tasks = semantic_targets(
-            decisions, stage["notes"], max_chars=max_chars, skip=stage.get("covered")
+            decisions,
+            stage["notes"],
+            max_chars=max_chars,
+            max_tasks=_max_semantic_tasks(job),
+            skip=stage.get("covered"),
+            nearest=stage.get("nearest"),
         )
         results = stage["decisions"]
         for index in range(stage["next_task"], len(tasks)):
@@ -1930,6 +2113,7 @@ class LearningWorker:
             max_chars=max_chars,
             max_tasks=_max_semantic_tasks(job),
             skip=stage.get("covered"),
+            nearest=stage.get("nearest"),
         )
         batches = semantic_batches(tasks, max_chars=max_chars)
         if len(batches) > 512:

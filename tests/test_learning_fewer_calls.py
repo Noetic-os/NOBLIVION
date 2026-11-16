@@ -127,15 +127,15 @@ def many_candidates(ledger, count, prefix=""):
     return result
 
 
-def test_new_job_freezes_contract_2_and_uses_larger_windows(ledger):
+def test_new_job_freezes_the_newest_contract_and_uses_larger_windows(ledger):
     capture(ledger, "long", "Routine context. " * 1100)  # 18,700 characters
     provider = Oracle()
     assert run(ledger, provider)["status"] == "done"
-    # Contract 1 needs two windows for this text; contract 2 needs one.
+    # Contract 1 needs two windows for this text; contracts 2 and 3 need one.
     assert provider.offsets == [0]
     state = progress(ledger)
-    assert state["execution_configuration"]["contract"] == 2
-    assert state["call_configuration"]["contract"] == 2
+    assert state["execution_configuration"]["contract"] == 3
+    assert state["call_configuration"]["contract"] == 3
 
 
 def test_contract_1_job_resumes_with_contract_1_windows_and_calls(ledger, monkeypatch):
@@ -148,7 +148,7 @@ def test_contract_1_job_resumes_with_contract_1_windows_and_calls(ledger, monkey
     frozen = progress(ledger)
     assert frozen["execution_configuration"]["contract"] == 1
     monkeypatch.undo()
-    assert learning_worker.EXTRACTION_CONTRACT == 2
+    assert learning_worker.EXTRACTION_CONTRACT == 3
     ledger.conn.execute("UPDATE learning_budget SET created_at=created_at-86401")
     ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0")
     result = run(ledger, provider)

@@ -360,7 +360,12 @@ class LearningPool:
             try:
                 with self.store.connection() as conn:
                     ledger = PooledLedger(conn, self)
-                    result = run_once(ledger, settings, worker_id=worker_id)
+                    result = run_once(
+                        ledger,
+                        settings,
+                        worker_id=worker_id,
+                        embedding=getattr(self.store, "embedding", None),
+                    )
             except Exception as exc:  # noqa: BLE001 - pending work survives this pass
                 log.error("learning pass failed: %s", type(exc).__name__)
             finally:
@@ -495,8 +500,18 @@ def worker_options(settings: dict):
     return provider, worker, budget
 
 
-def run_once(ledger: LearningLedger, settings: dict, *, worker_id: str | None = None):
-    """Construct an explicitly configured local worker; no provider fallback."""
+def run_once(
+    ledger: LearningLedger,
+    settings: dict,
+    *,
+    worker_id: str | None = None,
+    embedding=None,
+):
+    """Construct an explicitly configured local worker; no provider fallback.
+
+    ``embedding`` is the store's EmbeddingService for the semantic selection
+    of extraction contract 3 (NOBLIVION-243), or None for keyword order.
+    """
     from noblivion.learning_worker import LearningWorker
 
     worker = LearningWorker(
@@ -504,6 +519,7 @@ def run_once(ledger: LearningLedger, settings: dict, *, worker_id: str | None = 
         *worker_options(settings),
         worker_id=worker_id,
         allowed_scopes={(s["project"], s["root"]) for s in settings["scopes"]},
+        embedding=embedding,
     )
     return worker.run_once()
 

@@ -413,14 +413,14 @@ def capture_turn(ledger, user_text, assistant_text):
 
 
 def test_split_piece_without_eligible_evidence_gets_a_receipt_and_no_call(ledger):
-    # NOBLIVION-241: under contract 2 the no-call receipt is per piece, so the
+    # NOBLIVION-241: from contract 2 on the no-call receipt is per piece, so the
     # assistant half of a split window gets no model call.
     capture_turn(ledger, "User asks about routine context. " * 60, "Assistant narration. " * 80)
     provider = CappedProvider(ledger, cap=2500)
     run = LearningWorker(ledger, provider, WorkerSettings(), LIMITS)
     assert run.run_once()["status"] == "done"
     _, _, progress = job_row(ledger)
-    assert progress["execution_configuration"]["contract"] == 2
+    assert progress["execution_configuration"]["contract"] == 3
     assert progress["length_splits"] == {"0": [0]}
     # The whole window ends on length, then only the user piece is called.
     assert provider.results == ["length", "success"]

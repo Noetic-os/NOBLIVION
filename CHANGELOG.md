@@ -18,6 +18,27 @@ All notable changes to NOBLIVION. The format follows
   text drops ", instead of query" (the tool text still says it), the three
   host-hook fields say "Host hook sets.", and `include_mined` no longer
   lists its default in the schema (the default is still `false`).
+- The semantic calls of a learning job no longer grow with the note count
+  (NOBLIVION-243). New jobs start under extraction contract version 3. It keeps
+  the windows and batches of version 2, but compares each new add candidate only
+  with its 16 nearest managed notes and its 16 nearest earlier candidates of the
+  job, not with every note of the scope. Four of the 16 places go to the best
+  BM25 keyword matches, the others to the highest cosine similarity of the
+  embeddings (stored note vectors; a note without one and each candidate are
+  embedded with the store's model). A scope with at most 16 notes is still
+  compared whole, and each selected pair still needs one explicit relation. The
+  selection is stored with the semantic stage, so a resume builds the same
+  tasks. Without an embedding model, or with a remote model that may not receive
+  transcript-derived text, the order is the keyword order alone. When the model
+  is set up but gives no vector (it still loads, or a call fails), the job waits
+  5 minutes as `SemanticEmbeddingUnavailable` and keeps its attempt, for up to
+  288 such waits. A job of version 1 or 2 with partial work keeps its version
+  and its full comparison. When that full comparison exceeds the task bound of
+  the job and no comparison has run yet, the job takes the nearest selection
+  (16 + 16, else 8 + 8) instead of failing with "semantic reconciliation exceeds
+  bounded task count". So `noblivion learning retry --root <root> --error
+  "ValidationError: semantic reconciliation exceeds bounded task count"` can
+  now finish such jobs.
 
 ## 0.1.33 - 2026-11-16
 

@@ -837,11 +837,15 @@ def semantic_targets(
     max_chars: int = 16000,
     max_tasks: int = 512,
     skip: dict[str, list[str]] | None = None,
+    nearest: dict[str, list[str]] | None = None,
 ) -> list[dict]:
-    """Bound each comparison, covering all supplied managed notes and batch adds.
+    """Bound each comparison, covering the supplied managed notes and batch adds.
 
     ``skip`` maps a candidate index (as text) to the target ids that already
     have a valid comparison. Those targets get no new task (NOBLIVION-250).
+    ``nearest`` maps each add candidate index (as text) to the only target ids
+    it is compared with (``learning_nearest``, NOBLIVION-243). None compares
+    every target. The target order stays the same, so the tasks are a subset.
     """
     tasks = []
     for index, decision in enumerate(decisions):
@@ -857,6 +861,12 @@ def semantic_targets(
                 targets.append(
                     {"target_id": f"candidate:{prior_index}", "statement": prior["statement"]}
                 )
+        if nearest is not None:
+            chosen = nearest.get(str(index))
+            if not isinstance(chosen, list):
+                raise ValidationError("invalid durable semantic selection")
+            allowed = set(chosen)
+            targets = [target for target in targets if target["target_id"] in allowed]
         if skip and skip.get(str(index)):
             done = set(skip[str(index)])
             targets = [target for target in targets if target["target_id"] not in done]

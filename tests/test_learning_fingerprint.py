@@ -7,7 +7,14 @@ from dataclasses import asdict, fields, replace
 
 import pytest
 
-from noblivion import db, learning_extract, learning_semantic, learning_synthesis, learning_worker
+from noblivion import (
+    db,
+    learning_extract,
+    learning_nearest,
+    learning_semantic,
+    learning_synthesis,
+    learning_worker,
+)
 from noblivion.learning import BudgetLimits, LearningLedger
 from noblivion.learning_synthesis import _legacy_runtime_matches, _runtime_fingerprint
 from noblivion.learning_worker import (
@@ -89,6 +96,7 @@ WINDOWS = [[{"source_id": "source-1", "offset": 0, "text": "x"}]]
 CONTRACT_TEXT = {
     1: "d36896fdc03a381cefca3212199a2e5afae95d357f5a703085e3c5bf9c392e99",
     2: "2f619bf75a9c87e331d199a63ee244df59cddc739b746a4133fcb6f757f67311",
+    3: "ee363ea1c4d8989367e128a760314d0465c671aa9e58bae10bccceb339fe4326",
 }
 
 
@@ -173,6 +181,14 @@ def contract_text(version):
             learning_semantic.MAX_BATCH_ITEMS,
             learning_semantic.MAX_BATCH_PAIRS,
             learning_worker.WINDOW_SCALE[2],
+        ]
+    if version >= 3:
+        text += [
+            learning_nearest.NEAREST_NOTES,
+            learning_nearest.NEAREST_CANDIDATES,
+            learning_nearest.KEYWORD_SHARE,
+            learning_nearest.FALLBACK_SELECTIONS,
+            learning_worker.WINDOW_SCALE[3],
         ]
     return hashlib.sha256(json.dumps(text, sort_keys=True).encode()).hexdigest()
 

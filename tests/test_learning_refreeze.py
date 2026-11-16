@@ -39,7 +39,7 @@ def freeze_under_contract_1(ledger, monkeypatch, provider, **limits):
     frozen = progress(ledger)
     assert frozen["execution_configuration"]["contract"] == 1
     monkeypatch.undo()
-    assert learning_worker.EXTRACTION_CONTRACT == 2
+    assert learning_worker.EXTRACTION_CONTRACT == 3
     reopen(ledger)
     return first, frozen
 
@@ -48,7 +48,7 @@ def pages(ledger):
     return ledger.conn.execute("SELECT count(*) FROM learning_extraction_pages").fetchone()[0]
 
 
-def test_job_frozen_with_no_work_freezes_again_under_contract_2(ledger, monkeypatch):
+def test_job_frozen_with_no_work_freezes_again_under_the_newest_contract(ledger, monkeypatch):
     adds = many_candidates(ledger, 11, prefix=LONG)
     provider = Oracle(adds)
     # No call fits the budget: the job froze, but no window is done.
@@ -59,10 +59,10 @@ def test_job_frozen_with_no_work_freezes_again_under_contract_2(ledger, monkeypa
     assert result["status"] == "done"
     after = progress(ledger)
     assert after["refrozen_from"] == 1
-    assert after["execution_configuration"]["contract"] == 2
-    assert after["call_configuration"]["contract"] == 2
+    assert after["execution_configuration"]["contract"] == 3
+    assert after["call_configuration"]["contract"] == 3
     assert after["execution_fingerprint"] != frozen["execution_fingerprint"]
-    # Contract 2 windows (twice as large) and batched semantic calls.
+    # Contract 3 keeps the contract 2 windows (twice as large) and batched semantic calls.
     assert provider.offsets == [0] and "semantic" not in provider.calls
     assert provider.calls.count("batch") == 2
 
@@ -82,7 +82,7 @@ def test_job_with_a_failed_call_and_no_page_freezes_again(ledger, monkeypatch):
     assert first["status"] == "failed" and first["permanent"] is False
     assert "call_configuration" in frozen and pages(ledger) == 0
     assert run(ledger, provider)["status"] == "done"
-    assert progress(ledger)["execution_configuration"]["contract"] == 2
+    assert progress(ledger)["execution_configuration"]["contract"] == 3
     assert provider.offsets == [0]
 
 

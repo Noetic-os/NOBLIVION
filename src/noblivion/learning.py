@@ -923,6 +923,7 @@ class LearningLedger:
             progress.pop("returned_deferrals", None)
             progress.pop("unavailable_deferrals", None)
             progress.pop("unavailable_since", None)
+            progress.pop("embedding_deferrals", None)  # NOBLIVION-243
             from .learning_pages import retry_rejected
 
             retry_rejected(self.conn, job_id)
@@ -959,6 +960,36 @@ class LearningLedger:
             (project, root),
         ).fetchall()
         return [self._note(row) for row in rows]
+
+    def note_vectors(self, project: str, note_ids: list[str], model: str) -> dict[str, list[float]]:
+        """Stored vectors of ``model`` for these semantic targets (NOBLIVION-243).
+
+        A managed note uses the vector of its projected memory row, a legacy
+        target (``legacy:<id>``) the vector of that row. A target without a
+        stored vector is absent; the caller embeds its statement.
+        """
+        from .embedding import blob_to_vector
+
+        wanted = {str(note_id) for note_id in note_ids}
+        found: dict[str, list[float]] = {}
+        for note_id, blob in self.conn.execute(
+            "SELECT n.note_id, v.blob FROM learning_notes n JOIN memories m "
+            "ON m.project=n.project AND m.root=n.root AND m.path=n.path "
+            "JOIN vectors v ON v.memory_id=m.id AND v.model=? WHERE n.project=?",
+            (model, project),
+        ):
+            if note_id in wanted:
+                found[note_id] = blob_to_vector(blob)
+        legacy = [n for n in wanted if n.startswith("legacy:") and n[7:].isdigit()]
+        for note_id in legacy:
+            row = self.conn.execute(
+                "SELECT v.blob FROM vectors v JOIN memories m ON m.id=v.memory_id "
+                "WHERE v.memory_id=? AND v.model=? AND m.project=?",
+                (int(note_id[7:]), model, project),
+            ).fetchone()
+            if row is not None:
+                found[note_id] = blob_to_vector(row[0])
+        return found
 
     def semantic_notes(
         self, project: str, root: str, *, session_id: str = ""
