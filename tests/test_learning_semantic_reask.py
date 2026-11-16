@@ -522,8 +522,11 @@ def seed_many(ledger, count):
 
 @pytest.mark.parametrize("failing_task", [0, 1])
 def test_a_candidate_with_more_than_16_targets_is_not_stored_if_one_task_fails(
-    ledger, failing_task
+    ledger, failing_task, monkeypatch
 ):
+    # The full comparison of contract 1, which a started job with an answer
+    # keeps. With no answer it would take the nearest 16 notes (NOBLIVION-257).
+    monkeypatch.setattr(learning_worker.LearningWorker, "_bound_stage", lambda *args: None)
     seed_many(ledger, 17)
     lessons = two_lessons(ledger)
     tasks = {"n": 0}

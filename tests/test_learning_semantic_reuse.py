@@ -302,10 +302,14 @@ def test_note_added_inside_the_commit_race_is_refused_then_compared(ledger, setu
 
 
 @pytest.mark.parametrize("change", [False, True])
-def test_stage_checkpointed_by_0_1_29_resumes(ledger, setup, change):
+def test_stage_checkpointed_by_0_1_29_resumes(ledger, setup, change, monkeypatch):
     """A 0.1.29 stage has only notes, snapshot, next_task, decisions and reasks."""
     provider = Provider({"Prefer tabs": setup["candidates"]})
-    state = pause_after_first_comparison(ledger, setup, provider)
+    with monkeypatch.context() as old:
+        # 0.1.29 has no nearest selection (NOBLIVION-257 gives one to a stage
+        # with no answer). The answered stage keeps the full comparison.
+        old.setattr(learning_worker.LearningWorker, "_bound_stage", lambda *args: None)
+        state = pause_after_first_comparison(ledger, setup, provider)
     fingerprint = state["fingerprint"], state["execution_fingerprint"]
     # The stage that 0.1.29 writes, with a pending re-ask of task 1.
     assert set(state["semantic"]) == {"notes", "snapshot", "next_task", "decisions", "reasks"}

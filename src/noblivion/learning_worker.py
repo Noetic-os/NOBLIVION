@@ -281,6 +281,23 @@ def _stage_started(stage: dict) -> bool:
     )
 
 
+def _stage_answered(stage: dict, decisions: list[dict]) -> bool:
+    """True when a semantic stage holds an answer that still counts (NOBLIVION-257).
+
+    It counts the progress of the current stage (_stage_started) and what a
+    refresh kept from an earlier stage (NOBLIVION-250): the comparisons in
+    ``covered``, and each add that a comparison turned into a conflict or left
+    unvalidated.
+    """
+    if _stage_started(stage) or stage.get("covered"):
+        return True
+    results = stage.get("decisions") or ()
+    return any(
+        decision["action"] == "add" and result["action"] != "add"
+        for decision, result in zip(decisions, results)  # noqa: B905 - 3.9 lane
+    )
+
+
 # Text-free reason class of a candidate that the worker does not store.
 SEMANTIC_UNVALIDATED = "semantic comparison not validated"
 
@@ -483,9 +500,11 @@ REQUEST_PROVIDER = ("provider_type", "endpoint", "model", "reasoning_effort")
 # NOBLIVION-243 adds version 3. It has the windows and batches of version 2, but
 # compares each add candidate only with its nearest notes and earlier candidates
 # (learning_nearest), so the semantic calls of a job no longer grow with the
-# note count. A job of version 1 or 2 with partial work keeps its version. When
-# its full comparison exceeds its task bound and no comparison has run yet, it
-# takes the same nearest selection instead of failing (LearningWorker._bound_stage).
+# note count. A job of version 1 or 2 with partial work keeps its version and
+# its windows. NOBLIVION-257: while its semantic stage has no answered
+# comparison, it takes the same nearest selection; with an answer it keeps the
+# full comparison. Over its task bound with no comparison in the current stage,
+# it also takes the nearest selection instead of failing (LearningWorker._bound_stage).
 EXTRACTION_CONTRACT = 3
 # Releases up to 0.1.24 stored no contract. Their contract is version 1.
 LEGACY_EXTRACTION_CONTRACT = 1
@@ -1775,8 +1794,9 @@ class LearningWorker:
         """Compare the managed notes, including zero lexical overlap, before adds.
 
         Contract 3 compares each add with its nearest notes and earlier adds
-        only; contracts 1 and 2 compare all of them while they fit their task
-        bound (_bound_stage, NOBLIVION-243).
+        only. Contracts 1 and 2 do the same while their stage has no answered
+        comparison; with an answer they compare all of them while they fit
+        their task bound (_bound_stage, NOBLIVION-243, NOBLIVION-257).
 
         A semantic judgment can prevent a write, never authorize a correction.
         Equivalent, contradictory or uncertain candidates become visible conflicts.
@@ -1929,6 +1949,11 @@ class LearningWorker:
             fresh["covered"] = covered
         if stage.get("rejected"):
             fresh["rejected"] = stage["rejected"]
+        if stage.get("nearest_upgrade"):
+            # An old-contract stage that took the nearest selection selects
+            # again for the new note set; its answers never bring back the
+            # full comparison (NOBLIVION-257).
+            fresh["nearest_upgrade"] = stage["nearest_upgrade"]
         state["semantic"] = fresh
         state["semantic_restarts"] = state.get("semantic_restarts", 0) + 1
         state["semantic_reused"] = state.get("semantic_reused", 0) + reused
@@ -1941,13 +1966,18 @@ class LearningWorker:
         """Store the nearest-target selection of a stage that needs one (NOBLIVION-243).
 
         Contract 3 selects the nearest targets of each add candidate once per
-        stage, before the first comparison. Contracts 1 and 2 keep the full
-        comparison while it fits their task bound, so their task lists stay as
-        before. A stage of theirs over the bound failed with "semantic
-        reconciliation exceeds bounded task count" before any comparison. Such
-        a stage, while it has no answer, takes the nearest selection instead
-        (the smaller one when the first still exceeds the bound). The selection
-        is stored, so a resume builds the same tasks.
+        stage, before the first comparison.
+
+        Contracts 1 and 2 keep their windows and stored extraction answers.
+        NOBLIVION-257: a stage of theirs with no answered comparison, also none
+        that a refresh kept (_stage_answered), takes the nearest selection, so
+        its calls no longer grow with the note count. The stage records this in
+        ``nearest_upgrade``, and a refresh keeps that mark, so the job never
+        mixes the two selections. A stage with an answer keeps the full
+        comparison while it fits the task bound. Over the bound, with no answer
+        in the current stage, it takes the nearest selection instead of failing
+        (as in 0.1.34). The smaller selection is used when the first exceeds
+        the bound. The selection is stored, so a resume builds the same tasks.
         """
         if "nearest" in stage:
             return
@@ -1961,7 +1991,10 @@ class LearningWorker:
             self.ledger.checkpoint(job["id"], job["lease_token"], state)
             return
         if _stage_started(stage):
+            if stage.get("nearest_upgrade"):
+                raise ValidationError("invalid durable semantic selection")
             return
+        upgrade = bool(stage.get("nearest_upgrade")) or not _stage_answered(stage, decisions)
         full = semantic_targets(
             decisions,
             stage["notes"],
@@ -1969,7 +2002,8 @@ class LearningWorker:
             max_tasks=UNBOUNDED_TASKS,
             skip=stage.get("covered"),
         )
-        if not _over_bound(job, full, max_chars):
+        over = _over_bound(job, full, max_chars)
+        if not (upgrade or over):
             return
         vectors, mode = self._semantic_vectors(job, decisions, stage["notes"])
         for notes_limit, candidates_limit in FALLBACK_SELECTIONS:
@@ -1991,7 +2025,14 @@ class LearningWorker:
             if not _over_bound(job, tasks, max_chars):
                 stage["nearest"] = selection
                 stage["selection"] = mode
-                stage["bound_fallback"] = [notes_limit, candidates_limit]
+                # Contract 2 binds next_batch to the digest of its batches
+                # before the first batch call. No batch has an answer here, so
+                # the digest of the new batches replaces it.
+                stage.pop("batch_digest", None)
+                if upgrade:
+                    stage["nearest_upgrade"] = [notes_limit, candidates_limit]
+                if over:
+                    stage["bound_fallback"] = [notes_limit, candidates_limit]
                 self.ledger.checkpoint(job["id"], job["lease_token"], state)
                 return
         # Even the smaller selection exceeds the bound: the round fails visibly.

@@ -135,6 +135,7 @@ class Provider:
     def __init__(self, candidates):
         self.candidates = candidates
         self.targets = []  # one set of compared target statements per call
+        self.extractions = 0
 
     def estimate_cost(self, tokens):
         return 0.0
@@ -159,6 +160,7 @@ class Provider:
                 {"target_id": t["target_id"], "relation": "distinct"} for t in payload["targets"]
             ]
             return ProviderResponse(json.dumps({"version": 1, "relations": relations}), 50)
+        self.extractions += 1
         found = [
             c
             for c in self.candidates
@@ -337,19 +339,99 @@ def freeze(ledger, monkeypatch, provider, contract, **limits):
     return first
 
 
-@pytest.mark.parametrize("contract", [1, 2])
-def test_a_started_old_contract_job_keeps_the_full_comparison(ledger, monkeypatch, contract):
-    seed_notes(ledger, 20)
-    provider = Provider(new_job(ledger))
-    # One extraction call fits: the window is done, so the job keeps its contract.
-    first = freeze(ledger, monkeypatch, provider, contract, max_calls=1)
+def start_old(ledger, monkeypatch, provider, contract, max_calls):
+    """Run a job as the release before NOBLIVION-257 until the budget stops it."""
+    with monkeypatch.context() as old:
+        # 0.1.34 kept the full comparison for a started old job under its bound.
+        old.setattr(learning_worker.LearningWorker, "_bound_stage", lambda *args: None)
+        first = freeze(ledger, old, provider, contract, max_calls=max_calls)
     assert first["error"] == "BudgetExceeded"
+
+
+def wake(ledger):
+    """A new budget day: the waiting job may run again."""
     ledger.conn.execute("UPDATE learning_budget SET created_at=created_at-86401")
     ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0")
+
+
+def add_note(ledger, ident):
+    """A note from another job: the stored stage of a waiting job is refreshed."""
+    record = capture(ledger, ident, f"Other rule {ident}.")
+    job = ledger.claim("seed")
+    item = candidate(record, key=ident)
+    item["evidence"] = refs(record)
+    ledger.finish(job["id"], job["lease_token"], [item])
+
+
+@pytest.mark.parametrize("count", [20, 60])
+@pytest.mark.parametrize("contract", [1, 2])
+def test_an_old_job_with_no_semantic_answer_takes_the_nearest_selection(
+    ledger, monkeypatch, contract, count
+):
+    """NOBLIVION-257: stored extraction answers, a semantic stage at task 0."""
+    seed_notes(ledger, count)
+    provider = Provider(new_job(ledger))
+    # One extraction call fits: the window is done, so the job keeps its contract.
+    start_old(ledger, monkeypatch, provider, contract, max_calls=1)
+    wake(ledger)
+    ident, _, _, _, before = job_row(ledger)
+    # With 60 notes the budget stops the job before its semantic stage.
+    assert before.get("semantic", {}).get("next_task", 0) == 0
+    assert provider.extractions == 1 and before["next_window"] == 1
     assert worker(ledger, provider, Service()).run_once()["status"] == "done"
-    progress = job_row(ledger)[4]
+    progress = job_row(ledger, ident)[4]
+    # The frozen contract and fingerprint are unchanged, and the stored
+    # extraction answer is used: each window is asked once.
     assert progress["execution_configuration"]["contract"] == contract
-    assert "nearest" not in progress["semantic"]
+    assert progress["execution_fingerprint"] == before["execution_fingerprint"]
+    assert provider.extractions == progress["next_window"]
+    stage = progress["semantic"]
+    assert stage["nearest_upgrade"] == [NEAREST_NOTES, NEAREST_CANDIDATES]
+    assert stage["selection"] == "hybrid" and "bound_fallback" not in stage
+    # Bounded tasks, the same for 20 and for 60 notes.
+    assert len(provider.targets) == (5 if contract == 1 else 1)
+    assert len(compared_notes(provider, count)) <= 3 * NEAREST_NOTES
+
+
+class FirstEquivalent(Provider):
+    """The first semantic answer blocks its first target as equivalent."""
+
+    def complete(self, messages, **kwargs):
+        before = len(self.targets)
+        response = super().complete(messages, **kwargs)
+        if before or not self.targets:
+            return response
+        body = json.loads(response.content)
+        relations = body["results"][0]["relations"] if "results" in body else body["relations"]
+        relations[0]["relation"] = "equivalent"
+        return replace(response, content=json.dumps(body))
+
+
+@pytest.mark.parametrize("kept", ["stage", "covered", "conflict"])
+def test_an_old_job_with_an_answered_comparison_keeps_the_full_comparison(
+    ledger, monkeypatch, kept
+):
+    """One answer, in the stage, kept in ``covered`` or as a conflict after a refresh."""
+    seed_notes(ledger, 20)
+    lines = [f"Lesson {word} holds for every build." for word in "abc"]
+    cls = FirstEquivalent if kept == "conflict" else Provider
+    provider = cls(new_job(ledger, lines))
+    start_old(ledger, monkeypatch, provider, 1, max_calls=2)
+    ident, _, _, _, before = job_row(ledger)
+    # One call answered; a conflict also skips the other tasks of its candidate.
+    assert before["semantic"]["next_task"] >= 1 and len(provider.targets) == 1
+    if kept != "stage":
+        add_note(ledger, "later")
+    wake(ledger)
+    assert worker(ledger, provider, Service()).run_once()["status"] == "done"
+    progress = job_row(ledger, ident)[4]
+    stage = progress["semantic"]
+    assert "nearest" not in stage and "nearest_upgrade" not in stage
+    if kept == "covered":
+        assert progress["semantic_restarts"] == 1 and stage["covered"]
+    if kept == "conflict":
+        assert progress["semantic_restarts"] == 1 and "covered" not in stage
+        assert stage["decisions"][0]["action"] == "conflict"
     # Every note is compared, as before this change.
     assert compared_notes(provider, 20) == {f"Rule {n} applies to module {n}." for n in range(20)}
 
@@ -520,3 +602,38 @@ def test_a_resume_keeps_the_stored_selection(ledger):
     allowed = {statements[t] for ids in stored.values() for t in ids if t in statements}
     seeded = {n["statement"] for n in stage["notes"]}
     assert all(targets & seeded <= allowed for targets in provider.targets[1:])
+
+
+def test_an_old_job_resumes_and_refreshes_with_the_nearest_selection(ledger, monkeypatch):
+    """NOBLIVION-257: a switched old job keeps its stored selection on a resume,
+    and selects again, never the full comparison, after a refresh."""
+    seed_notes(ledger, 40)
+    lines = [f"Lesson {word} holds for every build." for word in "abcde"]
+    provider = Provider(new_job(ledger, lines))
+    start_old(ledger, monkeypatch, provider, 1, max_calls=1)
+    wake(ledger)
+    # The new release: one semantic task fits, then the budget stops the job.
+    first = worker(ledger, provider, Service(), max_calls=1).run_once()
+    assert first["error"] == "BudgetExceeded"
+    ident, _, _, _, progress = job_row(ledger)
+    stage = progress["semantic"]
+    stored = stage["nearest"]
+    assert stage["next_task"] == 1 and stage["nearest_upgrade"] == [16, 16]
+    wake(ledger)
+    other = OtherService()
+    second = worker(ledger, provider, other, max_calls=1).run_once()
+    assert second["error"] == "BudgetExceeded"
+    stage = job_row(ledger, ident)[4]["semantic"]
+    assert stage["nearest"] == stored and stage["next_task"] == 2 and other.calls == 0
+    # Another job adds a note: the stage refreshes with its answers in covered.
+    add_note(ledger, "later")
+    wake(ledger)
+    assert worker(ledger, provider, Service()).run_once()["status"] == "done"
+    progress = job_row(ledger, ident)[4]
+    stage = progress["semantic"]
+    assert progress["semantic_restarts"] == 1 and stage["covered"]
+    assert stage["nearest_upgrade"] == [16, 16] and "nearest" in stage
+    # Each candidate is compared with at most 16 notes, never with all 41.
+    for ids in stage["nearest"].values():
+        assert len([t for t in ids if not t.startswith("candidate:")]) == NEAREST_NOTES
+    assert len(compared_notes(provider, 40)) < 40

@@ -8,9 +8,11 @@ candidate only with its nearest notes and its nearest earlier candidates. It
 uses the two legs of the recall path: BM25 keyword match and cosine similarity
 of the stored embeddings. Without vectors the order is the keyword order alone.
 
-Each selected (candidate, target) pair still gets one explicit relation. The
-worker computes the selection once per semantic stage and stores it, so a resume
-builds the same tasks whatever the embedding service does later.
+A started contract 1 or 2 job whose semantic stage has no answered comparison
+takes the same selection (NOBLIVION-257). Each selected (candidate, target) pair
+still gets one explicit relation. The worker computes the selection once per
+semantic stage and stores it, so a resume builds the same tasks whatever the
+embedding service does later.
 """
 
 from __future__ import annotations
@@ -25,8 +27,8 @@ from . import bm25
 # targets for a started job, so it needs a new contract version.
 NEAREST_NOTES = 16
 NEAREST_CANDIDATES = 16
-# The smaller selection that the over-bound fallback of contracts 1 and 2 tries
-# when the one above still exceeds the task bound of the job.
+# The smaller selection that contracts 1 and 2 try when the one above still
+# exceeds the task bound of the job.
 FALLBACK_SELECTIONS = ((NEAREST_NOTES, NEAREST_CANDIDATES), (8, 8))
 # One seat in this many goes to the best keyword match (see _nearest).
 KEYWORD_SHARE = 4

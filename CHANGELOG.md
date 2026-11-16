@@ -8,6 +8,21 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- A started learning job of extraction contract 1 or 2 whose semantic stage
+  has no answered comparison now uses the nearest-target selection of contract
+  3 (NOBLIVION-257): each new add candidate is compared with its 16 nearest
+  notes and 16 nearest earlier candidates (8 + 8 when 16 + 16 exceeds the task
+  bound), so its semantic calls no longer grow with the note count. Before,
+  only such a job over its task bound did this. A job with at least one
+  answered comparison keeps the full comparison; an answer that a refresh kept
+  (in `covered`, or a candidate a comparison turned into a conflict or left
+  unvalidated) counts as answered. The job keeps its contract, windows, stored
+  extraction answers and frozen fingerprint. The stage records the switch in
+  `nearest_upgrade`, and a refresh after a note-set change selects again
+  instead of returning to the full comparison. A contract 2 stage drops the
+  batch digest it stored before its first batch call, so the new batches do
+  not fail it with "semantic batches changed during a job".
+
 ## 0.1.34 - 2026-11-16
 
 - `noblivion_recall` can read the older version of a corrected note
