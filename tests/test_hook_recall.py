@@ -1012,6 +1012,7 @@ def test_mcp_initialize_list_call_round_trip(daemon, env):
         "read_capability",
         "session_key",  # NOBLIVION-110
         "agent_key",
+        "history",  # NOBLIVION-189
     }
     assert tools[0]["inputSchema"]["properties"]["k"]["default"] == 5
     res = out[2]["result"]

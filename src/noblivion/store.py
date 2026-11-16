@@ -511,18 +511,23 @@ class Store:
             self._labeller = labels.make_labeller(self.settings)
         return self._labeller
 
+    def memory_folders(self) -> list[Path]:
+        """The memory folders an index scan reads, in scan order."""
+        from noblivion import learning_runtime
+
+        folders = list(self.settings.resolved_memory_dirs())
+        folders.extend(learning_runtime.memory_dirs(self.data_dir, self.namespace))
+        return list(dict.fromkeys(folders))
+
     def scan_once(self, conn: sqlite3.Connection) -> indexer.ScanResult | None:
         """One index scan under ``index.lock``. None when the CLI holds the lock."""
         self.index_state = INDEX_SCANNING
         try:
-            from noblivion import learning_runtime
-
-            folders = list(self.settings.resolved_memory_dirs())
-            folders.extend(learning_runtime.memory_dirs(self.data_dir, self.namespace))
+            folders = self.memory_folders()
             with indexer.index_lock(self.settings.index_lock_path, timeout_s=0.0):
                 result = indexer.scan(
                     conn,
-                    list(dict.fromkeys(folders)),
+                    folders,
                     project=self.namespace,
                     delete_grace_days=self.settings.delete_grace_days,
                     labeller=self._labeller_now(),  # type: ignore[arg-type]

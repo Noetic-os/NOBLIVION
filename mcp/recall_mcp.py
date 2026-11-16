@@ -125,7 +125,7 @@ def _load_hook():
 # NOBLIVION-161. The listing is paid on every call, so each text is short. The three reserved
 # fields stay in the schema: the PreToolUse hook adds them after the model's call, and this
 # server cannot prove here that Claude Code lets a field outside the schema through.
-RESERVED = "Set by the host hook. Omit."
+RESERVED = "Host hook sets."
 FETCH_LIST_MAX = 5
 
 TOOL_SCHEMA: Dict[str, Any] = {
@@ -156,7 +156,7 @@ TOOL_SCHEMA: Dict[str, Any] = {
                         "maxItems": FETCH_LIST_MAX,
                     },
                 ],
-                "description": "Row id or ids, instead of query.",
+                "description": "Row id or ids.",
             },
             "chunk": {
                 "type": "integer",
@@ -169,8 +169,11 @@ TOOL_SCHEMA: Dict[str, Any] = {
             },
             "include_mined": {
                 "type": "boolean",
-                "default": False,
                 "description": "Include lower-trust transcript rows.",
+            },
+            "history": {
+                "type": "boolean",
+                "description": "Older notes it replaced.",
             },
             "read_capability": {"type": "string", "description": RESERVED},
             "session_key": {"type": "string", "description": RESERVED},
@@ -289,6 +292,7 @@ def noblivion_recall(
     section: Any = None,
     session_key: Any = None,
     agent_key: Any = None,
+    history: Any = None,
 ) -> Dict[str, Any]:
     """The tool body. Returns an MCP tools/call result dict.
 
@@ -338,6 +342,16 @@ def noblivion_recall(
         )
     if not isinstance(include_mined, bool):
         return _tool_error("include_mined must be true or false")
+    if history is not None and not isinstance(history, bool):
+        return _tool_error("history must be true or false")
+    if history:
+        if fetch_id is None or isinstance(fetch_id, (list, tuple)):
+            return _tool_error("history goes with one fetch_id")
+        if isinstance(query, str) and query.strip():
+            return _tool_error("pass query OR fetch_id, not both")
+        if chunk is not None or section:
+            return _tool_error("chunk and section do not go with history")
+        return _fetch_history(hook, fetch_id, environ)
     if fetch_id is not None:
         if isinstance(query, str) and query.strip():
             return _tool_error("pass query OR fetch_id, not both")
@@ -701,6 +715,44 @@ def _fetch_one(
     return {"content": [{"type": "text", "text": "\n".join(parts)}], "isError": False}
 
 
+def _fetch_history(hook: Any, fetch_id: Any, environ: Dict[str, str]) -> Dict[str, Any]:
+    """NOBLIVION-189: the older notes that ONE current note replaces by its ``supersedes:``
+    line. The store checks the scope and the current state of every note
+    (``noblivion.history``). The header is not ``GROUNDED MEMORY``, so the text is never read
+    as current, and the fetch records no shown or used memory."""
+    try:
+        mid = int(str(fetch_id).strip())
+    except (TypeError, ValueError):
+        return _tool_error("fetch_id must be a whole number, as shown on an index line")
+    if mid < 1:
+        return _tool_error("fetch_id must be a positive integer")
+    try:
+        answer = hook.fetch_memory_text(mid, environ, history=True)
+    except hook.RecallError as exc:
+        return _store_error(exc.reason)
+    except Exception as exc:  # noqa: BLE001 — a tool result, never a traceback
+        return _tool_error(f"fetch failed ({type(exc).__name__})")
+    items = answer.get("history")
+    if not isinstance(items, list):
+        # A store older than this server ignores the request and answers an ordinary fetch.
+        return _tool_error("the memory store has no historical fetch; update NOBLIVION")
+    reason = answer.get("reason")
+    if reason or not items:
+        return _tool_error(f"memory {mid}: no older version returned ({reason or 'none'})")
+    parts = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            return _tool_error(f"memory {mid}: an older version came back in a bad shape")
+        old = hook._neutral(str(item.get("id") or ""), 24)
+        title = hook._neutral(str(item.get("title") or ""), hook.TITLE_MAX_CHARS) or "memory"
+        source = item.get("source")
+        line = f"HISTORICAL MEMORY {old}, replaced by {mid}: {title}"
+        if isinstance(source, str) and source:
+            line += f" [{hook._neutral(source, hook.TITLE_MAX_CHARS)}]"
+        parts.append(f"{line}\n{hook.neutral_block(item['text'])}")
+    return {"content": [{"type": "text", "text": "\n\n".join(parts)}], "isError": False}
+
+
 def _store_error(reason: str) -> Dict[str, Any]:
     """The tool error for a store call that failed (design doc section 3.5)."""
     if reason in STORE_DOWN_REASONS:
@@ -872,6 +924,7 @@ def handle(message: Any, environ: Optional[Dict[str, str]] = None) -> Optional[D
                 section=args.get("section"),
                 session_key=args.get("session_key"),
                 agent_key=args.get("agent_key"),
+                history=args.get("history"),
             ),
         )
     return _error(req_id, -32601, f"Method not found: {method}")

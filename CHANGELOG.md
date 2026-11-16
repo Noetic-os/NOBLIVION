@@ -8,6 +8,17 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- `noblivion_recall` can read the older version of a corrected note
+  (NOBLIVION-189). `history: true` with one `fetch_id` of a current note
+  returns the archived notes that its `supersedes:` line replaced. The fetch
+  checks the exact project and root, the current file on disk, the
+  learning ledger and memory-use controls, so a forgotten, excluded, edited,
+  removed or other-scope note is refused. Ordinary search and fetch are
+  unchanged. To keep the tool list within its size budget, the `fetch_id`
+  text drops ", instead of query" (the tool text still says it), the three
+  host-hook fields say "Host hook sets.", and `include_mined` no longer
+  lists its default in the schema (the default is still `false`).
+
 ## 0.1.32 - 2026-11-16
 
 - A provider outage no longer exhausts learning jobs (NOBLIVION-253). A

@@ -774,6 +774,8 @@ class Handler(BaseHTTPRequestHandler):
     def _fetch(self, raw_id: str, params: Mapping[str, list[str]]) -> dict:
         store = self.store
         namespace = namespace_of(params, store.namespace)
+        if first(params, "history").strip() == "1":
+            return self._history(raw_id, params)
         try:
             with store.connection() as conn:
                 query = first(params, "query")[:MAX_Q_CHARS]
@@ -795,6 +797,26 @@ class Handler(BaseHTTPRequestHandler):
         except (sqlite3.Error, OSError) as exc:
             log.error("fetch failed: %s", type(exc).__name__)
             return fetch_answer(None, raw_id, namespace)
+
+    def _history(self, raw_id: str, params: Mapping[str, list[str]]) -> dict:
+        """NOBLIVION-189: the older notes one current note replaces (``noblivion.history``)."""
+        from noblivion import history
+
+        store = self.store
+        namespace = namespace_of(params, store.namespace)
+        try:
+            with store.connection() as conn:
+                return history.history_answer(
+                    conn,
+                    raw_id,
+                    namespace,
+                    root_of(params),
+                    first(params, "session_id"),
+                    store.memory_folders(),
+                )
+        except (sqlite3.Error, OSError) as exc:
+            log.error("history fetch failed: %s", type(exc).__name__)
+            return history.history_answer(None, raw_id, namespace, None, "", ())
 
     def _feedback(self, body: dict) -> tuple[int, dict]:
         """Section 4.5. ``persona`` and ``project`` in the body or query are ignored."""
