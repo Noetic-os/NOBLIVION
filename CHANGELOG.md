@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.33 - 2026-11-16
+
 - A hung provider no longer exhausts learning jobs (NOBLIVION-255). A provider
   that accepts the connection and never answers ended each call as
   `Provider:timeout`, which counts an attempt, so a job ended after about
