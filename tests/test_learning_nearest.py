@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -88,6 +89,19 @@ def test_nearest_without_vectors_uses_keyword_order():
     notes.append({"note_id": "match", "statement": "Indent Go code with tabs.", "scope": "project"})
     chosen = nearest_targets([add("Indent with tabs.")], notes, None)["0"]
     assert "match" in chosen
+
+
+def test_keyword_mode_fills_every_seat_when_no_word_is_shared():
+    """No vector and no shared word must not leave a candidate unchecked."""
+    notes = note_pool(40)
+    earlier = [add(f"Earlier lesson number {i}.") for i in range(20)]
+    decisions = [*earlier, add("Prefer brief answers.")]
+    chosen = nearest_targets(decisions, notes, None)["20"]
+    own = [t for t in chosen if not t.startswith("candidate:")]
+    prior = [t for t in chosen if t.startswith("candidate:")]
+    assert len(own) == NEAREST_NOTES and len(prior) == NEAREST_CANDIDATES
+    tasks = semantic_targets(decisions, notes, nearest=nearest_targets(decisions, notes, None))
+    assert sum(len(t["targets"]) for t in tasks if t["candidate_index"] == 20) == 32
 
 
 def test_a_small_pool_is_compared_whole():
@@ -450,3 +464,59 @@ def test_a_remote_model_without_mined_consent_gets_no_candidate_text(ledger):
     assert worker(ledger, provider, service).run_once()["status"] == "done"
     assert job_row(ledger)[4]["semantic"]["selection"] == "keyword"
     assert service.calls == 0
+
+
+def test_each_embedding_call_renews_the_job_lease(ledger):
+    """A slow model and many notes without a vector must not lose the lease."""
+    seed_notes(ledger, 20)
+    provider = Provider(new_job(ledger))
+    service = Service()
+    left = []
+    embed = service.embed_query
+
+    def watched(text, timeout_s=1.0, conn=None):
+        until = conn.execute("SELECT lease_until FROM learning_jobs WHERE status='leased'")
+        left.append(until.fetchone()[0] - time.time())
+        # Time passes: the lease is about to end when this call returns.
+        conn.execute(
+            "UPDATE learning_jobs SET lease_until=? WHERE status='leased'", (time.time() + 1,)
+        )
+        return embed(text, timeout_s, conn)
+
+    service.embed_query = watched
+    assert worker(ledger, provider, service).run_once()["status"] == "done"
+    assert len(left) == 23
+    assert min(left) > learning_worker.EMBEDDING_TIMEOUT_S
+
+
+class OtherService(Service):
+    """Another model: the same texts get other vectors."""
+
+    def embed_query(self, text, timeout_s=1.0, conn=None):
+        self.calls += 1
+        digest = hashlib.sha256(b"other:" + text.encode()).digest()
+        return unit(*(1 + b for b in digest[:8]))
+
+
+def test_a_resume_keeps_the_stored_selection(ledger):
+    """The selection is made once; a resume with other vectors builds the same tasks."""
+    seed_notes(ledger, 40)
+    lines = [f"Lesson {word} holds for every build." for word in "abcdefghij"]
+    provider = Provider(new_job(ledger, lines))
+    # One extraction call and one semantic batch fit; then the budget stops the job.
+    first = worker(ledger, provider, Service(), max_calls=2).run_once()
+    assert first["error"] == "BudgetExceeded"
+    stage = job_row(ledger)[4]["semantic"]
+    stored, done = stage["nearest"], stage["next_batch"]
+    assert done == 1 and len(provider.targets) == 1
+    other = OtherService()
+    ledger.conn.execute("UPDATE learning_budget SET created_at=created_at-86401")
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0")
+    assert worker(ledger, provider, other).run_once()["status"] == "done"
+    after = job_row(ledger)[4]["semantic"]
+    assert after["nearest"] == stored and other.calls == 0
+    # Every compared note of the resumed batches is in the stored selection.
+    statements = {str(n["note_id"]): n["statement"] for n in stage["notes"]}
+    allowed = {statements[t] for ids in stored.values() for t in ids if t in statements}
+    seeded = {n["statement"] for n in stage["notes"]}
+    assert all(targets & seeded <= allowed for targets in provider.targets[1:])

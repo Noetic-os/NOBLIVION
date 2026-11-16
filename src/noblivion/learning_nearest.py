@@ -59,8 +59,10 @@ def _nearest(
     ``limit // KEYWORD_SHARE`` seats go to the best BM25 keyword matches, so a
     target that shares rare words with the candidate is always compared. The
     other seats go to the highest cosine similarity. Seats left over, for
-    example when there are no vectors, go to the next keyword matches. A target
-    with no vector can still be selected by its keyword match. A pool no larger
+    example when there are no vectors, go to the next keyword matches and then
+    to the rest of the pool in pool order, so a pool larger than ``limit``
+    always gives ``limit`` targets. A target with no vector can still be
+    selected by its keyword match. A pool no larger
     than ``limit`` is selected whole, so a small store keeps the full
     comparison of contracts 1 and 2.
     """
@@ -80,7 +82,10 @@ def _nearest(
         }
         cosine = sorted(near, key=lambda i: (-near[i], i))
     chosen = dict.fromkeys(keyword[: limit // KEYWORD_SHARE])
-    for i in [*cosine, *keyword]:
+    # Seats that neither leg fills go to the rest of the pool in its order, so
+    # a candidate with no vector and no shared word is still compared with
+    # ``limit`` targets and never stored unchecked.
+    for i in [*cosine, *keyword, *range(len(pool))]:
         if len(chosen) >= limit:
             break
         chosen.setdefault(i)

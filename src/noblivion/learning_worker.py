@@ -2019,6 +2019,9 @@ class LearningWorker:
         vectors = self.ledger.note_vectors(job["project"], [n["note_id"] for n in notes], model)
 
         def embed(text: str) -> list[float]:
+            # Many embedding calls can outlast the lease of the job; keep it
+            # alive for each call. renew_lease never shortens a lease.
+            self.ledger.renew_lease(job["id"], job["lease_token"], EMBEDDING_TIMEOUT_S + 30)
             vector = service.embed_query(text, EMBEDDING_TIMEOUT_S, self.ledger.conn)
             if vector is None or service.model_id != model:
                 raise EmbeddingDeferred()

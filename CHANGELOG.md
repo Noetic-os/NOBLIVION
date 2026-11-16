@@ -29,10 +29,12 @@ All notable changes to NOBLIVION. The format follows
   compared whole, and each selected pair still needs one explicit relation. The
   selection is stored with the semantic stage, so a resume builds the same
   tasks. Without an embedding model, or with a remote model that may not receive
-  transcript-derived text, the order is the keyword order alone. When the model
-  is set up but gives no vector (it still loads, or a call fails), the job waits
-  5 minutes as `SemanticEmbeddingUnavailable` and keeps its attempt, for up to
-  288 such waits. A job of version 1 or 2 with partial work keeps its version
+  transcript-derived text, the keyword matches come first and the rest of the
+  scope fills the free places in a fixed order, so each candidate still gets
+  16 note targets. The job lease is renewed for each embedding call. When the
+  model is set up but gives no vector (it still loads, or a call fails), the
+  job waits 5 minutes as `SemanticEmbeddingUnavailable` and keeps its attempt,
+  for up to 288 such waits. A job of version 1 or 2 with partial work keeps its version
   and its full comparison. When that full comparison exceeds the task bound of
   the job and no comparison has run yet, the job takes the nearest selection
   (16 + 16, else 8 + 8) instead of failing with "semantic reconciliation exceeds
