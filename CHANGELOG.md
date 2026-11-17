@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.35 - 2026-11-17
+
 - A started learning job of extraction contract 1 or 2 whose semantic stage
   has no answered comparison now uses the nearest-target selection of contract
   3 (NOBLIVION-257): each new add candidate is compared with its 16 nearest
