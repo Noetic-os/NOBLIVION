@@ -149,17 +149,18 @@ class LoadProbe:
         with self._lock:
             if time.monotonic() - self._read_at < CACHE_SECONDS:
                 return self._value
-            reader, result, start = self._reader, self._result, False
+            reader, result = self._reader, self._result
             if reader is None or not reader.is_alive():
                 result = {"value": None, "abandoned": False, "recorded": False}
                 reader = threading.Thread(
                     target=self._read, args=(result,), name="noblivion-load-probe", daemon=True
                 )
-                self._reader, self._result, start = reader, result, True
+                self._reader, self._result = reader, result
+                # Start under the lock: a caller in the gap would see a thread
+                # that is not alive yet and start a second read.
+                reader.start()
             elif result["abandoned"]:
                 return self._value  # a read that ran past its deadline still ends
-        if start:
-            reader.start()
         # Every loop that asks while a read runs waits for that read, so none
         # takes an unknown page for an empty queue; the wait is bounded.
         reader.join(self.options["timeout_seconds"])
