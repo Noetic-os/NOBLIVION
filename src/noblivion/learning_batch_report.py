@@ -19,11 +19,14 @@ import sqlite3
 from collections import defaultdict
 from typing import Any
 
+from noblivion.learning_worker import PARTIAL_WORK
+
 _FRESH_PROGRESS = {"next_window": 0, "decisions": []}
 
 
 def _holds_work(progress: str, pages: int) -> bool:
-    """True when the job stored extraction pages, a window position or decisions."""
+    """True when the job stored extraction pages, a window position, decisions or other
+    partial work (the worker's ``PARTIAL_WORK`` keys)."""
     if pages:
         return True
     try:
@@ -32,7 +35,8 @@ def _holds_work(progress: str, pages: int) -> bool:
         return True
     if not isinstance(state, dict):
         return True
-    return bool(state.get("next_window")) or bool(state.get("decisions"))
+    keys = ("next_window", "next_continuation", "decisions") + PARTIAL_WORK
+    return any(bool(state.get(key)) for key in keys)
 
 
 def _share(part: int, whole: int) -> float | None:
@@ -56,11 +60,15 @@ def batch_report(
         "JOIN learning_job_ranges r ON r.job_id=j.id WHERE " + where,
         params,
     ).fetchall()
-    unranged = conn.execute(
-        "SELECT count(*) FROM learning_jobs j WHERE " + where + " AND j.status='pending' "
-        "AND NOT EXISTS (SELECT 1 FROM learning_job_ranges r WHERE r.job_id=j.id)",
-        params,
-    ).fetchone()[0]
+    # Jobs from before ranges (or whose range was pruned) are counted, not sized.
+    unranged = dict(
+        conn.execute(
+            "SELECT j.status,count(*) FROM learning_jobs j WHERE " + where + " "
+            "AND NOT EXISTS (SELECT 1 FROM learning_job_ranges r WHERE r.job_id=j.id) "
+            "GROUP BY j.status",
+            params,
+        ).fetchall()
+    )
 
     sessions: dict[tuple, list] = defaultdict(list)
     for job in jobs:
@@ -142,8 +150,8 @@ def batch_report(
             "distinct_chars": pending_union,
             "distinct_chars_not_done": pending_union_not_done,
             "started": started,
-            "unranged_jobs": unranged,
         },
+        "unranged_extract_jobs": unranged,
         "other_jobs": [{"kind": kind, "status": status, "jobs": n} for kind, status, n in other],
         "note": "prune deletes sources of finished jobs, so done and exhausted counts can be low",
     }

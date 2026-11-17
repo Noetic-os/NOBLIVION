@@ -56,9 +56,9 @@ def store(tmp_path):
     # Session s2: a charged job without stored work. Session s3: an unstarted job.
     job_c = ledger.capture_batch(batch(1, "s2", "d" * 7))["job_id"]
     conn.execute("UPDATE learning_jobs SET attempts=1 WHERE id=?", (job_c,))
-    ledger.capture_batch(batch(1, "s3", "e" * 5))
+    job_d = ledger.capture_batch(batch(1, "s3", "e" * 5))["job_id"]
     conn.close()
-    return path, {"a": job_a, "b": job_b, "c": job_c}
+    return path, {"a": job_a, "b": job_b, "c": job_c, "d": job_d}
 
 
 def open_ro(path):
@@ -112,9 +112,81 @@ def test_scope_filter(store):
     conn = open_ro(path)
     try:
         assert batch_report(conn, project="other")["pending"]["jobs"] == 0
+        assert batch_report(conn, project=PROJECT, root="other")["pending"]["jobs"] == 0
         assert batch_report(conn, project=PROJECT, root=SCOPE)["pending"]["jobs"] == 3
     finally:
         conn.close()
+
+
+def report_after(path, *statements):
+    conn = db.open_db(path)
+    for sql, args in statements:
+        conn.execute(sql, args)
+    conn.close()
+    conn = open_ro(path)
+    try:
+        return batch_report(conn)
+    finally:
+        conn.close()
+
+
+def test_a_source_that_is_not_eligible_is_not_counted(store):
+    path, _ = store
+    report = report_after(
+        path, ("UPDATE learning_sources SET status='excluded' WHERE id=?", ("source-s1-3",))
+    )
+    assert report["pending"]["chars"] == 30 + 7 + 5
+    assert report["pending"]["distinct_chars_not_done"] == 12
+
+
+def test_a_budget_charge_alone_counts_as_charged(store):
+    path, jobs = store
+    report = report_after(
+        path,
+        (
+            "INSERT INTO learning_budget VALUES ('b1',?,'t',0,0,0,'settled',0,0)",
+            (jobs["d"],),
+        ),
+    )
+    assert report["pending"]["started"] == {"holds_work": 1, "charged_no_work": 2, "unstarted": 0}
+
+
+def test_an_extraction_page_alone_counts_as_stored_work(store):
+    path, jobs = store
+    report = report_after(
+        path,
+        (
+            "INSERT INTO learning_extraction_pages VALUES (?,0,0,'f','[]','[]','processed','',0)",
+            (jobs["d"],),
+        ),
+    )
+    assert report["pending"]["started"] == {"holds_work": 2, "charged_no_work": 1, "unstarted": 0}
+
+
+def test_partial_work_keys_count_as_stored_work(store):
+    path, jobs = store
+    progress = json.dumps({"next_window": 0, "decisions": [], "semantic": {"x": 1}})
+    report = report_after(
+        path, ("UPDATE learning_jobs SET progress=? WHERE id=?", (progress, jobs["d"]))
+    )
+    assert report["pending"]["started"]["holds_work"] == 2
+
+
+def test_a_job_without_a_range_is_counted_by_status(store):
+    path, jobs = store
+    report = report_after(path, ("DELETE FROM learning_job_ranges WHERE job_id=?", (jobs["a"],)))
+    assert report["unranged_extract_jobs"] == {"done": 1}
+    assert "done" not in report["extract_jobs"]
+
+
+def test_cli_reads_a_store_it_cannot_write(store, capsys):
+    path, _ = store
+    path.chmod(0o444)
+    try:
+        assert learning_cli.main(["--database", str(path), "batch-report"]) == 0
+    finally:
+        path.chmod(0o600)
+    assert json.loads(capsys.readouterr().out)["pending"]["jobs"] == 3
 
 
 def test_cli_reads_without_writing(store, capsys):
@@ -133,3 +205,20 @@ def test_cli_missing_database_is_not_created(tmp_path, capsys):
     assert learning_cli.main(["--database", str(path), "batch-report"]) == 1
     assert not path.exists()
     assert "OSError" in capsys.readouterr().err
+
+
+def test_cli_connection_refuses_writes(store, monkeypatch, capsys):
+    path, _ = store
+
+    def writes(conn, project, root):
+        conn.execute("CREATE TABLE probe_write (a)")
+        return {}
+
+    monkeypatch.setattr("noblivion.learning_batch_report.batch_report", writes)
+    assert learning_cli.main(["--database", str(path), "batch-report"]) == 1
+    assert "OperationalError" in capsys.readouterr().err
+    conn = open_ro(path)
+    try:
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='probe_write'").fetchone()
+    finally:
+        conn.close()

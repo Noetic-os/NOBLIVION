@@ -11,7 +11,7 @@ All notable changes to NOBLIVION. The format follows
 - New read-only command `noblivion learning batch-report` (NOBLIVION-265). It sizes
   the learning queue for batch learning: sessions behind the pending jobs, the
   characters each job status reads, the part an earlier job of the same session
-  already read, and how many pending jobs hold stored work. No model call, no write.
+  also holds, and how many pending jobs hold stored work. No model call, no write.
 
 ## 0.1.37 - 2026-11-17
 

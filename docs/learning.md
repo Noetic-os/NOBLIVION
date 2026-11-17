@@ -560,12 +560,13 @@ in a temporary folder and never opens a live store.
 
 To size the learning queue, run `noblivion learning batch-report` (add `--project` and `--root`
 to narrow it). It opens the store read-only, makes no model call and prints, per extraction job
-status, the characters of source text in the job ranges and the part an earlier job of the same
-session already read (`overlap_chars`). A new job takes earlier text of its session as context,
-so this text goes through extraction again. Under `pending` it also prints the number of sessions,
+status, the characters of source text in the job ranges and the part that an earlier job of the
+same session also holds in its range (`overlap_chars`). A new job takes earlier text of its session
+as context, so this text goes through extraction more than once. Under `pending` it also prints the number of sessions,
 the distinct characters, the distinct characters no done job read, and how many pending jobs hold
-stored work, were charged without stored work, or are unstarted. Prune deletes sources of finished
-jobs, so the counts for done jobs can be low.
+stored work, were charged without stored work, or are unstarted. `unranged_extract_jobs` counts
+jobs without a range per status; they are not sized. Prune deletes sources of finished jobs, so the
+counts for done jobs can be low.
 
 Add `--days 22 --pending-days 7 --retention-days 7` for a multi-day retention replay.
 The report separates initial growth from steady-state growth, logs pruning counts and checks
