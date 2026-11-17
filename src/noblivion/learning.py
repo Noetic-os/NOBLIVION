@@ -828,7 +828,9 @@ class LearningLedger:
         A live lease of one of ``owners`` counts. A pending job counts only when
         a claim would take it now (due, attempts left, scope enabled, not paused)
         and the budget window has room for one more call. A job that no worker
-        can take never keeps the store up.
+        can take never keeps the store up. A job that waits only for the busy-share
+        cap still does (NOBLIVION-260): the cap is a routine throttle that frees
+        within an hour, so a quiet store stays up to finish its backlog.
         """
         now = time.time()
         owners = sorted(owners)
@@ -853,7 +855,6 @@ class LearningLedger:
             or used["tokens"] >= limits.max_tokens
             or used["seconds"] + call_seconds > limits.max_seconds
             or used["cost"] > limits.max_cost  # a local model call costs 0
-            or self.share_wait(limits, call_seconds, now) > 0  # NOBLIVION-260
         ):
             return False
         for row in self.conn.execute(

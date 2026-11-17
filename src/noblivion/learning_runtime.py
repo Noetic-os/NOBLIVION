@@ -398,7 +398,9 @@ class LearningPool:
                 continue
             wait = self.step_aside()
             if wait > 0:
-                self.stop.wait(wait)
+                # Look again within one pass interval: a cleared queue, a raised
+                # cap or a changed learning.json takes effect within 5 seconds.
+                self.stop.wait(min(wait, PASS_INTERVAL))
                 continue
             result: dict = {"status": "failed"}
             ledger = None

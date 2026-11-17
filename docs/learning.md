@@ -155,14 +155,16 @@ learning behaves as before and makes no extra request.
   call, learning reads the sum of all samples of `gauge`. While the value is
   above `max_waiting`, learning sends no call. A job that reaches this check
   goes back to pending at once with its attempt returned and holds no lease.
-  Worker loops wait 1 second, then 2, 4 and so on up to `max_backoff_seconds`,
-  and start again at 1 second when the queue is empty. The page is read at most
-  once a second for all loops together.
+  A job that went back waits 1 second, then 2, 4 and so on up to
+  `max_backoff_seconds` before its next try, and starts again at 1 second when
+  the queue is empty. A worker loop that waits looks again within 5 seconds, so
+  a cleared queue or a changed `learning.json` takes effect within 5 seconds.
+  The page is read at most once a second for all loops together.
 - The probe URL must be `http` on loopback, like the provider. It uses no
   proxy and follows no redirect, and a page over 2 MiB is not read. A malformed
   `load_probe` block turns learning off, like any malformed setting. A page that
-  cannot be read (server down, status other than 200, gauge missing) counts as
-  an empty queue and learning goes on, as with no probe. The store logs one
+  cannot be read (server down, a timeout, status other than 200, gauge missing)
+  counts as an empty queue and learning goes on, as with no probe. The store logs one
   warning when the probe becomes unreadable and one line when it recovers.
 - `budget.max_busy_share` (0 to 1, default 1 = off) caps the share of the call
   slots that learning keeps busy over a rolling hour: the sum of the call
@@ -171,7 +173,9 @@ learning behaves as before and makes no extra request.
   be admitted count their reserved time (`worker.timeout_seconds`), which
   is an upper bound, so the hour stays at or under the cap. A refused call goes
   back to pending with its attempt returned and retries when the hour has moved
-  far enough, after at most 300 seconds. The job list shows
+  far enough, after at most 300 seconds. A store with a backlog that waits only
+  for the cap stays up (it does not stop idle) until the hour has moved far
+  enough. The job list shows
   "stepping aside for other model clients".
 
 Limits to know:
@@ -185,6 +189,8 @@ Limits to know:
   `max_concurrency` is higher than the number of requests the server serves at
   once, learning waits for its own queue. Keep `max_concurrency` at or below the
   server's slots, or set `max_waiting` to the number of requests that may wait.
+- The cap is per store, not per model server: two stores on one server each
+  keep their own hour.
 - The probe applies to the store's own worker loops. The busy-share cap applies
   to every learning call that reserves its budget.
 

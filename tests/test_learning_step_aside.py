@@ -315,7 +315,9 @@ def test_a_busy_share_above_one_is_invalid(tmp_path):
             reserve_one(ledger, job, BudgetLimits(max_busy_share=1.5))
 
 
-def test_work_open_is_false_while_the_share_is_spent(tmp_path, monkeypatch):
+def test_work_open_keeps_a_quiet_store_up_while_only_the_share_waits(tmp_path, monkeypatch):
+    """The cap is a routine throttle that frees within an hour: the store must not
+    stop idle and leave the backlog until a client wakes it."""
     clock = Clock(monkeypatch)
     store = FakeStore(tmp_path)
     capture(store, 2, text="Job {index} context.")
@@ -324,12 +326,10 @@ def test_work_open_is_false_while_the_share_is_spent(tmp_path, monkeypatch):
     with store.connection() as conn:
         ledger = LearningLedger(conn)
         job = ledger.claim("w", lease_seconds=10**6)
-        assert ledger.work_open(set(), scopes, max_attempts=4, limits=limits, call_seconds=60)
         reservation = reserve_one(ledger, job, limits, seconds=300.0)
         clock.now += 300.0
         ledger.settle(reservation["id"], actual_seconds=300.0)
-        assert not ledger.work_open(set(), scopes, max_attempts=4, limits=limits, call_seconds=60)
-        clock.now += 3600.0
+        assert ledger.share_wait(limits, 60.0) > 0
         assert ledger.work_open(set(), scopes, max_attempts=4, limits=limits, call_seconds=60)
 
 
@@ -390,6 +390,23 @@ def test_with_another_client_queueing_learning_sends_nothing_until_it_is_empty(
     assert provider.starts
 
 
+def test_a_waiting_loop_notices_a_cleared_queue_before_its_backoff_ends(
+    tmp_path, pool_env, metrics, monkeypatch
+):
+    monkeypatch.setattr(learning_runtime, "PASS_INTERVAL", 0.2)
+    store, pool, provider = probe_pool(tmp_path, pool_env, metrics, max_backoff_seconds=30)
+    provider.gate.set()
+    capture(store, 1)
+    metrics.waiting(2)
+    pool.pass_once()
+    time.sleep(3.2)  # the back-off has grown to 4 s: 1 + 2, then 4
+    assert provider.starts == [] and pool.probe.hold() > 0.5
+    metrics.waiting(0)
+    started = time.monotonic()
+    wait_for(all_done(store, 1), timeout=2.0)
+    assert time.monotonic() - started < 2.0
+
+
 def test_a_queue_that_appears_mid_job_stops_the_next_call(tmp_path, pool_env, metrics):
     store, pool, _ = probe_pool(tmp_path, pool_env, metrics)
     capture(store, 1)
@@ -446,32 +463,55 @@ def test_no_probe_configured_makes_no_request_and_changes_nothing(tmp_path, pool
     assert pool.step_aside() == 0.0
 
 
-def test_the_pool_waits_before_it_claims_when_the_share_is_spent(tmp_path, pool_env, monkeypatch):
+def test_the_pool_waits_before_it_claims_when_the_share_is_spent(tmp_path, pool_env):
     store, pool, provider = pool_env
     provider.gate.set()
     capture(store, 2)
-    write_settings(tmp_path, 1, max_busy_share=0.01, max_seconds=10**7)
-    with store.connection() as conn:
-        ledger = LearningLedger(conn)
-        job = ledger.claim("older", lease_seconds=120)
-        limits = BudgetLimits(max_busy_share=0.01, max_calls=10, max_seconds=10**7)
-        reservation = ledger.reserve(
-            job["id"],
-            job["lease_token"],
-            limits=limits,
-            estimated_tokens=10,
-            estimated_seconds=30.0,
-            estimated_cost=0,
-        )
-        ledger.settle(reservation["id"], actual_seconds=30.0)
-        ledger.release_leases({"older"})
+    # One slot, a 0.05 share: 180 s an hour. A finished call of 150 s leaves no
+    # room for the next call at the 60 s default timeout.
+    write_settings(tmp_path, 1, max_busy_share=0.05, max_seconds=10**7)
+    seed_call(store, started_ago=200.0, seconds=150.0)
     pool.pass_once()
     time.sleep(0.5)
     assert provider.starts == []
     assert pool.step_aside() > 0
-    jobs = rows(store, "SELECT attempts,last_error FROM learning_jobs WHERE status='pending'")
-    # Only the job that this test gave back itself; no worker claimed and deferred one.
-    assert jobs and all(not j["attempts"] and j["last_error"] != "StepAside" for j in jobs)
+    jobs = rows(store, "SELECT attempts,last_error FROM learning_jobs")
+    # No worker claimed and deferred a job.
+    assert jobs and all(not j["attempts"] and not j["last_error"] for j in jobs)
+    # The same store with a call of 100 s has room: learning goes on.
+    with store.connection() as conn:
+        conn.execute("DELETE FROM learning_budget")
+    seed_call(store, started_ago=200.0, seconds=100.0)
+    assert pool.step_aside() == 0.0
+    wait_for(all_done(store, 2))
+
+
+def seed_call(store, *, started_ago, seconds):
+    """A finished call of ``seconds`` that began ``started_ago`` seconds ago."""
+    now = time.time()
+    with store.connection() as conn:
+        job = conn.execute("SELECT id FROM learning_jobs LIMIT 1").fetchone()
+        conn.execute(
+            "INSERT INTO learning_budget VALUES (?,?,?,?,?,?,'settled',?,?)",
+            (
+                f"seed-{started_ago}-{seconds}",
+                job["id"],
+                "seed-token",
+                10,
+                seconds,
+                0,
+                now - started_ago,
+                now - started_ago + seconds,
+            ),
+        )
+
+
+def test_the_probe_page_is_read_once_a_second_for_all_loops(metrics, monkeypatch):
+    monkeypatch.setattr(learning_probe, "CACHE_SECONDS", 60.0)
+    probe = LoadProbe(options(metrics.url))
+    metrics.waiting(1)
+    assert [probe.hold() > 0 for _ in range(5)] == [True] * 5
+    assert metrics.requests == 1
 
 
 # --- configuration ---------------------------------------------------------
