@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.36 - 2026-11-17
+
 - Learning can step aside on a shared local model server (NOBLIVION-260). The
   optional `load_probe` block of `learning.json` names a loopback metrics page
   and a gauge (default `num_requests_waiting`). While other requests wait, the
