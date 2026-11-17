@@ -93,6 +93,11 @@ def main(argv: list[str] | None = None) -> int:
         try:
             ledger = LearningLedger(conn)
             result = _run(ledger, args)
+            if args.command == "status":
+                from noblivion.learning_runtime import settings_report
+
+                # learning.json sits beside the database (NOBLIVION-266).
+                result["settings"] = settings_report(path.parent)
         finally:
             conn.close()
     except (LearningError, db.SchemaError, sqlite3.Error, OSError, ValueError) as exc:

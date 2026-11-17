@@ -149,21 +149,37 @@ no worker.
 ### Stepping aside on a shared model server
 
 Learning sends its calls at the same priority as every other client of the
-model server. Two optional policies keep it from crowding the others out. Both
-are read again every 5 seconds and never frozen into a started job, so a
-change takes effect on the job's next call and fails no job. With neither set,
+model server. Three optional policies keep it from crowding the others out.
+All are read again every 5 seconds and never frozen into a started job, so a
+change takes effect on the job's next call and fails no job. With none set,
 learning behaves as before and makes no extra request.
 
 ```json
 "budget": {"max_concurrency": 4, "max_busy_share": 0.5},
+"schedule": {"window": "22:00-06:00"},
 "load_probe": {
   "url": "http://127.0.0.1:8000/metrics",
   "gauge": "num_requests_waiting",
   "max_waiting": 0,
   "timeout_seconds": 2,
-  "max_backoff_seconds": 30
+  "max_backoff_seconds": 30,
+  "strict": false,
+  "running_gauge": "num_requests_running"
 }
 ```
+
+- `schedule.window` (NOBLIVION-266) is one daily window, `HH:MM-HH:MM` in the
+  local time of the store's host. The start is inside the window and the end is
+  not. A window may cross midnight: `"22:00-06:00"` runs from 22:00 to 06:00 the
+  next morning. Outside the window, the worker loops claim no job, and a job that
+  reaches its next call goes back to pending with its attempt returned and its
+  progress kept. It retries at the next window start, or after one hour if that
+  is sooner, so a changed window takes effect. The job list shows such a job as
+  "stepping aside for other model clients". With no `schedule` block, learning
+  may call at any time. A malformed block (another key, no `window`, a time not
+  written as two digits each, or a start equal to the end) turns learning off.
+  A call that runs at the window end is not stopped; the job stops before its
+  next call.
 
 - `load_probe` reads a Prometheus-style metrics page. Only `url` is required;
   the other keys show their defaults. A sample matches by its exact name or as
@@ -179,11 +195,19 @@ learning behaves as before and makes no extra request.
   The page is read at most once a second for all loops together.
   `timeout_seconds` bounds the whole read: a server that sends its page slowly
   is unreadable after that time, and no worker loop waits for it longer.
+- `"strict": true` (NOBLIVION-266, default false) makes the probe a low-load
+  gate. Learning then also reads `running_gauge` and calls only while no request
+  waits (at most `max_waiting`) and no request of another client runs: the
+  running requests minus learning's own calls in flight in this store must be 0.
+  A page that cannot be read, or that lacks either gauge, holds learning with
+  the same back-off, and a failed check before a claim waits 5 seconds. The
+  store logs one warning when the page becomes unreadable.
 - The probe URL must be `http` on loopback, like the provider. It uses no
   proxy and follows no redirect, and a page over 2 MiB is not read. A malformed
   `load_probe` block turns learning off, like any malformed setting. A page that
   cannot be read (server down, a timeout, status other than 200, gauge missing)
-  counts as an empty queue and learning goes on, as with no probe. The store logs one
+  counts as an empty queue and learning goes on, as with no probe, unless the
+  probe is strict. The store logs one
   warning when the probe becomes unreadable and one line when it recovers.
 - `budget.max_busy_share` (0 to 1, default 1 = off) caps the share of the call
   slots that learning keeps busy over a rolling hour: the sum of the call
@@ -211,8 +235,20 @@ Limits to know:
   server's slots, or set `max_waiting` to the number of requests that may wait.
 - The cap is per store, not per model server: two stores on one server each
   keep their own hour.
-- The probe applies to the store's own worker loops. The busy-share cap applies
-  to every learning call that reserves its budget.
+- The probe and the window apply to the store's own worker loops. The
+  busy-share cap applies to every learning call that reserves its budget.
+- The strict probe counts learning's own calls by the call slots of this store.
+  A slot is held from the reservation to the settlement, a little longer than
+  the server runs the request. With more than one slot, a request of another
+  client that starts in that short gap can be taken for learning's own. With one
+  slot this cannot happen. Calls of another store on the same server count as
+  another client's.
+- A store with a backlog stays up outside the window (it does not stop idle),
+  so it can start learning at the window start. A store that stopped is started
+  again by the next client, as before.
+- `noblivion learning status` shows these settings under `settings`: the
+  window, whether it is open now, the seconds until it opens, and the strict
+  flag.
 
 ### Context and output deferrals
 
@@ -267,7 +303,8 @@ release that adds a contract version does not fail a started job: a job with
 partial work keeps its own version, and a job with no work yet freezes again
 under the newest version (see Extraction contract versions below).
 
-Budget limits (also `max_busy_share`), the `load_probe` block, `enable_consolidation`,
+Budget limits (also `max_busy_share`), the `load_probe` and `schedule` blocks,
+`enable_consolidation`,
 `max_attempts`, `lease_seconds`,
 `retry_delay`, `poll_seconds` and `timeout_seconds` are policy. A started job
 uses their current values on its next call. So you can raise the budget while

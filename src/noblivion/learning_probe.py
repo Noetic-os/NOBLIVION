@@ -5,6 +5,10 @@ The probe reads one gauge from a Prometheus-style metrics page of the shared
 local model server, for example ``num_requests_waiting``. It is a policy: the
 supervisor reads it again every pass, and a started job never freezes it. With
 no ``load_probe`` block nothing here runs and no request is made.
+
+With ``"strict": true`` (NOBLIVION-266) the probe also reads the running gauge,
+holds while any request of another client runs, and holds while the page
+cannot be read.
 """
 
 from __future__ import annotations
@@ -20,11 +24,20 @@ import urllib.request
 log = logging.getLogger(__name__)
 
 DEFAULT_GAUGE = "num_requests_waiting"
+DEFAULT_RUNNING_GAUGE = "num_requests_running"
 # Read at most this much of a metrics page, and cache an answer this long, so
 # several worker loops never turn into a stream of requests.
 MAX_PAGE_BYTES = 2 * 1024 * 1024
 CACHE_SECONDS = 1.0
-PROBE_KEYS = {"url", "gauge", "max_waiting", "timeout_seconds", "max_backoff_seconds"}
+PROBE_KEYS = {
+    "url",
+    "gauge",
+    "max_waiting",
+    "timeout_seconds",
+    "max_backoff_seconds",
+    "strict",
+    "running_gauge",
+}
 _NAME = re.compile(r"[a-zA-Z_:][a-zA-Z0-9_:]*\Z")
 
 
@@ -57,8 +70,13 @@ def probe_options(settings: dict) -> dict | None:
     ):
         raise ValueError("the learning load probe must be an http loopback URL")
     gauge = block.get("gauge", DEFAULT_GAUGE)
-    if not isinstance(gauge, str) or not _NAME.match(gauge):
-        raise ValueError("invalid learning load probe gauge")
+    running_gauge = block.get("running_gauge", DEFAULT_RUNNING_GAUGE)
+    for name in (gauge, running_gauge):
+        if not isinstance(name, str) or not _NAME.match(name):
+            raise ValueError("invalid learning load probe gauge")
+    strict = block.get("strict", False)
+    if type(strict) is not bool:
+        raise ValueError("invalid learning load probe strict flag")
     numbers = {}
     for name, default, low, high in (
         ("max_waiting", 0, 0, 1_000_000),
@@ -74,7 +92,13 @@ def probe_options(settings: dict) -> dict | None:
         ):
             raise ValueError("invalid learning load probe limits")
         numbers[name] = value
-    return {"url": url, "gauge": gauge, **numbers}
+    return {
+        "url": url,
+        "gauge": gauge,
+        **numbers,
+        "strict": strict,
+        "running_gauge": running_gauge,
+    }
 
 
 _SAMPLE_NAME = re.compile(r"[a-zA-Z_:][a-zA-Z0-9_:]*")
@@ -131,24 +155,38 @@ class LoadProbe:
 
     def __init__(self, options: dict):
         self.options = dict(options)
+        self.options.setdefault("strict", False)
+        self.options.setdefault("running_gauge", DEFAULT_RUNNING_GAUGE)
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         self._lock = threading.Lock()
         self._read_at = float("-inf")
-        self._value: float | None = None
+        self._values: dict | None = None
         self._unreadable = False
         self._reader: threading.Thread | None = None
         self._result: dict = {}
         self._backoff = 0.0
         self._hold_until = 0.0
 
+    @property
+    def strict(self) -> bool:
+        return self.options["strict"] is True
+
     def same(self, options: dict) -> bool:
         return options == self.options
 
     def waiting(self) -> float | None:
         """Requests that wait now, or None when the page cannot be read."""
+        values = self.read()
+        return None if values is None else values["waiting"]
+
+    def read(self) -> dict | None:
+        """``{"waiting", "running"}`` now, or None when the page cannot be read.
+
+        ``running`` is read only in strict mode; else it is None.
+        """
         with self._lock:
             if time.monotonic() - self._read_at < CACHE_SECONDS:
-                return self._value
+                return self._values
             reader, result = self._reader, self._result
             if reader is None or not reader.is_alive():
                 result = {"value": None, "abandoned": False, "recorded": False}
@@ -160,7 +198,7 @@ class LoadProbe:
                 # that is not alive yet and start a second read.
                 reader.start()
             elif result["abandoned"]:
-                return self._value  # a read that ran past its deadline still ends
+                return self._values  # a read that ran past its deadline still ends
         # Every loop that asks while a read runs waits for that read, so none
         # takes an unknown page for an empty queue; the wait is bounded.
         reader.join(self.options["timeout_seconds"])
@@ -169,23 +207,25 @@ class LoadProbe:
                 result["recorded"] = True
                 result["abandoned"] = reader.is_alive()
                 self._record(None if result["abandoned"] else result["value"])
-            return self._value
+            return self._values
 
     def _read(self, result: dict) -> None:
         result["value"] = self._fetch()
 
-    def _record(self, value: float | None) -> None:
-        self._value = value
+    def _record(self, values: dict | None) -> None:
+        self._values = values
         self._read_at = time.monotonic()
-        unreadable = value is None
+        unreadable = values is None
         if unreadable != self._unreadable:
             self._unreadable = unreadable
-            if unreadable:
+            if unreadable and self.strict:
+                log.warning("learning load probe unreadable; learning waits until it reads")
+            elif unreadable:
                 log.warning("learning load probe unreadable; learning goes on without it")
             else:
                 log.info("learning load probe readable again")
 
-    def _fetch(self) -> float | None:
+    def _fetch(self) -> dict | None:
         timeout = self.options["timeout_seconds"]
         deadline = time.monotonic() + timeout
         try:
@@ -203,22 +243,45 @@ class LoadProbe:
                     chunks.append(chunk)
                 else:
                     return None
-        except Exception:  # noqa: BLE001 - an unreadable probe never stops learning
+        except Exception:  # noqa: BLE001 - an unreadable page is a state, not an error
             return None
-        return parse_gauge(b"".join(chunks).decode("utf-8", "replace"), self.options["gauge"])
+        return self.parse(b"".join(chunks).decode("utf-8", "replace"))
 
-    def hold(self) -> float:
+    def parse(self, text: str) -> dict | None:
+        """Both gauges of one page; None when a gauge that counts is missing."""
+        waiting = parse_gauge(text, self.options["gauge"])
+        if waiting is None:
+            return None
+        running = None
+        if self.strict:
+            running = parse_gauge(text, self.options["running_gauge"])
+            if running is None:
+                return None
+        return {"waiting": waiting, "running": running}
+
+    def hold(self, own_running: int = 0) -> float:
         """Seconds learning waits now: 0 when it may call, else a bounded back-off.
 
         The wait doubles from one second up to ``max_backoff_seconds`` each time
-        a hold ends and the queue is still there, and starts again from one second
-        once the queue is empty. Loops that ask during a hold share it. An
-        unreadable page counts as empty (learning goes on, as with no probe).
+        a hold ends and the server is still busy, and starts again from one
+        second once it is free. Loops that ask during a hold share it.
+
+        Busy means more than ``max_waiting`` requests wait. In strict mode it
+        also means that more requests run than ``own_running``, the calls that
+        learning itself has in flight, or that the page cannot be read. Without
+        strict mode an unreadable page counts as empty (learning goes on, as with
+        no probe).
         """
-        value = self.waiting()
+        values = self.read()
         now = time.monotonic()
         with self._lock:
-            if value is None or value <= self.options["max_waiting"]:
+            if values is None:
+                busy = self.strict
+            else:
+                busy = values["waiting"] > self.options["max_waiting"]
+                if self.strict and values["running"] - max(0, own_running) > 0:
+                    busy = True
+            if not busy:
                 self._backoff, self._hold_until = 0.0, 0.0
                 return 0.0
             if now >= self._hold_until:

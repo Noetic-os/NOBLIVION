@@ -165,6 +165,8 @@ def test_probe_options_defaults_and_absent_block():
         "max_waiting": 0,
         "timeout_seconds": 2.0,
         "max_backoff_seconds": 30.0,
+        "strict": False,
+        "running_gauge": "num_requests_running",
     }
 
 

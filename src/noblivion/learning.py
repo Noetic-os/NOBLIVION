@@ -61,8 +61,9 @@ class ConcurrencyExceeded(BudgetExceeded):
 class StepAside(BudgetExceeded):
     """Learning waits for others (NOBLIVION-260): not a spent budget, not a failure.
 
-    ``reason`` is "queue" (another client waits at the shared model server) or
-    "share" (the rolling-hour GPU-share cap). The job goes back to pending with
+    ``reason`` is "queue" (another client waits or runs at the shared model
+    server), "share" (the rolling-hour GPU-share cap) or "window" (outside the
+    night window, NOBLIVION-266). The job goes back to pending with
     its attempt returned and retries after ``retry_after`` seconds.
     """
 

@@ -19,6 +19,7 @@ from pathlib import Path
 
 from noblivion.learning import LearningLedger, LeaseLost, StepAside
 from noblivion.learning_probe import LoadProbe, probe_options
+from noblivion.learning_schedule import local_now, schedule_options, window_wait
 
 log = logging.getLogger("noblivion.learning")
 
@@ -57,6 +58,7 @@ def load_settings(data_dir: Path) -> dict:
         try:
             worker_options(value)
             probe_options(value)
+            schedule_options(value)
         except ShareTooSmall:
             log.warning(
                 "budget.max_busy_share allows less than one call of worker.timeout_seconds "
@@ -67,6 +69,33 @@ def load_settings(data_dir: Path) -> dict:
             log.warning("invalid learning provider or limits; learning is off")
             value["enabled"] = False
     return value
+
+
+def settings_report(data_dir: Path, now=None) -> dict:
+    """The schedule and load probe part of ``noblivion learning status`` (NOBLIVION-266).
+
+    Reads learning.json in ``data_dir``; a bad file or block is reported, not raised.
+    """
+    from noblivion.learning_schedule import schedule_report
+
+    try:
+        settings = load_settings(data_dir)
+    except Exception as exc:  # noqa: BLE001 - status reports a bad file
+        return {"enabled": False, "error": type(exc).__name__}
+    report: dict = {"enabled": settings["enabled"]}
+    try:
+        report["schedule"] = schedule_report(schedule_options(settings), now or local_now())
+    except ValueError:
+        report["schedule"] = {"error": "invalid"}
+    try:
+        probe = probe_options(settings)
+    except ValueError:
+        report["load_probe"] = {"error": "invalid"}
+    else:
+        report["load_probe"] = (
+            None if probe is None else {"strict": probe["strict"], "gauge": probe["gauge"]}
+        )
+    return report
 
 
 def permitted(settings: dict, project: str, root: str) -> bool:
@@ -254,6 +283,9 @@ class PooledLedger(LearningLedger):
         # A stopping store takes no new job: its leases are given back at the stop.
         if self._pool.stop.is_set():
             return None
+        # NOBLIVION-266: outside the night window no job is claimed.
+        if self._pool.window_wait() > 0:
+            return None
         return super().claim(worker_id, lease_seconds=lease_seconds, max_attempts=max_attempts)
 
     def reserve(self, job_id: str, lease_token: str, *, limits, **estimates):
@@ -273,10 +305,16 @@ class PooledLedger(LearningLedger):
         # that changed while the job ran applies to its next call.
         current = self._pool.budget or limits
         try:
+            # NOBLIVION-266: outside the night window the job goes back with its
+            # attempt and checkpoint, and looks again at the window start.
+            wait = self._pool.window_wait()
+            if wait > 0:
+                raise StepAside("window", wait)
             # NOBLIVION-260: another client queues at the shared model server.
             # Checked after the slot wait, before the reservation row, so the job
-            # goes back at once and holds no lease while it waits.
-            wait = self._pool.probe_hold()
+            # goes back at once and holds no lease while it waits. The slot of
+            # this call is held already, but the server has not seen the call.
+            wait = self._pool.probe_hold(own_running=self._pool.slots.used - 1)
             if wait > 0:
                 raise StepAside("queue", wait)
             return super().reserve(job_id, lease_token, limits=current, **estimates)
@@ -312,6 +350,9 @@ class LearningPool:
         self.settings: dict | None = None
         self.budget = None
         self.probe: LoadProbe | None = None
+        # NOBLIVION-266: the night window, and the clock it is read by.
+        self.schedule: dict | None = None
+        self.clock = local_now
         self.lease_seconds: float = 120.0
         self.poll_seconds: float = PASS_INTERVAL
         self.max_attempts = 4
@@ -341,11 +382,13 @@ class LearningPool:
                 self.call_seconds = worker.timeout_seconds
                 self.retry_delay = worker.retry_delay
                 self._set_probe(probe_options(settings))
+                self.schedule = schedule_options(settings)
         except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
             desired = 0
         self.settings = settings if desired else None
         if not desired:
             self.probe = None
+            self.schedule = None
         self.desired = desired
         self.slots.set_limit(desired)
         for index in range(desired):
@@ -367,19 +410,31 @@ class LearningPool:
         elif self.probe is None or not self.probe.same(options):
             self.probe = LoadProbe(options)
 
-    def probe_hold(self) -> float:
+    def probe_hold(self, own_running: int = 0) -> float:
+        """The probe's hold; ``own_running`` is learning's own calls in flight."""
         probe = self.probe
-        return probe.hold() if probe is not None else 0.0
+        return probe.hold(own_running) if probe is not None else 0.0
+
+    def window_wait(self) -> float:
+        """Seconds until the night window opens; 0 inside it or with no window."""
+        return window_wait(self.schedule, self.clock())
 
     def step_aside(self) -> float:
         """Seconds a worker loop waits before it claims a job; 0 when it may go on.
 
-        NOBLIVION-260. Other clients that queue at the model server come first,
-        then the rolling-hour share cap. A failed look never blocks learning:
-        the reservation checks the share again, inside its transaction.
+        NOBLIVION-266: outside the night window nothing is claimed. NOBLIVION-260:
+        other clients at the model server come next, then the rolling-hour share
+        cap. A failed look never blocks learning, unless the probe is strict
+        (then it waits one pass): the reservation checks the share again,
+        inside its transaction.
         """
+        wait = self.window_wait()
+        if wait > 0:
+            return wait
         try:
-            wait = self.probe_hold()
+            # No call slot of this loop is held here: every used slot is a call
+            # of another loop of this store.
+            wait = self.probe_hold(own_running=self.slots.used)
             budget = self.budget
             if wait <= 0 and budget is not None and budget.max_busy_share < 1:
                 with self.store.connection() as conn:
@@ -387,7 +442,9 @@ class LearningPool:
             return wait
         except Exception as exc:  # noqa: BLE001 - never stop a worker loop here
             log.error("learning step-aside check failed: %s", type(exc).__name__)
-            return 0.0
+            probe = self.probe
+            # NOBLIVION-266: a strict probe waits when it cannot tell.
+            return PASS_INTERVAL if probe is not None and probe.strict else 0.0
 
     def alive(self) -> int:
         return sum(thread.is_alive() for thread in self._threads.values())

@@ -8,6 +8,20 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Learning can run only in a night window (NOBLIVION-266). A new optional
+  `schedule` block in `learning.json`, `{"window": "22:00-06:00"}`, names one
+  daily window in local time; it may cross midnight. Outside it the worker
+  loops claim no job, and a started job stops before its next call with its
+  attempt returned and its progress kept, and goes on at the window start.
+  No block: no window, as before.
+- A strict load probe (NOBLIVION-266). `load_probe.strict` (default false) also
+  reads `running_gauge` (default `num_requests_running`). Learning then calls
+  only while no request waits and no request of another client runs, and it
+  waits while the metrics page cannot be read. Without `strict` the probe works
+  as before and an unreadable page lets learning go on.
+- `noblivion learning status` shows the window, whether it is open now and the
+  strict flag under `settings`.
+
 ## 0.1.37 - 2026-11-17
 
 - Learning status shows output and thinking tokens per call (NOBLIVION-261).
