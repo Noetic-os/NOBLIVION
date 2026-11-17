@@ -23,6 +23,18 @@ OMISSION_MARK = "[...]"
 # Then each line that holds a marker, or fails the secret check on its own, is
 # replaced by this line as a whole. It is no value: no key, ``=``, ``:`` or ``@``.
 WITHHELD_LINE = "[line withheld]"
+# The body of a key block has no marker and no secret word: the redactor masks
+# a cut-off block only up to a short line, and it does not know an OpenVPN
+# static key or a PuTTY key file. On the line path any key text withholds the
+# note, as main did: a run of 40 base64 characters with upper case, lower case
+# and a digit, a line of 32 or more hex characters, an armor line, or the
+# PuTTY and OpenVPN key words.
+_KEY_BASE64 = re.compile(r"[A-Za-z0-9+/]{40,}")
+_KEY_HEX_LINE = re.compile(r"(?m)^[^0-9A-Za-z]*[0-9A-Fa-f]{32,}[^0-9A-Za-z]*$")
+_KEY_WORDS = re.compile(
+    r"(?i)-----(?:BEGIN|END) |putty-user-key-file|(?:public|private)-lines|private-mac"
+    r"|openvpn static key"
+)
 
 
 def encoded(value):
@@ -44,10 +56,10 @@ def neutral_note(note):
     First the markers are replaced by the omission mark. If that text fails,
     the lines are withheld instead, but only when the raw statement has no
     secret signal other than its markers: the redactor leaves it unchanged, no
-    natural-language secret, no failed redaction and no "private key" in any
-    case. The result must then pass the unchanged check on the raw statement
-    and on the encoded note, and so must the kept lines without the
-    placeholder lines.
+    natural-language secret (also read as one line), no failed redaction, no
+    "private key" in any case and no key text. The result must then pass the
+    unchanged check on the raw statement and on the encoded note, and so must
+    the kept lines without the placeholder lines, cut at "\\n" and as one line.
     """
     statement = note.get("statement")
     if not note.get("read_only") or not isinstance(statement, str):
@@ -58,9 +70,12 @@ def neutral_note(note):
     if (
         redact_at_rest(statement) != statement
         or re.search(NATURAL_SECRET_PATTERN, statement)
+        # Read across lines too: the key word may sit on a withheld line.
+        or re.search(NATURAL_SECRET_PATTERN, " ".join(statement.splitlines()))
         or "REDACTION_FAILED" in statement
         # The body of a key block has no marker and passes line by line.
         or "private key" in statement.lower()
+        or _has_key_text(statement)
     ):
         return None
     lines = [(line, _line_withheld(line)) for line in statement.split("\n")]
@@ -71,15 +86,32 @@ def neutral_note(note):
     # As encoded note too: there the natural-language rule reads across lines,
     # and the placeholder pushes the key word and the value apart.
     kept = "\n".join(line for line, held in lines if not held)
+    # And as one line: the natural-language rule stops at "\n" in the raw
+    # text, and in the encoded note it finds no word start after "\\n".
+    joined = " ".join(kept.splitlines())
     result = dict(note, statement=withheld)
     if (
         contains_secret(withheld)
         or contains_secret(kept)
+        or contains_secret(joined)
         or not _core_passes(result)
         or not _core_passes(dict(note, statement=kept))
+        or not _core_passes(dict(note, statement=joined))
     ):
         return None
     return result, "ContextLegacyLineWithheld"
+
+
+def _has_key_text(text):
+    """True when the text holds key body text or the words of a key file."""
+    return bool(
+        _KEY_WORDS.search(text)
+        or _KEY_HEX_LINE.search(text)
+        or any(
+            re.search(r"[A-Z]", run) and re.search(r"[a-z]", run) and re.search(r"[0-9]", run)
+            for run in _KEY_BASE64.findall(text)
+        )
+    )
 
 
 def _line_withheld(line):

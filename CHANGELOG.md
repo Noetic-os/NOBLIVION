@@ -34,11 +34,15 @@ All notable changes to NOBLIVION. The format follows
   the line `[line withheld]`. Lines are cut at a newline only; each part
   between other line breaks (`\r`, U+2028, U+0085) is checked on its own too.
   The raw statement must be one that the redactor leaves unchanged, with no
-  natural-language secret, no failed redaction and no "private key" in any
-  case. The result must pass the unchanged secret check as raw text and as
+  natural-language secret (also read with its lines joined into one), no
+  failed redaction, no "private key" in any case and no key text: a run of 40
+  base64 characters with upper case, lower case and a digit, a line of 32 or
+  more hex characters, an armor line, or the words of a PuTTY or OpenVPN key
+  file. The result must pass the unchanged secret check as raw text and as
   encoded note, and so must the kept lines joined without the placeholder
-  lines, so a placeholder cannot hide a key and its value (`Bearer` and a
-  token on the next kept line); otherwise the note stays withheld as before.
+  lines, both with newlines and as one line, so a placeholder cannot hide a key
+  and its value (`Bearer` and a token on the next kept line); otherwise the
+  note stays withheld as before.
   Learning status counts these notes as `ContextLegacyLineWithheld`. A note
   that is not read-only, or holds any other secret signal, is withheld as
   before. A waiting job builds its context again when it resumes, so no job

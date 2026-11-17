@@ -283,6 +283,94 @@ def test_the_kept_lines_also_pass_as_encoded_note():
     assert safe == [] and excluded[0]["statement_available"] is False
 
 
+def assert_withheld_as_on_main(statement):
+    note = legacy(statement)
+    # Main withholds every such note: its whole-note swap fails.
+    assert rejection_reason(encoded(core(note))) == "ContextRedactedCandidate"
+    assert neutral_note(note) is None
+    safe, excluded = isolate_notes([note], max_chars=24000)
+    assert safe == [] and excluded[0]["reason"] == "ContextRedactedCandidate"
+    assert excluded[0]["statement_available"] is False
+
+
+# Synthetic key text. The header lines are split so that no secret scanner
+# reads this file as a key.
+RSA_BEGIN = "-----BEGIN RSA PRIVATE " + "KEY-----"
+OVPN_BEGIN = "-----BEGIN OpenVPN " + "Static key V1-----"
+PPK_HEADER = "PuTTY-User-Key-" + "File-3: ssh-ed25519"
+HEX_LINES = [f"{0x9F8E7D6C5B4A39281706F5E4D3C2B1A0 * (i + 3) % (1 << 128):032x}" for i in range(4)]
+
+
+def test_key_text_withholds_a_cut_off_key_body():
+    # A short line ends the cut-off block for the redactor: it masks the
+    # header and the first line, and the body lines after the short line stay.
+    # They hold no marker and no secret word, so each one passes on its own.
+    residue = redact_at_rest(f"{RSA_BEGIN}\n{BASE64_LINE}\nAb3=\n{BASE64_LINE}\n{BASE64_LINE}")
+    assert BASE64_LINE in residue and "PRIVATE" not in residue.upper()
+    assert not contains_secret(BASE64_LINE)
+    assert_withheld_as_on_main(f"TOKEN=[REDACTED]\n{residue}")
+
+
+@pytest.mark.parametrize("upper", [False, True])
+def test_key_text_withholds_a_hex_key_body(upper):
+    # An OpenVPN static key body: lines of 32 hex characters, no base64 case mix.
+    body = "\r\n".join(line.upper() for line in HEX_LINES) if upper else "\n".join(HEX_LINES)
+    assert redact_at_rest(body) == body
+    assert_withheld_as_on_main(f"TOKEN=[REDACTED]\n{body}")
+
+
+@pytest.mark.parametrize(
+    "residue",
+    [
+        # A cut-off PuTTY key file: its body line is too short for a run.
+        f"{PPK_HEADER}\nEncryption: none\nPublic-Lines: 2\nAAAAC3NzaC1lZDI1",
+        # An armor line with a cut-off hex body.
+        f"{OVPN_BEGIN}\n9f8e7d6c5b4a",
+    ],
+)
+def test_key_text_withholds_key_file_words(residue):
+    assert redact_at_rest(residue) == residue
+    assert_withheld_as_on_main(f"TOKEN=[REDACTED]\n{residue}")
+
+
+def test_key_text_keeps_a_commit_hash_in_prose():
+    # A hash in prose is no key body: lower-case hex inside a line.
+    statement = "TOKEN=[REDACTED]\nFixed in commit " + "9f8e7d6c5b4a3928170" * 2 + "ab today."
+    result = neutral_note(legacy(statement))
+    assert result is not None and result[1] == "ContextLegacyLineWithheld"
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        "the password",
+        # Within the window of the raw text only: each quote takes two
+        # characters in the encoded note.
+        "the password" + ' "a"' * 12,
+    ],
+)
+def test_the_kept_lines_are_read_as_one_line(words):
+    # The value line starts with the verb. In the raw text the rule stops at
+    # "\n", and in the encoded note "\\nis" has no word start before "is".
+    statement = f"TOKEN=[REDACTED]\n{words}\nfoo. [REDACTED]\nis hunter2"
+    assert not contains_secret(f"{words}\nis hunter2")
+    assert_withheld_as_on_main(statement)
+
+
+def test_the_kept_lines_are_read_as_one_line_in_the_encoded_note():
+    # Only the encoded note reads the next field as the value after "is".
+    statement = "TOKEN=[REDACTED]\nRotate the password\nfoo. [REDACTED]\nis"
+    assert not contains_secret("Rotate the password is")
+    assert_withheld_as_on_main(statement)
+
+
+def test_the_raw_statement_is_read_as_one_line():
+    # The key word sits on the withheld line, so the kept lines do not hold it.
+    statement = "the password TOKEN=[REDACTED]\nis hunter2"
+    assert not contains_secret("is hunter2")
+    assert_withheld_as_on_main(statement)
+
+
 @pytest.mark.parametrize(
     ("statement", "expected"),
     [
