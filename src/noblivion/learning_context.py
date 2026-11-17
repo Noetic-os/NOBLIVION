@@ -34,17 +34,29 @@ _MARKER_LINE = re.compile(
     r"[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*(?:=|:)[ \t]*"
     r"(?:\*\*\*REDACTED\*\*\*|\[REDACTED\]|\[REDACTED_EMAIL\])[ \t]*"
 )
-# In any other withheld line only a marker span is cut out: ``NAME=<marker>``,
+# In any other withheld line one marker span may be cut out: ``NAME=<marker>``,
 # ``NAME: <marker>`` or ``NAME: <scheme> <marker>`` (one word such as Bearer),
 # with the name and the "=" or ":", so no key is left before the omission mark.
-# Nothing may be glued to either end of the span (``x<marker>abc``). The cut
-# line must then pass the line check on its own, or the note stays withheld.
+# The redactor may have masked only the head of a value (``PASSWORD=correct
+# horse``, ``app:pw@tail@host``, ``Digest username=...``), so the span must end
+# its line: only closing punctuation may follow it, and nothing at all after a
+# scheme. No "@", no other line break and no other space may follow it, and
+# nothing may be glued to either end (any Unicode word character). In doubt
+# the note stays withheld; the cut line must also pass the line check.
 _MARKER_SPAN = re.compile(
-    r"(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*"
-    r"(?:[ \t]*=[ \t]*|:[ \t]*(?:[A-Za-z]+[ \t]+)?)"
+    r"(?<!\w)[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:[ \t]*=[ \t]*|:[ \t]*(?P<scheme>[A-Za-z]+[ \t]+)?)"
     r"(?:\*\*\*REDACTED\*\*\*|\[REDACTED\]|\[REDACTED_EMAIL\])"
-    r"(?![A-Za-z0-9_])"
+    r"(?!\w)"
 )
+_SPAN_TAIL = re.compile(r"[.,;)\]}\"']*\s*")
+_SCHEME_TAIL = re.compile(r"\s*")
+# Any whitespace but a space or a tab, and any character outside ASCII.
+_OTHER_SPACE = re.compile(r"[^\S \t]|[^\x00-\x7f]")
+# A quote the redactor opened in a value may close on a later line
+# (``TOKEN="ab12`` / ``cd34"``): an odd count of a quote on a marker line or on
+# the line after it withholds the note.
+_QUOTES = "\"'`"
 # Redactor leftover: upper-case "REDACT" anywhere in the result (a cut-off
 # token such as ``[REDACT``) also withholds the note.
 _RESIDUE = "REDACT"
@@ -119,10 +131,16 @@ def neutral_note(note):
         elif _MARKER_LINE.fullmatch(line):
             lines.append((WITHHELD_LINE, True))
         else:
-            cut = _MARKER_SPAN.sub(OMISSION_MARK, line)
-            if _line_withheld(cut):
+            cut = _cut_span(line)
+            if cut is None or _line_withheld(cut):
                 return None
             lines.append((cut, False))
+    raw_lines = statement.split("\n")
+    for i, line in enumerate(raw_lines):
+        if LEGACY_MARKER.search(line) and any(
+            text.count(quote) % 2 for text in raw_lines[i : i + 2] for quote in _QUOTES
+        ):
+            return None
     withheld = "\n".join(line for line, _ in lines)
     if LEGACY_MARKER.search(withheld) or _RESIDUE in withheld:
         return None
@@ -146,6 +164,22 @@ def neutral_note(note):
     ):
         return None
     return result, "ContextLegacyLineWithheld"
+
+
+def _cut_span(line):
+    """The line with its marker span cut out, or None when in doubt."""
+    span = _MARKER_SPAN.search(line)
+    if span is None:
+        return None
+    tail = line[span.end() :]
+    if (
+        not _SPAN_TAIL.fullmatch(tail)
+        or (span["scheme"] and not _SCHEME_TAIL.fullmatch(tail))
+        or "@" in tail
+        or _OTHER_SPACE.search(tail)
+    ):
+        return None
+    return line[: span.start()] + OMISSION_MARK + tail
 
 
 def _has_key_text(text):

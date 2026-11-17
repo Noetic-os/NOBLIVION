@@ -32,13 +32,17 @@ All notable changes to NOBLIVION. The format follows
   fails, each whole marker line is now replaced by `[line withheld]`. A whole
   marker line is a name, `=` or `:`, and one redactor token (`***REDACTED***`,
   `[REDACTED]`, `[REDACTED_EMAIL]`) with only spaces or tabs around them. In
-  any other withheld line only the span `NAME=<marker>`, `NAME: <marker>` or
+  any other withheld line one span `NAME=<marker>`, `NAME: <marker>` or
   `NAME: <scheme> <marker>` is replaced by `[...]`, name and `=`/`:` included,
-  and the rest of the line is kept. Nothing may be glued to either end of the
-  span. This fails closed: when a cut line still fails the line check on its
-  own (a bare marker, a marker glued to text, a value after it), when a marker
-  or an upper-case `REDACT` is left, or when a line fails the secret check
-  without a marker, the note stays withheld as before. Lines are cut at a
+  but only when it ends the line: only closing punctuation (`.,;)]}"'`) may
+  follow it, nothing may follow a scheme span, and no `@`, other line break or
+  non-ASCII space may follow it. No word character (Unicode) may be glued to
+  either end. The redactor may have masked only the head of a value (a value
+  with spaces, a password with `@`, `Digest` parameters), so this fails
+  closed: when a span cannot be cut, a cut line still fails the line check on
+  its own, a quote is left open on or after a marker line, a marker or an
+  upper-case `REDACT` is left, or a line fails the secret check without a
+  marker, the note stays withheld as before. Lines are cut at a
   newline only, and each part between other line breaks is checked on its own.
   The raw statement must be one that the redactor leaves unchanged, with no
   natural-language secret (also read with its lines joined into one), no

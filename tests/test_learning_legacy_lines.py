@@ -378,36 +378,26 @@ def test_lines_are_cut_at_the_newline_only():
 
 
 @pytest.mark.parametrize(
-    ("statement", "expected"),
+    "statement",
     [
-        # Any other line break stays inside the line, so the marker line holds
-        # other text and is no whole marker line: only the span is cut out.
-        (
-            "Service on 8443.\r\nTOKEN=[REDACTED]\r\nRestart.",
-            "Service on 8443.\r\n[...]\r\nRestart.",
-        ),
-        (
-            "Service on 8443.\u2028TOKEN=[REDACTED]\u2028Restart.",
-            "Service on 8443.\u2028[...]\u2028Restart.",
-        ),
-        (
-            "Service on 8443.\u0085TOKEN=[REDACTED]\u0085Restart.",
-            "Service on 8443.\u0085[...]\u0085Restart.",
-        ),
+        # Any other line break stays inside the line. After a span it may
+        # carry the rest of a value, so the note stays withheld.
+        "Service on 8443.\r\nTOKEN=[REDACTED]\r\nRestart.",
+        "Service on 8443.\u2028TOKEN=[REDACTED]\u2028Restart.",
+        "Service on 8443.\u0085TOKEN=[REDACTED]\u0085Restart.",
+        "Service on 8443.\nTOKEN=[REDACTED]\u00a0\nRestart.",
     ],
 )
-def test_another_line_break_on_a_marker_line_cuts_only_the_span(statement, expected):
-    result = neutral_note(legacy(statement))
-    assert result is not None and result[1] == "ContextLegacyLineWithheld"
-    assert result[0]["statement"] == expected
+def test_another_line_break_or_space_after_a_span_withholds_the_note(statement):
+    assert_withheld_as_on_main(statement)
 
 
 def test_a_cut_line_is_checked_in_its_parts():
     # The redactor reads "pass:" at a line start after "\n" only. The cut line
     # fails the part check, so the note stays withheld.
-    statement = "Deploy notes.\rTOKEN=[REDACTED]\r  pass: Zq8hunter2example"
+    statement = "Deploy notes.\r  pass: Zq8hunter2example TOKEN=[REDACTED]"
     assert redact_at_rest(statement) == statement
-    assert not contains_secret("Deploy notes.\r[...]\r  pass: Zq8hunter2example")
+    assert not contains_secret("Deploy notes.\r  pass: Zq8hunter2example [...]")
     assert_withheld_as_on_main(statement)
 
 
@@ -471,18 +461,14 @@ def test_title_and_evidence_are_not_part_of_the_line_check():
 @pytest.mark.parametrize(
     ("held", "cut"),
     [
-        # A command in prose, the store's most common shape.
-        ("Run `TOKEN=[REDACTED] tool` before the deploy.", "Run `[...] tool` before the deploy."),
-        # A scheme word goes with the span.
-        ("Authorization: Bearer [REDACTED]", "[...]"),
-        (
-            "curl -H 'Authorization: Basic ***REDACTED***' https://example.com",
-            "curl -H '[...]' https://example.com",
-        ),
+        # The span ends the line.
         ("export API_TOKEN=[REDACTED]", "export [...]"),
-        ("- TOKEN=[REDACTED_EMAIL], then restart.", "- [...], then restart."),
-        # Two markers in one line.
-        ("A=[REDACTED] B: [REDACTED]", "[...] [...]"),
+        ("Set it in the env file as API_TOKEN=[REDACTED]", "Set it in the env file as [...]"),
+        # A scheme word goes with the span; nothing may follow it.
+        ("Authorization: Bearer [REDACTED]", "[...]"),
+        # Only closing punctuation follows the span.
+        ("- set TOKEN=[REDACTED_EMAIL].", "- set [...]."),
+        ("(see TOKEN: ***REDACTED***);", "(see [...]);"),
     ],
 )
 def test_a_marker_span_is_cut_out_of_a_line(held, cut):
@@ -509,6 +495,13 @@ def test_a_marker_span_is_cut_out_of_a_line(held, cut):
         "TOKEN=[REDACTED] password=Zq8hunter2example",
         # One marker is cut, the other has no name.
         "TOKEN=[REDACTED] and [REDACTED]",
+        # Text after the span: it may be the rest of a value.
+        "Run `TOKEN=[REDACTED] tool` before the deploy.",
+        "- TOKEN=[REDACTED_EMAIL], then restart.",
+        "A=[REDACTED] B: [REDACTED]",
+        # Anything after a scheme span, even a closing quote.
+        "curl -H 'Authorization: Basic ***REDACTED***' https://example.com",
+        'curl -H "Authorization: Bearer [REDACTED]"',
         # A marker as the user of a credential, the store's other shape.
         'curl -u "[REDACTED]:$PASS" https://example.com',
         # A cut-off token is no span.
@@ -558,6 +551,46 @@ def test_private_key_words_withhold_the_note_before_the_swap(words):
     swapped = statement.replace("[REDACTED]", OMISSION_MARK)
     assert rejection_reason(encoded(core(legacy(swapped)))) is None
     assert_withheld_as_on_main(statement)
+
+
+# Review of 4178fb2: the redactor masked only the head of a value. Each raw
+# text goes through the redactor first, as at rest.
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # 1. A value with spaces: the tail after the masked word stays.
+        "Set it with PASSWORD=correct horse battery staple before deploy.",
+        "Set it with PASSWORD=abcd1234\u00a0wxyz9876 here",
+        # 2. A password with "@": the tail after the first "@" stays.
+        "Connect via postgres://app:Xy7@Kq9mPw3z@db:5432/prod for reports.",
+        # 3. A quoted value across lines (a whole marker line, then the tail).
+        'Export notes.\nAPI_TOKEN="ab12cd34\nef56gh78Qz"\nthen run the job.',
+        # 4. A scheme with parameters: only the first one is masked.
+        'Authorization: Digest username="bob", realm="r", response="66' + "29fae4" * 5 + '"',
+        # 5. A value continued after "\r".
+        "TOKEN=abc12345\rZq9xLm2Pw7Rt\nrun it.",
+    ],
+)
+def test_a_value_masked_only_in_part_stays_withheld(raw):
+    stored = redact_at_rest(raw)
+    assert LEGACY_MARKER.search(stored)
+    note = legacy(stored)
+    assert neutral_note(note) is None
+    safe, excluded = isolate_notes([note], max_chars=24000)
+    assert safe == [] and excluded[0]["statement_available"] is False
+
+
+@pytest.mark.parametrize(
+    "held",
+    [
+        # 6. Non-ASCII text glued to either end of the span.
+        "x \u00e9TOKEN=[REDACTED]",
+        "x TOKEN=[REDACTED]\u00e9q9Zk",
+        "x TOKEN=[REDACTED]\uff17\uff18",
+    ],
+)
+def test_non_ascii_text_glued_to_a_span_withholds_the_note(held):
+    assert_withheld_as_on_main(f"Deploy notes.\nTOKEN=[REDACTED]\n{held}")
 
 
 def review_reproducers():
