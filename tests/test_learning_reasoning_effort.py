@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """NOBLIVION-261: reasoning tokens per call, and a reasoning effort change keeps started jobs."""
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -218,3 +219,62 @@ def test_an_output_limit_hold_or_a_bad_stored_effort_is_not_pinned(ledger):
     assert not worker._keep_frozen_effort({"execution_configuration": {"reasoning_effort": "x"}})
     assert not worker._keep_frozen_effort({})
     assert worker.provider.reasoning_effort == "none"
+
+
+def started_consolidation(tmp_path):
+    """A consolidation job frozen under "low" that stopped on an outage."""
+    from test_learning_pages import DenseProvider, run, seed
+
+    conn = db.open_db(tmp_path / "derivation.db", create=True)
+    ledger, _ = seed(conn, 1)
+    provider = DenseProvider()
+    provider.reasoning_effort = "low"
+    assert run(ledger, provider, enable_consolidation=True)["status"] == "done"
+    provider.complete = lambda *args, **kwargs: (_ for _ in ()).throw(OSError("outage"))
+    assert run(ledger, provider, enable_consolidation=True)["status"] == "failed"
+    started = json.loads(
+        conn.execute("SELECT progress FROM learning_jobs WHERE kind='consolidate'").fetchone()[0]
+    )
+    assert started["worker_configuration"]["reasoning_effort"] == "low"
+    conn.execute("UPDATE learning_jobs SET next_attempt=0")
+    return conn, ledger, run
+
+
+class Outage:
+    """Records the effort of each call, then fails it as an outage."""
+
+    def __init__(self, effort):
+        self.reasoning_effort = effort
+        self.sent = []
+
+    def estimate_cost(self, tokens):
+        return 0.0
+
+    def complete(self, messages, **kwargs):
+        self.sent.append(self.reasoning_effort)
+        raise OSError("outage")
+
+
+def test_a_started_consolidation_job_keeps_its_frozen_effort(tmp_path):
+    conn, ledger, run = started_consolidation(tmp_path)
+    provider = Outage("none")
+    # The frozen provider type is test_learning_pages.DenseProvider. Keep that
+    # identity and change only the effort; a bound method of the original
+    # instance would not see the effort of the worker's per-job copy.
+    provider.__class__ = type("DenseProvider", (Outage,), {"__module__": "test_learning_pages"})
+    result = run(ledger, provider, enable_consolidation=True)
+    # The job passed the frozen checks and called the model with "low".
+    assert result["error"] == "Provider:transport" and not result["permanent"]
+    assert provider.sent == ["low"]
+    conn.close()
+
+
+def test_a_model_change_still_fails_a_started_consolidation_job(tmp_path):
+    conn, ledger, run = started_consolidation(tmp_path)
+    provider = Outage("none")
+    provider.__class__ = type("DenseProvider", (Outage,), {"__module__": "test_learning_pages"})
+    provider.model = "other:8b"
+    result = run(ledger, provider, enable_consolidation=True)
+    assert result["error"] == "ValidationError" and result["permanent"]
+    assert provider.sent == []
+    conn.close()

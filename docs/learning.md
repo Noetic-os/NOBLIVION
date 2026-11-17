@@ -79,10 +79,11 @@ freezes again under the new effort (`refrozen_effort` names the old one). A job
 held on an output-limit result keeps the reviewed output-limit recovery, which
 also accepts a new effort. Measure `"none"` with the selected local model before
 using it: compare the kept candidates per window, not only the tokens. On 61
-recorded extraction windows with a 27B Qwen-family local model, `"none"` cut the
-output from about 4,000 to 19 tokens per call, but it kept no candidate, against
-18 kept candidates on the first 11 windows with `"low"`. Thinking was about 79%
-of the `"low"` output. With that model, keep `"low"`.
+recorded extraction windows with a 27B Qwen-family local model, `"none"` answered
+an empty candidate list on every window (19 output tokens per call on average)
+and kept no candidate. `"low"` kept 18 candidates on the first 11 of these
+windows, with about 4,000 output tokens per call, about 79% of them thinking
+(estimated from the text share). With that model, keep `"low"`.
 
 ### Parallel model calls
 
