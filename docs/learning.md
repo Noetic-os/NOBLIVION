@@ -308,22 +308,27 @@ records of one job use at most 256 KiB. An exact-quote failure has a detail: `re
 one record per page (`unit`, `continuation`) with the cited source IDs, so a
 measurement can join it to the page spans. `context_rejections` also counts
 `ContextLegacyMarkerReplaced`: a read-only legacy note whose only finding was an
-old redaction marker, sent with the neutral mark `[...]` instead. After a key
-the mark reads as a value (`TOKEN=[...]`, `Authorization: Bearer [...]`,
-`user:[...]@host`). Then each line of the note that holds a marker, or fails
-the secret check on its own, is replaced by the line `[line withheld]`, and
-`context_rejections` counts `ContextLegacyLineWithheld`. Lines are cut at a
-newline only, and each part between other line breaks (`\r`, U+2028, U+0085)
-is checked on its own too. This needs a raw statement that the redactor leaves
-unchanged, with no natural-language secret (also read as one line), no failed
-redaction, no "private key" in any case and no key text (a long mixed-case
-base64 run, a hex line, an armor line, PuTTY or OpenVPN key words). The result
-must pass the secret check as raw text and as encoded note, and so must the
-kept lines joined without the placeholder lines, with newlines and as one line,
-so a placeholder cannot hide a key and its value. Otherwise the note
-stays withheld as before. A job that
-waits on such a note (`ContextDependencyDeferred`) builds its context again
-when it resumes.
+old redaction marker, sent with the neutral mark `[...]` instead. A statement
+with "private key" in any case never takes this path. After a key the mark
+reads as a value (`TOKEN=[...]`). Then each whole marker line is replaced by
+the line `[line withheld]`, and `context_rejections` counts
+`ContextLegacyLineWithheld`. A whole marker line is a name, `=` or `:`, and one
+redactor token (`***REDACTED***`, `[REDACTED]`, `[REDACTED_EMAIL]`), with only
+spaces or tabs around them. This is an allowlist and fails closed: any other
+withheld line (a marker inside other text, a bare marker, another line break
+on the line, or a line that fails the secret check without a marker), or an
+upper-case `REDACT` outside the marker lines, keeps the note withheld. Lines
+are cut at a newline only, and each part between other line breaks (`\r`,
+U+2028, U+0085) is checked on its own too. This also needs a raw statement that
+the redactor leaves unchanged, with no natural-language secret (also read as
+one line), no failed redaction and no key text (a long mixed-case base64 run, a
+hex line, an armor line, PuTTY or OpenVPN key words). The result must pass the
+secret check as raw text and as encoded note, and so must the kept lines joined
+without the placeholder lines, with newlines and as one line. Otherwise the
+note stays withheld as before. The path adds no secret check of its own: text
+that the shared check misses reaches the model, as in any note without a
+marker. A job that waits on such a note (`ContextDependencyDeferred`) builds
+its context again when it resumes.
 
 Before enabling paused learning, verify provider readiness and budgets, capture
 cadence and retention, and one bounded capture-to-accepted-note-to-recall path.

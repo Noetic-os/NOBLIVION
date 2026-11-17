@@ -20,9 +20,23 @@ OMISSION_MARK = "[...]"
 # NOBLIVION-258: after a key the omission mark reads as a value
 # (``TOKEN=[...]``, ``Authorization: Bearer [...]``, ``user:[...]@host``), so
 # the swapped note still failed the check and the job waited until it gave up.
-# Then each line that holds a marker, or fails the secret check on its own, is
-# replaced by this line as a whole. It is no value: no key, ``=``, ``:`` or ``@``.
+# Then each marker line is replaced by this line as a whole. It is no value:
+# no key, ``=``, ``:`` or ``@``.
 WITHHELD_LINE = "[line withheld]"
+# The line path is an allowlist and fails closed. It applies only when every
+# withheld line is a whole marker line: a name, ``=`` or ``:``, and one of the
+# redactor tokens, with spaces or tabs around them and nothing else. Any other
+# withheld line withholds the note, as main did: its other text would be cut
+# out of every check of the kept lines (``the password. [REDACTED]`` before
+# ``is hunter2``), and a line that fails the secret check without a marker is
+# no marker line at all.
+_MARKER_LINE = re.compile(
+    r"[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*(?:=|:)[ \t]*"
+    r"(?:\*\*\*REDACTED\*\*\*|\[REDACTED\]|\[REDACTED_EMAIL\])[ \t]*"
+)
+# Redactor leftover: upper-case "REDACT" outside those lines (a cut-off token
+# such as ``[REDACT``) also withholds the note.
+_RESIDUE = "REDACT"
 # The body of a key block has no marker and no secret word: the redactor masks
 # a cut-off block only up to a short line, and it does not know an OpenVPN
 # static key or a PuTTY key file. On the line path any key text withholds the
@@ -53,16 +67,25 @@ def neutral_note(note):
     model may mark it unchanged or in conflict, never rewrite it, so the
     neutral text never becomes a stored note.
 
-    First the markers are replaced by the omission mark. If that text fails,
-    the lines are withheld instead, but only when the raw statement has no
-    secret signal other than its markers: the redactor leaves it unchanged, no
-    natural-language secret (also read as one line), no failed redaction, no
-    "private key" in any case and no key text. The result must then pass the
-    unchanged check on the raw statement and on the encoded note, and so must
-    the kept lines without the placeholder lines, cut at "\\n" and as one line.
+    A statement with "private key" in any case is withheld on both paths.
+    Then the markers are replaced by the omission mark. If that text fails,
+    the marker lines are withheld instead, but only when every withheld line
+    is a whole marker line, no redactor leftover is outside them, and the raw
+    statement has no secret signal other than its markers: the redactor leaves
+    it unchanged, no natural-language secret (also read as one line), no
+    failed redaction and no key text. The result must then pass the unchanged
+    check on the raw statement and on the encoded note, and so must the kept
+    lines without the placeholder lines, cut at "\\n" and as one line.
+
+    The line path never adds a secret check of its own beyond these. Text
+    that the shared check misses reaches the model, as in any note without a
+    marker.
     """
     statement = note.get("statement")
     if not note.get("read_only") or not isinstance(statement, str):
+        return None
+    # The body of a key block has no marker and passes line by line.
+    if "private key" in statement.lower():
         return None
     swapped = dict(note, statement=LEGACY_MARKER.sub(OMISSION_MARK, statement))
     if _core_passes(swapped):
@@ -73,12 +96,14 @@ def neutral_note(note):
         # Read across lines too: the key word may sit on a withheld line.
         or re.search(NATURAL_SECRET_PATTERN, " ".join(statement.splitlines()))
         or "REDACTION_FAILED" in statement
-        # The body of a key block has no marker and passes line by line.
-        or "private key" in statement.lower()
         or _has_key_text(statement)
     ):
         return None
     lines = [(line, _line_withheld(line)) for line in statement.split("\n")]
+    if any(held and not _MARKER_LINE.fullmatch(line) for line, held in lines) or any(
+        _RESIDUE in line for line, held in lines if not held
+    ):
+        return None
     withheld = "\n".join(WITHHELD_LINE if held else line for line, held in lines)
     # A placeholder line must not hide a key and its value on two kept lines
     # (``Bearer`` and a token, ``Basic`` and a credential): the redactor reads

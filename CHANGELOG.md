@@ -25,24 +25,29 @@ All notable changes to NOBLIVION. The format follows
   batch digest it stored before its first batch call, so the new batches do
   not fail it with "semantic batches changed during a job".
 - A read-only legacy note whose only secret signal is an old redaction marker
-  after a key no longer makes its learning job wait until it is exhausted
-  (NOBLIVION-258). The neutral mark `[...]` reads as a value there
-  (`TOKEN=[...]`, `Authorization: Bearer [...]`, `user:[...]@host`), so the
-  note stayed withheld and every new note of the job in that scope waited on
-  it (`ContextDependencyDeferred`). When the mark fails, each line of the note
-  that holds a marker, or fails the secret check on its own, is now replaced by
-  the line `[line withheld]`. Lines are cut at a newline only; each part
-  between other line breaks (`\r`, U+2028, U+0085) is checked on its own too.
+  on a whole `NAME=<marker>` line no longer makes its learning job wait until
+  it is exhausted (NOBLIVION-258). The neutral mark `[...]` reads as a value
+  there (`TOKEN=[...]`), so the note stayed withheld and every new note of the
+  job in that scope waited on it (`ContextDependencyDeferred`). When the mark
+  fails, each such line is now replaced by the line `[line withheld]`. This is
+  an allowlist and it fails closed: every withheld line must be a name, `=` or
+  `:`, and one redactor token (`***REDACTED***`, `[REDACTED]`,
+  `[REDACTED_EMAIL]`) with only spaces or tabs around them, and no upper-case
+  `REDACT` may be left outside those lines. A marker inside other text, a bare
+  marker line, another line break on the line, or a line that fails the secret
+  check without a marker keeps the note withheld as before. Lines are cut at a
+  newline only, and each part between other line breaks is checked on its own.
   The raw statement must be one that the redactor leaves unchanged, with no
   natural-language secret (also read with its lines joined into one), no
-  failed redaction, no "private key" in any case and no key text: a run of 40
-  base64 characters with upper case, lower case and a digit, a line of 32 or
-  more hex characters, an armor line, or the words of a PuTTY or OpenVPN key
-  file. The result must pass the unchanged secret check as raw text and as
-  encoded note, and so must the kept lines joined without the placeholder
-  lines, both with newlines and as one line, so a placeholder cannot hide a key
-  and its value (`Bearer` and a token on the next kept line); otherwise the
-  note stays withheld as before.
+  failed redaction and no key text: a run of 40 base64 characters with upper
+  case, lower case and a digit, a line of 32 or more hex characters, an armor
+  line, or the words of a PuTTY or OpenVPN key file. The result must pass the
+  unchanged secret check as raw text and as encoded note, and so must the kept
+  lines joined without the placeholder lines, both with newlines and as one
+  line. A statement with "private key" in any case is now withheld before the
+  whole-note swap too, so neither path shows it. The line path adds no secret
+  check of its own: text that the shared check misses reaches the model, as in
+  any note without a marker.
   Learning status counts these notes as `ContextLegacyLineWithheld`. A note
   that is not read-only, or holds any other secret signal, is withheld as
   before. A waiting job builds its context again when it resumes, so no job

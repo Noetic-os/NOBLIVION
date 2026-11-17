@@ -3,10 +3,13 @@
 
 The omission mark reads as a value after a key (``TOKEN=[...]``), so such a
 read-only note stayed withheld and every new note of its job waited on it until
-the job gave up. Each line with a marker is now withheld whole instead. A note
-with any other secret signal stays withheld, as before.
+the job gave up. A whole marker line (``NAME=<marker>``) is now withheld instead.
+Any other withheld line, and any other secret signal, withholds the note, as
+before.
 """
 
+import base64
+import hashlib
 import json
 import re
 
@@ -67,15 +70,14 @@ def context_text(safe):
     return json.dumps(safe, ensure_ascii=False, separators=(",", ":"))
 
 
+# Whole marker lines: a name, "=" or ":", one redactor token, and spaces or
+# tabs around them.
 SHAPES = [
     "TOKEN=[REDACTED]",
     "GH_TOKEN=***REDACTED***",
     "PASSWORD=[REDACTED]",
-    "export API_TOKEN=[REDACTED] before the run",
-    "Authorization: Bearer [REDACTED]",
-    "Authorization: Basic ***REDACTED***",
-    "curl -H 'Authorization: Bearer ***REDACTED***' https://api.example.com/v1",
-    "postgresql://app:[REDACTED]@db.example.com:5432/app",
+    "  API_TOKEN = [REDACTED]\t",
+    "password: ***REDACTED***",
     "TOKEN=[REDACTED_EMAIL]",
 ]
 
@@ -104,9 +106,9 @@ def test_marker_after_a_key_withholds_only_its_line(shape):
 
 
 def test_one_line_note_becomes_the_placeholder():
-    # The reproducer of the issue: nothing of the note is left but the
-    # placeholder. It is still available, so the job does not wait on it.
-    safe, excluded = isolate_notes([legacy("run `TOKEN=[REDACTED] tool`")], max_chars=24000)
+    # Nothing of the note is left but the placeholder. It is still available,
+    # so the job does not wait on it.
+    safe, excluded = isolate_notes([legacy("TOKEN=[REDACTED]")], max_chars=24000)
     assert safe[0]["statement"] == WITHHELD_LINE
     assert excluded[0]["reason"] == "ContextLegacyLineWithheld"
     assert dependent_decisions([{"action": "add", "scope": "project"}], excluded) == []
@@ -242,8 +244,8 @@ def test_a_key_block_stays_withheld(statement):
 @pytest.mark.parametrize(
     "statement",
     [
-        "Basic\n[REDACTED]\ndXNlcjpwYXNzd29yZA==\nTOKEN=[REDACTED]",
-        "Bearer\n[REDACTED]\nzQ8vLm2Pw7RtXk4NabcdEFGH12\nTOKEN=[REDACTED]",
+        "Basic\nTOKEN=[REDACTED]\ndXNlcjpwYXNzd29yZA==",
+        "Bearer\nTOKEN=[REDACTED]\nzQ8vLm2Pw7RtXk4NabcdEFGH12",
     ],
 )
 def test_a_placeholder_line_does_not_hide_a_key_and_its_value(statement):
@@ -352,52 +354,49 @@ def test_key_text_keeps_a_commit_hash_in_prose():
 def test_the_kept_lines_are_read_as_one_line(words):
     # The value line starts with the verb. In the raw text the rule stops at
     # "\n", and in the encoded note "\\nis" has no word start before "is".
-    statement = f"TOKEN=[REDACTED]\n{words}\nfoo. [REDACTED]\nis hunter2"
+    statement = f"TOKEN=[REDACTED]\n{words}\nTOKEN=[REDACTED]\nis hunter2"
     assert not contains_secret(f"{words}\nis hunter2")
     assert_withheld_as_on_main(statement)
 
 
 def test_the_kept_lines_are_read_as_one_line_in_the_encoded_note():
     # Only the encoded note reads the next field as the value after "is".
-    statement = "TOKEN=[REDACTED]\nRotate the password\nfoo. [REDACTED]\nis"
+    statement = "TOKEN=[REDACTED]\nRotate the password\nTOKEN=[REDACTED]\nis"
     assert not contains_secret("Rotate the password is")
     assert_withheld_as_on_main(statement)
 
 
 def test_the_raw_statement_is_read_as_one_line():
-    # The key word sits on the withheld line, so the kept lines do not hold it.
-    statement = "the password TOKEN=[REDACTED]\nis hunter2"
+    # The key word is the name of the marker line, so the kept lines do not
+    # hold it.
+    statement = "PASSWORD=[REDACTED]\nis hunter2"
     assert not contains_secret("is hunter2")
     assert_withheld_as_on_main(statement)
 
 
+def test_lines_are_cut_at_the_newline_only():
+    # A kept line keeps its own "\r".
+    result = neutral_note(legacy("Service on 8443.\r\nTOKEN=[REDACTED]\nRestart."))
+    assert result is not None and result[1] == "ContextLegacyLineWithheld"
+    assert result[0]["statement"] == f"Service on 8443.\r\n{WITHHELD_LINE}\nRestart."
+
+
 @pytest.mark.parametrize(
-    ("statement", "expected"),
+    "statement",
     [
-        # Lines are cut at "\n" only. The "\r" of a withheld line goes with
-        # it; a kept line keeps its own.
-        (
-            "Service on 8443.\r\nTOKEN=[REDACTED]\r\nRestart.",
-            f"Service on 8443.\r\n{WITHHELD_LINE}\nRestart.",
-        ),
-        # Any other line break stays inside the line, so the marker withholds
-        # the whole run: no part of it is kept because of how it was cut.
-        ("Service on 8443. TOKEN=[REDACTED] Restart.", WITHHELD_LINE),
-        ("Service on 8443.\u0085TOKEN=[REDACTED]\u0085Restart.", WITHHELD_LINE),
-        (
-            "Service on 8443.\rTOKEN=[REDACTED]\rRestart.\nCheck the logs.",
-            f"{WITHHELD_LINE}\nCheck the logs.",
-        ),
+        # Any other line break stays inside the line, so the marker line holds
+        # other text and is no whole marker line: the note stays withheld.
+        "Service on 8443.\r\nTOKEN=[REDACTED]\r\nRestart.",
+        "Service on 8443.\u2028TOKEN=[REDACTED]\u2028Restart.",
+        "Service on 8443.\u0085TOKEN=[REDACTED]\u0085Restart.",
+        "Service on 8443.\rTOKEN=[REDACTED]\rRestart.\nCheck the logs.",
     ],
 )
-def test_lines_are_cut_at_the_newline_only(statement, expected):
-    result = neutral_note(legacy(statement))
-    assert result is not None
-    assert result[0]["statement"] == expected
-    assert result[1] == "ContextLegacyLineWithheld"
+def test_another_line_break_on_a_marker_line_withholds_the_note(statement):
+    assert_withheld_as_on_main(statement)
 
 
-@pytest.mark.parametrize("line_break", ["\r", " ", "\u0085"])
+@pytest.mark.parametrize("line_break", ["\r", "\u2028", "\u0085"])
 def test_a_part_after_another_line_break_is_checked_as_a_line(line_break):
     statement = f"Deploy notes.{line_break}  pass: Zq8hunter2example\nTOKEN=[REDACTED]"
     # Precondition: the redactor reads a line start after "\n" only, so the
@@ -405,10 +404,8 @@ def test_a_part_after_another_line_break_is_checked_as_a_line(line_break):
     assert redact_at_rest(statement) == statement
     assert not contains_secret(statement.split("\n")[0])
     assert contains_secret("  pass: Zq8hunter2example")
-    result = neutral_note(legacy(statement))
-    assert result is not None
-    assert result[0]["statement"] == f"{WITHHELD_LINE}\n{WITHHELD_LINE}"
-    assert "Zq8hunter2example" not in json.dumps(result)
+    # The line is withheld for the part, and it is no marker line.
+    assert neutral_note(legacy(statement)) is None
 
 
 def test_the_placeholder_reads_as_no_value():
@@ -419,18 +416,17 @@ def test_the_placeholder_reads_as_no_value():
     assert not contains_secret(WITHHELD_LINE)
 
 
-def test_a_line_that_fails_on_its_own_is_withheld(monkeypatch):
-    # A line with no marker that fails the check on its own is withheld too.
-    # No such line passes the raw check of the whole statement today, so the
-    # whole-statement check is replaced here to reach the line rule.
+def test_a_line_that_fails_on_its_own_withholds_the_note(monkeypatch):
+    # A line with no marker that fails the check on its own is no marker
+    # line, so the note stays withheld. No such line passes the raw check of
+    # the whole statement today, so the checks are replaced to reach the rule.
     real = learning_context.contains_secret
     monkeypatch.setattr(
         learning_context, "contains_secret", lambda text: "flagged" in text or real(text)
     )
     monkeypatch.setattr(learning_context, "redact_at_rest", lambda text: text)
-    result = neutral_note(legacy("Deploy notes.\nflagged line\nTOKEN=[REDACTED]"))
-    assert result is not None
-    assert result[0]["statement"] == f"Deploy notes.\n{WITHHELD_LINE}\n{WITHHELD_LINE}"
+    assert neutral_note(legacy("Deploy notes.\nplain line\nTOKEN=[REDACTED]")) is not None
+    assert neutral_note(legacy("Deploy notes.\nflagged line\nTOKEN=[REDACTED]")) is None
 
 
 def test_the_whole_note_swap_is_tried_first():
@@ -454,13 +450,176 @@ def test_title_and_evidence_are_not_part_of_the_line_check():
     assert not contains_secret(json.dumps([safe, excluded]))
 
 
+# -- NOBLIVION-258 review 3: allowlist, fail closed ---------------------------
+
+
+@pytest.mark.parametrize(
+    "held",
+    [
+        # A bare marker line: no name.
+        "[REDACTED]",
+        # Text besides the marker: the store's shape, a command in prose.
+        "Run `TOKEN=[REDACTED] tool` before the deploy.",
+        "Authorization: Bearer [REDACTED]",
+        "export API_TOKEN=[REDACTED]",
+        "- TOKEN=[REDACTED]",
+        "A=[REDACTED] B=[REDACTED]",
+        "postgresql://app:[REDACTED]@db.example.com:5432/app",
+        # A cut-off token is no whole marker line either.
+        "TOKEN=***REDACTED*",
+    ],
+)
+def test_only_whole_marker_lines_take_the_line_path(held):
+    # Precondition: the release before this rule withheld this line and showed
+    # the rest of the note.
+    statement = f"The cobalt service uses port 443.\nTOKEN=[REDACTED]\n{held}\nRestart it."
+    assert learning_context._line_withheld(held)
+    assert not learning_context._MARKER_LINE.fullmatch(held)
+    assert_withheld_as_on_main(statement)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        # The marker line holds the key word, so the kept lines do not.
+        "TOKEN=[REDACTED]\nthe password. [REDACTED]\nis hunter2",
+        # A bare marker line between a key word and its value.
+        "TOKEN=[REDACTED]\nthe secret\n[REDACTED]\nis hunter2",
+    ],
+)
+def test_a_held_line_with_other_text_does_not_cut_a_secret_apart(statement):
+    assert not contains_secret(
+        "\n".join(line for line in statement.split("\n")[1:] if "REDACTED" not in line)
+    )
+    assert_withheld_as_on_main(statement)
+
+
+def test_a_redactor_leftover_outside_the_marker_lines_withholds_the_note():
+    # A cut-off token is no marker for LEGACY_MARKER and passes the check.
+    leftover = "Old notes end in [REDACT here."
+    assert not LEGACY_MARKER.search(leftover) and not contains_secret(leftover)
+    assert neutral_note(legacy("Deploy notes.\nTOKEN=[REDACTED]")) is not None
+    assert_withheld_as_on_main(f"Deploy notes.\nTOKEN=[REDACTED]\n{leftover}")
+
+
+@pytest.mark.parametrize("words", ["private " + "key", "PRIVATE " + "KEY", "Private " + "Key"])
+def test_private_key_words_withhold_the_note_before_the_swap(words):
+    # Precondition: the omission mark alone passes, so the whole-note swap
+    # would show the note.
+    statement = f"Rotate the {words} [REDACTED] every month."
+    swapped = statement.replace("[REDACTED]", OMISSION_MARK)
+    assert rejection_reason(encoded(core(legacy(swapped)))) is None
+    assert_withheld_as_on_main(statement)
+
+
+def review_reproducers():
+    """The synthetic inputs of the three review rounds, each after a marker line."""
+    marker = "TOKEN=[REDACTED]"
+    raw = hashlib.sha512(b"k").digest() * 4
+    b64 = base64.b64encode(raw).decode()
+    url = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    def wrap(text, width):
+        return [text[i : i + width] for i in range(0, len(text), width)]
+
+    def b64url(seed):
+        return base64.urlsafe_b64encode(hashlib.sha512(seed).digest()).decode()[:43]
+
+    hexes = [hashlib.md5(bytes([i])).hexdigest() for i in range(8)]
+    seed_hex = hashlib.sha256(b"p").hexdigest()
+
+    def colons(text):
+        return ":".join(text[j : j + 2] for j in range(0, len(text), 2))
+
+    bodies = [
+        # Round 3.
+        "\n".join(wrap(b64, 70)[:5]),
+        "\n".join(wrap(b64, 36)[:6]),
+        "\r".join(wrap(b64, 64)[:5]),
+        " ".join(wrap(b64, 64)[:5]),
+        "\r".join(hexes),
+        " ".join(hexes),
+        "\n".join(f"{a} {b}" for a, b in zip(hexes[::2], hexes[1::2], strict=True)),
+        "priv:\n" + "\n".join("    " + colons(h[:30]) + ":" for h in hexes),
+        "\n".join(h[:31] for h in hexes),
+        '{"kty":"EC","crv":"P-256","d":"' + url[:43] + '","x":"' + url[43:86] + '"}',
+        '"d": "' + url[:43] + '"',
+        "AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGhIjKlMnOpQrSt",
+        "\n".join(line.lower() for line in wrap(b64, 64)[:5]),
+        "AGE-SECRET-" + "KEY-1" + "QYQSZQGP" * 8,
+        "the password\n[REDACTED]\n= hunter2",
+        "the password\nfoo. [REDACTED]\nis hunter2",
+        "the password. [REDACTED]\nis hunter2",
+        "the password.\n[REDACTED]\nis hunter2",
+        "the secret\n[REDACTED]\nis hunter2",
+        "the token\n[REDACTED]\nis hunter2",
+        "password:\n[REDACTED]\nhunter2",
+        "the password\rwas hunter2",
+        "read EC key\npriv:\n    " + colons(seed_hex[:30]) + ":\n    " + colons(seed_hex[30:60]),
+        "seed: " + hashlib.sha256(b"s").hexdigest(),
+        *(
+            json.dumps({"kty": "OKP", "crv": "Ed25519", "d": b64url(b"e%d" % i)}, indent=2)
+            for i in range(8)
+        ),
+        # Round 2.
+        "\n".join(HEX_LINES),
+        "\r\n".join(line.upper() for line in HEX_LINES),
+        "\n".join("> " + BASE64_LINE for _ in range(3)),
+        "\n".join("+" + BASE64_LINE for _ in range(3)),
+        redact_at_rest(f"{RSA_BEGIN}\n{BASE64_LINE}\nAb3=\n{BASE64_LINE}\n{BASE64_LINE}"),
+        f"{PPK_HEADER}\nEncryption: none\nPublic-Lines: 2\nAAAAC3NzaC1lZDI1",
+        "the password\nfoo. [REDACTED]\nis hunter2",
+        # Round 1.
+        "kind: Secret data:   db: QUJDREVGR0hJSktMTU5PUA==",
+        "Authorization: Bearer\n[REDACTED]\nabcd1234efgh5678ijkl",
+        "Basic\n[REDACTED]\ndXNlcjpwYXNzd29yZA==",
+        "sk-proj-\n[REDACTED]\nabcdefghijklmnopqrstuvwx",
+        "password=\n[REDACTED]\nhunter2hunter2",
+        "postgres://admin:\n[REDACTED]\nS3cretPw@db.local",
+        f"{BEGIN_LINE}\n[REDACTED]\n{BASE64_LINE}\n{BASE64_LINE}",
+        *(f"note{brk}PASS: Zx9qLm2Pw7Rt" for brk in ["\x0b", "\x0c", "\x1c", "\x85", "\r", " "]),
+        # Controls.
+        "Run the tests.",
+        "The cobalt service uses port 443.",
+    ]
+    return [f"{marker}\n{body}" for body in bodies] + [
+        "the password TOKEN=[REDACTED]\nis hunter2",
+        "Rotate the password\nTOKEN=[REDACTED]\n" + "x" * 37 + "\nit is hunter2example",
+        "Deploy notes.\r  pass: Zq8hunter2example\nTOKEN=[REDACTED]",
+    ]
+
+
+def test_the_line_path_shows_only_text_a_plain_note_shows():
+    shown = 0
+    for statement in review_reproducers():
+        lines = statement.split("\n")
+        held = [line for line in lines if learning_context._line_withheld(line)]
+        result = neutral_note(legacy(statement))
+        if any(not learning_context._MARKER_LINE.fullmatch(line) for line in held):
+            assert result is None or result[1] == "ContextLegacyMarkerReplaced", statement
+        if result is None or result[1] != "ContextLegacyLineWithheld":
+            continue
+        shown += 1
+        # The kept text, as a plain note without a marker, passes the shared
+        # check: the line path shows nothing that such a note would not show.
+        kept = "\n".join(
+            line for line in result[0]["statement"].split("\n") if line != WITHHELD_LINE
+        )
+        assert kept == "\n".join(line for line in lines if line not in held)
+        assert not contains_secret(kept)
+        safe, excluded = isolate_notes([legacy(kept)], max_chars=10**6)
+        assert [note["statement"] for note in safe] == [kept] and excluded == []
+    # Not vacuous: some inputs take the line path.
+    assert shown >= 10
+
+
 # -- worker ---------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("exhausted", [False, True])
 def test_dependency_deferred_job_rebuilds_its_context_and_proceeds(ledger, monkeypatch, exhausted):
     record = capture(ledger, "new", "The indigo service uses port 8443.")
-    notes = [legacy("The cobalt service uses port 443.\nexport GH_TOKEN=***REDACTED***")]
+    notes = [legacy("The cobalt service uses port 443.\nGH_TOKEN=***REDACTED***")]
     calls = []
 
     def context(*args, **kwargs):
