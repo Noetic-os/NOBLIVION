@@ -155,6 +155,13 @@ def test_every_budget_limit_is_classified():
     )
 
 
+def test_a_policy_budget_added_later_is_not_in_the_frozen_budgets():
+    # NOBLIVION-260: derivation jobs of releases up to 0.1.35 hash the six budgets.
+    assert set(configured()["budgets"]) == set(learning_worker.LEGACY_BUDGETS)
+    legacy = {"worker_fingerprint": learning_worker.worker_fingerprint(LIVE_0_1_24)}
+    assert worker_matches(legacy, configured(budget={"max_busy_share": 0.25}))
+
+
 def test_every_configuration_key_is_classified():
     assert set(configured()) == {"contract", "settings", "budgets", *REQUEST_PROVIDER}
 
@@ -215,6 +222,8 @@ def test_live_legacy_job_matches_its_own_file():
     [
         {"budget": RAISED_BUDGET, "worker": {"enable_consolidation": True}},
         {"budget": {"max_cost": 0, "max_concurrency": 2, "window_seconds": 3600}},
+        # NOBLIVION-260: the busy-share cap is a policy, like every budget.
+        {"budget": {"max_busy_share": 0.5}},
         {
             "worker": {
                 "max_attempts": 10,

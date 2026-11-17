@@ -17,7 +17,8 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from noblivion.learning import LearningLedger, LeaseLost
+from noblivion.learning import LearningLedger, LeaseLost, StepAside
+from noblivion.learning_probe import LoadProbe, probe_options
 
 log = logging.getLogger("noblivion.learning")
 
@@ -51,6 +52,7 @@ def load_settings(data_dir: Path) -> dict:
     if value["enabled"]:
         try:
             worker_options(value)
+            probe_options(value)
         except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
             log.warning("invalid learning provider or limits; learning is off")
             value["enabled"] = False
@@ -261,6 +263,12 @@ class PooledLedger(LearningLedger):
         # that changed while the job ran applies to its next call.
         current = self._pool.budget or limits
         try:
+            # NOBLIVION-260: another client queues at the shared model server.
+            # Checked after the slot wait, before the reservation row, so the job
+            # goes back at once and holds no lease while it waits.
+            wait = self._pool.probe_hold()
+            if wait > 0:
+                raise StepAside("queue", wait)
             return super().reserve(job_id, lease_token, limits=current, **estimates)
         except BaseException:
             self.release()
@@ -293,6 +301,7 @@ class LearningPool:
         self.slots = CallSlots()
         self.settings: dict | None = None
         self.budget = None
+        self.probe: LoadProbe | None = None
         self.lease_seconds: float = 120.0
         self.poll_seconds: float = PASS_INTERVAL
         self.max_attempts = 4
@@ -321,9 +330,12 @@ class LearningPool:
                 self.max_attempts = worker.max_attempts
                 self.call_seconds = worker.timeout_seconds
                 self.retry_delay = worker.retry_delay
+                self._set_probe(probe_options(settings))
         except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
             desired = 0
         self.settings = settings if desired else None
+        if not desired:
+            self.probe = None
         self.desired = desired
         self.slots.set_limit(desired)
         for index in range(desired):
@@ -337,6 +349,35 @@ class LearningPool:
                 )
                 self._threads[index] = thread
                 thread.start()
+
+    def _set_probe(self, options: dict | None) -> None:
+        """Follow ``load_probe`` live: a new block replaces the probe, none removes it."""
+        if options is None:
+            self.probe = None
+        elif self.probe is None or not self.probe.same(options):
+            self.probe = LoadProbe(options)
+
+    def probe_hold(self) -> float:
+        probe = self.probe
+        return probe.hold() if probe is not None else 0.0
+
+    def step_aside(self) -> float:
+        """Seconds a worker loop waits before it claims a job; 0 when it may go on.
+
+        NOBLIVION-260. Other clients that queue at the model server come first,
+        then the rolling-hour share cap. A failed look never blocks learning:
+        the reservation checks the share again, inside its transaction.
+        """
+        try:
+            wait = self.probe_hold()
+            budget = self.budget
+            if wait <= 0 and budget is not None and budget.max_busy_share < 1:
+                with self.store.connection() as conn:
+                    wait = LearningLedger(conn).share_wait(budget, self.call_seconds)
+            return wait
+        except Exception as exc:  # noqa: BLE001 - never stop a worker loop here
+            log.error("learning step-aside check failed: %s", type(exc).__name__)
+            return 0.0
 
     def alive(self) -> int:
         return sum(thread.is_alive() for thread in self._threads.values())
@@ -354,6 +395,10 @@ class LearningPool:
             hold = self._provider_hold_until - time.monotonic()
             if hold > 0:
                 self.stop.wait(hold)
+                continue
+            wait = self.step_aside()
+            if wait > 0:
+                self.stop.wait(wait)
                 continue
             result: dict = {"status": "failed"}
             ledger = None
@@ -492,9 +537,13 @@ def worker_options(settings: dict):
     provider = OpenAICompatibleProvider(**settings["provider"])
     worker = WorkerSettings(**settings.get("worker", {}))
     budget = BudgetLimits(**settings.get("budget", {}))
-    if budget.window_seconds <= 0 or any(
-        type(value) not in (int, float) or not math.isfinite(value) or value < 0
-        for value in vars(budget).values()
+    if (
+        budget.window_seconds <= 0
+        or any(
+            type(value) not in (int, float) or not math.isfinite(value) or value < 0
+            for value in vars(budget).values()
+        )
+        or budget.max_busy_share > 1
     ):
         raise ValueError("invalid learning budget")
     return provider, worker, budget

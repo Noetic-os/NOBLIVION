@@ -131,6 +131,63 @@ no worker.
   status count the changed note sets in `semantic_restarts` and the kept
   comparisons in `semantic_reused` (NOBLIVION-250).
 
+### Stepping aside on a shared model server
+
+Learning sends its calls at the same priority as every other client of the
+model server. Two optional policies keep it from crowding the others out. Both
+are read again every 5 seconds and never frozen into a started job, so a
+change takes effect on the job's next call and fails no job. With neither set,
+learning behaves as before and makes no extra request.
+
+```json
+"budget": {"max_concurrency": 4, "max_busy_share": 0.5},
+"load_probe": {
+  "url": "http://127.0.0.1:8000/metrics",
+  "gauge": "num_requests_waiting",
+  "max_waiting": 0,
+  "timeout_seconds": 2,
+  "max_backoff_seconds": 30
+}
+```
+
+- `load_probe` reads a Prometheus-style metrics page. Only `url` is required;
+  the other keys show their defaults. Before it claims a job and before each
+  call, learning reads the sum of all samples of `gauge`. While the value is
+  above `max_waiting`, learning sends no call. A job that reaches this check
+  goes back to pending at once with its attempt returned and holds no lease.
+  Worker loops wait 1 second, then 2, 4 and so on up to `max_backoff_seconds`,
+  and start again at 1 second when the queue is empty. The page is read at most
+  once a second for all loops together.
+- The probe URL must be `http` on loopback, like the provider. It uses no
+  proxy and follows no redirect, and a page over 2 MiB is not read. A malformed
+  `load_probe` block turns learning off, like any malformed setting. A page that
+  cannot be read (server down, status other than 200, gauge missing) counts as
+  an empty queue and learning goes on, as with no probe. The store logs one
+  warning when the probe becomes unreadable and one line when it recovers.
+- `budget.max_busy_share` (0 to 1, default 1 = off) caps the share of the call
+  slots that learning keeps busy over a rolling hour: the sum of the call
+  seconds divided by 3600 times `max_concurrency`. A finished call counts its
+  measured time, from reservation to settlement. An open call and the call to
+  be admitted count their reserved time (`worker.timeout_seconds`), which
+  is an upper bound, so the hour stays at or under the cap. A refused call goes
+  back to pending with its attempt returned and retries when the hour has moved
+  far enough, after at most 300 seconds. The job list shows
+  "stepping aside for other model clients".
+
+Limits to know:
+
+- The share is a share of learning's own slots (`max_concurrency`), not of the
+  GPU or the server. Set `max_concurrency` to the slots you give learning.
+- When the cap times 3600 times `max_concurrency` is less than
+  `worker.timeout_seconds`, no call is ever admitted. Lower `timeout_seconds`
+  or raise the cap. For example, 0.05 with one slot allows 180 seconds an hour.
+- The gauge also counts requests that learning itself has queued. If
+  `max_concurrency` is higher than the number of requests the server serves at
+  once, learning waits for its own queue. Keep `max_concurrency` at or below the
+  server's slots, or set `max_waiting` to the number of requests that may wait.
+- The probe applies to the store's own worker loops. The busy-share cap applies
+  to every learning call that reserves its budget.
+
 ### Context and output deferrals
 
 Existing notes are checked separately. A safe statement stays available when an
@@ -184,7 +241,8 @@ release that adds a contract version does not fail a started job: a job with
 partial work keeps its own version, and a job with no work yet freezes again
 under the newest version (see Extraction contract versions below).
 
-Budget limits, `enable_consolidation`, `max_attempts`, `lease_seconds`,
+Budget limits (also `max_busy_share`), the `load_probe` block, `enable_consolidation`,
+`max_attempts`, `lease_seconds`,
 `retry_delay`, `poll_seconds` and `timeout_seconds` are policy. A started job
 uses their current values on its next call. So you can raise the budget while
 jobs wait with `BudgetExceeded`.

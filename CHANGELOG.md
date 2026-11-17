@@ -8,6 +8,20 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Learning can step aside on a shared local model server (NOBLIVION-260). The
+  optional `load_probe` block of `learning.json` names a loopback metrics page
+  and a gauge (default `num_requests_waiting`). While other requests wait, the
+  worker loops claim no job and a job that reaches a call goes back to pending
+  with its attempt returned and no lease held, with a bounded back-off of 1
+  second up to `max_backoff_seconds` (default 30). A new budget key
+  `budget.max_busy_share` (0 to 1, default 1 = off) caps the share of the
+  `max_concurrency` call slots that learning keeps busy over a rolling hour;
+  a call that would pass it is refused and retried later, with the attempt
+  returned. Both are policy budgets read live every 5 seconds and not part of a
+  started job's frozen settings, so a change fails no job. With no probe and
+  no cap, behaviour is unchanged and no request is made. Details and limits:
+  `docs/learning.md`.
+
 ## 0.1.35 - 2026-11-17
 
 - A started learning job of extraction contract 1 or 2 whose semantic stage

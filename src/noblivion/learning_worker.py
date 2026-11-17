@@ -23,7 +23,13 @@ import uuid
 from dataclasses import asdict, dataclass
 from threading import Event, Timer
 
-from .learning import BudgetExceeded, ConcurrencyExceeded, LeaseLost, SemanticSnapshotChanged
+from .learning import (
+    BudgetExceeded,
+    ConcurrencyExceeded,
+    LeaseLost,
+    SemanticSnapshotChanged,
+    StepAside,
+)
 from .learning_context import dependent_decisions, isolate_notes
 from .learning_extract import (
     EXTRACTION_SCHEMA,
@@ -484,7 +490,15 @@ POLICY_SETTINGS = frozenset(
 # reads the current limits on every call and settlement never reads them.
 REQUEST_BUDGETS = frozenset()
 POLICY_BUDGETS = frozenset(
-    {"window_seconds", "max_calls", "max_tokens", "max_seconds", "max_cost", "max_concurrency"}
+    {
+        "window_seconds",
+        "max_calls",
+        "max_tokens",
+        "max_seconds",
+        "max_cost",
+        "max_concurrency",
+        "max_busy_share",  # NOBLIVION-260: admission, like the others
+    }
 )
 REQUEST_PROVIDER = ("provider_type", "endpoint", "model", "reasoning_effort")
 # Version of the prompt and schema text of every learning request. Bump it when
@@ -1149,6 +1163,12 @@ class LearningWorker:
             self.ledger.checkpoint(ident, lease, state)
             self.ledger.defer(ident, lease, retry_delay=1, error="SemanticSnapshotChanged")
             return {"status": "deferred", "job_id": ident, "error": "SemanticSnapshotChanged"}
+        except StepAside as exc:
+            # NOBLIVION-260: another client queues at the model server, or the
+            # rolling-hour share cap is reached. Wait a bounded time with no
+            # lease held; defer gives the attempt back.
+            self.ledger.defer(ident, lease, retry_delay=exc.retry_after, error="StepAside")
+            return {"status": "deferred", "job_id": ident, "error": "StepAside"}
         except ConcurrencyExceeded:
             # Other reserved calls hold every slot, for example the calls of a
             # process that stopped mid-call, until their leases expire. Retry
@@ -1317,7 +1337,9 @@ class LearningWorker:
         return {
             "contract": contract,
             "settings": asdict(self.settings),
-            "budgets": vars(self.budget_limits),
+            # NOBLIVION-260: the shape of every release up to 0.1.35. A policy
+            # budget added later (max_busy_share) is not part of any frozen job.
+            "budgets": {key: getattr(self.budget_limits, key) for key in LEGACY_BUDGETS},
             "provider_type": type(self.provider).__module__
             + "."
             + type(self.provider).__qualname__,

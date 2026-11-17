@@ -49,6 +49,20 @@ class ConcurrencyExceeded(BudgetExceeded):
     """
 
 
+class StepAside(BudgetExceeded):
+    """Learning waits for others (NOBLIVION-260): not a spent budget, not a failure.
+
+    ``reason`` is "queue" (another client waits at the shared model server) or
+    "share" (the rolling-hour GPU-share cap). The job goes back to pending with
+    its attempt returned and retries after ``retry_after`` seconds.
+    """
+
+    def __init__(self, reason: str, retry_after: float):
+        super().__init__(f"learning steps aside: {reason}")
+        self.reason = reason
+        self.retry_after = retry_after
+
+
 class RevisionConflict(LearningError):
     """The note changed since the caller read it."""
 
@@ -61,6 +75,16 @@ class BudgetLimits:
     max_seconds: float = 300.0
     max_cost: float = 0.0
     max_concurrency: int = 1
+    # NOBLIVION-260: the largest share of the call slots that learning may keep busy
+    # over a rolling hour, 0..1. 1 means no cap and skips the check.
+    max_busy_share: float = 1.0
+
+
+# The rolling hour of the share cap, and the longest wait before a retry.
+SHARE_WINDOW = 3600.0
+SHARE_RETRY_MAX = 300.0
+# A finished call that began before the window can still reach into it.
+SHARE_LOOKBACK = 900.0
 
 
 def _id() -> str:
@@ -610,10 +634,13 @@ class LearningLedger:
             "max_seconds",
             "max_cost",
             "max_concurrency",
+            "max_busy_share",
         ):
             _number(getattr(limits, name), name)
         if limits.window_seconds <= 0:
             raise BudgetExceeded("invalid budget window")
+        if limits.max_busy_share > 1:
+            raise BudgetExceeded("invalid busy share")
         now = time.time()
         with db.write_tx(self.conn):
             self.validate_lease(job_id, lease_token)
@@ -637,6 +664,9 @@ class LearningLedger:
                 raise BudgetExceeded("persistent learning budget exhausted")
             if active >= limits.max_concurrency:
                 raise ConcurrencyExceeded("every learning call slot is reserved")
+            wait = self.share_wait(limits, seconds, now)
+            if wait > 0:
+                raise StepAside("share", wait)
             reservation = {"id": _id(), "tokens": int(tokens), "seconds": seconds, "cost": cost}
             self.conn.execute(
                 "INSERT INTO learning_budget VALUES (?,?,?,?,?,?,'reserved',?,?)",
@@ -647,6 +677,52 @@ class LearningLedger:
                 (now + seconds + 30, now, job_id),
             )
             return reservation
+
+    def share_wait(self, limits: BudgetLimits, seconds: float, now: float | None = None) -> float:
+        """Seconds until a call of ``seconds`` fits the busy-share cap; 0 when it fits.
+
+        NOBLIVION-260. The busy time of the last hour is the measured span of each
+        finished call (reserve to settle, so the lease and slot waits before the
+        reservation do not count; never more than the reserved seconds), and the
+        full reserved seconds of each open call and of the new one. Those open
+        spans are an upper bound, so the hour stays at or under the cap. The
+        capacity is one hour of each call slot (``max_concurrency``).
+        """
+        share = limits.max_busy_share
+        if share >= 1:
+            return 0.0
+        now = time.time() if now is None else now
+        capacity = SHARE_WINDOW * max(1.0, float(limits.max_concurrency))
+        allowed = share * capacity
+        spans = [
+            (row["created_at"], row["created_at"] + row["seconds"])
+            if row["status"] == "reserved"
+            else (row["created_at"], min(row["updated_at"], row["created_at"] + row["seconds"]))
+            for row in self.conn.execute(
+                "SELECT status,seconds,created_at,updated_at FROM learning_budget "
+                "WHERE created_at>=?",
+                (now - SHARE_WINDOW - SHARE_LOOKBACK,),
+            )
+        ]
+
+        def busy(at: float) -> float:
+            low = at - SHARE_WINDOW
+            return sum(max(0.0, end - max(start, low)) for start, end in spans if start <= at)
+
+        if busy(now) + seconds <= allowed:
+            return 0.0
+        # The busy time only falls as the window moves on: find the first moment
+        # at which the new call fits. A call longer than the allowance never fits.
+        if seconds > allowed:
+            return SHARE_RETRY_MAX
+        low_t, high_t = 0.0, SHARE_WINDOW
+        for _ in range(14):
+            mid = (low_t + high_t) / 2
+            if busy(now + mid) + seconds <= allowed:
+                high_t = mid
+            else:
+                low_t = mid
+        return min(SHARE_RETRY_MAX, max(1.0, high_t))
 
     def provider_answered_since(self, since: float) -> bool:
         """True when a model call of this store got a real answer at or after ``since``.
@@ -777,6 +853,7 @@ class LearningLedger:
             or used["tokens"] >= limits.max_tokens
             or used["seconds"] + call_seconds > limits.max_seconds
             or used["cost"] > limits.max_cost  # a local model call costs 0
+            or self.share_wait(limits, call_seconds, now) > 0  # NOBLIVION-260
         ):
             return False
         for row in self.conn.execute(
@@ -2161,6 +2238,8 @@ class LearningLedger:
             return "budget", row["updated_at"], False
         if error == "ConcurrencyExceeded":
             return "waiting for a call slot", row["updated_at"], False
+        if error == "StepAside":
+            return "stepping aside for other model clients", row["updated_at"], False
         if error == "ScopeNotEnabled":
             return "scope not enabled", row["updated_at"], False
         if error.startswith("Context"):
