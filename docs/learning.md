@@ -66,9 +66,23 @@ extends its lease before the call to cover the configured timeout plus 30 second
 Check the existing time and token budgets before selecting larger limits: a
 180-second reservation still consumes 180 seconds even when the call finishes
 sooner. The example daily time budget above therefore permits one such call;
-a job needing several calls can wait for the next budget window. The provider
-also supports `"reasoning_effort": "none"`. Measure that setting with the selected
-local model before using it. Neither example enables a remote or paid provider.
+a job needing several calls can wait for the next budget window. Neither example
+enables a remote or paid provider.
+
+`provider.reasoning_effort` is `"low"` (the default) or `"none"`. On a model whose
+chat template thinks before it answers, `"low"` keeps the thinking on and only
+`"none"` turns it off. The effort is part of the frozen request of a job. A
+change applies to jobs that freeze after it. A started job keeps the effort it
+froze and sends it on every call, so it does not fail and does not mix answers
+of two efforts. A started job with no completed window, receipt or decision
+freezes again under the new effort (`refrozen_effort` names the old one). A job
+held on an output-limit result keeps the reviewed output-limit recovery, which
+also accepts a new effort. Measure `"none"` with the selected local model before
+using it: compare the kept candidates per window, not only the tokens. On 61
+recorded extraction windows with a 27B Qwen-family local model, `"none"` cut the
+output from about 4,000 to 19 tokens per call, but it kept no candidate, against
+18 kept candidates on the first 11 windows with `"low"`. Thinking was about 79%
+of the `"low"` output. With that model, keep `"low"`.
 
 ### Parallel model calls
 
@@ -342,6 +356,16 @@ Learning status includes `failure_reasons`, `context_rejections`, `outcomes`, an
 `transport`, and `invalid`. Schema and budget failures have separate counts.
 `provider_actual` totals measured calls, seconds and reported tokens from retained
 jobs, including failed calls. Unknown usage is not reported as a measurement.
+It also totals the output tokens (`completion_tokens`) and the thinking tokens
+(`reasoning_tokens`) of each answer, a cut-off answer included, with the mean per
+call (`completion_tokens_per_call`, `reasoning_tokens_per_call`). `output_calls`
+and `reasoning_calls` count the calls that reported each value; the means use
+these counts. A server that reports `usage.completion_tokens_details` gives the
+thinking tokens directly. A server that returns the thinking text apart, in
+`message.reasoning` or `message.reasoning_content`, gives an estimate: the output
+tokens times the share of the thinking text in all returned text.
+`reasoning_estimated` counts these estimates. No text is kept. The provider
+reason of a call is its finish reason: `success` is `stop`, `length` is `length`.
 The existing `budget` totals remain conservative reservations, including unknown
 usage after a crash or transport failure. `outcomes` separates committed decisions,
 deferred jobs, exhausted failures and corrections deferred as visible conflicts.

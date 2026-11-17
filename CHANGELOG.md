@@ -8,6 +8,18 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Learning status shows output and thinking tokens per call (NOBLIVION-261).
+  `provider_actual` adds `completion_tokens`, `reasoning_tokens`, their means per
+  call, and the counts of calls that reported them. A server without
+  `completion_tokens_details` that returns the thinking text apart gives an
+  estimate from the text share, counted in `reasoning_estimated`. No text is kept.
+- A change of `provider.reasoning_effort` no longer fails started jobs
+  (NOBLIVION-261). A started job keeps the effort it froze and sends it on every
+  call. A started job with no work freezes again under the new effort. A change
+  of model or endpoint still fails a started job.
+- The documented A/B result: on recorded extraction windows, `"none"` cut output
+  tokens by more than 99% but kept no lesson, so `"low"` stays the default.
+
 ## 0.1.36 - 2026-11-17
 
 - Learning can step aside on a shared local model server (NOBLIVION-260). The

@@ -8,6 +8,7 @@ are recovered conservatively by the durable ledger.
 
 from __future__ import annotations
 
+import copy
 import errno
 import hashlib
 import http.client
@@ -149,7 +150,7 @@ def record_mismatches(
 class ProviderError(RuntimeError):
     """Allowlisted diagnosis; never retain an HTTP body or exception message."""
 
-    def __init__(self, reason="transport", *, tokens=None):
+    def __init__(self, reason="transport", *, tokens=None, output=None):
         allowed = {
             "incomplete",
             "length",
@@ -161,6 +162,8 @@ class ProviderError(RuntimeError):
         }
         self.reason = reason if reason in allowed else "transport"
         self.tokens = tokens if type(tokens) is int and tokens >= 0 else None
+        # Output token counts of a cut-off answer (output_usage), never its text.
+        self.output = output if isinstance(output, dict) else None
         super().__init__("provider output incomplete" if reason == "length" else self.reason)
 
 
@@ -686,6 +689,60 @@ def worker_matches(progress: dict, current: dict) -> bool:
 class ProviderResponse:
     content: str
     tokens: int | None = None
+    # Output token counts of the answer (output_usage), or None when unknown.
+    output: dict | None = None
+
+
+# The reasoning effort values the local provider sends (NOBLIVION-261). On a
+# model whose chat template thinks before it answers, "low" keeps the thinking
+# on; only "none" turns it off.
+REASONING_EFFORTS = ("low", "none")
+
+
+def output_usage(usage, message) -> dict:
+    """Output and reasoning token counts of one answer; an empty dict when unknown.
+
+    NOBLIVION-261. A server that reports usage.completion_tokens_details gives
+    the reasoning tokens directly. A server that does not, but returns the
+    thinking text apart in message.reasoning_content or message.reasoning, gives
+    an estimate: the completion tokens times the share of the thinking text in
+    all returned text. The estimate is marked. No text is kept, only counts.
+    """
+    completion = usage.get("completion_tokens") if isinstance(usage, dict) else None
+    if type(completion) is not int or completion < 0:
+        return {}
+    result = {"completion_tokens": completion}
+    details = usage.get("completion_tokens_details")
+    reported = details.get("reasoning_tokens") if isinstance(details, dict) else None
+    if type(reported) is int and 0 <= reported <= completion:
+        result["reasoning_tokens"] = reported
+        return result
+    message = message if isinstance(message, dict) else {}
+    keys = [key for key in ("reasoning_content", "reasoning") if key in message]
+    if not keys:
+        return result
+    # A server that separates thinking sends the field as null when there was none.
+    thinking = next((message[k] for k in keys if isinstance(message[k], str)), "")
+    content = message.get("content") if isinstance(message.get("content"), str) else ""
+    total = len(thinking) + len(content)
+    result["reasoning_tokens"] = round(completion * len(thinking) / total) if total else 0
+    result["reasoning_estimated"] = True
+    return result
+
+
+def add_output_metrics(metrics: dict, output) -> None:
+    """Add the output_usage counts of one call to a job's provider_metrics."""
+    if not isinstance(output, dict) or "completion_tokens" not in output:
+        return
+    metrics["output_calls"] = metrics.get("output_calls", 0) + 1
+    metrics["completion_tokens"] = metrics.get("completion_tokens", 0) + output["completion_tokens"]
+    if "reasoning_tokens" in output:
+        metrics["reasoning_calls"] = metrics.get("reasoning_calls", 0) + 1
+        metrics["reasoning_tokens"] = (
+            metrics.get("reasoning_tokens", 0) + output["reasoning_tokens"]
+        )
+        if output.get("reasoning_estimated"):
+            metrics["reasoning_estimated"] = metrics.get("reasoning_estimated", 0) + 1
 
 
 _OUTAGE_STATUS = frozenset({429, 502, 503, 504})
@@ -798,7 +855,7 @@ class OpenAICompatibleProvider:
             raise ValueError("learning requires an explicitly priced local loopback provider")
         if not isinstance(model, str) or not model.strip() or contains_secret(model):
             raise ValueError("invalid local model")
-        if reasoning_effort not in {"low", "none"}:
+        if reasoning_effort not in REASONING_EFFORTS:
             raise ValueError("invalid local reasoning effort")
         self.endpoint = urllib.parse.urlunsplit(
             (url.scheme, url.netloc, "/v1/chat/completions", "", "")
@@ -845,8 +902,11 @@ class OpenAICompatibleProvider:
             invalid_usage = not isinstance(usage, dict) or (
                 tokens is not None and (type(tokens) is not int or tokens < 0)
             )
+            output = output_usage(usage, choice.get("message"))
             if finish == "length":
-                raise ProviderError("length", tokens=None if invalid_usage else tokens)
+                raise ProviderError(
+                    "length", tokens=None if invalid_usage else tokens, output=output
+                )
             if invalid_usage:
                 raise ProviderError("invalid")
             if finish != "stop":
@@ -856,7 +916,7 @@ class OpenAICompatibleProvider:
                 raise ProviderError("invalid", tokens=tokens)
             if not content.strip():
                 raise ProviderError("empty", tokens=tokens)
-            return ProviderResponse(content, tokens)
+            return ProviderResponse(content, tokens, output)
         except (KeyError, IndexError, TypeError, AttributeError) as exc:
             raise ProviderError("invalid") from exc
 
@@ -992,11 +1052,45 @@ class LearningWorker:
         exclusion revokes the lease on purpose. This worker stops with no write,
         and the job state stays with whoever owns it now.
         """
+        provider = self.provider
         try:
             return self._run_once()
         except LeaseLost:
             LOG.info("learning job lease lost; the job is no longer this worker's")
             return {"status": "lease_lost"}
+        finally:
+            # A job may run with its frozen reasoning effort (_keep_frozen_effort).
+            self.provider = provider
+
+    def _keep_frozen_effort(self, progress: dict) -> bool:
+        """Run a started job with the reasoning effort it froze. True when that differs.
+
+        NOBLIVION-261. The effort is part of the frozen request (REQUEST_PROVIDER),
+        so a configuration change used to fail every started job. Now a started
+        job keeps its frozen effort, and only jobs frozen later use the new one.
+        The stored value still has to reproduce the frozen hash, so an edited
+        progress row fails as before. A job with an output-limit hold keeps the
+        reviewed recovery path (_output_recovery), which already allows a new
+        effort. A provider without an effort is not changed.
+        """
+        current = getattr(self.provider, "reasoning_effort", None)
+        if current not in REASONING_EFFORTS or progress.get("output_limit_hold"):
+            return False
+        stored = next(
+            (
+                progress[key]
+                for key in ("execution_configuration", "worker_configuration", "call_configuration")
+                if isinstance(progress.get(key), dict)
+            ),
+            None,
+        )
+        effort = stored.get("reasoning_effort") if stored is not None else None
+        if effort == current or effort not in REASONING_EFFORTS:
+            return False
+        provider = copy.copy(self.provider)
+        provider.reasoning_effort = effort
+        self.provider = provider
+        return True
 
     def _run_once(self) -> dict:
         """Claim one job and process all windows, or leave a visible failure.
@@ -1020,7 +1114,9 @@ class LearningWorker:
             self.ledger.defer(ident, lease, retry_delay=3600, error="ScopeNotEnabled")
             return {"status": "deferred", "job_id": ident, "error": "ScopeNotEnabled"}
         state = dict(job.get("progress") or {})
+        current_provider = self.provider
         try:
+            frozen_effort = self._keep_frozen_effort(state)
             if job.get("kind", "extract") != "extract":
                 from .learning_synthesis import run_derivation
 
@@ -1035,11 +1131,15 @@ class LearningWorker:
                 return run_derivation(self.ledger, job, self._validated_call)
             sources = job["sources"]
             progress = job.get("progress") or {}
-            if self._may_refreeze(job, progress, sources):
-                # A job frozen under an older contract that has done no work
-                # yet starts again as a new job under the newest contract.
+            if self._may_refreeze(job, progress, sources, frozen_effort):
+                # A job frozen under an older contract or another reasoning
+                # effort that has done no work yet starts again as a new job
+                # under the newest contract and the current effort.
                 progress = {key: progress[key] for key in ("provider_metrics",) if key in progress}
                 progress["refrozen_from"] = self._job_contract(job["progress"], sources)
+                if frozen_effort:
+                    progress["refrozen_effort"] = self.provider.reasoning_effort
+                    self.provider = current_provider
                 state = dict(progress)
                 job["progress"] = progress
             # The contract decides the windows and the request shape, so it is
@@ -1300,7 +1400,7 @@ class LearningWorker:
                 return contract
         return hint
 
-    def _may_refreeze(self, job, progress, sources) -> bool:
+    def _may_refreeze(self, job, progress, sources, frozen_effort=False) -> bool:
         """True when a job frozen under an older contract has no partial work.
 
         Such a job has no completed window, no page receipt, no semantic stage,
@@ -1308,6 +1408,9 @@ class LearningWorker:
         so nothing in it depends on its frozen windows. It may freeze again under the newest
         contract. A job with any partial work keeps its frozen contract, and a
         job whose freeze no longer matches still fails visibly (NOBLIVION-236).
+        frozen_effort is True when the job runs with a reasoning effort that is
+        not the current one (_keep_frozen_effort). Such a job with no partial
+        work also freezes again, under the current effort (NOBLIVION-261).
         """
         if progress.get("execution_fingerprint", progress.get("fingerprint")) is None:
             return False
@@ -1325,7 +1428,7 @@ class LearningWorker:
             contract = self._job_contract(progress, sources)
         except ValidationError:
             return False
-        if contract >= EXTRACTION_CONTRACT:
+        if contract >= EXTRACTION_CONTRACT and not frozen_effort:
             return False
         try:
             windows = self.windows(sources, contract)
@@ -1776,6 +1879,11 @@ class LearningWorker:
             metrics["tokens"] += usage or 0
             reason = failure.reason if failure else "success"
             metrics["reasons"][reason] = metrics["reasons"].get(reason, 0) + 1
+            # NOBLIVION-261: output and reasoning tokens. The reason is the finish
+            # reason of the answer: success is "stop", length is "length".
+            add_output_metrics(
+                metrics, getattr(response if response is not None else failure, "output", None)
+            )
             # Preserve a known output-limit hold even if settlement fails.
             self.ledger.checkpoint(job["id"], job["lease_token"], state)
             # Measured durations are independent of conservative reservations.

@@ -29,6 +29,15 @@ from .learning_values import canonical_json, text_hash, validate_safe_text, vali
 
 CATEGORIES = frozenset({"preference", "workflow", "fact", "decision", "proven_fix"})
 MAX_RECORDS = 256
+# Output token counts per job in provider_metrics (NOBLIVION-261). output_calls
+# and reasoning_calls count the calls that reported each count.
+OUTPUT_METRICS = (
+    "output_calls",
+    "completion_tokens",
+    "reasoning_calls",
+    "reasoning_tokens",
+    "reasoning_estimated",
+)
 MAX_CONTENT = 65536
 MAX_STATEMENT = 12000
 
@@ -2329,7 +2338,13 @@ class LearningLedger:
         reasons, context = {}, {}
         # Text-free classes of dropped and rejected candidates (NOBLIVION-237).
         mismatches = {"dropped": {}, "rejected": {}}
-        actual = {"calls": 0, "seconds": 0.0, "tokens": 0, "reasons": {}}
+        actual = {
+            "calls": 0,
+            "seconds": 0.0,
+            "tokens": 0,
+            **dict.fromkeys(OUTPUT_METRICS, 0),
+            "reasons": {},
+        }
         outcomes = {"committed": 0, "deferred": 0, "failed": 0}
         # Windows whose whole model reply was rejected; the job went on (NOBLIVION-244).
         rejected_windows = 0
@@ -2375,7 +2390,7 @@ class LearningLedger:
                     item.get("failures", 0) for item in (semantic.get(key) or {}).values()
                 )
             metrics = progress.get("provider_metrics", {})
-            for key in ("calls", "seconds", "tokens"):
+            for key in ("calls", "seconds", "tokens", *OUTPUT_METRICS):
                 actual[key] += metrics.get(key, 0)
             for reason, count in metrics.get("reasons", {}).items():
                 actual["reasons"][reason] = actual["reasons"].get(reason, 0) + count
@@ -2403,6 +2418,14 @@ class LearningLedger:
             "AND job_id IN (SELECT id FROM learning_jobs" + clause + ")",
             params,
         ).fetchone()[0]
+        # NOBLIVION-261: means over the calls that reported the count.
+        for key, calls in (
+            ("completion_tokens", "output_calls"),
+            ("reasoning_tokens", "reasoning_calls"),
+        ):
+            actual[key + "_per_call"] = (
+                round(actual[key] / actual[calls], 1) if actual[calls] else None
+            )
         return {
             "failure_reasons": reasons,
             "context_rejections": context,
