@@ -314,10 +314,13 @@ reads as a value (`TOKEN=[...]`). Then each whole marker line is replaced by
 the line `[line withheld]`, and `context_rejections` counts
 `ContextLegacyLineWithheld`. A whole marker line is a name, `=` or `:`, and one
 redactor token (`***REDACTED***`, `[REDACTED]`, `[REDACTED_EMAIL]`), with only
-spaces or tabs around them. This is an allowlist and fails closed: any other
-withheld line (a marker inside other text, a bare marker, another line break
-on the line, or a line that fails the secret check without a marker), or an
-upper-case `REDACT` outside the marker lines, keeps the note withheld. Lines
+spaces or tabs around them. In any other withheld line only the span
+`NAME=<marker>`, `NAME: <marker>` or `NAME: <scheme> <marker>` is replaced by
+`[...]`, name and `=`/`:` included, with nothing glued to either end. This
+fails closed: a cut line that still fails the line check (a bare marker, a
+marker glued to text, a value after it), a marker or an upper-case `REDACT`
+left anywhere, or a line that fails the secret check without a marker keeps
+the note withheld. Lines
 are cut at a newline only, and each part between other line breaks (`\r`,
 U+2028, U+0085) is checked on its own too. This also needs a raw statement that
 the redactor leaves unchanged, with no natural-language secret (also read as

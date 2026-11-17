@@ -143,10 +143,6 @@ def test_marker_lines_of_every_shape_and_safe_notes_pass_the_full_context_check(
         "curl -H 'Authorization: Bearer\n[REDACTED]' https://api.example.com\nGH_TOKEN=[REDACTED]",
         # The same with the key of a basic credential.
         "Authorization: Basic\n***REDACTED***\nPASSWORD=[REDACTED]",
-        # A natural-language secret across lines: only the encoded note joins
-        # the key word and the verb once the long marker line is withheld.
-        "Rotate the password\nexport SERVICE_TOKEN=[REDACTED] for the cobalt deploy job runner\n"
-        "this is fine",
     ],
 )
 def test_a_secret_split_across_lines_stays_withheld(statement):
@@ -382,17 +378,36 @@ def test_lines_are_cut_at_the_newline_only():
 
 
 @pytest.mark.parametrize(
-    "statement",
+    ("statement", "expected"),
     [
         # Any other line break stays inside the line, so the marker line holds
-        # other text and is no whole marker line: the note stays withheld.
-        "Service on 8443.\r\nTOKEN=[REDACTED]\r\nRestart.",
-        "Service on 8443.\u2028TOKEN=[REDACTED]\u2028Restart.",
-        "Service on 8443.\u0085TOKEN=[REDACTED]\u0085Restart.",
-        "Service on 8443.\rTOKEN=[REDACTED]\rRestart.\nCheck the logs.",
+        # other text and is no whole marker line: only the span is cut out.
+        (
+            "Service on 8443.\r\nTOKEN=[REDACTED]\r\nRestart.",
+            "Service on 8443.\r\n[...]\r\nRestart.",
+        ),
+        (
+            "Service on 8443.\u2028TOKEN=[REDACTED]\u2028Restart.",
+            "Service on 8443.\u2028[...]\u2028Restart.",
+        ),
+        (
+            "Service on 8443.\u0085TOKEN=[REDACTED]\u0085Restart.",
+            "Service on 8443.\u0085[...]\u0085Restart.",
+        ),
     ],
 )
-def test_another_line_break_on_a_marker_line_withholds_the_note(statement):
+def test_another_line_break_on_a_marker_line_cuts_only_the_span(statement, expected):
+    result = neutral_note(legacy(statement))
+    assert result is not None and result[1] == "ContextLegacyLineWithheld"
+    assert result[0]["statement"] == expected
+
+
+def test_a_cut_line_is_checked_in_its_parts():
+    # The redactor reads "pass:" at a line start after "\n" only. The cut line
+    # fails the part check, so the note stays withheld.
+    statement = "Deploy notes.\rTOKEN=[REDACTED]\r  pass: Zq8hunter2example"
+    assert redact_at_rest(statement) == statement
+    assert not contains_secret("Deploy notes.\r[...]\r  pass: Zq8hunter2example")
     assert_withheld_as_on_main(statement)
 
 
@@ -454,28 +469,61 @@ def test_title_and_evidence_are_not_part_of_the_line_check():
 
 
 @pytest.mark.parametrize(
+    ("held", "cut"),
+    [
+        # A command in prose, the store's most common shape.
+        ("Run `TOKEN=[REDACTED] tool` before the deploy.", "Run `[...] tool` before the deploy."),
+        # A scheme word goes with the span.
+        ("Authorization: Bearer [REDACTED]", "[...]"),
+        (
+            "curl -H 'Authorization: Basic ***REDACTED***' https://example.com",
+            "curl -H '[...]' https://example.com",
+        ),
+        ("export API_TOKEN=[REDACTED]", "export [...]"),
+        ("- TOKEN=[REDACTED_EMAIL], then restart.", "- [...], then restart."),
+        # Two markers in one line.
+        ("A=[REDACTED] B: [REDACTED]", "[...] [...]"),
+    ],
+)
+def test_a_marker_span_is_cut_out_of_a_line(held, cut):
+    statement = f"The cobalt service uses port 443.\nTOKEN=[REDACTED]\n{held}\nRestart it."
+    # Precondition: the line is withheld and no whole marker line.
+    assert learning_context._line_withheld(held)
+    assert not learning_context._MARKER_LINE.fullmatch(held)
+    result = neutral_note(legacy(statement))
+    assert result is not None and result[1] == "ContextLegacyLineWithheld"
+    assert result[0]["statement"] == (
+        f"The cobalt service uses port 443.\n{WITHHELD_LINE}\n{cut}\nRestart it."
+    )
+
+
+@pytest.mark.parametrize(
     "held",
     [
-        # A bare marker line: no name.
-        "[REDACTED]",
-        # Text besides the marker: the store's shape, a command in prose.
-        "Run `TOKEN=[REDACTED] tool` before the deploy.",
-        "Authorization: Bearer [REDACTED]",
-        "export API_TOKEN=[REDACTED]",
-        "- TOKEN=[REDACTED]",
-        "A=[REDACTED] B=[REDACTED]",
-        "postgresql://app:[REDACTED]@db.example.com:5432/app",
-        # A cut-off token is no whole marker line either.
+        # A bare marker: no name.
+        "see [REDACTED] here",
+        # A marker glued to text on either end.
+        "TOKEN=[REDACTED]abc",
+        "2FA_TOKEN=[REDACTED]",
+        # A value after the span on the same line: the rest fails.
+        "TOKEN=[REDACTED] password=Zq8hunter2example",
+        # One marker is cut, the other has no name.
+        "TOKEN=[REDACTED] and [REDACTED]",
+        # A marker as the user of a credential, the store's other shape.
+        'curl -u "[REDACTED]:$PASS" https://example.com',
+        # A cut-off token is no span.
         "TOKEN=***REDACTED*",
     ],
 )
-def test_only_whole_marker_lines_take_the_line_path(held):
-    # Precondition: the release before this rule withheld this line and showed
-    # the rest of the note.
+def test_a_line_that_cannot_be_cut_withholds_the_note(held):
     statement = f"The cobalt service uses port 443.\nTOKEN=[REDACTED]\n{held}\nRestart it."
     assert learning_context._line_withheld(held)
-    assert not learning_context._MARKER_LINE.fullmatch(held)
-    assert_withheld_as_on_main(statement)
+    note = legacy(statement)
+    # Main withholds every such note; the value case is unsafe from the start.
+    assert rejection_reason(encoded(core(note))) is not None
+    assert neutral_note(note) is None
+    safe, excluded = isolate_notes([note], max_chars=24000)
+    assert safe == [] and excluded[0]["statement_available"] is False
 
 
 @pytest.mark.parametrize(
@@ -578,6 +626,8 @@ def review_reproducers():
         "postgres://admin:\n[REDACTED]\nS3cretPw@db.local",
         f"{BEGIN_LINE}\n[REDACTED]\n{BASE64_LINE}\n{BASE64_LINE}",
         *(f"note{brk}PASS: Zx9qLm2Pw7Rt" for brk in ["\x0b", "\x0c", "\x1c", "\x85", "\r", " "]),
+        "Rotate the password\nexport SERVICE_TOKEN=[REDACTED] for the cobalt deploy job runner\n"
+        "this is fine",
         # Controls.
         "Run the tests.",
         "The cobalt service uses port 443.",
@@ -592,20 +642,24 @@ def review_reproducers():
 def test_the_line_path_shows_only_text_a_plain_note_shows():
     shown = 0
     for statement in review_reproducers():
-        lines = statement.split("\n")
-        held = [line for line in lines if learning_context._line_withheld(line)]
         result = neutral_note(legacy(statement))
-        if any(not learning_context._MARKER_LINE.fullmatch(line) for line in held):
-            assert result is None or result[1] == "ContextLegacyMarkerReplaced", statement
         if result is None or result[1] != "ContextLegacyLineWithheld":
             continue
         shown += 1
+        # Every withheld line was a whole marker line or a line whose cut
+        # passes the line check; no marker and no leftover remains.
+        for line in statement.split("\n"):
+            if learning_context._line_withheld(line) and not (
+                learning_context._MARKER_LINE.fullmatch(line)
+            ):
+                cut = learning_context._MARKER_SPAN.sub(OMISSION_MARK, line)
+                assert not learning_context._line_withheld(cut), statement
+        assert "REDACT" not in result[0]["statement"]
         # The kept text, as a plain note without a marker, passes the shared
         # check: the line path shows nothing that such a note would not show.
         kept = "\n".join(
             line for line in result[0]["statement"].split("\n") if line != WITHHELD_LINE
         )
-        assert kept == "\n".join(line for line in lines if line not in held)
         assert not contains_secret(kept)
         safe, excluded = isolate_notes([legacy(kept)], max_chars=10**6)
         assert [note["statement"] for note in safe] == [kept] and excluded == []

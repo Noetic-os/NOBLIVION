@@ -25,17 +25,20 @@ All notable changes to NOBLIVION. The format follows
   batch digest it stored before its first batch call, so the new batches do
   not fail it with "semantic batches changed during a job".
 - A read-only legacy note whose only secret signal is an old redaction marker
-  on a whole `NAME=<marker>` line no longer makes its learning job wait until
-  it is exhausted (NOBLIVION-258). The neutral mark `[...]` reads as a value
-  there (`TOKEN=[...]`), so the note stayed withheld and every new note of the
-  job in that scope waited on it (`ContextDependencyDeferred`). When the mark
-  fails, each such line is now replaced by the line `[line withheld]`. This is
-  an allowlist and it fails closed: every withheld line must be a name, `=` or
-  `:`, and one redactor token (`***REDACTED***`, `[REDACTED]`,
-  `[REDACTED_EMAIL]`) with only spaces or tabs around them, and no upper-case
-  `REDACT` may be left outside those lines. A marker inside other text, a bare
-  marker line, another line break on the line, or a line that fails the secret
-  check without a marker keeps the note withheld as before. Lines are cut at a
+  after a key no longer makes its learning job wait until it is exhausted
+  (NOBLIVION-258). The neutral mark `[...]` reads as a value there
+  (`TOKEN=[...]`), so the note stayed withheld and every new note of the job
+  in that scope waited on it (`ContextDependencyDeferred`). When the mark
+  fails, each whole marker line is now replaced by `[line withheld]`. A whole
+  marker line is a name, `=` or `:`, and one redactor token (`***REDACTED***`,
+  `[REDACTED]`, `[REDACTED_EMAIL]`) with only spaces or tabs around them. In
+  any other withheld line only the span `NAME=<marker>`, `NAME: <marker>` or
+  `NAME: <scheme> <marker>` is replaced by `[...]`, name and `=`/`:` included,
+  and the rest of the line is kept. Nothing may be glued to either end of the
+  span. This fails closed: when a cut line still fails the line check on its
+  own (a bare marker, a marker glued to text, a value after it), when a marker
+  or an upper-case `REDACT` is left, or when a line fails the secret check
+  without a marker, the note stays withheld as before. Lines are cut at a
   newline only, and each part between other line breaks is checked on its own.
   The raw statement must be one that the redactor leaves unchanged, with no
   natural-language secret (also read with its lines joined into one), no
