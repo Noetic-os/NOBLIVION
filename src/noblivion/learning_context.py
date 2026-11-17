@@ -56,9 +56,10 @@ _OTHER_SPACE = re.compile(r"[^\S \t]|[^\x00-\x7f]")
 # A marker at the end of a line does not mean the value ended there: the
 # redactor masks a value up to the line end, and the rest of it may sit on the
 # next line (a quote or a shell continuation that runs on, a folded header, an
-# indented continuation). So the line after a withheld marker line or a cut
-# span must be blank, or the text must end. Counting quotes or looking further
-# ahead does not work: an apostrophe evens the count, and some values have none.
+# indented continuation, also past a blank line). So every line after a
+# withheld marker line or a cut span must be blank, through the end of the text.
+# Counting quotes or looking further ahead does not work: an apostrophe evens
+# the count, and some values have none.
 _BLANK_LINE = re.compile(r"[ \t]*\r?")
 # Redactor leftover: upper-case "REDACT" anywhere in the result (a cut-off
 # token such as ``[REDACT``) also withholds the note.
@@ -100,8 +101,8 @@ def neutral_note(note):
     natural-language secret (also read as one line), no failed redaction and
     no key text. A whole marker line is withheld. In any other line that fails
     the line check, the marker spans are cut out, and the cut line must then
-    pass the line check, or the note stays withheld. The line after a withheld
-    line must be blank, or the text must end: the value may run on. No marker
+    pass the line check, or the note stays withheld. Every line after a
+    withheld line must be blank, through the end: the value may run on. No marker
     and no redactor leftover may remain. The result must then pass the unchanged check on the
     raw statement and on the encoded note, and so must the kept lines without
     the placeholder lines, cut at "\\n" and as one line.
@@ -134,8 +135,9 @@ def neutral_note(note):
         if not _line_withheld(line):
             lines.append((line, False))
             continue
-        # The value may run on: only a blank line or the end may follow.
-        if i + 1 < len(raw_lines) and not _BLANK_LINE.fullmatch(raw_lines[i + 1]):
+        # The value may run on, also past a blank line: only blank lines
+        # through the end of the text may follow.
+        if not all(_BLANK_LINE.fullmatch(rest) for rest in raw_lines[i + 1 :]):
             return None
         if _MARKER_LINE.fullmatch(line):
             lines.append((WITHHELD_LINE, True))

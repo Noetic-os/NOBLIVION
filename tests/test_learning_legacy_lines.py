@@ -84,7 +84,7 @@ SHAPES = [
 
 @pytest.mark.parametrize("shape", SHAPES)
 def test_marker_after_a_key_withholds_only_its_line(shape):
-    statement = f"The cobalt service listens on port 8443.\n{shape}\n\nRestart it after a deploy."
+    statement = f"The cobalt service listens on port 8443.\n\nRestart it after a deploy.\n{shape}"
     note = legacy(statement)
     # Preconditions: the only signal is the marker, and the omission mark
     # alone fails, so this is the line path and not the whole-note swap.
@@ -93,7 +93,7 @@ def test_marker_after_a_key_withholds_only_its_line(shape):
     assert rejection_reason(encoded(core(swapped))) is not None
     safe, excluded = isolate_notes([note], max_chars=24000)
     assert [n["statement"] for n in safe] == [
-        f"The cobalt service listens on port 8443.\n{WITHHELD_LINE}\n\nRestart it after a deploy."
+        f"The cobalt service listens on port 8443.\n\nRestart it after a deploy.\n{WITHHELD_LINE}"
     ]
     assert excluded[0]["reason"] == "ContextLegacyLineWithheld"
     assert excluded[0]["statement_available"] is True
@@ -117,7 +117,7 @@ def test_one_line_note_becomes_the_placeholder():
 def test_marker_lines_of_every_shape_and_safe_notes_pass_the_full_context_check():
     notes = [legacy("The cobalt service uses port 443.", note_id="legacy:1")]
     notes += [
-        legacy(f"Deploy notes {i}.\n{shape}\n\nCheck the logs.", note_id=f"legacy:{i + 10}")
+        legacy(f"Deploy notes {i}.\n\nCheck the logs.\n{shape}", note_id=f"legacy:{i + 10}")
         for i, shape in enumerate(SHAPES)
     ]
     # A note the whole-note swap still handles keeps its omission mark.
@@ -333,7 +333,7 @@ def test_key_text_withholds_key_file_words(residue):
 
 def test_key_text_keeps_a_commit_hash_in_prose():
     # A hash in prose is no key body: lower-case hex inside a line.
-    statement = "TOKEN=[REDACTED]\n\nFixed in commit " + "9f8e7d6c5b4a3928170" * 2 + "ab today."
+    statement = "Fixed in commit " + "9f8e7d6c5b4a3928170" * 2 + "ab today.\n\nTOKEN=[REDACTED]"
     result = neutral_note(legacy(statement))
     assert result is not None and result[1] == "ContextLegacyLineWithheld"
 
@@ -372,9 +372,9 @@ def test_the_raw_statement_is_read_as_one_line():
 
 def test_lines_are_cut_at_the_newline_only():
     # A kept line keeps its own "\r".
-    result = neutral_note(legacy("Service on 8443.\r\nTOKEN=[REDACTED]\n\nRestart."))
+    result = neutral_note(legacy("Service on 8443.\r\nRestart.\n\nTOKEN=[REDACTED]"))
     assert result is not None and result[1] == "ContextLegacyLineWithheld"
-    assert result[0]["statement"] == f"Service on 8443.\r\n{WITHHELD_LINE}\n\nRestart."
+    assert result[0]["statement"] == f"Service on 8443.\r\nRestart.\n\n{WITHHELD_LINE}"
 
 
 @pytest.mark.parametrize(
@@ -475,15 +475,13 @@ def test_title_and_evidence_are_not_part_of_the_line_check():
     ],
 )
 def test_a_marker_span_is_cut_out_of_a_line(held, cut):
-    statement = f"The cobalt service uses port 443.\nTOKEN=[REDACTED]\n\n{held}\n\nRestart it."
+    statement = f"The cobalt service uses port 443.\n\nRestart it.\n\n{held}"
     # Precondition: the line is withheld and no whole marker line.
     assert learning_context._line_withheld(held)
     assert not learning_context._MARKER_LINE.fullmatch(held)
     result = neutral_note(legacy(statement))
     assert result is not None and result[1] == "ContextLegacyLineWithheld"
-    assert result[0]["statement"] == (
-        f"The cobalt service uses port 443.\n{WITHHELD_LINE}\n\n{cut}\n\nRestart it."
-    )
+    assert result[0]["statement"] == (f"The cobalt service uses port 443.\n\nRestart it.\n\n{cut}")
 
 
 @pytest.mark.parametrize(
@@ -608,6 +606,14 @@ RUN_ON_RAWS = [
     "Header was\nAuthorization: Basic dXNlcjpwYXNzd29yZA\n  ZXhhbXBsZXRhaWw=\nend.",
     # A whole marker line with an indented continuation.
     "config:\n  password: Xy7Qp9Lm2\n    Pw7RtZq9x\n  user: bob",
+    # Review of da3a9f9: the same shapes with a blank or spaces-only line
+    # inside. A blank line does not end the value.
+    "Export API_TOKEN='ab12cd34\n\nef56gh78Qz' now.",
+    'Export API_TOKEN="ab12cd34\n  \nef56gh78Qz" now.',
+    "Run: export TOKEN=ab12cd34\n\nthen run.",
+    "Header was\nAuthorization: Bearer abcdefgh12345678\n\n  ijklmnop90123456\nend.",
+    "Header was\nAuthorization: Basic dXNlcjpwYXNzd29yZA\n \n  ZXhhbXBsZXRhaWw=\nend.",
+    "config:\npassword: Xy7Qp9Lm2\n\nuser: bob",
 ]
 
 
@@ -619,10 +625,10 @@ def test_a_value_that_runs_on_after_the_marker_stays_withheld(raw):
     stored = redact_at_rest(raw)
     assert LEGACY_MARKER.search(stored)
     note = legacy(stored)
-    # Precondition: the line after the withheld line is not blank.
+    # Precondition: a later line is not blank, also past a blank line.
     lines = stored.split("\n")
     held = [i for i, line in enumerate(lines) if learning_context._line_withheld(line)]
-    assert held and any(i + 1 < len(lines) and lines[i + 1].strip() for i in held)
+    assert held and any(rest.strip() for i in held for rest in lines[i + 1 :])
     assert neutral_note(note) is None
     safe, excluded = isolate_notes([note], max_chars=24000)
     assert safe == [] and excluded[0]["statement_available"] is False
@@ -631,18 +637,27 @@ def test_a_value_that_runs_on_after_the_marker_stays_withheld(raw):
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        # A blank line or the end of the text may follow, as in a paragraph.
-        ("Run: export TOKEN=ab12cd34\n\nthen run.", "Run: export [...]\n\nthen run."),
+        # Only blank lines or the end of the text may follow.
+        ("Run it.\n\nRun: export TOKEN=ab12cd34\n\n", "Run it.\n\nRun: export [...]\n\n"),
         ("Run: export TOKEN=ab12cd34", "Run: export [...]"),
         ("Header was\nAuthorization: Bearer abcdefgh12345678", "Header was\n[...]"),
-        ("config:\npassword: Xy7Qp9Lm2\n\nuser: bob", f"config:\n{WITHHELD_LINE}\n\nuser: bob"),
+        ("config:\npassword: Xy7Qp9Lm2\n \n\t\n", f"config:\n{WITHHELD_LINE}\n \n\t\n"),
     ],
 )
-def test_a_blank_line_or_the_end_may_follow_the_marker(raw, expected):
+def test_only_blank_lines_or_the_end_may_follow_the_marker(raw, expected):
     stored = redact_at_rest(raw)
     result = neutral_note(legacy(stored))
     assert result is not None and result[1] == "ContextLegacyLineWithheld"
     assert result[0]["statement"] == expected
+
+
+@pytest.mark.parametrize("blank", ["\u00a0", "\x0b", "\x0c", "\u3000", "\u200b"])
+def test_a_line_of_a_non_ascii_or_exotic_space_is_not_blank(blank):
+    # Only spaces, tabs and a CR make a blank line. Any other character may be
+    # the start of a value that runs on.
+    note = legacy(f"Deploy.\nTOKEN=[REDACTED]\n{blank}\nPw7RtZq9x")
+    assert neutral_note(note) is None
+    assert neutral_note(legacy(f"Deploy.\nTOKEN=[REDACTED]\n{blank}")) is None
 
 
 def review_reproducers():
@@ -718,7 +733,7 @@ def review_reproducers():
         "The cobalt service uses port 443.",
     ]
     return (
-        [f"{marker}\n\n{body}" for body in bodies]
+        [f"{body}\n\n{marker}" for body in bodies]
         + [redact_at_rest(raw) for raw in RUN_ON_RAWS]
         + [
             "the password TOKEN=[REDACTED]\nis hunter2",
@@ -736,11 +751,12 @@ def test_the_line_path_shows_only_text_a_plain_note_shows():
             continue
         shown += 1
         # Independent of the code under test: whatever line was withheld, the
-        # value may run on, so the next line is blank or the text ends.
+        # value may run on, also past a blank line, so every later line is
+        # blank.
         raw_lines = statement.split("\n")
         for i, line in enumerate(raw_lines):
-            if learning_context._line_withheld(line) and i + 1 < len(raw_lines):
-                assert not raw_lines[i + 1].strip(), statement
+            if learning_context._line_withheld(line):
+                assert all(not rest.strip() for rest in raw_lines[i + 1 :]), statement
         # Every withheld line was a whole marker line or a line whose cut
         # passes the line check; no marker and no leftover remains.
         for line in statement.split("\n"):
