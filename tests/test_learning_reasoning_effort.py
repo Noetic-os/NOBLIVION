@@ -106,6 +106,20 @@ def test_the_provider_returns_output_counts_also_for_a_cut_off_answer():
     assert cut.value.reason == "length" and cut.value.output["completion_tokens"] == 100
 
 
+@pytest.mark.parametrize(
+    "finish,content,reason",
+    [("stop", "  ", "empty"), ("stop", None, "invalid"), ("tool_calls", "y", "incomplete")],
+)
+def test_an_all_thinking_answer_that_fails_still_reports_its_output(finish, content, reason):
+    local = provider()
+    local._post = lambda payload, timeout: answer(finish=finish, reasoning="x" * 300, content=content)
+    with pytest.raises(ProviderError) as failed:
+        local.complete([{"role": "user", "content": "x"}], max_tokens=10, timeout=1)
+    assert failed.value.reason == reason
+    # Before the fix these errors carried no output, so the thinking was not counted.
+    assert failed.value.output is not None and failed.value.output["reasoning_tokens"] >= 75
+
+
 class Thinking:
     """Answers with no lesson and reports 100 output tokens, 60 of them thinking."""
 

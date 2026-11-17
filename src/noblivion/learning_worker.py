@@ -910,12 +910,12 @@ class OpenAICompatibleProvider:
             if invalid_usage:
                 raise ProviderError("invalid")
             if finish != "stop":
-                raise ProviderError("incomplete", tokens=tokens)
+                raise ProviderError("incomplete", tokens=tokens, output=output)
             content = choice["message"]["content"]
             if not isinstance(content, str):
-                raise ProviderError("invalid", tokens=tokens)
+                raise ProviderError("invalid", tokens=tokens, output=output)
             if not content.strip():
-                raise ProviderError("empty", tokens=tokens)
+                raise ProviderError("empty", tokens=tokens, output=output)
             return ProviderResponse(content, tokens, output)
         except (KeyError, IndexError, TypeError, AttributeError) as exc:
             raise ProviderError("invalid") from exc
