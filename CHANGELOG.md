@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.37 - 2026-11-17
+
 - Learning status shows output and thinking tokens per call (NOBLIVION-261).
   `provider_actual` adds `completion_tokens`, `reasoning_tokens`, their means per
   call, and the counts of calls that reported them. A server without
