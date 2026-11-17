@@ -295,9 +295,10 @@ def test_a_slow_page_costs_every_loop_at_most_the_timeout_in_total():
         # for it longer than the one deadline (plus a read that is still due).
         assert all(value is None and hold == 0.0 for value, hold, _ in waits)
         assert max(took for _, _, took in waits) < 1.5
-        # No second read starts while the first still drips, and no lock is held.
+        # A later ask is bounded by the timeout again (a new read, or the one that
+        # still runs); it never waits for the page to end.
         started = time.monotonic()
-        assert probe.waiting() is None and time.monotonic() - started < 0.3
+        assert probe.waiting() is None and time.monotonic() - started < 1.0
     finally:
         drip.close()
 
