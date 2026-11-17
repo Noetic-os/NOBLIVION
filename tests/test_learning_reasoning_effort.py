@@ -112,7 +112,10 @@ def test_the_provider_returns_output_counts_also_for_a_cut_off_answer():
 )
 def test_an_all_thinking_answer_that_fails_still_reports_its_output(finish, content, reason):
     local = provider()
-    local._post = lambda payload, timeout: answer(finish=finish, reasoning="x" * 300, content=content)
+    thinking = "x" * 300
+    local._post = lambda payload, timeout: answer(
+        finish=finish, reasoning=thinking, content=content
+    )
     with pytest.raises(ProviderError) as failed:
         local.complete([{"role": "user", "content": "x"}], max_tokens=10, timeout=1)
     assert failed.value.reason == reason
