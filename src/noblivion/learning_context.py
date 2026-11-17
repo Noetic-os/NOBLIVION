@@ -53,10 +53,13 @@ _SPAN_TAIL = re.compile(r"[.,;)\]}\"']*\s*")
 _SCHEME_TAIL = re.compile(r"\s*")
 # Any whitespace but a space or a tab, and any character outside ASCII.
 _OTHER_SPACE = re.compile(r"[^\S \t]|[^\x00-\x7f]")
-# A quote the redactor opened in a value may close on a later line
-# (``TOKEN="ab12`` / ``cd34"``): an odd count of a quote on a marker line or on
-# the line after it withholds the note.
-_QUOTES = "\"'`"
+# A marker at the end of a line does not mean the value ended there: the
+# redactor masks a value up to the line end, and the rest of it may sit on the
+# next line (a quote or a shell continuation that runs on, a folded header, an
+# indented continuation). So the line after a withheld marker line or a cut
+# span must be blank, or the text must end. Counting quotes or looking further
+# ahead does not work: an apostrophe evens the count, and some values have none.
+_BLANK_LINE = re.compile(r"[ \t]*\r?")
 # Redactor leftover: upper-case "REDACT" anywhere in the result (a cut-off
 # token such as ``[REDACT``) also withholds the note.
 _RESIDUE = "REDACT"
@@ -97,8 +100,9 @@ def neutral_note(note):
     natural-language secret (also read as one line), no failed redaction and
     no key text. A whole marker line is withheld. In any other line that fails
     the line check, the marker spans are cut out, and the cut line must then
-    pass the line check, or the note stays withheld. No marker and no redactor
-    leftover may remain. The result must then pass the unchanged check on the
+    pass the line check, or the note stays withheld. The line after a withheld
+    line must be blank, or the text must end: the value may run on. No marker
+    and no redactor leftover may remain. The result must then pass the unchanged check on the
     raw statement and on the encoded note, and so must the kept lines without
     the placeholder lines, cut at "\\n" and as one line.
 
@@ -125,22 +129,21 @@ def neutral_note(note):
     ):
         return None
     lines = []
-    for line in statement.split("\n"):
+    raw_lines = statement.split("\n")
+    for i, line in enumerate(raw_lines):
         if not _line_withheld(line):
             lines.append((line, False))
-        elif _MARKER_LINE.fullmatch(line):
+            continue
+        # The value may run on: only a blank line or the end may follow.
+        if i + 1 < len(raw_lines) and not _BLANK_LINE.fullmatch(raw_lines[i + 1]):
+            return None
+        if _MARKER_LINE.fullmatch(line):
             lines.append((WITHHELD_LINE, True))
         else:
             cut = _cut_span(line)
             if cut is None or _line_withheld(cut):
                 return None
             lines.append((cut, False))
-    raw_lines = statement.split("\n")
-    for i, line in enumerate(raw_lines):
-        if LEGACY_MARKER.search(line) and any(
-            text.count(quote) % 2 for text in raw_lines[i : i + 2] for quote in _QUOTES
-        ):
-            return None
     withheld = "\n".join(line for line, _ in lines)
     if LEGACY_MARKER.search(withheld) or _RESIDUE in withheld:
         return None

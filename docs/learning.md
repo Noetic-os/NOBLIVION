@@ -320,10 +320,12 @@ spaces or tabs around them. In any other withheld line one span
 closing punctuation (`.,;)]}"'`) may follow it, nothing may follow a scheme
 span, no `@`, other line break or non-ASCII space may follow it, and no
 Unicode word character may be glued to either end. The redactor may have
-masked only the head of a value, so this fails closed: a span that cannot be
-cut, a cut line that still fails the line check, a quote left open on or after
-a marker line, a marker or an upper-case `REDACT` left anywhere, or a line that
-fails the secret check without a marker keeps the note withheld. Lines
+masked only the head of a value, and the rest of it may sit on the next line,
+so the line after a withheld marker line or a cut span must be blank, or the
+text must end. This fails closed: a span that cannot be cut, a cut line that
+still fails the line check, non-blank text after a withheld line, a marker or
+an upper-case `REDACT` left anywhere, or a line that fails the secret check
+without a marker keeps the note withheld. Lines
 are cut at a newline only, and each part between other line breaks (`\r`,
 U+2028, U+0085) is checked on its own too. This also needs a raw statement that
 the redactor leaves unchanged, with no natural-language secret (also read as

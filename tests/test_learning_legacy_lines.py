@@ -84,7 +84,7 @@ SHAPES = [
 
 @pytest.mark.parametrize("shape", SHAPES)
 def test_marker_after_a_key_withholds_only_its_line(shape):
-    statement = f"The cobalt service listens on port 8443.\n{shape}\nRestart it after a deploy."
+    statement = f"The cobalt service listens on port 8443.\n{shape}\n\nRestart it after a deploy."
     note = legacy(statement)
     # Preconditions: the only signal is the marker, and the omission mark
     # alone fails, so this is the line path and not the whole-note swap.
@@ -93,7 +93,7 @@ def test_marker_after_a_key_withholds_only_its_line(shape):
     assert rejection_reason(encoded(core(swapped))) is not None
     safe, excluded = isolate_notes([note], max_chars=24000)
     assert [n["statement"] for n in safe] == [
-        f"The cobalt service listens on port 8443.\n{WITHHELD_LINE}\nRestart it after a deploy."
+        f"The cobalt service listens on port 8443.\n{WITHHELD_LINE}\n\nRestart it after a deploy."
     ]
     assert excluded[0]["reason"] == "ContextLegacyLineWithheld"
     assert excluded[0]["statement_available"] is True
@@ -117,7 +117,7 @@ def test_one_line_note_becomes_the_placeholder():
 def test_marker_lines_of_every_shape_and_safe_notes_pass_the_full_context_check():
     notes = [legacy("The cobalt service uses port 443.", note_id="legacy:1")]
     notes += [
-        legacy(f"Deploy notes {i}.\n{shape}\nCheck the logs.", note_id=f"legacy:{i + 10}")
+        legacy(f"Deploy notes {i}.\n{shape}\n\nCheck the logs.", note_id=f"legacy:{i + 10}")
         for i, shape in enumerate(SHAPES)
     ]
     # A note the whole-note swap still handles keeps its omission mark.
@@ -195,7 +195,7 @@ def test_an_unsafe_note_stays_withheld(statement):
         "Deploy notes.\n  pass: Zq8hunter2example\nTOKEN=[REDACTED]",
         # A natural-language secret within the window of the raw text only:
         # each quote takes two characters in the encoded note.
-        "TOKEN=[REDACTED]\nThe password" + ' "a"' * 12 + " is hunter-example-9",
+        "TOKEN=[REDACTED]\n\nThe password" + ' "a"' * 12 + " is hunter-example-9",
         # A failed redaction in the raw text.
         "TOKEN=[REDACTED]\n***REDACTION_FAILED_TEXT_WITHHELD***",
     ],
@@ -240,8 +240,8 @@ def test_a_key_block_stays_withheld(statement):
 @pytest.mark.parametrize(
     "statement",
     [
-        "Basic\nTOKEN=[REDACTED]\ndXNlcjpwYXNzd29yZA==",
-        "Bearer\nTOKEN=[REDACTED]\nzQ8vLm2Pw7RtXk4NabcdEFGH12",
+        "Basic\nTOKEN=[REDACTED]\n\ndXNlcjpwYXNzd29yZA==",
+        "Bearer\nTOKEN=[REDACTED]\n\nzQ8vLm2Pw7RtXk4NabcdEFGH12",
     ],
 )
 def test_a_placeholder_line_does_not_hide_a_key_and_its_value(statement):
@@ -263,7 +263,7 @@ def test_a_placeholder_line_does_not_hide_a_key_and_its_value(statement):
 def test_the_kept_lines_also_pass_as_encoded_note():
     marker_line = "TOKEN=[REDACTED]"
     statement = (
-        f"Rotate the password\n{marker_line}\nthen restart the cobalt service after\n"
+        f"Rotate the password\n{marker_line}\n\nthen restart the cobalt service after\n"
         "it is Zq8hunter2example"
     )
     note = legacy(statement)
@@ -306,7 +306,7 @@ def test_key_text_withholds_a_cut_off_key_body():
     residue = redact_at_rest(f"{RSA_BEGIN}\n{BASE64_LINE}\nAb3=\n{BASE64_LINE}\n{BASE64_LINE}")
     assert BASE64_LINE in residue and "PRIVATE" not in residue.upper()
     assert not contains_secret(BASE64_LINE)
-    assert_withheld_as_on_main(f"TOKEN=[REDACTED]\n{residue}")
+    assert_withheld_as_on_main(f"TOKEN=[REDACTED]\n\n{residue}")
 
 
 @pytest.mark.parametrize("upper", [False, True])
@@ -314,7 +314,7 @@ def test_key_text_withholds_a_hex_key_body(upper):
     # An OpenVPN static key body: lines of 32 hex characters, no base64 case mix.
     body = "\r\n".join(line.upper() for line in HEX_LINES) if upper else "\n".join(HEX_LINES)
     assert redact_at_rest(body) == body
-    assert_withheld_as_on_main(f"TOKEN=[REDACTED]\n{body}")
+    assert_withheld_as_on_main(f"TOKEN=[REDACTED]\n\n{body}")
 
 
 @pytest.mark.parametrize(
@@ -328,12 +328,12 @@ def test_key_text_withholds_a_hex_key_body(upper):
 )
 def test_key_text_withholds_key_file_words(residue):
     assert redact_at_rest(residue) == residue
-    assert_withheld_as_on_main(f"TOKEN=[REDACTED]\n{residue}")
+    assert_withheld_as_on_main(f"TOKEN=[REDACTED]\n\n{residue}")
 
 
 def test_key_text_keeps_a_commit_hash_in_prose():
     # A hash in prose is no key body: lower-case hex inside a line.
-    statement = "TOKEN=[REDACTED]\nFixed in commit " + "9f8e7d6c5b4a3928170" * 2 + "ab today."
+    statement = "TOKEN=[REDACTED]\n\nFixed in commit " + "9f8e7d6c5b4a3928170" * 2 + "ab today."
     result = neutral_note(legacy(statement))
     assert result is not None and result[1] == "ContextLegacyLineWithheld"
 
@@ -350,14 +350,14 @@ def test_key_text_keeps_a_commit_hash_in_prose():
 def test_the_kept_lines_are_read_as_one_line(words):
     # The value line starts with the verb. In the raw text the rule stops at
     # "\n", and in the encoded note "\\nis" has no word start before "is".
-    statement = f"TOKEN=[REDACTED]\n{words}\nTOKEN=[REDACTED]\nis hunter2"
+    statement = f"TOKEN=[REDACTED]\n\n{words}\nTOKEN=[REDACTED]\n\nis hunter2"
     assert not contains_secret(f"{words}\nis hunter2")
     assert_withheld_as_on_main(statement)
 
 
 def test_the_kept_lines_are_read_as_one_line_in_the_encoded_note():
     # Only the encoded note reads the next field as the value after "is".
-    statement = "TOKEN=[REDACTED]\nRotate the password\nTOKEN=[REDACTED]\nis"
+    statement = "TOKEN=[REDACTED]\n\nRotate the password\nTOKEN=[REDACTED]\n\nis"
     assert not contains_secret("Rotate the password is")
     assert_withheld_as_on_main(statement)
 
@@ -365,16 +365,16 @@ def test_the_kept_lines_are_read_as_one_line_in_the_encoded_note():
 def test_the_raw_statement_is_read_as_one_line():
     # The key word is the name of the marker line, so the kept lines do not
     # hold it.
-    statement = "PASSWORD=[REDACTED]\nis hunter2"
+    statement = "PASSWORD=[REDACTED]\n\nis hunter2"
     assert not contains_secret("is hunter2")
     assert_withheld_as_on_main(statement)
 
 
 def test_lines_are_cut_at_the_newline_only():
     # A kept line keeps its own "\r".
-    result = neutral_note(legacy("Service on 8443.\r\nTOKEN=[REDACTED]\nRestart."))
+    result = neutral_note(legacy("Service on 8443.\r\nTOKEN=[REDACTED]\n\nRestart."))
     assert result is not None and result[1] == "ContextLegacyLineWithheld"
-    assert result[0]["statement"] == f"Service on 8443.\r\n{WITHHELD_LINE}\nRestart."
+    assert result[0]["statement"] == f"Service on 8443.\r\n{WITHHELD_LINE}\n\nRestart."
 
 
 @pytest.mark.parametrize(
@@ -385,7 +385,10 @@ def test_lines_are_cut_at_the_newline_only():
         "Service on 8443.\r\nTOKEN=[REDACTED]\r\nRestart.",
         "Service on 8443.\u2028TOKEN=[REDACTED]\u2028Restart.",
         "Service on 8443.\u0085TOKEN=[REDACTED]\u0085Restart.",
-        "Service on 8443.\nTOKEN=[REDACTED]\u00a0\nRestart.",
+        # A blank line follows: only the break or space after the span is left.
+        "Service on 8443.\r\nTOKEN=[REDACTED]\r\n\r\nRestart.",
+        "Service on 8443.\nTOKEN=[REDACTED]\u00a0\n\nRestart.",
+        "Service on 8443.\nTOKEN=[REDACTED]\u2028\n\nRestart.",
     ],
 )
 def test_another_line_break_or_space_after_a_span_withholds_the_note(statement):
@@ -472,14 +475,14 @@ def test_title_and_evidence_are_not_part_of_the_line_check():
     ],
 )
 def test_a_marker_span_is_cut_out_of_a_line(held, cut):
-    statement = f"The cobalt service uses port 443.\nTOKEN=[REDACTED]\n{held}\nRestart it."
+    statement = f"The cobalt service uses port 443.\nTOKEN=[REDACTED]\n\n{held}\n\nRestart it."
     # Precondition: the line is withheld and no whole marker line.
     assert learning_context._line_withheld(held)
     assert not learning_context._MARKER_LINE.fullmatch(held)
     result = neutral_note(legacy(statement))
     assert result is not None and result[1] == "ContextLegacyLineWithheld"
     assert result[0]["statement"] == (
-        f"The cobalt service uses port 443.\n{WITHHELD_LINE}\n{cut}\nRestart it."
+        f"The cobalt service uses port 443.\n{WITHHELD_LINE}\n\n{cut}\n\nRestart it."
     )
 
 
@@ -509,7 +512,7 @@ def test_a_marker_span_is_cut_out_of_a_line(held, cut):
     ],
 )
 def test_a_line_that_cannot_be_cut_withholds_the_note(held):
-    statement = f"The cobalt service uses port 443.\nTOKEN=[REDACTED]\n{held}\nRestart it."
+    statement = f"The cobalt service uses port 443.\nTOKEN=[REDACTED]\n\n{held}\n\nRestart it."
     assert learning_context._line_withheld(held)
     note = legacy(statement)
     # Main withholds every such note; the value case is unsafe from the start.
@@ -523,9 +526,9 @@ def test_a_line_that_cannot_be_cut_withholds_the_note(held):
     "statement",
     [
         # The marker line holds the key word, so the kept lines do not.
-        "TOKEN=[REDACTED]\nthe password. [REDACTED]\nis hunter2",
+        "TOKEN=[REDACTED]\n\nthe password. [REDACTED]\nis hunter2",
         # A bare marker line between a key word and its value.
-        "TOKEN=[REDACTED]\nthe secret\n[REDACTED]\nis hunter2",
+        "TOKEN=[REDACTED]\n\nthe secret\n[REDACTED]\nis hunter2",
     ],
 )
 def test_a_held_line_with_other_text_does_not_cut_a_secret_apart(statement):
@@ -540,7 +543,7 @@ def test_a_redactor_leftover_outside_the_marker_lines_withholds_the_note():
     leftover = "Old notes end in [REDACT here."
     assert not LEGACY_MARKER.search(leftover) and not contains_secret(leftover)
     assert neutral_note(legacy("Deploy notes.\nTOKEN=[REDACTED]")) is not None
-    assert_withheld_as_on_main(f"Deploy notes.\nTOKEN=[REDACTED]\n{leftover}")
+    assert_withheld_as_on_main(f"Deploy notes.\nTOKEN=[REDACTED]\n\n{leftover}")
 
 
 @pytest.mark.parametrize("words", ["private " + "key", "PRIVATE " + "KEY", "Private " + "Key"])
@@ -590,7 +593,56 @@ def test_a_value_masked_only_in_part_stays_withheld(raw):
     ],
 )
 def test_non_ascii_text_glued_to_a_span_withholds_the_note(held):
-    assert_withheld_as_on_main(f"Deploy notes.\nTOKEN=[REDACTED]\n{held}")
+    assert_withheld_as_on_main(f"Deploy notes.\nTOKEN=[REDACTED]\n\n{held}")
+
+
+RUN_ON_RAWS = [
+    # A quote that an apostrophe later on evens out (quote counting fails).
+    "Run: export DB_PASSWORD='Xy7Qp9Lm2\nPw7RtZq9x' (it's in the vault)\nthen deploy.",
+    # A quoted value over three lines (looking one line ahead fails).
+    'Export API_TOKEN="ab12cd34\nef56gh78Qz\nij90kl12"\nthen run.',
+    # A shell line continuation.
+    "Run: export TOKEN=ab12cd34\\\nef56gh78Qz\nthen run.",
+    # A folded header: a scheme span, then the indented rest.
+    "Header was\nAuthorization: Bearer abcdefgh12345678\n  ijklmnop90123456\nend.",
+    "Header was\nAuthorization: Basic dXNlcjpwYXNzd29yZA\n  ZXhhbXBsZXRhaWw=\nend.",
+    # A whole marker line with an indented continuation.
+    "config:\n  password: Xy7Qp9Lm2\n    Pw7RtZq9x\n  user: bob",
+]
+
+
+# Review of 431302c: a marker at the end of a line does not mean the value
+# ended there. The redactor masks a value up to the line end, and the rest may
+# sit on the next line. Each raw text goes through the redactor first.
+@pytest.mark.parametrize("raw", RUN_ON_RAWS)
+def test_a_value_that_runs_on_after_the_marker_stays_withheld(raw):
+    stored = redact_at_rest(raw)
+    assert LEGACY_MARKER.search(stored)
+    note = legacy(stored)
+    # Precondition: the line after the withheld line is not blank.
+    lines = stored.split("\n")
+    held = [i for i, line in enumerate(lines) if learning_context._line_withheld(line)]
+    assert held and any(i + 1 < len(lines) and lines[i + 1].strip() for i in held)
+    assert neutral_note(note) is None
+    safe, excluded = isolate_notes([note], max_chars=24000)
+    assert safe == [] and excluded[0]["statement_available"] is False
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # A blank line or the end of the text may follow, as in a paragraph.
+        ("Run: export TOKEN=ab12cd34\n\nthen run.", "Run: export [...]\n\nthen run."),
+        ("Run: export TOKEN=ab12cd34", "Run: export [...]"),
+        ("Header was\nAuthorization: Bearer abcdefgh12345678", "Header was\n[...]"),
+        ("config:\npassword: Xy7Qp9Lm2\n\nuser: bob", f"config:\n{WITHHELD_LINE}\n\nuser: bob"),
+    ],
+)
+def test_a_blank_line_or_the_end_may_follow_the_marker(raw, expected):
+    stored = redact_at_rest(raw)
+    result = neutral_note(legacy(stored))
+    assert result is not None and result[1] == "ContextLegacyLineWithheld"
+    assert result[0]["statement"] == expected
 
 
 def review_reproducers():
@@ -665,11 +717,15 @@ def review_reproducers():
         "Run the tests.",
         "The cobalt service uses port 443.",
     ]
-    return [f"{marker}\n{body}" for body in bodies] + [
-        "the password TOKEN=[REDACTED]\nis hunter2",
-        "Rotate the password\nTOKEN=[REDACTED]\n" + "x" * 37 + "\nit is hunter2example",
-        "Deploy notes.\r  pass: Zq8hunter2example\nTOKEN=[REDACTED]",
-    ]
+    return (
+        [f"{marker}\n\n{body}" for body in bodies]
+        + [redact_at_rest(raw) for raw in RUN_ON_RAWS]
+        + [
+            "the password TOKEN=[REDACTED]\nis hunter2",
+            "Rotate the password\nTOKEN=[REDACTED]\n" + "x" * 37 + "\nit is hunter2example",
+            "Deploy notes.\r  pass: Zq8hunter2example\nTOKEN=[REDACTED]",
+        ]
+    )
 
 
 def test_the_line_path_shows_only_text_a_plain_note_shows():
@@ -679,6 +735,12 @@ def test_the_line_path_shows_only_text_a_plain_note_shows():
         if result is None or result[1] != "ContextLegacyLineWithheld":
             continue
         shown += 1
+        # Independent of the code under test: whatever line was withheld, the
+        # value may run on, so the next line is blank or the text ends.
+        raw_lines = statement.split("\n")
+        for i, line in enumerate(raw_lines):
+            if learning_context._line_withheld(line) and i + 1 < len(raw_lines):
+                assert not raw_lines[i + 1].strip(), statement
         # Every withheld line was a whole marker line or a line whose cut
         # passes the line check; no marker and no leftover remains.
         for line in statement.split("\n"):
