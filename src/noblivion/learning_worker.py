@@ -1339,7 +1339,11 @@ class LearningWorker:
             "settings": asdict(self.settings),
             # NOBLIVION-260: the shape of every release up to 0.1.35. A policy
             # budget added later (max_busy_share) is not part of any frozen job.
-            "budgets": {key: getattr(self.budget_limits, key) for key in LEGACY_BUDGETS},
+            "budgets": {
+                key: value
+                for key, value in vars(self.budget_limits).items()
+                if key in LEGACY_BUDGETS
+            },
             "provider_type": type(self.provider).__module__
             + "."
             + type(self.provider).__qualname__,
