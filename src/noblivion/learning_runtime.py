@@ -23,6 +23,10 @@ from noblivion.learning_probe import LoadProbe, probe_options
 log = logging.getLogger("noblivion.learning")
 
 
+class ShareTooSmall(ValueError):
+    """``budget.max_busy_share`` allows less than one call an hour (NOBLIVION-260)."""
+
+
 def load_settings(data_dir: Path) -> dict:
     path = data_dir / "learning.json"
     if not path.exists():
@@ -53,6 +57,12 @@ def load_settings(data_dir: Path) -> dict:
         try:
             worker_options(value)
             probe_options(value)
+        except ShareTooSmall:
+            log.warning(
+                "budget.max_busy_share allows less than one call of worker.timeout_seconds "
+                "an hour; learning is off. Raise the share or lower the timeout"
+            )
+            value["enabled"] = False
         except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
             log.warning("invalid learning provider or limits; learning is off")
             value["enabled"] = False
@@ -548,6 +558,13 @@ def worker_options(settings: dict):
         or budget.max_busy_share > 1
     ):
         raise ValueError("invalid learning budget")
+    # A call reserves worker.timeout_seconds. A cap that allows less than that in
+    # an hour (0 included) would refuse every call and say nothing.
+    if (
+        budget.max_busy_share < 1
+        and budget.max_busy_share * 3600 * max(1, budget.max_concurrency) < worker.timeout_seconds
+    ):
+        raise ShareTooSmall("budget.max_busy_share allows no call")
     return provider, worker, budget
 
 

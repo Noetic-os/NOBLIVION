@@ -828,9 +828,10 @@ class LearningLedger:
         A live lease of one of ``owners`` counts. A pending job counts only when
         a claim would take it now (due, attempts left, scope enabled, not paused)
         and the budget window has room for one more call. A job that no worker
-        can take never keeps the store up. A job that waits only for the busy-share
-        cap still does (NOBLIVION-260): the cap is a routine throttle that frees
-        within an hour, so a quiet store stays up to finish its backlog.
+        can take never keeps the store up. A job that went back with StepAside
+        (a queue at the model server or the busy-share cap) counts although its
+        retry is not due yet (NOBLIVION-260): that wait is a bounded back-off, so a
+        quiet store stays up to finish its backlog.
         """
         now = time.time()
         owners = sorted(owners)
@@ -859,7 +860,8 @@ class LearningLedger:
             return False
         for row in self.conn.execute(
             "SELECT project,root,session_id FROM learning_jobs WHERE status='pending' "
-            "AND next_attempt<=? AND attempts<? ORDER BY created_at,id LIMIT 64",
+            "AND (next_attempt<=? OR last_error='StepAside') AND attempts<? "
+            "ORDER BY created_at,id LIMIT 64",
             (now, max_attempts),
         ).fetchall():
             if (row["project"], row["root"]) not in scopes:

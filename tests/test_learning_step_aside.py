@@ -93,6 +93,30 @@ def options(url, **extra):
 # --- the probe -------------------------------------------------------------
 
 
+def test_a_namespaced_gauge_matches_by_its_suffix_and_label_sets_add_up():
+    page = "\n".join(
+        [
+            f"# TYPE vllm:{GAUGE} gauge",
+            f'vllm:{GAUGE}{{engine="0",model_name="m"}} 2.0',
+            f'vllm:{GAUGE}{{engine="1",model_name="m"}} 3.0',
+            f"vllm_{GAUGE} 40",  # another name: no colon before the gauge
+            f"vllm:{GAUGE}_total 50",
+            f"vllm:other_{GAUGE} 60",
+            "",
+        ]
+    )
+    assert parse_gauge(page, GAUGE) == 5.0
+    # A gauge named with its namespace still matches exactly, and only itself.
+    assert parse_gauge(page, f"vllm:{GAUGE}") == 5.0
+    assert parse_gauge(page, f"other:{GAUGE}") is None
+
+
+def test_the_probe_holds_on_a_namespaced_gauge_page(metrics):
+    probe = LoadProbe(options(metrics.url))
+    metrics.page = f'# TYPE vllm:{GAUGE} gauge\nvllm:{GAUGE}{{model_name="m"}} 4.0\n'
+    assert probe.waiting() == 4.0 and probe.hold() > 0
+
+
 def test_parse_gauge_sums_series_and_ignores_other_names():
     page = "\n".join(
         [
@@ -216,6 +240,68 @@ def test_a_redirect_is_never_followed(metrics):
         other.close()
 
 
+class DripServer:
+    """Answers 200 and then sends the page one byte at a time for ``seconds``."""
+
+    def __init__(self, seconds=6.0):
+        self.stop = threading.Event()
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - http.server API
+                self.send_response(200)
+                self.send_header("Content-Length", "100000")
+                self.end_headers()
+                end = time.monotonic() + seconds
+                try:
+                    while time.monotonic() < end and not outer.stop.is_set():
+                        self.wfile.write(b"#")
+                        self.wfile.flush()
+                        time.sleep(0.05)
+                except OSError:
+                    pass
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/metrics"
+
+    def close(self):
+        self.stop.set()
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def test_a_slow_page_costs_every_loop_at_most_the_timeout_in_total():
+    drip = DripServer()
+    try:
+        probe = LoadProbe(options(drip.url, timeout_seconds=0.3))
+        waits = []
+
+        def ask():
+            started = time.monotonic()
+            waits.append((probe.waiting(), probe.hold(), time.monotonic() - started))
+
+        loops = [threading.Thread(target=ask) for _ in range(3)]
+        for loop in loops:
+            loop.start()
+        for loop in loops:
+            loop.join(5)
+        assert len(waits) == 3
+        # The page never ends: unreadable, so learning goes on; no loop waits
+        # for it longer than the one deadline (plus a read that is still due).
+        assert all(value is None and hold == 0.0 for value, hold, _ in waits)
+        assert max(took for _, _, took in waits) < 1.5
+        # No second read starts while the first still drips, and no lock is held.
+        started = time.monotonic()
+        assert probe.waiting() is None and time.monotonic() - started < 0.3
+    finally:
+        drip.close()
+
+
 def test_a_page_over_the_size_bound_is_unreadable(metrics, monkeypatch):
     monkeypatch.setattr(learning_probe, "MAX_PAGE_BYTES", 64)
     metrics.page = "# " + "x" * 200 + f"\n{GAUGE} 3\n"
@@ -333,6 +419,23 @@ def test_work_open_keeps_a_quiet_store_up_while_only_the_share_waits(tmp_path, m
         assert ledger.work_open(set(), scopes, max_attempts=4, limits=limits, call_seconds=60)
 
 
+def test_work_open_counts_a_job_that_stepped_aside_before_it_is_due(tmp_path):
+    store = FakeStore(tmp_path)
+    capture(store, 2, text="Job {index} context.")
+    scopes = {("demo", "example")}
+    limits = BudgetLimits(max_calls=100, max_seconds=10**9, max_tokens=10**9)
+    with store.connection() as conn:
+        ledger = LearningLedger(conn)
+        job = ledger.claim("w", lease_seconds=120)
+        other = ledger.claim("x", lease_seconds=120)
+        ledger.defer(other["id"], other["lease_token"], retry_delay=3600, error="other error")
+        assert not ledger.work_open(set(), scopes, max_attempts=4, limits=limits, call_seconds=60)
+        ledger.defer(job["id"], job["lease_token"], retry_delay=300, error="StepAside")
+        assert ledger.work_open(set(), scopes, max_attempts=4, limits=limits, call_seconds=60)
+        # It still obeys the other rules: a scope that is not enabled keeps nothing up.
+        assert not ledger.work_open(set(), set(), max_attempts=4, limits=limits, call_seconds=60)
+
+
 # --- the worker defers, the pool waits -------------------------------------
 
 
@@ -448,7 +551,10 @@ def test_the_probe_follows_learning_json_live(tmp_path, pool_env, metrics):
 
 
 def test_no_probe_configured_makes_no_request_and_changes_nothing(tmp_path, pool_env, monkeypatch):
+    called = []
+
     def forbidden(*args, **kwargs):
+        called.append(args)
         raise AssertionError("no load probe is configured")
 
     monkeypatch.setattr(learning_probe.LoadProbe, "__init__", forbidden)
@@ -461,6 +567,8 @@ def test_no_probe_configured_makes_no_request_and_changes_nothing(tmp_path, pool
     wait_for(all_done(store, 3))
     assert pool.probe is None
     assert pool.step_aside() == 0.0
+    # step_aside swallows errors, so count the calls: the probe was never touched.
+    assert called == []
 
 
 def test_the_pool_waits_before_it_claims_when_the_share_is_spent(tmp_path, pool_env):
@@ -517,6 +625,19 @@ def test_the_probe_page_is_read_once_a_second_for_all_loops(metrics, monkeypatch
 # --- configuration ---------------------------------------------------------
 
 
+def test_a_share_below_one_call_an_hour_says_so_at_load_time(tmp_path, caplog):
+    write_settings(tmp_path, 1, max_busy_share=0.01)
+    with caplog.at_level(logging.WARNING, logger="noblivion.learning"):
+        assert learning_runtime.load_settings(tmp_path)["enabled"] is False
+    assert any("max_busy_share" in r.getMessage() for r in caplog.records)
+    # Exactly one call an hour is allowed: 0.02 x 3600 = 72 s >= 60 s.
+    write_settings(tmp_path, 1, max_busy_share=0.02)
+    assert learning_runtime.load_settings(tmp_path)["enabled"] is True
+    # Slots count: 0.01 x 3600 x 2 = 72 s.
+    write_settings(tmp_path, 2, max_busy_share=0.01)
+    assert learning_runtime.load_settings(tmp_path)["enabled"] is True
+
+
 def test_malformed_load_probe_or_share_turns_learning_off(tmp_path):
     for change in (
         {"load_probe": {"url": "http://example.com/metrics"}},
@@ -524,6 +645,9 @@ def test_malformed_load_probe_or_share_turns_learning_off(tmp_path):
         {"budget": {"max_busy_share": 1.5}},
         {"budget": {"max_busy_share": -0.1}},
         {"budget": {"max_busy_share": "half"}},
+        # A cap that allows less than one 60 s call an hour (36 s) or none at all.
+        {"budget": {"max_busy_share": 0.01}},
+        {"budget": {"max_busy_share": 0}},
     ):
         write_settings(tmp_path, 1)
         value = json.loads((tmp_path / "learning.json").read_text())

@@ -151,7 +151,9 @@ learning behaves as before and makes no extra request.
 ```
 
 - `load_probe` reads a Prometheus-style metrics page. Only `url` is required;
-  the other keys show their defaults. Before it claims a job and before each
+  the other keys show their defaults. A sample matches by its exact name or as
+  `<namespace>:<gauge>`, so the default finds `vllm:num_requests_waiting{...}`
+  too, and the samples of all label sets are added up. Before it claims a job and before each
   call, learning reads the sum of all samples of `gauge`. While the value is
   above `max_waiting`, learning sends no call. A job that reaches this check
   goes back to pending at once with its attempt returned and holds no lease.
@@ -160,6 +162,8 @@ learning behaves as before and makes no extra request.
   the queue is empty. A worker loop that waits looks again within 5 seconds, so
   a cleared queue or a changed `learning.json` takes effect within 5 seconds.
   The page is read at most once a second for all loops together.
+  `timeout_seconds` bounds the whole read: a server that sends its page slowly
+  is unreadable after that time, and no worker loop waits for it longer.
 - The probe URL must be `http` on loopback, like the provider. It uses no
   proxy and follows no redirect, and a page over 2 MiB is not read. A malformed
   `load_probe` block turns learning off, like any malformed setting. A page that
@@ -174,8 +178,8 @@ learning behaves as before and makes no extra request.
   is an upper bound, so the hour stays at or under the cap. A refused call goes
   back to pending with its attempt returned and retries when the hour has moved
   far enough, after at most 300 seconds. A store with a backlog that waits only
-  for the cap stays up (it does not stop idle) until the hour has moved far
-  enough. The job list shows
+  for the cap, or a job that stepped aside for a queue, stays up (it does not
+  stop idle) until the hour has moved far enough or the retry is due. The job list shows
   "stepping aside for other model clients".
 
 Limits to know:
@@ -183,8 +187,9 @@ Limits to know:
 - The share is a share of learning's own slots (`max_concurrency`), not of the
   GPU or the server. Set `max_concurrency` to the slots you give learning.
 - When the cap times 3600 times `max_concurrency` is less than
-  `worker.timeout_seconds`, no call is ever admitted. Lower `timeout_seconds`
-  or raise the cap. For example, 0.05 with one slot allows 180 seconds an hour.
+  `worker.timeout_seconds` (a cap of 0 included), no call could ever be
+  admitted. Learning then turns off with a warning in the store log. Lower
+  `timeout_seconds` or raise the cap. For example, 0.05 with one slot allows 180 seconds an hour.
 - The gauge also counts requests that learning itself has queued. If
   `max_concurrency` is higher than the number of requests the server serves at
   once, learning waits for its own queue. Keep `max_concurrency` at or below the

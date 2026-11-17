@@ -20,7 +20,10 @@ All notable changes to NOBLIVION. The format follows
   returned. Both are policy budgets read live every 5 seconds and not part of a
   started job's frozen settings, so a change fails no job. With no probe and
   no cap, behaviour is unchanged and no request is made. Details and limits:
-  `docs/learning.md`.
+  `docs/learning.md`. The probe read is bounded in total by `timeout_seconds`,
+  a gauge with a namespace prefix (`vllm:num_requests_waiting`) matches, a job
+  that stepped aside keeps an idle store up until its retry, and a cap that
+  allows less than one call an hour turns learning off with a warning.
 
 ## 0.1.35 - 2026-11-17
 
