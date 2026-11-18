@@ -155,7 +155,7 @@ ENV_KEYS = {
 
 
 # Expected metadata from the packaged schema. A regression test detects drift.
-_SCHEMA_MANIFEST_VERSION = 7
+_SCHEMA_MANIFEST_VERSION = 8
 _REQUIRED_COLUMNS = {
     "chunk_vectors": frozenset("chunk_id model dim content_hash blob rev".split()),
     "dedup_actions": frozenset(
@@ -174,6 +174,7 @@ _REQUIRED_COLUMNS = {
     "feedback_events": frozenset(
         "id session_id memory_id kind citation_capable ts received_at".split()
     ),
+    "learning_batch_items": frozenset("job_id created_at".split()),
     "learning_batches": frozenset(
         "batch_id payload_hash project root session_id skipped created_at".split()
     ),
@@ -244,6 +245,9 @@ _REQUIRED_COLUMNS = {
             "id project root session_id source_client role content sha256 observed_at "
             "metadata status created_at seq"
         ).split()
+    ),
+    "learning_session_watermarks": frozenset(
+        "project root session_id source_client last_seq job_id updated_at".split()
     ),
     "memories": frozenset(
         (

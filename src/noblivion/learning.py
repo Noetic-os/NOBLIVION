@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from noblivion import db, learning_ranges
+from noblivion import db, learning_batch, learning_ranges
 
 from .learning_values import LearningError as LearningError
 from .learning_values import SemanticSnapshotChanged as SemanticSnapshotChanged
@@ -535,8 +535,16 @@ class LearningLedger:
         )
 
     def claim(
-        self, worker_id: str, lease_seconds: float = 120, max_attempts: int = 4
+        self,
+        worker_id: str,
+        lease_seconds: float = 120,
+        max_attempts: int = 4,
+        *,
+        batch: bool = False,
     ) -> dict[str, Any] | None:
+        """Lease the oldest due job. ``batch`` (NOBLIVION-267) first plans one batch
+        item per session with unstarted work and skips the per-capture jobs that
+        wait for it; without it the claim is the same as before."""
         validate_text(worker_id, "worker_id")
         if lease_seconds <= 0 or max_attempts < 1:
             raise LearningError("invalid lease limits")
@@ -554,12 +562,18 @@ class LearningLedger:
                 "WHERE status='pending' AND attempts>=?",
                 (now, max_attempts),
             )
+            waiting: set[str] = set()
+            if batch:
+                learning_batch.plan(self.conn, now)
+                waiting = learning_batch.superseded_ids(self.conn)
             rows = self.conn.execute(
                 "SELECT * FROM learning_jobs WHERE status='pending' AND next_attempt<=? "
                 "AND attempts<? ORDER BY created_at,id",
                 (now, max_attempts),
             ).fetchall()
             for row in rows:
+                if row["id"] in waiting:
+                    continue
                 controls = self.effective_controls(row["project"], row["root"], row["session_id"])
                 if not controls["contribute"] or controls["paused"]:
                     continue
@@ -1581,6 +1595,9 @@ class LearningLedger:
                 "lease_until=NULL,last_error='',updated_at=? WHERE id=?",
                 (time.time(), job_id),
             )
+            # NOBLIVION-267: a batch item raises its session watermark and cancels
+            # the covered per-capture jobs in this same transaction.
+            learning_batch.commit(self.conn, job_id, time.time())
             self._expire_reservations()
             if enqueue_consolidation:
                 self._enqueue_derivation(job["project"], job["root"], job["session_id"])

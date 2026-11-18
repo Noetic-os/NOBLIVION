@@ -25,6 +25,16 @@ JOB_CHARS = 200_000
 DEFAULT_PENDING_DAYS = 14.0
 DEFAULT_RETENTION_DAYS = 14.0
 
+# A pending extract job ``j`` that no worker has started: no attempt, a fresh progress
+# row, no extraction page and no budget charge. Deferral can reset the attempt
+# counter, so the counter alone does not establish that a job is unstarted.
+UNSTARTED = (
+    "j.kind='extract' AND j.status='pending' AND j.attempts=0 "
+    "AND j.progress IN ('{}','{\"next_window\":0,\"decisions\":[]}') "
+    "AND NOT EXISTS (SELECT 1 FROM learning_extraction_pages p WHERE p.job_id=j.id) "
+    "AND NOT EXISTS (SELECT 1 FROM learning_budget b WHERE b.job_id=j.id)"
+)
+
 _IN_RANGE = (
     "s.project=r.project AND s.root=r.root AND s.session_id=r.session_id "
     "AND s.source_client=r.source_client AND s.seq BETWEEN r.first_seq AND r.last_seq"
@@ -37,8 +47,12 @@ def next_seq(conn, project: str, root: str, session: str, client: str) -> int:
         "SELECT coalesce(max(seq),0) FROM (SELECT seq FROM learning_sources "
         "WHERE project=? AND root=? AND session_id=? AND source_client=? "
         "UNION ALL SELECT last_seq FROM learning_job_ranges "
+        "WHERE project=? AND root=? AND session_id=? AND source_client=? "
+        # NOBLIVION-267: after prune drops the sources and ranges of a session, a new
+        # source must still get a number above the batch watermark.
+        "UNION ALL SELECT last_seq FROM learning_session_watermarks "
         "WHERE project=? AND root=? AND session_id=? AND source_client=?)",
-        (project, root, session, client, project, root, session, client),
+        (project, root, session, client) * 3,
     ).fetchone()[0]
 
 
@@ -73,12 +87,11 @@ def attach_job(
         "SELECT j.id,r.first_seq,r.last_seq FROM learning_jobs j "
         "JOIN learning_job_ranges r ON r.job_id=j.id "
         "WHERE j.project=? AND j.root=? AND j.session_id=? AND r.source_client=? "
-        "AND j.kind='extract' AND j.status='pending' AND j.attempts=0 "
-        "AND j.progress IN (?,?) "
-        "AND NOT EXISTS (SELECT 1 FROM learning_extraction_pages p WHERE p.job_id=j.id) "
-        "AND NOT EXISTS (SELECT 1 FROM learning_budget b WHERE b.job_id=j.id) "
+        "AND " + UNSTARTED + " "
+        # A batch item keeps the range it was planned with (NOBLIVION-267).
+        "AND NOT EXISTS (SELECT 1 FROM learning_batch_items i WHERE i.job_id=j.id) "
         "ORDER BY j.created_at DESC LIMIT 1",
-        (project, root, session, client, "{}", '{"next_window":0,"decisions":[]}'),
+        (project, root, session, client),
     ).fetchone()
     if open_job and (
         conn.execute(

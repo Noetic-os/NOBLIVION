@@ -19,6 +19,7 @@ import sqlite3
 from collections import defaultdict
 from typing import Any
 
+from noblivion import learning_batch
 from noblivion.learning_worker import PARTIAL_WORK
 
 _FRESH_PROGRESS = {"next_window": 0, "decisions": []}
@@ -152,6 +153,8 @@ def batch_report(
             "started": started,
         },
         "unranged_extract_jobs": unranged,
+        # NOBLIVION-267: batch items, the jobs they cancelled and their model time.
+        "batch": learning_batch.report(conn, where, params),
         "other_jobs": [{"kind": kind, "status": status, "jobs": n} for kind, status, n in other],
         "note": "prune deletes sources of finished jobs, so done and exhausted counts can be low",
     }

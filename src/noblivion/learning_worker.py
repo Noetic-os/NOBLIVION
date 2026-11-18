@@ -1033,8 +1033,12 @@ class LearningWorker:
         worker_id: str | None = None,
         allowed_scopes: set[tuple[str, str]] | None = None,
         embedding=None,
+        batch: bool = False,
     ):
         self.ledger = ledger
+        # NOBLIVION-267: policy, not request, so it stays out of WorkerSettings
+        # and out of every frozen job configuration.
+        self.batch = batch
         self.provider = provider
         self.settings = settings
         self.budget_limits = budget_limits
@@ -1101,9 +1105,17 @@ class LearningWorker:
         failure means no provider call occurs.
         """
         cfg = self.settings
-        job = self.ledger.claim(
-            self.worker_id, lease_seconds=cfg.lease_seconds, max_attempts=cfg.max_attempts
-        )
+        if self.batch:
+            job = self.ledger.claim(
+                self.worker_id,
+                lease_seconds=cfg.lease_seconds,
+                max_attempts=cfg.max_attempts,
+                batch=True,
+            )
+        else:
+            job = self.ledger.claim(
+                self.worker_id, lease_seconds=cfg.lease_seconds, max_attempts=cfg.max_attempts
+            )
         if job is None:
             return {"status": "idle"}
         ident, lease = job["id"], job["lease_token"]

@@ -253,6 +253,61 @@ Limits to know:
   window, whether it is open now, the seconds until it opens, and the strict
   flag.
 
+### Batch learning per session
+
+By default the worker runs one extraction job per capture. A new job also takes
+earlier text of its session as context, so some text goes through extraction
+more than once (`noblivion learning batch-report` measures this as
+`overlap_chars`). Batch learning (NOBLIVION-267) runs one batch item per session
+instead. It is off by default:
+
+```json
+"batch": {"enabled": true}
+```
+
+- A batch item is an extraction job like the others: it has a lease, attempts,
+  a frozen window plan, page receipts and budget charges. It reads a range of
+  the session's sources and no earlier context.
+- Each session and client has a watermark: the last source that a committed
+  batch item covered (`learning_session_watermarks`). An item starts at the
+  first source after the watermark that an unstarted capture job holds and that
+  no done job and no started job reads. It ends at the newest such source, or
+  before the next source would pass 200,000 characters. Text that is left goes
+  to the next item.
+- The worker plans items when it claims a job, so only inside the night window
+  and after the load probe lets it go on. One session has at most one pending
+  or leased item. Capture is unchanged: it still makes and extends the capture
+  jobs, but never changes the range of an item.
+- While the flag is on, the worker does not claim a capture job that no worker
+  has started (no attempt, no checkpoint, no page, no budget charge). It waits
+  for its session item.
+- When an item commits, in the same transaction, the watermark moves to the
+  last source of the item, and each unstarted capture job of the session that
+  ends at or below the watermark is cancelled with `last_error` `batch`. A
+  second run of the cancel changes nothing.
+- A started capture job keeps its work. It is never cancelled by an item, and it
+  runs to its end as before. No item reads the text that it reads. A legacy job
+  without a range and a consolidation or draft job are not changed.
+- An exhausted item stops batch learning for its session: the capture jobs of
+  that session run as before, so no item repeats the failed range. `noblivion
+  learning retry <id>` runs the item again; its commit then cancels the covered
+  capture jobs that are still unstarted.
+- With the flag off again, the worker claims every job as before. An item that
+  is left runs as an ordinary job, and its commit still moves the watermark.
+- The flag is policy. It is read again every 5 seconds and is never frozen into
+  a job. A malformed `batch` block (another key, or `enabled` not a boolean)
+  turns learning off. `noblivion learning status` shows the flag under
+  `settings.batch`.
+
+Limits to know:
+
+- An item takes no earlier context. A lesson whose evidence starts before the
+  watermark and ends after it (a failure, then its verification) can be missed.
+- The watermark rows are not pruned. There is one small row per session and
+  client.
+- Schema version 8 adds the two tables of this feature. An older release
+  refuses the new schema; the migration backup restores the old one.
+
 ### Context and output deferrals
 
 Existing notes are checked separately. A safe statement stays available when an
@@ -306,7 +361,7 @@ release that adds a contract version does not fail a started job: a job with
 partial work keeps its own version, and a job with no work yet freezes again
 under the newest version (see Extraction contract versions below).
 
-Budget limits (also `max_busy_share`), the `load_probe` and `schedule` blocks,
+Budget limits (also `max_busy_share`), the `load_probe`, `schedule` and `batch` blocks,
 `enable_consolidation`,
 `max_attempts`, `lease_seconds`,
 `retry_delay`, `poll_seconds` and `timeout_seconds` are policy. A started job
@@ -607,6 +662,9 @@ the distinct characters, the distinct characters no done job read, and how many 
 stored work, were charged without stored work, or are unstarted. `unranged_extract_jobs` counts
 jobs without a range per status; they are not sized. Prune deletes sources of finished jobs, so the
 counts for done jobs can be low.
+The `batch` part counts the batch items per status, the jobs cancelled with the reason `batch`,
+the sessions with a watermark, and the model calls and measured model seconds of the done items,
+also per item.
 
 Add `--days 22 --pending-days 7 --retention-days 7` for a multi-day retention replay.
 The report separates initial growth from steady-state growth, logs pruning counts and checks

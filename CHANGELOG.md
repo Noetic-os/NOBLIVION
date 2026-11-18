@@ -8,6 +8,24 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Per-session batch learning (NOBLIVION-267), off by default. With
+  `"batch": {"enabled": true}` in `learning.json`, the worker runs one batch
+  item per session instead of one extract job per capture. An item reads only
+  the text after the session's watermark, with no earlier context, and at most
+  200,000 characters. When it commits, the watermark moves to its last source
+  and the session's unstarted capture jobs that it covers are cancelled with
+  the reason `batch`, in the same transaction. Started jobs keep their work and
+  run as before. Items are planned only when a worker may claim, so the night
+  window and the load probe apply. With no block, or `"enabled": false`,
+  learning works as before.
+- Schema version 8 adds the tables `learning_batch_items` and
+  `learning_session_watermarks`. No existing row changes. An older release
+  refuses the new schema; the migration backup restores the old one.
+- `noblivion learning batch-report` adds a `batch` part: items per status, jobs
+  cancelled with the reason `batch`, sessions with a watermark and the measured
+  model seconds per done item. `noblivion learning status` shows the flag under
+  `settings.batch`.
+
 ## 0.1.38 - 2026-11-18
 
 - Learning can run only in a night window (NOBLIVION-266). A new optional

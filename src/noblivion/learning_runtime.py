@@ -18,6 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from noblivion.learning import LearningLedger, LeaseLost, StepAside
+from noblivion.learning_batch import batch_options
 from noblivion.learning_probe import LoadProbe, probe_options
 from noblivion.learning_schedule import local_now, schedule_options, window_wait
 
@@ -59,6 +60,7 @@ def load_settings(data_dir: Path) -> dict:
             worker_options(value)
             probe_options(value)
             schedule_options(value)
+            batch_options(value)
         except ShareTooSmall:
             log.warning(
                 "budget.max_busy_share allows less than one call of worker.timeout_seconds "
@@ -95,6 +97,10 @@ def settings_report(data_dir: Path, now=None) -> dict:
         report["load_probe"] = (
             None if probe is None else {"strict": probe["strict"], "gauge": probe["gauge"]}
         )
+    try:
+        report["batch"] = {"enabled": batch_options(settings)}
+    except ValueError:
+        report["batch"] = {"error": "invalid"}
     return report
 
 
@@ -281,14 +287,17 @@ class PooledLedger(LearningLedger):
         # True from the reservation until settle: the call is sent, or about to be.
         self._sent = False
 
-    def claim(self, worker_id: str, lease_seconds: float = 120, max_attempts: int = 4):
+    def claim(self, worker_id: str, lease_seconds: float = 120, max_attempts: int = 4, **kwargs):
         # A stopping store takes no new job: its leases are given back at the stop.
         if self._pool.stop.is_set():
             return None
-        # NOBLIVION-266: outside the night window no job is claimed.
+        # NOBLIVION-266: outside the night window no job is claimed. A batch item
+        # (NOBLIVION-267) is planned inside the claim, so also only in the window.
         if self._pool.window_wait() > 0:
             return None
-        return super().claim(worker_id, lease_seconds=lease_seconds, max_attempts=max_attempts)
+        return super().claim(
+            worker_id, lease_seconds=lease_seconds, max_attempts=max_attempts, **kwargs
+        )
 
     def reserve(self, job_id: str, lease_token: str, *, limits, **estimates):
         if not self._held:
@@ -673,6 +682,7 @@ def run_once(
         worker_id=worker_id,
         allowed_scopes={(s["project"], s["root"]) for s in settings["scopes"]},
         embedding=embedding,
+        batch=batch_options(settings),
     )
     return worker.run_once()
 

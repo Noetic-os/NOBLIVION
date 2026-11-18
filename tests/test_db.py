@@ -28,6 +28,8 @@ TABLES = {
     "learning_sources",
     "learning_jobs",
     "learning_job_ranges",
+    "learning_batch_items",
+    "learning_session_watermarks",
     "learning_job_sources",
     "learning_budget",
     "learning_notes",
