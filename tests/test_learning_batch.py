@@ -594,3 +594,20 @@ def test_a_capture_job_that_waits_for_a_held_item_does_not_keep_the_store_up(led
     # The item waits an hour; its capture job cannot run before it.
     assert not open_(True)
     assert open_(False)  # off, the capture job counts as before
+
+
+def test_many_held_capture_jobs_do_not_hide_a_due_item(ledger):
+    """Held jobs sort before every item; the idle check must still see the items."""
+    limits = BudgetLimits(max_calls=1000, max_seconds=10**7, max_tokens=10**9)
+    for number in range(70):
+        ledger.capture_batch(payload(1, f"s{number:02d}"))
+    item = ledger.claim("w", batch=True)
+    ledger.release_leases({"w"})
+    assert (
+        ledger.conn.execute(
+            "SELECT status FROM learning_jobs WHERE id=?", (item["id"],)
+        ).fetchone()[0]
+        == "pending"
+    )
+    assert len(items(ledger)) == 70
+    assert ledger.work_open(set(), {(PROJECT, ROOT)}, max_attempts=4, limits=limits, batch=True)

@@ -18,8 +18,13 @@ All notable changes to NOBLIVION. The format follows
   run as before. Items are planned only when a worker may claim, so the night
   window and the load probe apply. With no block, or `"enabled": false`,
   learning works as before.
+- With the flag on, a capture job that waits for a pending or leased item of
+  its session does not keep an idle store up; the item counts for itself.
 - Schema version 8 adds the tables `learning_batch_items` and
-  `learning_session_watermarks`. No existing row changes. An older release
+  `learning_session_watermarks`, and an index on `learning_budget(job_id)`
+  (the planner asks each pending job for a budget charge; a claim on a store
+  with 62,000 sources and 21,600 budget rows took 0.33 s without it and
+  0.03 s with it). No existing row changes. An older release
   refuses the new schema; the migration backup restores the old one.
 - `noblivion learning batch-report` adds a `batch` part: items per status, jobs
   cancelled with the reason `batch`, sessions with a watermark and the measured

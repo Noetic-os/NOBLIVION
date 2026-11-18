@@ -264,6 +264,7 @@ _REQUIRED_INDEXES = {
     "chunk_vectors_rev": "chunk_vectors",
     "feedback_events_memory": "feedback_events",
     "feedback_events_ts": "feedback_events",
+    "learning_budget_job": "learning_budget",
     "learning_budget_window": "learning_budget",
     "learning_claim_support_note": "learning_claim_supports",
     "learning_claim_support_source": "learning_claim_supports",

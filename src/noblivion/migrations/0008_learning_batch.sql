@@ -14,3 +14,5 @@ CREATE TABLE learning_session_watermarks (
     job_id TEXT NOT NULL, updated_at REAL NOT NULL,
     PRIMARY KEY (project,root,session_id,source_client)
 ) STRICT;
+-- The batch planner asks, for each pending job, whether it holds a budget charge.
+CREATE INDEX learning_budget_job ON learning_budget(job_id);

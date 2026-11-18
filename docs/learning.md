@@ -306,7 +306,14 @@ Limits to know:
   watermark and ends after it (a failure, then its verification) can be missed.
 - The watermark rows are not pruned. There is one small row per session and
   client.
-- Schema version 8 adds the two tables of this feature. An older release
+- With the flag off, learning works as before. Only the reports change:
+  `noblivion learning status` shows `settings.batch` and `batch-report` has a
+  `batch` part.
+- The gate is per session: a session of more than 200,000 characters needs
+  several items. Divide the model seconds by `sessions_with_watermark` for a
+  figure per session.
+- Schema version 8 adds the two tables of this feature and an index on
+  `learning_budget(job_id)`. An older release
   refuses the new schema; the migration backup restores the old one.
 
 ### Context and output deferrals

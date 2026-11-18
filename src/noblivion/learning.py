@@ -885,14 +885,15 @@ class LearningLedger:
             or used["cost"] > limits.max_cost  # a local model call costs 0
         ):
             return False
-        held = learning_batch.held_ids(self.conn) if batch else set()
+        # The held jobs are left out before the limit: they sort before every item.
+        held = " AND id NOT IN (" + learning_batch.HELD + ")" if batch else ""
         for row in self.conn.execute(
-            "SELECT id,project,root,session_id FROM learning_jobs WHERE status='pending' "
-            "AND (next_attempt<=? OR last_error='StepAside') AND attempts<? "
+            "SELECT project,root,session_id FROM learning_jobs WHERE status='pending' "
+            "AND (next_attempt<=? OR last_error='StepAside') AND attempts<?" + held + " "
             "ORDER BY created_at,id LIMIT 64",
             (now, max_attempts),
         ).fetchall():
-            if (row["project"], row["root"]) not in scopes or row["id"] in held:
+            if (row["project"], row["root"]) not in scopes:
                 continue
             controls = self.effective_controls(row["project"], row["root"], row["session_id"])
             if controls["contribute"] and not controls["paused"]:
