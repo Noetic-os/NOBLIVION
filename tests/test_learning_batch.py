@@ -577,3 +577,20 @@ def test_the_batch_report_counts_items_cancels_and_model_seconds(ledger):
         "model_seconds_per_done_item": 90.5,
     }
     assert batch_report(ledger.conn, project="other")["batch"]["items"] == {}
+
+
+def test_a_capture_job_that_waits_for_a_held_item_does_not_keep_the_store_up(ledger):
+    limits = BudgetLimits(max_calls=1000, max_seconds=10**7, max_tokens=10**9)
+    scopes = {(PROJECT, ROOT)}
+    ledger.capture_batch(payload(1))
+
+    def open_(batch):
+        return ledger.work_open(set(), scopes, max_attempts=4, limits=limits, batch=batch)
+
+    # No item yet: the next claim plans one, so the store stays up.
+    assert open_(True) and open_(False)
+    item = ledger.claim("w", batch=True)
+    ledger.defer(item["id"], item["lease_token"], retry_delay=3600, error="BudgetExceeded")
+    # The item waits an hour; its capture job cannot run before it.
+    assert not open_(True)
+    assert open_(False)  # off, the capture job counts as before

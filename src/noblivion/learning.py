@@ -846,6 +846,7 @@ class LearningLedger:
         max_attempts: int,
         limits: BudgetLimits | None = None,
         call_seconds: float = 0.0,
+        batch: bool = False,
     ) -> bool:
         """True while learning work keeps an idle store up (NOBLIVION-248).
 
@@ -856,6 +857,8 @@ class LearningLedger:
         (a queue at the model server or the busy-share cap) counts although its
         retry is not due yet (NOBLIVION-260): that wait is a bounded back-off, so a
         quiet store stays up to finish its backlog.
+        With ``batch`` (NOBLIVION-267), a capture job that waits for a pending or
+        leased item of its session does not count: no worker takes it.
         """
         now = time.time()
         owners = sorted(owners)
@@ -882,13 +885,14 @@ class LearningLedger:
             or used["cost"] > limits.max_cost  # a local model call costs 0
         ):
             return False
+        held = learning_batch.held_ids(self.conn) if batch else set()
         for row in self.conn.execute(
-            "SELECT project,root,session_id FROM learning_jobs WHERE status='pending' "
+            "SELECT id,project,root,session_id FROM learning_jobs WHERE status='pending' "
             "AND (next_attempt<=? OR last_error='StepAside') AND attempts<? "
             "ORDER BY created_at,id LIMIT 64",
             (now, max_attempts),
         ).fetchall():
-            if (row["project"], row["root"]) not in scopes:
+            if (row["project"], row["root"]) not in scopes or row["id"] in held:
                 continue
             controls = self.effective_controls(row["project"], row["root"], row["session_id"])
             if controls["contribute"] and not controls["paused"]:

@@ -193,6 +193,27 @@ def superseded_ids(conn) -> set[str]:
     }
 
 
+def held_ids(conn) -> set[str]:
+    """The waiting per-capture jobs whose session already has a pending or leased
+    item. No worker takes them; the item counts for itself (``work_open``)."""
+    return {
+        row[0]
+        for row in conn.execute(
+            "SELECT j.id FROM learning_jobs j JOIN learning_job_ranges r ON r.job_id=j.id "
+            "WHERE "
+            + learning_ranges.UNSTARTED
+            + " AND "
+            + _NOT_ITEM
+            + " AND NOT "
+            + _FALLBACK
+            + " AND EXISTS (SELECT 1 FROM learning_batch_items li JOIN learning_jobs l "
+            "ON l.id=li.job_id JOIN learning_job_ranges lr ON lr.job_id=l.id "
+            "WHERE l.status IN ('pending','leased') AND lr.project=r.project AND lr.root=r.root "
+            "AND lr.session_id=r.session_id AND lr.source_client=r.source_client)"
+        )
+    }
+
+
 def cancel_covered(conn, key: tuple, upto: int, now: float) -> int:
     """Cancel the session's unstarted per-capture jobs that end at or below ``upto``.
 

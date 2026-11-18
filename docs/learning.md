@@ -280,7 +280,8 @@ instead. It is off by default:
   jobs, but never changes the range of an item.
 - While the flag is on, the worker does not claim a capture job that no worker
   has started (no attempt, no checkpoint, no page, no budget charge). It waits
-  for its session item.
+  for its session item. While its session has a pending or leased item, such a
+  job does not keep an idle store up; the item counts for itself.
 - When an item commits, in the same transaction, the watermark moves to the
   last source of the item, and each unstarted capture job of the session that
   ends at or below the watermark is cancelled with `last_error` `batch`. A

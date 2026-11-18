@@ -591,6 +591,9 @@ class LearningPool:
         """
         settings = self.settings
         scopes = {(s["project"], s["root"]) for s in settings["scopes"]} if settings else set()
+        extra = {}
+        if settings and batch_options(settings):
+            extra["batch"] = True  # NOBLIVION-267; off, the call is as before
         with self.store.connection() as conn:
             return LearningLedger(conn).work_open(
                 set(self.worker_ids),
@@ -598,6 +601,7 @@ class LearningPool:
                 max_attempts=self.max_attempts,
                 limits=self.budget if settings else None,
                 call_seconds=self.call_seconds,
+                **extra,
             )
 
     def shutdown(self, timeout: float = 0.0) -> None:
