@@ -237,12 +237,15 @@ Limits to know:
   keep their own hour.
 - The probe and the window apply to the store's own worker loops. The
   busy-share cap applies to every learning call that reserves its budget.
-- The strict probe counts learning's own calls by the call slots of this store.
-  A slot is held from the reservation to the settlement, a little longer than
-  the server runs the request. With more than one slot, a request of another
-  client that starts in that short gap can be taken for learning's own. With one
-  slot this cannot happen. Calls of another store on the same server count as
-  another client's.
+- The strict probe counts as learning's own only the calls this store has
+  sent: a call counts from its reservation to its settlement. A worker loop
+  that holds a call slot but has not reserved does not count. One loop at a
+  time checks the probe and reserves, so two loops never go on the same
+  reading. A call counts a little longer than the server runs it (from just
+  before it is sent to just after the answer). With more than one slot, a
+  request of another client that runs only in that short gap can be taken for
+  learning's own. With one slot this cannot happen. Calls of another store on
+  the same server count as another client's.
 - A store with a backlog stays up outside the window (it does not stop idle),
   so it can start learning at the window start. A store that stopped is started
   again by the next client, as before.

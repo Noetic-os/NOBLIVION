@@ -325,31 +325,64 @@ def test_a_strict_probe_holds_while_others_run_and_goes_for_learnings_own(metric
     assert loose.hold() == 0.0  # the old fail-open behaviour is kept
 
 
-def test_reserve_counts_only_the_other_calls_of_the_store_as_its_own(tmp_path, metrics):
-    """The caller's own slot is held at the check, but the server has not seen it."""
+def test_reserve_counts_only_the_sent_calls_of_the_store_as_its_own(tmp_path, metrics):
+    """A held slot is not a call: only a reserved call counts as learning's own."""
     store = FakeStore(tmp_path)
-    capture(store, 1)
+    capture(store, 2)
     pool = manual_pool(store, slots=2, schedule=None, probe=LoadProbe(strict_options(metrics.url)))
-    with store.connection() as conn:
-        ledger = learning_runtime.PooledLedger(conn, pool)
-        job = ledger.claim("w", lease_seconds=120)
-        # One slot: a job between two calls, and one request of another client.
+    pool.budget = BudgetLimits(
+        max_calls=1000, max_seconds=10**7, max_tokens=10**9, max_concurrency=2
+    )
+    with store.connection() as one, store.connection() as two:
+        first, second = (learning_runtime.PooledLedger(c, pool) for c in (one, two))
+        job_a, job_b = first.claim("a", lease_seconds=120), second.claim("b", lease_seconds=120)
+        # One request of another client runs, learning has sent nothing.
         metrics.page = vllm_page(0, 1)
         with pytest.raises(StepAside) as aside:
-            reserve_one(ledger, job, pool.budget)
+            reserve_one(first, job_a, pool.budget)
         assert aside.value.reason == "queue" and pool.slots.used == 0
-        # Another loop of this store has a call in flight: it is the one request.
+        # Another loop holds its slot but has sent no call: the request is still
+        # another client's, so neither loop may go.
         assert pool.slots.acquire(pool.stop, lambda: None)
+        assert pool.step_aside() > 0
+        with pytest.raises(StepAside):
+            reserve_one(first, job_a, pool.budget)
+        pool.slots.release()
+        # The server is idle: the first loop sends its call.
+        metrics.page = vllm_page(0, 0)
+        reservation = reserve_one(first, job_a, pool.budget)
+        assert pool.in_flight == 1
+        # The one running request is now that call: the second loop may go.
+        metrics.page = vllm_page(0, 1)
         assert pool.step_aside() == 0.0
-        reservation = reserve_one(ledger, job, pool.budget)
-        ledger.settle(reservation["id"], actual_seconds=1.0)
+        other = reserve_one(second, job_b, pool.budget)
+        assert pool.in_flight == 2
+        second.settle(other["id"], actual_seconds=1.0)
         # Two requests run, one is learning's: the other belongs to a client.
         metrics.page = vllm_page(0, 2)
         assert pool.step_aside() > 0
         with pytest.raises(StepAside):
-            reserve_one(ledger, job, pool.budget)
-        pool.slots.release()
-    assert pool.slots.used == 0
+            reserve_one(second, job_b, pool.budget)
+        first.settle(reservation["id"], actual_seconds=1.0)
+    assert pool.slots.used == 0 and pool.in_flight == 0
+
+
+def test_two_loops_never_both_pass_while_another_client_runs(tmp_path, metrics):
+    """Both loops hold a slot at the check; the one foreign request stops both."""
+    store = FakeStore(tmp_path)
+    capture(store, 2)
+    pool = manual_pool(store, slots=2, schedule=None, probe=LoadProbe(strict_options(metrics.url)))
+    metrics.page = vllm_page(0, 1)
+    with store.connection() as one, store.connection() as two:
+        loops = [learning_runtime.PooledLedger(c, pool) for c in (one, two)]
+        jobs = [loop.claim(f"w{i}", lease_seconds=120) for i, loop in enumerate(loops)]
+        for loop in loops:
+            assert pool.slots.acquire(pool.stop, lambda: None)
+            loop._held = True
+        for index, loop in enumerate(loops):
+            with pytest.raises(StepAside):
+                reserve_one(loop, jobs[index], pool.budget)
+    assert pool.slots.used == 0 and pool.in_flight == 0
 
 
 def test_a_failed_step_aside_check_holds_when_the_probe_is_strict(tmp_path, metrics):
@@ -410,9 +443,11 @@ def test_replay_of_recorded_pages_makes_no_call_while_another_client_is_busy(tmp
         label[0] = f"{step}:{name}"
         state.update(waiting=waiting, foreign=foreign, own=own, readable=readable)
         page()
-        # Learning calls in flight in another loop hold their call slots.
+        # Learning calls in flight in another loop hold their call slots and
+        # count as sent.
         for _ in range(own):
             assert pool.slots.acquire(pool.stop, lambda: None)
+            pool.call_sent()
         before = len(calls)
         if pool.step_aside() == 0:
             with store.connection() as conn:
@@ -425,6 +460,7 @@ def test_replay_of_recorded_pages_makes_no_call_while_another_client_is_busy(tmp
                 ).run_once()
         went[label[0]] = len(calls) - before
         for _ in range(own):
+            pool.call_ended()
             pool.slots.release()
     busy = [c for c in calls if c[1]["waiting"] or c[1]["foreign"] or not c[1]["readable"]]
     assert busy == []

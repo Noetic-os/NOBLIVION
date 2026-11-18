@@ -278,6 +278,8 @@ class PooledLedger(LearningLedger):
         super().__init__(conn)
         self._pool = pool
         self._held = False
+        # True from the reservation until settle: the call is sent, or about to be.
+        self._sent = False
 
     def claim(self, worker_id: str, lease_seconds: float = 120, max_attempts: int = 4):
         # A stopping store takes no new job: its leases are given back at the stop.
@@ -312,12 +314,18 @@ class PooledLedger(LearningLedger):
                 raise StepAside("window", wait)
             # NOBLIVION-260: another client queues at the shared model server.
             # Checked after the slot wait, before the reservation row, so the job
-            # goes back at once and holds no lease while it waits. The slot of
-            # this call is held already, but the server has not seen the call.
-            wait = self._pool.probe_hold(own_running=self._pool.slots.used - 1)
-            if wait > 0:
-                raise StepAside("queue", wait)
-            return super().reserve(job_id, lease_token, limits=current, **estimates)
+            # goes back at once and holds no lease while it waits. Only the calls
+            # learning has sent count as its own: a slot that waits for its check
+            # is not a call the server runs. One loop at a time checks and
+            # reserves, so two loops never pass on the same reading.
+            with self._pool.send_lock:
+                wait = self._pool.probe_hold(own_running=self._pool.in_flight)
+                if wait > 0:
+                    raise StepAside("queue", wait)
+                reservation = super().reserve(job_id, lease_token, limits=current, **estimates)
+                self._pool.call_sent()
+                self._sent = True
+            return reservation
         except BaseException:
             self.release()
             raise
@@ -330,6 +338,9 @@ class PooledLedger(LearningLedger):
 
     def release(self) -> None:
         """Free the call slot. Safe to call when no slot is held."""
+        if self._sent:
+            self._sent = False
+            self._pool.call_ended()
         if self._held:
             self._held = False
             self._pool.slots.release()
@@ -347,6 +358,11 @@ class LearningPool:
         self.store = store
         self.stop: threading.Event = store._jobs_stop
         self.slots = CallSlots()
+        # NOBLIVION-266: learning's calls the model server can see, from the
+        # reservation to settle. The strict probe counts only these as its own.
+        self.send_lock = threading.Lock()
+        self._in_flight = 0
+        self._in_flight_lock = threading.Lock()
         self.settings: dict | None = None
         self.budget = None
         self.probe: LoadProbe | None = None
@@ -415,6 +431,19 @@ class LearningPool:
         probe = self.probe
         return probe.hold(own_running) if probe is not None else 0.0
 
+    @property
+    def in_flight(self) -> int:
+        with self._in_flight_lock:
+            return self._in_flight
+
+    def call_sent(self) -> None:
+        with self._in_flight_lock:
+            self._in_flight += 1
+
+    def call_ended(self) -> None:
+        with self._in_flight_lock:
+            self._in_flight = max(0, self._in_flight - 1)
+
     def window_wait(self) -> float:
         """Seconds until the night window opens; 0 inside it or with no window."""
         return window_wait(self.schedule, self.clock())
@@ -432,9 +461,8 @@ class LearningPool:
         if wait > 0:
             return wait
         try:
-            # No call slot of this loop is held here: every used slot is a call
-            # of another loop of this store.
-            wait = self.probe_hold(own_running=self.slots.used)
+            # Only the calls this store has sent are learning's own.
+            wait = self.probe_hold(own_running=self.in_flight)
             budget = self.budget
             if wait <= 0 and budget is not None and budget.max_busy_share < 1:
                 with self.store.connection() as conn:
