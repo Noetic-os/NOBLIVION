@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.38 - 2026-11-18
+
 - Learning can run only in a night window (NOBLIVION-266). A new optional
   `schedule` block in `learning.json`, `{"window": "22:00-06:00"}`, names one
   daily window in local time; it may cross midnight. Outside it the worker
