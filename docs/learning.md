@@ -283,16 +283,25 @@ instead. It is off by default:
   for its session item. While its session has a pending or leased item, such a
   job does not keep an idle store up; the item counts for itself.
 - When an item commits, in the same transaction, the watermark moves to the
-  last source of the item, and each unstarted capture job of the session that
-  ends at or below the watermark is cancelled with `last_error` `batch`. A
-  second run of the cancel changes nothing.
+  last source of the item. Each unstarted capture job of the session that ends
+  at or below the watermark, and whose text is read, is cancelled with
+  `last_error` `batch`. Text is read when an item read it or a done job read it.
+  A second run of the cancel changes nothing.
 - A started capture job keeps its work. It is never cancelled by an item, and it
-  runs to its end as before. No item reads the text that it reads. A legacy job
-  without a range and a consolidation or draft job are not changed.
+  runs to its end as before. No item reads the text that it reads, so an item
+  can skip that text and still move the watermark past it. A legacy job without
+  a range and a consolidation or draft job are not changed.
+- An unstarted capture job that holds skipped text is not cancelled until a done
+  job has read that text. While a started job still reads it, the capture job
+  waits. When no job reads it (the started job is exhausted, or it was released
+  before its first checkpoint), the capture job runs as a per-capture job, as in
+  fallback mode, because no item reads text below the watermark.
 - An exhausted item stops batch learning for its session: the capture jobs of
   that session run as before, so no item repeats the failed range. `noblivion
   learning retry <id>` runs the item again; its commit then cancels the covered
-  capture jobs that are still unstarted.
+  capture jobs that are still unstarted. When done capture jobs already read all
+  of its text, the claim cancels the retried item with `last_error` `batch` and
+  moves the watermark to its last source, so the text is not read again.
 - With the flag off again, the worker claims every job as before. An item that
   is left runs as an ordinary job, and its commit still moves the watermark.
 - The flag is policy. It is read again every 5 seconds and is never frozen into
@@ -306,6 +315,10 @@ Limits to know:
   watermark and ends after it (a failure, then its verification) can be missed.
 - The watermark rows are not pruned. There is one small row per session and
   client.
+- A capture job that runs because skipped text has no reader also reads its
+  other text again, as on a store with the flag off. A retried item whose text
+  done capture jobs read only in part, or while a capture job of its session
+  still runs, reads that text again.
 - With the flag off, learning works as before. Only the reports change:
   `noblivion learning status` shows `settings.batch` and `batch-report` has a
   `batch` part.

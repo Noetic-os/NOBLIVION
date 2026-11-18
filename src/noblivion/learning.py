@@ -564,6 +564,7 @@ class LearningLedger:
             )
             waiting: set[str] = set()
             if batch:
+                learning_batch.drop_read_items(self.conn, now)
                 learning_batch.plan(self.conn, now)
                 waiting = learning_batch.superseded_ids(self.conn)
             rows = self.conn.execute(

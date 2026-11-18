@@ -174,7 +174,7 @@ _REQUIRED_COLUMNS = {
     "feedback_events": frozenset(
         "id session_id memory_id kind citation_capable ts received_at".split()
     ),
-    "learning_batch_items": frozenset("job_id created_at".split()),
+    "learning_batch_items": frozenset("job_id created_at mark_seq".split()),
     "learning_batches": frozenset(
         "batch_id payload_hash project root session_id skipped created_at".split()
     ),

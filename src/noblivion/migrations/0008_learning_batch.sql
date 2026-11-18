@@ -5,7 +5,10 @@
 -- are new, so no existing row changes.
 CREATE TABLE learning_batch_items (
     job_id TEXT PRIMARY KEY REFERENCES learning_jobs(id) ON DELETE CASCADE,
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    -- The session watermark when the item was planned. The text after it and
+    -- before the item's first source was skipped: a started job reads it.
+    mark_seq INTEGER NOT NULL CHECK (mark_seq>=0)
 ) STRICT;
 CREATE TABLE learning_session_watermarks (
     project TEXT NOT NULL, root TEXT NOT NULL, session_id TEXT NOT NULL,

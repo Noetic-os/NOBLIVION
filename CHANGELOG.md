@@ -14,14 +14,17 @@ All notable changes to NOBLIVION. The format follows
   the text after the session's watermark, with no earlier context, and at most
   200,000 characters. When it commits, the watermark moves to its last source
   and the session's unstarted capture jobs that it covers are cancelled with
-  the reason `batch`, in the same transaction. Started jobs keep their work and
-  run as before. Items are planned only when a worker may claim, so the night
+  the reason `batch`, in the same transaction. A capture job is cancelled only
+  when an item or a done job read all of its text: text that an item skipped
+  because a started job reads it is never cancelled unread. A retried item whose
+  text done capture jobs already read is cancelled at claim. Started jobs keep
+  their work and run as before. Items are planned only when a worker may claim, so the night
   window and the load probe apply. With no block, or `"enabled": false`,
   learning works as before.
 - With the flag on, a capture job that waits for a pending or leased item of
   its session does not keep an idle store up; the item counts for itself.
-- Schema version 8 adds the tables `learning_batch_items` and
-  `learning_session_watermarks`, and an index on `learning_budget(job_id)`
+- Schema version 8 adds the tables `learning_batch_items` (with the watermark
+  at plan time) and `learning_session_watermarks`, and an index on `learning_budget(job_id)`
   (the planner asks each pending job for a budget charge; a claim on a store
   with 62,000 sources and 21,600 budget rows took 0.33 s without it and
   0.03 s with it). No existing row changes. An older release

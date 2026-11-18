@@ -103,7 +103,7 @@ def test_the_setting_is_off_by_default_and_strictly_validated(tmp_path):
 
 
 def test_off_the_claim_plans_nothing_and_takes_the_capture_job(ledger, monkeypatch):
-    for name in ("plan", "superseded_ids", "cancel_covered"):
+    for name in ("plan", "superseded_ids", "cancel_covered", "drop_read_items"):
         monkeypatch.setattr(learning_batch, name, lambda *a, **k: pytest.fail("batch code ran"))
     for number in (1, 2, 3):
         ledger.capture_batch(payload(number))
@@ -310,10 +310,110 @@ def test_a_started_job_keeps_its_work_and_no_item_reads_its_text(ledger):
     ledger.finish(item["id"], item["lease_token"], [])
     state = {j["id"]: (j["status"], j["last_error"]) for j in jobs(ledger)}
     assert state[started["id"]] == ("pending", "StepAside")
-    assert state[later] == ("cancelled", "batch")
+    # Seqs 1-2 of the later job are read only by the started job, which is not
+    # done: the later job is not cancelled. It waits for the started job.
+    assert state[later][0] == "pending"
     resumed = ledger.claim("w", batch=True)
     assert resumed["id"] == started["id"] and resumed["progress"]["next_window"] == 1
     ledger.finish(resumed["id"], resumed["lease_token"], [])
+    # Now a done job read seqs 1-2 and the item read seq 3: the later job goes.
+    assert ledger.claim("w", batch=True) is None
+    assert ledger.conn.execute(
+        "SELECT status,last_error FROM learning_jobs WHERE id=?", (later,)
+    ).fetchone()[:] == ("cancelled", "batch")
+
+
+def test_text_an_item_skipped_is_read_when_the_started_job_exhausts(ledger):
+    # Review F1, scenario B: the item skips seqs 1-2 because a started job reads
+    # them. The started job then exhausts, so the later job must read them.
+    for number in (1, 2):
+        ledger.capture_batch(payload(number))
+    started = ledger.claim("w", max_attempts=2)
+    ledger.checkpoint(started["id"], started["lease_token"], {"next_window": 1, "decisions": []})
+    ledger.defer(started["id"], started["lease_token"], retry_delay=3600, error="StepAside")
+    later = ledger.capture_batch(payload(3))["job_id"]
+    item = ledger.claim("w", batch=True, max_attempts=2)
+    assert [s["seq"] for s in item["sources"]] == [3]
+    ledger.finish(item["id"], item["lease_token"], [])
+    assert marks(ledger) == {"s1": 3}
+    # While the started job may still read seqs 1-2, the later job waits.
+    assert ledger.claim("w", batch=True, max_attempts=2) is None
+    ledger.conn.execute(
+        "UPDATE learning_jobs SET next_attempt=0,attempts=2 WHERE id=?", (started["id"],)
+    )
+    job = ledger.claim("w", batch=True, max_attempts=2)
+    status = ledger.conn.execute(
+        "SELECT status FROM learning_jobs WHERE id=?", (started["id"],)
+    ).fetchone()[0]
+    assert status == "exhausted"
+    assert job["id"] == later
+    assert [s["seq"] for s in job["sources"]] == [1, 2, 3]
+
+
+def test_text_an_item_skipped_is_read_when_the_started_job_is_released(ledger):
+    # Review F1, scenario A: a capture job is leased while the flag is off. The
+    # item skips its text. The store stops before its first checkpoint, so the
+    # job is unstarted again when the item commits. Its text must still be read.
+    for number in (1, 2):
+        ledger.capture_batch(payload(number))
+    leased = ledger.claim("w")
+    later = ledger.capture_batch(payload(3))["job_id"]
+    assert [s["seq"] for s in ledger._job_sources(later)] == [1, 2, 3]
+    item = ledger.claim("w2", batch=True)
+    assert [s["seq"] for s in item["sources"]] == [3]
+    assert ledger.release_leases(["w"]) == 1
+    ledger.finish(item["id"], item["lease_token"], [])
+    assert marks(ledger) == {"s1": 3}
+    state = {j["id"]: j["status"] for j in jobs(ledger)}
+    assert state[leased["id"]] == state[later] == "pending"
+    job = ledger.claim("w", batch=True)
+    assert job["id"] == leased["id"]
+    assert [s["seq"] for s in job["sources"]] == [1, 2]
+    ledger.finish(job["id"], job["lease_token"], [])
+    # Seqs 1-2 are read now, and the item read seq 3: the later job goes unread.
+    assert ledger.claim("w", batch=True) is None
+    assert ledger.conn.execute(
+        "SELECT status,last_error FROM learning_jobs WHERE id=?", (later,)
+    ).fetchone()[:] == ("cancelled", "batch")
+
+
+def test_an_item_stops_before_the_text_a_started_job_reads(ledger, monkeypatch):
+    # Review F3: open capture ranges lie before and after the range of a started job.
+    monkeypatch.setattr(learning_ranges, "JOB_CHARS", 130)
+    monkeypatch.setattr(learning_ranges, "CONTEXT_SOURCES", 0)
+    for number in range(1, 7):
+        ledger.capture_batch(payload(number, text=chr(96 + number) * 60))
+    assert [(j["first_seq"], j["last_seq"]) for j in jobs(ledger)] == [(1, 2), (3, 4), (5, 6)]
+    first = ledger.claim("w")
+    second = ledger.claim("w")
+    assert (first["sources"][0]["seq"], second["sources"][0]["seq"]) == (1, 3)
+    ledger.checkpoint(second["id"], second["lease_token"], {"next_window": 1, "decisions": []})
+    ledger.defer(second["id"], second["lease_token"], retry_delay=3600, error="StepAside")
+    ledger.release_leases(["w"])
+    # The size limit must not end the item: only the started job may.
+    monkeypatch.setattr(learning_ranges, "JOB_CHARS", 200_000)
+    item = ledger.claim("w", batch=True)
+    assert learning_batch.is_item(ledger.conn, item["id"])
+    assert [s["seq"] for s in item["sources"]] == [1, 2]
+
+
+def test_a_capture_job_is_cancelled_after_prune_drops_the_old_ranges(ledger):
+    # The watermark, not a range row, proves that an item read the old text.
+    ledger.capture_batch(payload(1))
+    item = ledger.claim("w", batch=True)
+    ledger.finish(item["id"], item["lease_token"], [])
+    ledger.conn.execute(
+        "DELETE FROM learning_job_ranges WHERE job_id IN "
+        "(SELECT id FROM learning_jobs WHERE status IN ('done','cancelled'))"
+    )
+    later = ledger.capture_batch(payload(2))["job_id"]
+    assert [s["seq"] for s in ledger._job_sources(later)] == [1, 2]
+    item = ledger.claim("w", batch=True)
+    assert [s["seq"] for s in item["sources"]] == [2]
+    ledger.finish(item["id"], item["lease_token"], [])
+    assert ledger.conn.execute(
+        "SELECT status,last_error FROM learning_jobs WHERE id=?", (later,)
+    ).fetchone()[:] == ("cancelled", "batch")
 
 
 def test_the_job_size_limit_splits_a_session_into_items(ledger, monkeypatch):
@@ -353,6 +453,11 @@ def test_the_bulk_cancel_is_idempotent(ledger):
     ledger.capture_batch(payload(1, "s2"))
     key = (PROJECT, ROOT, "s1", "codex")
     with db.write_tx(ledger.conn):
+        # An earlier item of s1 read seqs 1-2.
+        ledger.conn.execute(
+            "INSERT INTO learning_session_watermarks VALUES (?,?,?,?,?,?,?)",
+            (*key, 2, "earlier", time.time()),
+        )
         assert learning_batch.cancel_covered(ledger.conn, key, 1, time.time()) == 0
         assert learning_batch.cancel_covered(ledger.conn, key, 2, time.time()) == 1
         assert learning_batch.cancel_covered(ledger.conn, key, 2, time.time()) == 0
@@ -369,7 +474,7 @@ def test_the_bulk_cancel_is_idempotent(ledger):
     ledger.conn.execute("UPDATE learning_session_watermarks SET last_seq=9")
     with db.write_tx(ledger.conn):
         learning_batch.commit(ledger.conn, item["id"], time.time())
-    assert marks(ledger) == {"s2": 9}
+    assert marks(ledger) == {"s1": 9, "s2": 9}
 
 
 def test_the_bulk_cancel_rolls_back_with_a_failed_commit(ledger, monkeypatch):
@@ -410,12 +515,32 @@ def test_an_exhausted_item_hands_the_session_back_and_is_not_planned_again(ledge
     assert job["id"] != item["id"] and not learning_batch.is_item(ledger.conn, job["id"])
     assert len(items(ledger)) == 1
     ledger.finish(job["id"], job["lease_token"], [])
-    # An explicit retry runs the item again; its commit raises the watermark.
+    # Review F2: the capture job read seqs 1-2, so a retried item does not read
+    # them again. It is cancelled with the reason batch and its commit raises
+    # the watermark.
+    ledger.retry(item["id"])
+    assert ledger.claim("w", batch=True) is None
+    assert ledger.conn.execute(
+        "SELECT status,last_error FROM learning_jobs WHERE id=?", (item["id"],)
+    ).fetchone()[:] == ("cancelled", "batch")
+    assert marks(ledger) == {"s1": 2}
+
+
+def test_a_retried_item_runs_when_no_done_job_read_its_text(ledger):
+    for number in (1, 2):
+        ledger.capture_batch(payload(number))
+    item = ledger.claim("w", batch=True, max_attempts=1)
+    ledger.fail(item["id"], item["lease_token"], "Provider:invalid", max_attempts=1)
+    # An explicit retry before the capture job runs: the item runs again, and
+    # its commit raises the watermark and cancels the capture job.
     ledger.retry(item["id"])
     again = ledger.claim("w", batch=True)
     assert again["id"] == item["id"]
     ledger.finish(again["id"], again["lease_token"], [])
     assert marks(ledger) == {"s1": 2}
+    assert [(j["status"], j["last_error"]) for j in jobs(ledger) if not j["item"]] == [
+        ("cancelled", "batch")
+    ]
 
 
 def test_a_new_source_after_prune_still_numbers_above_the_watermark(ledger):
