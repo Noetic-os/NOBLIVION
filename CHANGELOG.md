@@ -21,6 +21,10 @@ All notable changes to NOBLIVION. The format follows
   as before and an unreadable page lets learning go on.
 - `noblivion learning status` shows the window, whether it is open now and the
   strict flag under `settings`.
+- New read-only command `noblivion learning batch-report` (NOBLIVION-265). It sizes
+  the learning queue for batch learning: sessions behind the pending jobs, the
+  characters each job status reads, the part an earlier job of the same session
+  also holds, and how many pending jobs hold stored work. No model call, no write.
 
 ## 0.1.37 - 2026-11-17
 

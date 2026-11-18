@@ -36,10 +36,12 @@ def _parser() -> argparse.ArgumentParser:
         "exclude-source",
         "retry",
         "prune",
+        "batch-report",
     ):
         command = commands.add_parser(name)
         command.add_argument(
-            "--project", default=None if name == "inspect" else config.DEFAULT_NAMESPACE
+            "--project",
+            default=None if name in {"inspect", "batch-report"} else config.DEFAULT_NAMESPACE,
         )
         command.add_argument("--root", default="", help="explicit project root")
         command.add_argument("--session", default="")
@@ -88,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.error("--root is required for scoped operations")
     path = args.database or config.data_dir() / config.DB_FILE
+    if args.command == "batch-report":
+        return _batch_report(path, args)
     try:
         conn = db.open_db(path, allow_migrate=False)
         try:
@@ -106,6 +110,27 @@ def main(argv: list[str] | None = None) -> int:
             str(exc) if isinstance(exc, (LearningError, db.SchemaError)) else type(exc).__name__
         )
         print("noblivion learning: " + diagnostic, file=sys.stderr)
+        return 1
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _batch_report(path: Path, args: argparse.Namespace) -> int:
+    """Open the store read-only (no migration, no write) and print the batch report."""
+    from noblivion.learning_batch_report import batch_report
+
+    try:
+        if not Path(path).is_file():
+            raise OSError("database missing")
+        conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=ON")
+            result = batch_report(conn, args.project, args.root or None)
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        print("noblivion learning: " + type(exc).__name__, file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
