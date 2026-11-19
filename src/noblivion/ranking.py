@@ -397,6 +397,10 @@ class _Snapshot:
     # of each row in it.
     findex: inverted.InvertedIndex | None = None
     fslots: dict[int, int] = field(default_factory=dict)
+    # The rows that are not in the two indexes yet (NOBLIVION-184): memory id -> the search text
+    # of its chunks, in chunk order (empty for a row with no chunk). A row enters the indexes at
+    # the first use of a pool that holds it, so a reload builds no postings.
+    pending: dict[int, tuple[str, ...]] = field(default_factory=dict)
     vectors: dict[int, bytes] = field(default_factory=dict)  # chunk id -> float32 blob
     dims: dict[int, int] = field(default_factory=dict)
     pools: dict = field(default_factory=dict)  # pool key -> _Pool
@@ -415,8 +419,9 @@ class RankIndex:
     ``refresh(conn)`` reads both counters. When one is higher than the loaded
     value, it reads the changed rows (``rev > loaded``) in one read
     transaction and applies them: a changed row takes its old units out of the
-    shared inverted index and adds new ones, and the cached pools follow by the units that
-    entered or left them (NOBLIVION-157). A lock lets one reload run at a time; a
+    shared inverted index, and its new units enter the index at the first use of a pool that
+    holds them (NOBLIVION-184); the cached pools follow by the units that entered or left them
+    (NOBLIVION-157). A lock lets one reload run at a time; a
     search waits for the short apply step of a reload that runs and then ranks on the new
     state. The first load, and a rebuild after many dead units, builds a new index
     beside the old one and swaps it in.
@@ -456,6 +461,7 @@ class RankIndex:
                     index=old.index,
                     findex=old.findex,
                     fslots=old.fslots,
+                    pending=old.pending,  # the same object: a search indexes into it
                     pools=old.pools,
                 )
 
@@ -483,41 +489,55 @@ class RankIndex:
         )
         since = -1 if fresh else old.content_rev
         changed_vectors: list = []
-        with db.read_tx(conn):
-            content_rev, vector_rev = db.revisions(conn)
-            new = _Snapshot(content_rev=content_rev, vector_rev=vector_rev)
-            if content_rev > old.content_rev:
-                changed_rows = conn.execute(
-                    "SELECT m.id, m.project, m.root, m.path, m.source_type, m.category, "
-                    "m.content, m.weight, m.labels, m.index_text, m.archived_at, m.deleted_at, "
-                    "EXISTS (SELECT 1 FROM learning_notes n "
-                    "WHERE n.project=m.project AND n.root=m.root AND n.path=m.path "
-                    "AND n.file_hash=m.hash AND n.status='active' AND n.scope='general' "
-                    "AND n.category IN ('preference','workflow')) is_general "
-                    "FROM memories m WHERE m.rev > ?",
-                    (since,),
-                ).fetchall()
-                # A physical forget has no changed row to reload. Remove old
-                # cached rows by checking live identities in this same snapshot.
-                live_ids = {
-                    int(row[0])
-                    for row in conn.execute(
-                        "SELECT id FROM memories WHERE archived_at IS NULL AND deleted_at IS NULL"
-                    )
-                }
-                self._apply_changes(conn, old, new, changed_rows, live_ids, fresh)
-            else:
-                new.rows, new.units, new.index = old.rows, old.units, old.index
-                new.findex, new.fslots = old.findex, old.fslots
-                new.pools = old.pools  # the index stays: no content change
-            if model is not None and vector_rev > old.vector_rev:
-                changed_vectors = conn.execute(
-                    "SELECT chunk_id, dim, blob FROM chunk_vectors WHERE model = ? AND rev > ?",
-                    (model, old.vector_rev),
-                ).fetchall()
-        with self._ilock:
-            self._finish(new, old, changed_vectors, content_rev)
-            self._snap = new
+        held = False
+        try:
+            with db.read_tx(conn):
+                content_rev, vector_rev = db.revisions(conn)
+                new = _Snapshot(content_rev=content_rev, vector_rev=vector_rev)
+                if content_rev > old.content_rev:
+                    changed_rows = conn.execute(
+                        "SELECT m.id, m.project, m.root, m.path, m.source_type, m.category, "
+                        "m.content, m.weight, m.labels, m.index_text, m.archived_at, m.deleted_at, "
+                        "EXISTS (SELECT 1 FROM learning_notes n "
+                        "WHERE n.project=m.project AND n.root=m.root AND n.path=m.path "
+                        "AND n.file_hash=m.hash AND n.status='active' AND n.scope='general' "
+                        "AND n.category IN ('preference','workflow')) is_general "
+                        "FROM memories m WHERE m.rev > ?",
+                        (since,),
+                    ).fetchall()
+                    # A physical forget has no changed row to reload. Remove old
+                    # cached rows by checking live identities in this same snapshot.
+                    live_ids = {
+                        int(row[0])
+                        for row in conn.execute(
+                            "SELECT id FROM memories "
+                            "WHERE archived_at IS NULL AND deleted_at IS NULL"
+                        )
+                    }
+                    if not fresh:
+                        # A patch copies the maps of the old snapshot. A search must not index
+                        # rows into the old snapshot until the new one is in place, or their
+                        # units would stay live in the shared index with no snapshot that names
+                        # them (NOBLIVION-184).
+                        self._ilock.acquire()
+                        held = True
+                    self._apply_changes(conn, old, new, changed_rows, live_ids, fresh)
+                else:
+                    new.rows, new.units, new.index = old.rows, old.units, old.index
+                    new.findex, new.fslots = old.findex, old.fslots
+                    new.pending = old.pending  # the same object: a search indexes into it
+                    new.pools = old.pools  # the index stays: no content change
+                if model is not None and vector_rev > old.vector_rev:
+                    changed_vectors = conn.execute(
+                        "SELECT chunk_id, dim, blob FROM chunk_vectors WHERE model = ? AND rev > ?",
+                        (model, old.vector_rev),
+                    ).fetchall()
+            with self._ilock:
+                self._finish(new, old, changed_vectors, content_rev)
+                self._snap = new
+        finally:
+            if held:
+                self._ilock.release()
         return new
 
     def _apply_changes(
@@ -529,10 +549,11 @@ class RankIndex:
         live_ids: set[int],
         fresh: bool,
     ) -> None:
-        """Take the changed rows into the index and into ``new``. The rows are cut into words
-        and added one batch at a time, so the words of the whole store are never in memory
-        together. A fresh index is built beside the old one, with no lock; a patch of the
-        old index holds the lock, and its work is the changed rows only."""
+        """Take the changed rows into ``new``. The rows are read one batch at a time. They are
+        not cut into words here: a row enters the two indexes at the first use of a pool that
+        holds it (``_index_rows``, NOBLIVION-184). A fresh snapshot gets two empty indexes and
+        needs no lock; a patch of the old indexes holds the lock, and takes the old units of
+        the changed and the dead rows out."""
         changed_ids = {int(r["id"]) for r in changed_rows}
         if fresh:
             idx = inverted.InvertedIndex()
@@ -540,8 +561,9 @@ class RankIndex:
             fslots: dict[int, int] = {}
             rows: dict[int, PoolRow] = {}
             units: dict[int, tuple[PoolRow, ...]] = {}
+            pending: dict[int, tuple[str, ...]] = {}
             new.pools = {}
-            self._add_rows(conn, idx, fidx, fslots, changed_rows, live_ids, rows, units)
+            self._add_rows(conn, changed_rows, live_ids, rows, units, pending)
         else:
             idx = old.index  # type: ignore[assignment]
             fidx = old.findex  # type: ignore[assignment]
@@ -555,28 +577,32 @@ class RankIndex:
                 for mid, gone in old.units.items():
                     if mid in changed_ids or mid not in live_ids:
                         for u in gone:
-                            idx.remove(u.slot)
+                            if u.slot >= 0:  # -1: the row was never indexed
+                                idx.remove(u.slot)
                         units.pop(mid, None)
+                pending = {
+                    mid: texts
+                    for mid, texts in old.pending.items()
+                    if mid in live_ids and mid not in changed_ids
+                }
                 rows = {
                     mid: row
                     for mid, row in old.rows.items()
                     if mid in live_ids and mid not in changed_ids
                 }
-                self._add_rows(conn, idx, fidx, fslots, changed_rows, live_ids, rows, units)
+                self._add_rows(conn, changed_rows, live_ids, rows, units, pending)
                 new.pools = old.pools
         new.rows, new.units, new.index = rows, units, idx
-        new.findex, new.fslots = fidx, fslots
+        new.findex, new.fslots, new.pending = fidx, fslots, pending
 
     @staticmethod
     def _add_rows(
         conn: sqlite3.Connection,
-        idx: inverted.InvertedIndex,
-        fidx: inverted.InvertedIndex,
-        fslots: dict[int, int],
         changed_rows: list,
         live_ids: set[int],
         rows: dict[int, PoolRow],
         units: dict[int, tuple[PoolRow, ...]],
+        pending: dict[int, tuple[str, ...]],
     ) -> None:
         live = [r for r in changed_rows if int(r["id"]) in live_ids]
         for start in range(0, len(live), _CHUNK_READ_BATCH):
@@ -593,7 +619,6 @@ class RankIndex:
                 chunks.setdefault(int(c["parent_id"]), []).append(c)
             for r in part:
                 mid = int(r["id"])
-                field_tokens = bm25.tokenize(r["index_text"]) * INDEX_FIELDS_REPEAT
                 row = PoolRow(
                     id=mid,
                     project=r["project"],
@@ -608,18 +633,8 @@ class RankIndex:
                     index_text=r["index_text"],
                 )
                 rows[mid] = row
-                # The file as the hook reads it: the sub-token words of the text, and those of
-                # the rule, apply and trigger lines again (INDEX_FIELDS_REPEAT).
-                fslots[mid] = fidx.add(
-                    bm25.tokenize_sub(row.content)
-                    + bm25.tokenize_sub(row.index_text) * INDEX_FIELDS_REPEAT
-                )
                 found = chunks.get(mid)
                 if found:
-                    # The marker line (the file path) is part of the keyword text of every chunk
-                    # of its file, as it was part of the keyword text of the file row.
-                    marker = _MARKER_LINE_RE.search(row.content)
-                    path_tokens = bm25.tokenize(marker.group(0)) if marker else []
                     units[mid] = tuple(
                         replace(
                             row,
@@ -627,18 +642,46 @@ class RankIndex:
                             chunk_index=int(c["chunk_index"]),
                             heading=c["heading"],
                             chunk_text=c["text"],
-                            slot=idx.add(
-                                bm25.tokenize(c["search_text"]) + path_tokens + field_tokens
-                            ),
                         )
                         for c in found
                     )
+                    pending[mid] = tuple(c["search_text"] for c in found)
                 else:
                     # A row that changed and has no chunk row (a writer that skipped them) is
                     # one unit of its own.
-                    units[mid] = (
-                        replace(row, slot=idx.add(bm25.tokenize(row.content) + field_tokens)),
-                    )
+                    units[mid] = (row,)
+                    pending[mid] = ()
+
+    @staticmethod
+    def _index_rows(snap: _Snapshot, ids: Iterable[int]) -> None:
+        """Put the rows ``ids`` of ``snap.pending`` into the two indexes, and give their units
+        the slots (NOBLIVION-184). The words are the same as the reload cut before. The caller
+        holds the index lock."""
+        idx, fidx = snap.index, snap.findex
+        assert idx is not None and fidx is not None
+        for mid in ids:
+            texts = snap.pending.pop(mid)
+            row = snap.rows[mid]
+            # The file as the hook reads it: the sub-token words of the text, and those of the
+            # rule, apply and trigger lines again (INDEX_FIELDS_REPEAT).
+            snap.fslots[mid] = fidx.add(
+                bm25.tokenize_sub(row.content)
+                + bm25.tokenize_sub(row.index_text) * INDEX_FIELDS_REPEAT
+            )
+            field_tokens = bm25.tokenize(row.index_text) * INDEX_FIELDS_REPEAT
+            if texts:
+                # The marker line (the file path) is part of the keyword text of every chunk of
+                # its file, as it was part of the keyword text of the file row.
+                marker = _MARKER_LINE_RE.search(row.content)
+                path_tokens = bm25.tokenize(marker.group(0)) if marker else []
+                snap.units[mid] = tuple(
+                    replace(u, slot=idx.add(bm25.tokenize(text) + path_tokens + field_tokens))
+                    for u, text in zip(snap.units[mid], texts, strict=True)
+                )
+            else:
+                snap.units[mid] = (
+                    replace(row, slot=idx.add(bm25.tokenize(row.content) + field_tokens)),
+                )
 
     def _finish(
         self, new: _Snapshot, old: _Snapshot, changed_vectors: list, content_rev: int
@@ -697,6 +740,11 @@ class RankIndex:
                 if r.root == root or r.source_type != db.SOURCE_MD or r.path not in own
             ]
         rows.sort(key=lambda r: r.id)
+        missing = [r.id for r in rows if r.id in snap.pending]
+        if missing:
+            # NOBLIVION-184: a row enters the indexes at the first use of a pool that holds it.
+            with self._ilock:
+                self._index_rows(snap, missing)
         # One unit per chunk (BM25 and cosine are per chunk), or one unit for a
         # row that has no chunk. The units of a row stay together, in chunk order.
         units = [u for r in rows for u in snap.units[r.id]]

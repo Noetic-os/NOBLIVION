@@ -190,10 +190,16 @@ def test_a_changed_row_leaves_the_postings_of_other_rows_alone(conn):
     ranker = ranking.RankIndex()
     ranker.refresh(conn)
     index = ranker._snap.index
+    # NOBLIVION-184: the reload builds no postings; the first use of a pool indexes its rows.
+    assert len(index) == 0 and len(ranker._snap.findex) == 0
+    ranker.rank("alpha", project="claude_code", top_k=5)
+    assert len(index) == 2 and not ranker._snap.pending
     before = {w: (list(index.post_slot[t]), list(index.post_tf[t])) for w, t in index.vocab.items()}
     change_memory(conn, a, "alpha delta")
     ranker.refresh(conn)
     assert ranker._snap.index is index  # patched in place, not rebuilt
+    assert set(ranker._snap.pending) == {a}  # the changed row waits for the next search
+    ranker.rank("alpha", project="claude_code", top_k=5)
     for word in ("gamma",):
         t = index.vocab[word]
         assert (list(index.post_slot[t]), list(index.post_tf[t])) == before[word]
@@ -206,10 +212,12 @@ def test_a_rebuild_follows_many_dead_slots(conn, monkeypatch):
     add_memory(conn, "b", "beta")
     ranker = ranking.RankIndex()
     ranker.refresh(conn)
+    ranker.rank("alpha", project="claude_code", top_k=5)  # the first use indexes the pool
     first = ranker._snap.index
     for n in range(4):
         change_memory(conn, a, f"alpha v{n}")
         ranker.refresh(conn)
+        ranker.rank("alpha", project="claude_code", top_k=5)  # a dead slot needs an indexed row
     assert ranker._snap.index is not first
     assert ranker._snap.index.dead < 3
     assert [h.row.id for h in ranker.rank("alpha", project="claude_code", top_k=5).hits] == [a]

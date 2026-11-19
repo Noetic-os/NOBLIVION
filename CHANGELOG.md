@@ -55,6 +55,10 @@ All notable changes to NOBLIVION. The format follows
   description; the MCP server instructions keep only the recall-before-remember
   sentence. The session briefing of the continuity hook is off by default
   (NOBLIVION-223): `NOBLIVION_CONTINUITY_BRIEFING=1` turns it on.
+- The first search of a new store process no longer builds the postings of
+  every row in both keyword indexes (NOBLIVION-184). A row enters the indexes
+  at the first use of a pool that holds it; scores are the same. A search with
+  no `root` still indexes every row at its first use.
 
 ## 0.1.38 - 2026-11-18
 
