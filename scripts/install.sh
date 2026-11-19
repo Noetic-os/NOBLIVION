@@ -79,7 +79,7 @@ try:
     doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 except OSError as exc:
     give_up(f"cannot be read ({exc.strerror or exc})")
-except ValueError:
+except (ValueError, RecursionError):  # NOBLIVION-92: deep nesting
     give_up("is not valid JSON")
 embedding = doc.get("embedding", {}) if isinstance(doc, dict) else None
 if not isinstance(embedding, dict):

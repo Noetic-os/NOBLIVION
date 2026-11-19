@@ -101,13 +101,24 @@ def private_dir(path: Path, *, create: bool = True) -> Path:
     return path
 
 
+def _read_json(path: Path) -> object:
+    """Read one JSON file. NOBLIVION-92: very deep nesting makes the json
+    decoder raise ``RecursionError``, which is not a ``ValueError``; it goes up
+    as a ``ValueError`` that names the file, as other broken JSON does."""
+    text = path.read_text(encoding="utf-8")
+    try:
+        return json.loads(text)
+    except RecursionError:
+        raise ValueError(f"{path}: JSON nested too deep") from None
+
+
 def load_file(env: Mapping[str, str] | None = None) -> dict:
     """Read the config file. A missing or broken file gives ``{}``."""
     env = os.environ if env is None else env
     explicit = env.get("NOBLIVION_CONFIG", "").strip()
     path = Path(os.path.expanduser(explicit)) if explicit else data_dir(env) / "config.json"
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = _read_json(path)
     except (OSError, ValueError):
         return {}
     return loaded if isinstance(loaded, dict) else {}
@@ -134,7 +145,7 @@ def add_default_keys(path: Path, defaults_path: Path) -> list[str]:
     ``path`` lacks, and return their dotted names. A key that is present is
     never changed. The file stays as it is (and ``ValueError`` or ``OSError``
     goes up) when it cannot be read as a JSON object or cannot be written."""
-    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc = _read_json(path)
     if not isinstance(doc, dict):
         raise ValueError("config file is not a JSON object")
     defaults = json.loads(defaults_path.read_text(encoding="utf-8"))
@@ -218,7 +229,7 @@ def _auto_memory_directory(path: Path) -> Path | None:
     """The ``autoMemoryDirectory`` of one Claude Code settings file, when it
     is absolute or ``~/...`` (the only forms Claude Code accepts)."""
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = _read_json(path)
     except (OSError, ValueError):
         return None
     raw = doc.get("autoMemoryDirectory") if isinstance(doc, dict) else None

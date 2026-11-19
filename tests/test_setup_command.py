@@ -256,8 +256,9 @@ def test_install_no_embed_says_which_backend_it_replaced(tmp_path):
         ('{"embedding": ', "is not valid JSON"),
         ("[1, 2]", "is not a JSON object"),
         ('{"embedding": "fastembed"}', 'has an "embedding" that is not an object'),
+        ("[" * 100000, "is not valid JSON"),  # NOBLIVION-92: RecursionError in json
     ],
-    ids=["not JSON", "not an object", "embedding not an object"],
+    ids=["not JSON", "not an object", "embedding not an object", "nested too deep"],
 )
 def test_install_no_embed_goes_on_with_a_broken_config(tmp_path, text, problem):
     # Before, a Python traceback, and set -e stopped the install after the venv.

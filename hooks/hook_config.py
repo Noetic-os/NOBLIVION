@@ -153,7 +153,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Dict[str, Any]:
                 loaded = json.load(fh)
             if isinstance(loaded, dict):
                 doc = loaded
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):  # NOBLIVION-92: deep nesting
             doc = {}
     _CACHE[key] = (mtime, doc)
     return doc
@@ -376,7 +376,7 @@ def _check_dir(raw: Any, expand_home: bool) -> Optional[Path]:
 def _settings_value(path: Path, key: str) -> Any:
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):  # NOBLIVION-92: deep nesting
         return None
     return doc.get(key) if isinstance(doc, dict) else None
 

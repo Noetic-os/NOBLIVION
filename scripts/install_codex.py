@@ -363,7 +363,7 @@ def _store_config(data: Path) -> dict[str, Any]:
     path = data / "config.json"
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:  # NOBLIVION-92: deep nesting
         raise ValueError("data dir needs a readable config.json") from exc
     if not isinstance(doc, dict):
         raise ValueError("data dir config.json must contain an object")

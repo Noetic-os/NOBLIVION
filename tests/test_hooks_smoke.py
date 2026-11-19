@@ -158,8 +158,13 @@ def test_there_is_no_home_folder_default(hook_env, tmp_path) -> None:
     assert cfg.resolve_memory_dir(str(project)) == home / ".claude" / "projects" / slug / "memory"
 
 
-def test_broken_config_reads_as_empty(hook_env) -> None:
-    hook_env["config"].write_text("{not json", encoding="utf-8")
+@pytest.mark.parametrize(
+    "text",
+    ["{not json", "[" * 100000],  # NOBLIVION-92: deep nesting raises RecursionError
+    ids=["not JSON", "nested too deep"],
+)
+def test_broken_config_reads_as_empty(hook_env, text) -> None:
+    hook_env["config"].write_text(text, encoding="utf-8")
     cfg = load("hook_config")
     assert cfg.load_config() == {}
     assert cfg.generic_args() == cfg.GENERIC_ARGS_DEFAULT

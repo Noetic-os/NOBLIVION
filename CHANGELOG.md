@@ -8,6 +8,10 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- A very deeply nested `config.json` no longer stops `noblivion index` or
+  `scripts/install.sh` with a RecursionError traceback; it is read as broken
+  JSON, like other broken config files (NOBLIVION-92).
+
 ## 0.1.39 - 2026-11-19
 
 - Per-session batch learning (NOBLIVION-267), off by default. With
