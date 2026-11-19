@@ -56,6 +56,8 @@ _MARKER_SPAN = re.compile(
 )
 _SPAN_TAIL = re.compile(r"[.,;)\]}\"']*\s*")
 _SCHEME_TAIL = re.compile(r"\s*")
+# The longest word that counts as plain prose after a marker (_plain_tail).
+_PLAIN_WORD_MAX = 24
 # Any whitespace but a space or a tab, and any character outside ASCII.
 _OTHER_SPACE = re.compile(r"[^\S \t]|[^\x00-\x7f]")
 # A marker at the end of a line does not mean the value ended there: the
@@ -184,7 +186,7 @@ def neutral_note(note):
         # (``password: [REDACTED] tail9Word``): a marker span after a key
         # must end its line, as on the line path.
         and all(
-            not _MARKER_SPAN.search(line) or _cut_span(line) is not None
+            not _MARKER_SPAN.search(line) or _cut_span(line) is not None or _plain_tail(line)
             for line in statement.split("\n")
         )
     ):
@@ -245,6 +247,27 @@ def _cut_span(line):
     ):
         return None
     return line[: span.start()] + OMISSION_MARK + tail
+
+
+def _plain_tail(line):
+    """True when only plain words follow the marker span of this line (NOBLIVION-259).
+
+    ``KEY=[REDACTED] some prose`` is safe when no word after the marker has the
+    shape of a value: a digit and a letter in one word, a very long word, an
+    "@" or an unusual space. The swap may keep such a line; the line path keeps
+    its stricter rule.
+    """
+    span = _MARKER_SPAN.search(line)
+    if span is None or span["scheme"]:
+        return False
+    tail = line[span.end() :]
+    if "@" in tail or re.search(r"[^\S \t]", tail):
+        return False
+    return all(
+        len(word) <= _PLAIN_WORD_MAX
+        and not (re.search(r"[^\W\d_]", word) and re.search(r"\d", word))
+        for word in tail.split()
+    )
 
 
 def _has_key_text(text):

@@ -225,6 +225,15 @@ def test_a_secret_that_only_the_raw_text_shows_stays_withheld(statement):
     assert safe == [] and excluded[0]["statement_available"] is False
 
 
+def test_prose_after_a_marker_is_shown_with_the_marker_replaced():
+    # NOBLIVION-259: 8 legacy memories of a store copy, "KEY=[REDACTED] prose" with
+    # later lines, were safe. A word with a digit and a letter stays withheld above.
+    statement = "token: [REDACTED] **999 words, more 2026-11-19**, ok\nnext line"
+    safe, excluded = isolate_notes([legacy(statement)], max_chars=24000)
+    assert excluded[0]["reason"] == "ContextLegacyMarkerReplaced"
+    assert excluded[0]["statement_available"] is True
+
+
 # Synthetic base64 that the redactor masks after a BEGIN line only. The BEGIN
 # lines are split so that no secret scanner reads this file as a key.
 BASE64_LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7Zq8Xy"
