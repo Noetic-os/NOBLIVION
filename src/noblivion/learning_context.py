@@ -58,6 +58,8 @@ _SPAN_TAIL = re.compile(r"[.,;)\]}\"']*\s*")
 _SCHEME_TAIL = re.compile(r"\s*")
 # The longest word that counts as plain prose after a marker (_plain_tail).
 _PLAIN_WORD_MAX = 24
+# A key and a value in the text after a marker (``mode=fast``, ``user: bob``).
+_TAIL_KEY_VALUE = re.compile(r"[A-Za-z_]\w*[ \t]*[=:][ \t]*\w")
 # Any whitespace but a space or a tab, and any character outside ASCII.
 _OTHER_SPACE = re.compile(r"[^\S \t]|[^\x00-\x7f]")
 # A marker at the end of a line does not mean the value ended there: the
@@ -254,14 +256,17 @@ def _plain_tail(line):
 
     ``KEY=[REDACTED] some prose`` is safe when no word after the marker has the
     shape of a value: a digit and a letter in one word, a very long word, an
-    "@" or an unusual space. The swap may keep such a line; the line path keeps
-    its stricter rule.
+    "@" or an unusual space. A tail that fails the secret check, or that holds a
+    key and a value, is no plain tail. The swap may keep such a line; the line
+    path keeps its stricter rule.
     """
     span = _MARKER_SPAN.search(line)
     if span is None or span["scheme"]:
         return False
     tail = line[span.end() :]
     if "@" in tail or re.search(r"[^\S \t]", tail):
+        return False
+    if contains_secret(tail) or _TAIL_KEY_VALUE.search(tail):
         return False
     return all(
         len(word) <= _PLAIN_WORD_MAX

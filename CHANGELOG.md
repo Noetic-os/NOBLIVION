@@ -25,7 +25,7 @@ All notable changes to NOBLIVION. The format follows
 - The learning context and the final provider check now also check each note
   and message string as raw text, so a line-start secret or a value on the next
   line is withheld; the whole-note marker swap needs the raw guard first, and a
-  context checkpointed before this is isolated again, not failed. Plain words after a marker stay shown with the marker replaced, as before; a word with a digit and a letter after it is withheld (NOBLIVION-259).
+  context checkpointed before this is isolated again, not failed. Plain words after a marker stay shown with the marker replaced, as before; a word with a digit and a letter after it, a key with a value, or a tail that fails the secret check is withheld (NOBLIVION-259).
 - The full health answer now counts a row whose vector is of an older text
   in `embedding.missing_vectors`, and gives `embedding.chunk_vectors_pending`
   for the chunks, so it no longer reports 0 before the backfill is done

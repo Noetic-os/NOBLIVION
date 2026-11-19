@@ -218,6 +218,8 @@ def test_a_raw_secret_signal_besides_the_markers_keeps_the_note_withheld(stateme
         '{\n "api_key":\n "[REDACTED]",\n "client_secret":\n "Zq8hunter2examplevalue"\n}',
         # The redactor masked only the head of the value (comment of 2026-11-17).
         "db password: [REDACTED] tail9Word more",
+        # A key and a value after the marker are no prose (NOBLIVION-259).
+        "db password: [REDACTED] horse user=bob\nnext line",
     ],
 )
 def test_a_secret_that_only_the_raw_text_shows_stays_withheld(statement):
