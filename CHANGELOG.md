@@ -38,6 +38,11 @@ All notable changes to NOBLIVION. The format follows
   0.25 of the score the prompt can reach (`GATE_ONE_WORD_SCORE_SHARE`, from the
   recorded off-topic share of 0.211 at most). Only stores with no embedder use
   this gate.
+- The text search for a store that does not answer charges the prompt words
+  that no note holds (NOBLIVION-226), as the store's keyword gate does. A topic
+  word among words from outside the notes no longer carries the share alone.
+  The fresh-note rows of a healthy store are unchanged. `FALLBACK_MIN_SHARE`
+  stays 0.3: no recorded value exists to set it again.
 
 ## 0.1.38 - 2026-11-18
 

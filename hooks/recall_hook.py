@@ -3687,7 +3687,10 @@ def _search_text(md: MemoryFile) -> str:
 
 
 def text_search(
-    query: str, corpus: Sequence[MemoryFile], deadline: Optional[float] = None
+    query: str,
+    corpus: Sequence[MemoryFile],
+    deadline: Optional[float] = None,
+    charge_unknown: bool = False,
 ) -> List[Tuple[int, float]]:
     """``(corpus index, score)`` of the notes that match ``query``, best first.
 
@@ -3697,7 +3700,13 @@ def text_search(
     weighted words (one when the prompt has one word) and FALLBACK_MIN_SHARE
     of the weight of the prompt words that some note holds. A tie goes to the
     lower path. Past ``deadline`` (``time.monotonic``, checked every 64 notes)
-    the notes not yet read are left out."""
+    the notes not yet read are left out.
+
+    ``charge_unknown`` (NOBLIVION-226, the store-silent fallback only): a prompt
+    word that no note holds and that is no stop word adds the weight of a word
+    in no note to the prompt's weight, as the store's keyword gate charges it
+    (``ranking.score_share``). So a topic word among words from outside the
+    notes no longer carries the share alone."""
     words = {w for w in _search_words(query) if len(w) >= 2}
     if not words or not corpus:
         return []
@@ -3711,6 +3720,7 @@ def text_search(
         n += 1
         for word in words.intersection(_search_words(_search_text(md))):
             holders.setdefault(word, []).append(i)
+    held = set(holders)  # NOBLIVION-226: the prompt words some note holds
     weight: Dict[str, float] = {}
     for word in list(holders):
         df = len(holders[word])
@@ -3721,6 +3731,11 @@ def text_search(
     total = sum(weight.values())
     if total <= 0.0:
         return []
+    if charge_unknown:
+        # Document frequency 0: the weight of a word in no note, the highest weight
+        # the corpus can give. A common word (deleted above) is held, so no charge.
+        unknown = sum(1 for w in words if w not in held and w not in _CORPUS.STOP_WORDS)
+        total += unknown * math.log(1.0 + (n + 0.5) / 0.5)
     score: Dict[int, float] = {}
     count: Dict[int, int] = {}
     for word, docs in holders.items():
@@ -3777,7 +3792,9 @@ def fallback_index(
     # files not read yet are left for the next prompt, so one prompt never
     # waits for the whole folder; the files read stay cached.
     corpus = load_session_corpus(environ, start + FALLBACK_READ_S)
-    found = text_search(query, corpus, start + FALLBACK_BUDGET_S)
+    # NOBLIVION-226: prompt words that no note holds count against the share here;
+    # the fresh-note leg on the healthy-store path keeps the search as it was.
+    found = text_search(query, corpus, start + FALLBACK_BUDGET_S, charge_unknown=True)
     rows = [_search_row(corpus[i], r, FALLBACK_MARK) for r, (i, _v) in enumerate(found[:k], 1)]
     return rows, corpus
 
