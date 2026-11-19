@@ -8,6 +8,10 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Error recall in the store and fused modes now sends the tool names of the
+  failed command (`git rev-parse`, `docker exec`) as `target`, so the label
+  boost of NOBLIVION-104 works; prompt and subagent recall send none, and no
+  quoted text or flag value of the command is sent (NOBLIVION-115).
 - A very deeply nested `config.json` no longer stops `noblivion index` or
   `scripts/install.sh` with a RecursionError traceback; it is read as broken
   JSON, like other broken config files (NOBLIVION-92).

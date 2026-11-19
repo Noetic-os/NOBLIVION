@@ -605,6 +605,17 @@ def test_the_store_url_passes_the_transport_rule(daemon, env):
     assert hook.transport_reason(hook.search_url(base, "x", 1), env) is None
 
 
+def test_the_url_builders_send_a_target_only_when_it_is_not_empty():
+    # NOBLIVION-115: the store reads ``target`` for its label boost (NOBLIVION-104).
+    for build in (hook.search_url, hook.index_url):
+        assert "target" not in urllib.parse.parse_qs(
+            urllib.parse.urlsplit(build("b", "x", 1)).query
+        )
+        url = build("b", "x", 1, target="git rev-parse" + " x" * 400)
+        got = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["target"][0]
+        assert got.startswith("git rev-parse") and len(got) == hook.TARGET_MAX_CHARS
+
+
 def test_stuck_workers_cannot_accumulate_past_the_cap(monkeypatch):
     """getaddrinfo() has no timeout and cannot be cancelled, so a worker stuck
     in connect() outlives the deadline. The cap bounds how many can exist:

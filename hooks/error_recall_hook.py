@@ -86,9 +86,11 @@ Search (env ``NOBLIVION_ERROR_RECALL_MODE``, see ``search``)
   fused            both lists, reciprocal rank fusion; a hit passes when either
                    of its scores reaches its gate.
   The store and fused modes are OFF by default: only an explicit
-  ``NOBLIVION_ERROR_RECALL_MODE`` turns them on. They send only the redacted
-  query (never the command), and the hook time limit (``TIME_LIMIT_S``) cuts
-  them like the local search.
+  ``NOBLIVION_ERROR_RECALL_MODE`` turns them on. They send the redacted query
+  and the tool names of the command as ``target`` (``tool_target``,
+  NOBLIVION-115: it feeds the label boost of the store), never other words of
+  the command. The hook time limit (``TIME_LIMIT_S``) cuts them like the
+  local search.
 
 Memory folder
   ``NOBLIVION_ERROR_RECALL_MEMORY_DIR``, else ``NOBLIVION_RECALL_MEMORY_DIR``,
@@ -550,6 +552,66 @@ def command_terms(command: str) -> str:
                 if w and re.fullmatch(r"[\w.-]{2,40}", w) and w not in out:
                     out.append(w)
     return " ".join(out[:12])
+
+
+_QUOTE_OR_ESCAPE = re.compile(r"['\"\\]")
+_TOOL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9._+-]{0,39}")
+
+
+def _unquoted(command: str) -> str:
+    """``command`` with every quoted span and every backslash escape made one
+    ``_``, and with nothing after a quote that is not closed. One linear scan.
+    So no word and no separator inside quotes is left."""
+    out: List[str] = []
+    i, n = 0, len(command)
+    while i < n:
+        m = _QUOTE_OR_ESCAPE.search(command, i)
+        if m is None:
+            out.append(command[i:])
+            break
+        out.append(command[i : m.start()])
+        j = m.start() + 1
+        if m.group() == "\\":
+            out.append("_")
+            i = j + 1
+            continue
+        if m.group() == "'":
+            end = command.find("'", j)
+        else:
+            end = j
+            while end < n and command[end] != '"':
+                end += 2 if command[end] == "\\" else 1
+            end = end if end < n else -1
+        if end < 0:
+            break
+        out.append("_")
+        i = end + 1
+    return "".join(out)
+
+
+def tool_target(command: str) -> str:
+    """The tool target that error recall sends to the store (NOBLIVION-115):
+    the command name of every pipeline stage, plus the git subcommand or the
+    word directly after ``docker``. Unlike ``command_terms`` there is no quote
+    cut: quoted text is dropped before the split, a stage whose wrapper took a
+    flag (``sudo -u alice``: the flag value would read as the name) gives
+    nothing, and a word that holds ``=`` or is not a plain tool name is
+    dropped. So no other word of the command reaches the store."""
+    text = _unquoted(_strip_heredocs((command or "")[:COMMAND_MAX_CHARS]))
+    out: List[str] = []
+    for st in _statements(text):
+        for stage in re.split(r"(?<!\|)\|(?!\|)", st):
+            words = stage.strip().lstrip("({ ").split()
+            rest = _command_words(stage)
+            if not rest or any(w.startswith("-") for w in words[: len(words) - len(rest)]):
+                continue
+            name, sub = _first_word(stage)
+            if name == "docker":
+                sub = rest[1] if len(rest) > 1 else ""
+            for w in (name, sub):
+                if w and "=" not in w and _TOOL_NAME.fullmatch(w) and w not in out:
+                    out.append(w)
+    return redact(" ".join(out[:12]))
 
 
 # A logic exception names a bug in the code that raised it. When the failing
@@ -1107,7 +1169,7 @@ def _store_id(row: Mapping[str, object]) -> str:
 
 
 def store_search(
-    query: str, env: Mapping[str, str], folder: Path, k: int = STORE_TOP_K
+    query: str, env: Mapping[str, str], folder: Path, k: int = STORE_TOP_K, target: str = ""
 ) -> Tuple[List[Tuple[float, Dict[str, str]]], str]:
     """``([(score, memory)], model)`` from the store's ranked index:
     memory-file rows only (NOBLIVION-154: the query never asks for mined rows),
@@ -1120,7 +1182,9 @@ def store_search(
     root = os.path.basename(os.path.dirname(os.path.normpath(str(folder)))) or None
     timeout_s = _float_env(env, "NOBLIVION_ERROR_RECALL_TIMEOUT_S", STORE_TIMEOUT_S)
     payload = rh.store_get(
-        lambda base: rh.index_url(base, query, int(k), project, root), env, timeout_s
+        lambda base: rh.index_url(base, query, int(k), project, root, target=target),
+        env,
+        timeout_s,
     )
     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
         raise RuntimeError("bad_shape")
@@ -1222,8 +1286,10 @@ def search(
     folder: Path,
     context: str = "",
     index: Optional[LocalIndex] = None,
+    target: str = "",
 ) -> Tuple[str, List[Tuple[float, Dict[str, Any]]], str]:
-    """``(source, hits that pass a floor, store error)``.
+    """``(source, hits that pass a floor, store error)``. ``target`` (the tool
+    names of the command) goes to the store only.
 
     Mode (env ``NOBLIVION_ERROR_RECALL_MODE``):
       ``local`` (default)  local BM25 only, no network. The WI-14 replay of
@@ -1247,7 +1313,7 @@ def search(
     store_error = ""
     if mode != "local":
         try:
-            store_rows, model = store_search(query, env, folder)
+            store_rows, model = store_search(query, env, folder, target=target)
             d_floor = store_gate(env, model)
         except _TimeUp:
             raise
@@ -1425,9 +1491,12 @@ def decide(
     raw_ti = event.get("tool_input")
     ti: Dict[str, Any] = raw_ti if isinstance(raw_ti, dict) else {}
     raw_command = ti.get("command")
-    context = command_terms(raw_command if isinstance(raw_command, str) else "")
+    command = raw_command if isinstance(raw_command, str) else ""
+    context = command_terms(command)
     index = LocalIndex(folder)
-    source, hits, store_error = search(query, env, folder, context, index)
+    source, hits, store_error = search(
+        query, env, folder, context, index, target=tool_target(command)
+    )
     # The command's words rank the hits and are never logged: a quoted value
     # in the command (a token, ``-p'<password>'``) would read as a tool name.
     rec: Dict[str, object] = {

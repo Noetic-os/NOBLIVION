@@ -979,11 +979,28 @@ def _qs(params: Mapping[str, Any], root: Optional[str]) -> str:
     return urllib.parse.urlencode(items)
 
 
+# NOBLIVION-115: the longest tool target a hook sends. A target is a few tool names.
+TARGET_MAX_CHARS = 300
+
+
+def _with_target(params: Dict[str, Any], target: str) -> Dict[str, Any]:
+    """``params`` plus ``target`` (cut to ``TARGET_MAX_CHARS``) when it is not empty."""
+    target = (target or "").strip()[:TARGET_MAX_CHARS]
+    if target:
+        params["target"] = target
+    return params
+
+
 def search_url(
-    base: str, query: str, k: int, project: str = PERSONA, root: Optional[str] = None
+    base: str,
+    query: str,
+    k: int,
+    project: str = PERSONA,
+    root: Optional[str] = None,
+    target: str = "",
 ) -> str:
-    qs = _qs({"q": query, "project": project, "top_k": int(k)}, root)
-    return f"{base}/api/memories/search?{qs}"
+    params = _with_target({"q": query, "project": project, "top_k": int(k)}, target)
+    return f"{base}/api/memories/search?{_qs(params, root)}"
 
 
 def index_url(
@@ -994,12 +1011,16 @@ def index_url(
     root: Optional[str] = None,
     include_mined: bool = False,
     lex: bool = False,
+    target: str = "",
 ) -> str:
     """(R1) — the ranked-index route. A different path, not a flag
     on the old one: the two answers have different shapes. ``include_mined``
     is sent only when true (the MCP tool; design doc section 11.3). ``lex`` asks the store
-    for the BM25 values of the P1h re-rank (NOBLIVION-157)."""
-    params: Dict[str, Any] = {"q": query, "project": project, "top_k": int(k)}
+    for the BM25 values of the P1h re-rank (NOBLIVION-157). ``target`` (NOBLIVION-104) is
+    sent only when it is not empty: the tool names of a failed command, from error recall
+    (NOBLIVION-115). Prompt, subagent, MCP and memory-fields recall send no target: they
+    have no tool call to name, and their query words already feed the label boost."""
+    params = _with_target({"q": query, "project": project, "top_k": int(k)}, target)
     if include_mined:
         params["include_mined"] = 1
     if lex:
