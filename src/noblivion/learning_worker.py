@@ -25,6 +25,7 @@ from dataclasses import asdict, dataclass
 from threading import Event, Timer
 
 from .learning import (
+    SOURCES_CHANGED,
     BudgetExceeded,
     ConcurrencyExceeded,
     LeaseLost,
@@ -685,6 +686,21 @@ def execution_matches(progress: dict, sources, windows, current: dict) -> bool:
     return stored is not None and request_configuration(stored) == request
 
 
+def sources_changed(progress: dict, sources, windows, current: dict) -> bool:
+    """True when the frozen request configuration equals the current one.
+
+    Then the sources or windows are the cause of a fingerprint mismatch, for
+    example a range that lost rows (NOBLIVION-240).
+    """
+    if frozen_execution(progress, sources, windows) is not None:
+        return False
+    request = request_configuration(current)
+    return any(
+        isinstance(progress.get(key), dict) and request_configuration(progress[key]) == request
+        for key in ("execution_configuration", "call_configuration")
+    )
+
+
 def worker_matches(progress: dict, current: dict) -> bool:
     """True when a started derivation job may continue under the current configuration.
 
@@ -1189,6 +1205,8 @@ class LearningWorker:
                     not self._output_recovery(state, contract)
                     or frozen_execution(progress, sources, windows) is None
                 ):
+                    if sources_changed(progress, sources, windows, current):
+                        raise ValidationError(f"{SOURCES_CHANGED} ({len(sources)} present)")
                     raise ValidationError("window configuration changed during a job")
                 started = None  # an explicit output-limit recovery freezes again
             # Receipts keep their immutable identity across a policy change and

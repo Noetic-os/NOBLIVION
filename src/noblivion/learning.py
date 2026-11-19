@@ -32,6 +32,8 @@ CATEGORIES = frozenset({"preference", "workflow", "fact", "decision", "proven_fi
 # Summary order by category: what the user asked for comes before what a tool showed.
 _SUMMARY_RANK = {"preference": 0, "workflow": 1, "decision": 2, "proven_fix": 3, "fact": 4}
 MAX_RECORDS = 256
+# The worker error of a job whose sources are gone or changed (NOBLIVION-240).
+SOURCES_CHANGED = "job sources missing or changed"
 # Output token counts per job in provider_metrics (NOBLIVION-261). output_calls
 # and reasoning_calls count the calls that reported each count.
 OUTPUT_METRICS = (
@@ -1029,11 +1031,15 @@ class LearningLedger:
         """
         with db.write_tx(self.conn):
             row = self.conn.execute(
-                "SELECT progress FROM learning_jobs WHERE id=? AND status='exhausted'",
+                "SELECT progress,kind,last_error FROM learning_jobs "
+                "WHERE id=? AND status='exhausted'",
                 (job_id,),
             ).fetchone()
             if row is None:
                 raise LearningError("job is not exhausted")
+            present = self._missing_sources(job_id, row["kind"], row["last_error"])
+            if present is not None:
+                raise LearningError(f"job sources missing ({present} present); retry refused")
             progress = json.loads(row["progress"])
             # Explicit recovery renews only the bounded format retry. Validated
             # windows, semantic comparisons and durable budget charges remain.
@@ -1054,6 +1060,19 @@ class LearningLedger:
                 (canonical_json(progress), time.time(), job_id),
             )
 
+    def _missing_sources(self, job_id: str, kind: str, last_error: str) -> int | None:
+        """The count of present sources when a retry cannot work, else None (NOBLIVION-240).
+
+        A job with no sources, or one that failed because its sources changed,
+        would fail again after model calls.
+        """
+        if kind != "extract":
+            return None
+        present = len(self._job_sources(job_id))
+        if present == 0 or SOURCES_CHANGED in (last_error or ""):
+            return present
+        return None
+
     def retry_by_error(
         self, project: str, root: str, error: str, *, omit_withheld: bool = False
     ) -> list[str]:
@@ -1067,10 +1086,12 @@ class LearningLedger:
         ids = [
             r[0]
             for r in self.conn.execute(
-                "SELECT id FROM learning_jobs WHERE project=? AND root=? "
+                "SELECT id,kind FROM learning_jobs WHERE project=? AND root=? "
                 "AND status='exhausted' AND last_error=? ORDER BY updated_at",
                 (project, root, error),
             )
+            # A job that lost its sources stays exhausted (NOBLIVION-240).
+            if self._missing_sources(r[0], r[1], error) is None
         ]
         for job_id in ids:
             self.retry(job_id, omit_withheld=omit_withheld)

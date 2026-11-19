@@ -15,7 +15,7 @@ from noblivion import (
     learning_synthesis,
     learning_worker,
 )
-from noblivion.learning import BudgetLimits, LearningLedger
+from noblivion.learning import BudgetLimits, LearningError, LearningLedger
 from noblivion.learning_synthesis import _legacy_runtime_matches, _runtime_fingerprint
 from noblivion.learning_worker import (
     DERIVATION_CONTRACT,
@@ -420,3 +420,28 @@ def test_model_change_still_fails_a_budget_paused_job(ledger):
     assert provider.offsets == [0]
     error = ledger.conn.execute("SELECT last_error FROM learning_jobs").fetchone()[0]
     assert error == "ValidationError: window configuration changed during a job"
+
+
+def test_a_job_whose_sources_changed_says_so_and_a_retry_is_refused(ledger):
+    # NOBLIVION-240: the configuration is unchanged, so the sources are the cause.
+    provider = Pages()
+    limits = budget_paused_job(ledger, provider)
+    # A range that lost rows hashes differently; the stored configuration still matches.
+    state = progress(ledger)
+    state.update(execution_fingerprint="0" * 64, fingerprint="0" * 64)
+    ledger.conn.execute("UPDATE learning_jobs SET progress=?", (json.dumps(state),))
+    raised = replace(limits, max_calls=2500)
+    result = LearningWorker(ledger, provider, WorkerSettings(), raised).run_once()
+    assert result["status"] == "failed" and result["permanent"]
+    assert provider.offsets == [0]
+    row = ledger.conn.execute("SELECT id,last_error FROM learning_jobs").fetchone()
+    assert row[1] == "ValidationError: job sources missing or changed (1 present)"
+    ledger.conn.execute("UPDATE learning_jobs SET status='exhausted'")
+    assert ledger.retry_by_error("demo", "scope", row[1]) == []
+    with pytest.raises(LearningError, match="retry refused"):
+        ledger.retry(row[0])
+    ledger.conn.execute("DELETE FROM learning_job_ranges")
+    ledger.conn.execute("DELETE FROM learning_job_sources")
+    ledger.conn.execute("UPDATE learning_jobs SET last_error='Provider:transport'")
+    with pytest.raises(LearningError, match=r"\(0 present\); retry refused"):
+        ledger.retry(row[0])
