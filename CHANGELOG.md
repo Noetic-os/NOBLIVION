@@ -15,6 +15,9 @@ All notable changes to NOBLIVION. The format follows
   in `embedding.missing_vectors`, and gives `embedding.chunk_vectors_pending`
   for the chunks, so it no longer reports 0 before the backfill is done
   (NOBLIVION-44).
+- `scripts/uninstall.sh` now also stops a new store that waits for the lock
+  of an old store after a version restart. Before, such a store could start
+  later on the kept database from the deleted venv (NOBLIVION-88).
 
 ## 0.1.39 - 2026-11-19
 

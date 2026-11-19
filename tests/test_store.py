@@ -840,16 +840,44 @@ def test_a_replacement_store_waits_until_a_busy_old_store_has_stopped(tmp_path):
     assert stop_s <= now[0] < stop_s + 1.0
 
 
+def test_a_stop_ends_the_lock_wait_at_once(tmp_path):
+    """NOBLIVION-88: a SIGTERM to a store that waits for the lock ends the wait."""
+    lock = tmp_path / config.STORE_LOCK_FILE
+    old = store.acquire_lock(lock)
+    now = [0.0]
+    stopped = [False]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+        stopped[0] = now[0] >= 1.0
+
+    try:
+        with pytest.raises(store.StoreLockedError):
+            store.acquire_lock(
+                lock,
+                launcher.RESTART_LOCK_WAIT_S,
+                clock=lambda: now[0],
+                sleep=sleep,
+                stop=lambda: stopped[0],
+            )
+        assert 1.0 <= now[0] < 1.2
+    finally:
+        os.close(old)
+
+
 def test_port_in_use_fails_and_releases_the_lock(tmp_path):
     with socket.socket() as taken:
         taken.bind(("127.0.0.1", 0))
         taken.listen(1)
         port = taken.getsockname()[1]
-        st = make_store(tmp_path, store_settings={"port": port})
+        st = make_store(tmp_path, store_settings={"port": port}, lock_wait_s=1.0)
         with pytest.raises(OSError):
             st.open()
-    st = make_store(tmp_path)
+    # The wait file (NOBLIVION-88) is gone after a failed and after a good open.
+    assert not list(st.data_dir.glob(config.STORE_WAIT_GLOB))
+    st = make_store(tmp_path, lock_wait_s=1.0)
     st.open()
+    assert not list(st.data_dir.glob(config.STORE_WAIT_GLOB))
     st.close()
 
 
