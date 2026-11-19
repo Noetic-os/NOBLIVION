@@ -202,6 +202,8 @@ class Turn:
     cwd: str = ""
     # (index, tool name, input dict) for every tool call that did not fail
     calls: List[Tuple[int, str, dict]] = field(default_factory=list)
+    # the same for every tool call that failed; only the ``tests`` check reads it
+    failed: List[Tuple[int, str, dict]] = field(default_factory=list)
     stop_feedback: bool = False  # a "Stop hook feedback" entry is inside this turn
     truncated: bool = False  # the tail limit was hit before the turn start
 
@@ -303,12 +305,11 @@ def turn_from_rows(rows_oldest_first: List[dict]) -> Turn:
                 turn.reply = b["text"]
             elif b.get("type") == "tool_use":
                 idx += 1
-                if str(b.get("id")) in errors:
-                    continue
                 raw_inp = b.get("input")
                 inp: Dict[str, Any] = dict(raw_inp) if isinstance(raw_inp, dict) else {}
                 inp["_cwd"] = row.get("cwd") or turn.cwd
-                turn.calls.append((idx, str(b.get("name") or ""), inp))
+                failed = str(b.get("id")) in errors
+                (turn.failed if failed else turn.calls).append((idx, str(b.get("name") or ""), inp))
     return turn
 
 
@@ -737,7 +738,8 @@ def check_tests(turn: Turn, ctx: Ctx) -> Optional[str]:
     if not code:
         return None
     last = max(c.idx for c in code)
-    for idx, name, inp in turn.calls:
+    # A test run that failed (non-zero exit) is a test run (NOBLIVION-223).
+    for idx, name, inp in turn.calls + turn.failed:
         if idx >= last and name == "Bash" and TEST_RE.search(str(inp.get("command") or "")):
             return None
     files = sorted({os.path.basename(c.path) for c in code})

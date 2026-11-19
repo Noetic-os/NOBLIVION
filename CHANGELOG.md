@@ -45,6 +45,9 @@ All notable changes to NOBLIVION. The format follows
   stays 0.3: no recorded value exists to set it again.
 - The recall nudge adds its line once per session and kind of call, ticket or
   merge (NOBLIVION-223). A later call of the same kind logs `skip_once`.
+- The stop check `tests` counts a test run that failed (NOBLIVION-223). A
+  turn that ran the tests after its last code change and reports a failure is
+  no longer blocked with "no test ran".
 
 ## 0.1.38 - 2026-11-18
 
