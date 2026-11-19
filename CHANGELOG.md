@@ -59,6 +59,9 @@ All notable changes to NOBLIVION. The format follows
   every row in both keyword indexes (NOBLIVION-184). A row enters the indexes
   at the first use of a pool that holds it; scores are the same. A search with
   no `root` still indexes every row at its first use.
+- The long-run harness gives the memory-sync worker the indexer command of its
+  build (`NOBLIVION_MEMORY_SYNC_CMD`, NOBLIVION-192). Before, the worker logged
+  `no_indexer` and a new note waited for the 30 s periodic scan of the store.
 
 ## 0.1.38 - 2026-11-18
 

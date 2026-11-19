@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -135,9 +136,28 @@ class Harness:
             ORT_INTRA_OP_NUM_THREADS=EMBED_THREADS,
             OMP_NUM_THREADS=EMBED_THREADS,
             OPENBLAS_NUM_THREADS="2",
+            # NOBLIVION-192: the memory-sync worker runs this indexer after a note is
+            # written, as an install runs <data dir>/venv/bin/noblivion. Without it the
+            # worker logs no_indexer, and a new note waits for the 30 s periodic scan.
+            NOBLIVION_MEMORY_SYNC_CMD=self.index_command(),
             **self.settings,
             PYTHONPATH=self.pythonpath(),
             PYTHONPYCACHEPREFIX=str(self.root / "pycache"),
+        )
+
+    def index_command(self) -> str:
+        """``noblivion index`` of the build, as a shell line for the memory-sync worker. The
+        worker runs it in a small environment that drops ``PYTHONPATH`` and
+        ``PYTHONPYCACHEPREFIX``, so the line sets both itself."""
+        return " ".join(
+            [
+                "PYTHONPATH=" + shlex.quote(self.pythonpath()),
+                "PYTHONPYCACHEPREFIX=" + shlex.quote(str(self.root / "pycache")),
+                shlex.quote(self.python),
+                "-m",
+                "noblivion",
+                "index",
+            ]
         )
 
     def pythonpath(self, *more: Path) -> str:
