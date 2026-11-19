@@ -541,10 +541,14 @@ _NEXT_LINE_VERB = r"(?-i:is|was|equals|set\s+to)[ \t]+"
 # and the word must not run on into the next line ("is enforced\\n12\\t").
 _PROSE_VALUE = r"(?=[^\s'\"\\]{0,63}[0-9])(?=[^\s'\"\\]{0,63}[A-Za-z])[^\s'\"\\]{6,64}"
 # A value on the same line as "secret" or "token": also two runs of digits
-# with a letter between them (``ab12cd34ef``). Prose such as ``OAuth2``,
-# ``HS256-signed``, ``256-bit`` or ``v1.2.3`` is no value.
+# with a letter between them (``ab12cd34ef``), 9 or more characters and no
+# hyphen. Prose such as ``OAuth2``, ``HS256-signed``, ``256-bit``, ``v1.2.3``,
+# ``abc2def3`` or ``k8s2secret-store`` is no value. A hash prefix such as
+# ``sha256abcd1234`` stays a hit: it has the shape of a value (an accepted
+# limit, NOBLIVION-262).
 _SAME_LINE_VALUE = (
-    r"(?=[^\s'\"\\]{0,63}[0-9][^\s0-9'\"\\]{0,63}[A-Za-z][^\s0-9'\"\\]{0,63}[0-9])" + _PROSE_VALUE
+    r"(?=[^\s'\"\\]{0,63}[0-9][^\s0-9'\"\\]{0,63}[A-Za-z][^\s0-9'\"\\]{0,63}[0-9])"
+    r"(?![^\s'\"\\]{0,63}-)(?=[^\s'\"\\]{9})" + _PROSE_VALUE
 )
 _SECRET_SIGNALS = (
     # An age secret key: the prefix and 58 bech32 characters.

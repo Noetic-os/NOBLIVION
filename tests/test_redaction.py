@@ -644,6 +644,10 @@ def test_the_learning_check_finds_key_formats_and_prose_forms(text):
         "the token was HS256-signed",
         "the token is OAuth2",
         "the token is v1.2.3",
+        # NOBLIVION-262: a short or hyphenated word is no value.
+        "The secret is k8s2secret-store",
+        "The token is abc2def3 style",
+        "The user's token is ab12cd34 in test fixtures",
         # As JSON text: the value stops at the escape of the next line.
         "tokens is enforced\\n12\\t\\n34\\t-",
         "Do not log the password.\nUse python3 -m pytest to run the tests.",

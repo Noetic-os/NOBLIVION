@@ -21,7 +21,7 @@ All notable changes to NOBLIVION. The format follows
   member, an age secret key, a named seed or `priv:` hex value, "the secret/token
   is <value>", a password word with its value on the next line, and line-start
   secrets after `\r`, U+2028 or other line breaks; an unnamed hex or base64 key
-  body stays an accepted limit (NOBLIVION-262).
+  body stays an accepted limit, and so does a hash prefix such as `sha256abcd1234` after "the token is", which is still withheld (NOBLIVION-262).
 - The learning context and the final provider check now also check each note
   and message string as raw text, so a line-start secret or a value on the next
   line is withheld; the whole-note marker swap needs the raw guard first, and a
