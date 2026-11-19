@@ -31,7 +31,7 @@ from .learning import (
     SemanticSnapshotChanged,
     StepAside,
 )
-from .learning_context import dependent_decisions, isolate_notes
+from .learning_context import dependent_decisions, isolate_notes, secret_in_text
 from .learning_extract import (
     EXTRACTION_SCHEMA,
     RESPONSE_FAILURES,
@@ -1179,7 +1179,15 @@ class LearningWorker:
                 state["execution_configuration"] = current
             existing = progress.get("existing_notes")
             exclusions = progress.get("context_exclusions", [])
-            if existing is None or progress.get("dependency_deferred"):
+            # NOBLIVION-259: a context or semantic stage checkpointed before
+            # the raw text check may hold a secret that only the raw text
+            # shows. Isolate the notes again, as for a deferred dependency;
+            # a ValidationError would fail the job permanently.
+            stage = progress.get("semantic")
+            stale = secret_in_text(existing) is not None or (
+                isinstance(stage, dict) and secret_in_text(stage.get("notes")) is not None
+            )
+            if existing is None or progress.get("dependency_deferred") or stale:
                 existing, exclusions = isolate_notes(
                     self.ledger.reconciliation_context(
                         job["project"],
@@ -1193,7 +1201,11 @@ class LearningWorker:
                 # a fresh comparison against the complete current revision set.
                 state.pop("semantic", None)
             context = json.dumps(existing, ensure_ascii=False, separators=(",", ":"))
-            if len(context) > cfg.max_existing_chars or contains_secret(context):
+            if (
+                len(context) > cfg.max_existing_chars
+                or contains_secret(context)
+                or secret_in_text(existing) is not None
+            ):
                 raise ValidationError("unsafe durable reconciliation context")
             start_window = progress.get("next_window", 0)
             if type(start_window) is not int or not 0 <= start_window <= len(windows):
@@ -1818,7 +1830,9 @@ class LearningWorker:
         """One reservation per extraction or semantic call, including retries."""
         cfg = self.settings
         submitted = json.dumps(messages, ensure_ascii=False)
-        if contains_secret(submitted):
+        # NOBLIVION-259: as raw text too. In JSON a line break is "\n", so a
+        # rule that needs a real line start does not match the encoded text.
+        if contains_secret(submitted) or secret_in_text(messages) is not None:
             raise ValidationError("unsafe final provider context")
         call_key = hashlib.sha256(
             json.dumps(

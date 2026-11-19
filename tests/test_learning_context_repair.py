@@ -102,6 +102,42 @@ def test_withheld_statement_defers_without_repeating_extraction_and_can_resolve(
     assert ledger.current_notes("demo", "scope")[0]["statement"] == record["content"]
 
 
+def test_a_checkpointed_context_that_fails_as_raw_text_is_isolated_again(ledger):
+    # NOBLIVION-259: a context checkpointed before the raw text check may hold
+    # a line-start secret that the encoded check misses. The job isolates it
+    # again; it does not fail permanently, and the provider never sees it.
+    record = capture(ledger, "new", "The indigo service uses port 8443.")
+    held = old_note()
+    held.update(statement="The cobalt job reads GH_TOKEN=***REDACTED*** first.", read_only=False)
+    notes = [old_note(), held]
+    ledger.reconciliation_context = lambda *a, **k: notes
+    provider = ScriptedProvider(ledger, [candidate(record, category="fact")], "distinct")
+    run = worker(ledger, provider)
+    assert run.run_once()["error"] == "ContextDependencyDeferred"
+    stale = old_note()
+    stale["statement"] = "Deploy notes:\n  pass: Zq8hunter2example\nend"
+    assert not contains_secret(json.dumps([stale])) and contains_secret(stale["statement"])
+    row = ledger.conn.execute("SELECT id,progress FROM learning_jobs").fetchone()
+    progress = json.loads(row["progress"])
+    progress.pop("dependency_deferred")
+    progress.update(existing_notes=[stale], context_exclusions=[])
+    ledger.conn.execute(
+        "UPDATE learning_jobs SET progress=? WHERE id=?", (json.dumps(progress), row["id"])
+    )
+    notes[:] = [old_note()]
+    seen = []
+    original = provider.complete
+
+    def checked(messages, **kwargs):
+        seen.append(json.dumps(messages))
+        return original(messages, **kwargs)
+
+    provider.complete = checked
+    ready(ledger)
+    assert run.run_once()["status"] == "done"
+    assert seen and not any("Zq8hunter2example" in text for text in seen)
+
+
 def test_mixed_context_with_safe_statement_and_hidden_evidence_commits_distinct_fact(ledger):
     record = capture(ledger, "new", "The indigo service uses port 8443.")
     note = old_note()

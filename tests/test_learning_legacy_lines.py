@@ -206,6 +206,25 @@ def test_a_raw_secret_signal_besides_the_markers_keeps_the_note_withheld(stateme
     assert neutral_note(legacy(statement)) is None
 
 
+@pytest.mark.parametrize(
+    "statement",
+    [
+        # NOBLIVION-259: the general path. A line-start key and a key whose
+        # value is on the next line pass the encoded check only.
+        "Deploy notes:\n  pass: Zq8hunter2example\nend",
+        "curl -H 'Authorization: Bearer\nabcDEF123456ghijkl7890'",
+        # The whole-note swap (Jira comment of 2026-11-16).
+        "Deploy notes.\n  pass: Zq8hunter2example\nsee [REDACTED]",
+        '{\n "api_key":\n "[REDACTED]",\n "client_secret":\n "Zq8hunter2examplevalue"\n}',
+        # The redactor masked only the head of the value (comment of 2026-11-17).
+        "db password: [REDACTED] tail9Word more",
+    ],
+)
+def test_a_secret_that_only_the_raw_text_shows_stays_withheld(statement):
+    safe, excluded = isolate_notes([legacy(statement)], max_chars=24000)
+    assert safe == [] and excluded[0]["statement_available"] is False
+
+
 # Synthetic base64 that the redactor masks after a BEGIN line only. The BEGIN
 # lines are split so that no secret scanner reads this file as a key.
 BASE64_LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7Zq8Xy"

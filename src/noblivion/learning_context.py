@@ -87,9 +87,48 @@ def encoded(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def secret_in_text(value, _depth=0):
+    """The first string in the value that fails the secret check as raw text.
+
+    NOBLIVION-259: the encoded check reads a line break as the two characters
+    "\\n", so a rule that needs a real line start (``pass:`` in YAML) or
+    whitespace across a line break does not match. This walks dicts and lists
+    and checks each string as it is. A string that holds a JSON dict or list
+    (a message body) is walked again after parsing. Only strings are checked:
+    contains_secret rejects any other type. It adds to the encoded check,
+    which still finds a key and its value in two fields. None when all pass.
+    """
+    if isinstance(value, dict):
+        value = list(value.values())
+    if isinstance(value, list):
+        for item in value:
+            if (leaf := secret_in_text(item, _depth)) is not None:
+                return leaf
+        return None
+    if not isinstance(value, str):
+        return None
+    if contains_secret(value):
+        return value
+    if _depth < 8 and value.lstrip()[:1] in ("{", "["):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, RecursionError):
+            return None
+        return secret_in_text(parsed, _depth + 1)
+    return None
+
+
+def unsafe_reason(value):
+    """rejection_reason of the encoded value, else of its first raw string that fails."""
+    reason = rejection_reason(encoded(value))
+    if reason is None and (leaf := secret_in_text(value)) is not None:
+        reason = rejection_reason(leaf)
+    return reason
+
+
 def _core_passes(note):
     core = {k: v for k, v in note.items() if k not in {"title", "evidence"}}
-    return rejection_reason(encoded(core)) is None
+    return unsafe_reason(core) is None
 
 
 def neutral_note(note):
@@ -99,12 +138,13 @@ def neutral_note(note):
     model may mark it unchanged or in conflict, never rewrite it, so the
     neutral text never becomes a stored note.
 
-    A statement with "private key" in any case is withheld on both paths.
-    Then the markers are replaced by the omission mark. If that text fails,
-    the line path runs, but only when the raw statement has no secret signal
-    other than its markers: the redactor leaves it unchanged, no
-    natural-language secret (also read as one line), no failed redaction and
-    no key text. A whole marker line is withheld. In any other line that fails
+    A statement with "private key" in any case is withheld on both paths, and
+    so is a raw statement with any secret signal other than its markers: the
+    redactor changes it, a natural-language secret (also read as one line), a
+    failed redaction or key text. Then the markers are replaced by the
+    omission mark. That text must pass as encoded note, as raw text and as one
+    line, and a marker span after a key must end its line. If not, the line
+    path runs. A whole marker line is withheld. In any other line that fails
     the line check, the marker spans are cut out, and the cut line must then
     pass the line check, or the note stays withheld. Every line after a
     withheld line must be blank, through the end: the value may run on. No marker
@@ -122,9 +162,9 @@ def neutral_note(note):
     # The body of a key block has no marker and passes line by line.
     if "private key" in statement.lower():
         return None
-    swapped = dict(note, statement=LEGACY_MARKER.sub(OMISSION_MARK, statement))
-    if _core_passes(swapped):
-        return swapped, "ContextLegacyMarkerReplaced"
+    # NOBLIVION-259: the raw guard runs before the swap too. The swap was
+    # checked only as encoded note, so a secret that needs a real line start
+    # or spans a line break reached the model.
     if (
         redact_at_rest(statement) != statement
         or re.search(NATURAL_SECRET_PATTERN, statement)
@@ -135,6 +175,20 @@ def neutral_note(note):
         or _has_key_text(statement)
     ):
         return None
+    text = LEGACY_MARKER.sub(OMISSION_MARK, statement)
+    swapped = dict(note, statement=text)
+    if (
+        _core_passes(swapped)
+        and not contains_secret(" ".join(text.splitlines()))
+        # The redactor may have masked only the head of a value
+        # (``password: [REDACTED] tail9Word``): a marker span after a key
+        # must end its line, as on the line path.
+        and all(
+            not _MARKER_SPAN.search(line) or _cut_span(line) is not None
+            for line in statement.split("\n")
+        )
+    ):
+        return swapped, "ContextLegacyMarkerReplaced"
     lines = []
     raw_lines = statement.split("\n")
     for i, line in enumerate(raw_lines):
@@ -247,20 +301,21 @@ def isolate_notes(notes, *, max_chars):
         raw = encoded(original)
         ancillary_reason = None
         core = {k: v for k, v in note.items() if k not in {"title", "evidence"}}
-        reason = rejection_reason(encoded(core))
+        # NOBLIVION-259: as encoded note and as raw text. The raw check runs
+        # on the note that goes to the model, so after a neutral swap it reads
+        # the swapped statement, not the markers of the original.
+        reason = unsafe_reason(core)
         if reason == "ContextRedactedCandidate" and (neutral := neutral_note(note)):
             # Visible in status, but the statement is available: no deferral.
             (note, ancillary_reason), reason = neutral, None
         if reason is None:
-            if "title" in note and contains_secret(encoded(note["title"])):
-                ancillary_reason = rejection_reason(encoded(note["title"]))
+            if "title" in note and (title_reason := unsafe_reason(note["title"])):
+                ancillary_reason = title_reason
                 note["title"] = "Existing memory"
             if "evidence" in note:
-                note["evidence"] = [
-                    ref for ref in note["evidence"] if not contains_secret(encoded(ref))
-                ]
+                note["evidence"] = [ref for ref in note["evidence"] if unsafe_reason(ref) is None]
                 if len(note["evidence"]) != len(original["evidence"]):
-                    ancillary_reason = rejection_reason(encoded(original["evidence"]))
+                    ancillary_reason = unsafe_reason(original["evidence"])
                     note["evidence_withheld"] = True
             if len(encoded(safe + [note])) > max_chars:
                 reason = "ContextSizeLimit"
