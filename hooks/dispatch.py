@@ -21,6 +21,11 @@ Rules, each pinned by ``tests/test_hook_dispatch.py``:
   ``systemMessage`` and ``additionalContext`` join with a line break in the table order; text that is
   not JSON counts as ``additionalContext``, as Claude Code reads plain stdout of these events;
   ``decision: "block"`` and ``continue: false`` win; the first value of any other key stays.
+* Claude Code caps each ``additionalContext`` string at 10,000 characters; a longer one reaches the
+  model only as a file path and a short preview. So the joined context of a prompt keeps to one
+  budget, ``PROMPT_CONTEXT_MAX`` (NOBLIVION-84). Over it, the learning context gives way first, then
+  the other parts from the last one back; a part is cut at a line break and is left out when only
+  its first line would stay.
 * The deny paths are not here. ``guard_hook.py`` (with the credential guard) stays its own command
   hook for ``PreToolUse``, so its deny result and its failure mode are those of a single process.
   Async work (``memory_sync_hook``, ``trust_flush``, ``version_check``) and the ``Stop`` check stay
@@ -106,6 +111,12 @@ PLAN: Dict[str, Tuple[Tuple[Step, ...], str]] = {
 MAX_TIMEOUT = 60
 # What is left of the limit for the work after the last step: print and exit.
 RESERVE_S = 0.5
+
+# NOBLIVION-84: the one budget of the joined prompt context, 500 under the 10,000 characters that
+# Claude Code allows one ``additionalContext`` string. The part of ``GIVES_WAY_FIRST`` is cut first.
+PROMPT_EVENT = "UserPromptSubmit"
+PROMPT_CONTEXT_MAX = 9500
+GIVES_WAY_FIRST = "learning_context"
 
 
 def timeout_of(event: str) -> int:
@@ -272,7 +283,8 @@ def _merge_docs(items: Sequence[Any], event_name: str) -> Dict[str, Any]:
     stop_reasons: List[str] = []
     for doc in items:
         if isinstance(doc, str):
-            contexts.append(doc)
+            if doc:
+                contexts.append(doc)
             continue
         for key, value in doc.items():
             if key == "systemMessage":
@@ -321,20 +333,76 @@ def combine(parts: Sequence[Part], event_name: str) -> Tuple[int, str, str]:
     blocking = [p for p in parts if p.code == 2]
     if blocking:
         return 2, "", "".join(p.stderr for p in blocking)
-    kept = [p.stdout for p in parts if p.code == 0 and p.stdout.strip()]
+    kept = [p for p in parts if p.code == 0 and p.stdout.strip()]
     if not kept:
         return 0, "", stderr
     if len(kept) == 1:
-        return 0, kept[0], stderr
+        return 0, kept[0].stdout, stderr
     items: List[Any] = []
-    for raw in kept:
-        text = raw.strip()
+    for part in kept:
+        text = part.stdout.strip()
         try:
             doc = json.loads(text)
         except ValueError:
             doc = None
         items.append(doc if isinstance(doc, dict) else text)
+    if event_name == PROMPT_EVENT:
+        items = _fit_context(items, [p.module for p in kept], PROMPT_CONTEXT_MAX)
     return 0, json.dumps(_merge_docs(items, event_name)) + "\n", stderr
+
+
+def _context_of(item: Any) -> str:
+    """The ``additionalContext`` that ``_merge_docs`` takes from one item."""
+    if isinstance(item, str):
+        return item
+    spec = item.get("hookSpecificOutput")
+    value = spec.get("additionalContext") if isinstance(spec, dict) else None
+    return value if isinstance(value, str) else ""
+
+
+def _with_context(item: Any, text: str) -> Any:
+    """``item`` with its context replaced by ``text``. The item itself is not changed."""
+    if isinstance(item, str):
+        return text
+    spec = dict(item["hookSpecificOutput"])
+    spec["additionalContext"] = text
+    return {**item, "hookSpecificOutput": spec}
+
+
+def _cut(text: str, room: int) -> str:
+    """The whole lines of ``text`` that fit in ``room`` characters. Empty when nothing past the
+    first line would stay: a header alone tells the model nothing."""
+    if len(text) <= room:
+        return text
+    end = text.rfind("\n", 0, max(0, room) + 1)
+    kept = text[:end] if end > 0 else ""
+    return kept if "\n" in kept.strip("\n") else ""
+
+
+def _fit_context(items: Sequence[Any], modules: Sequence[str], limit: int) -> List[Any]:
+    """``items`` whose contexts, joined with a line break, take at most ``limit`` characters
+    (NOBLIVION-84). The part of ``GIVES_WAY_FIRST`` is cut first, then the others from the last one
+    back. Under the limit the items are returned as they are."""
+    texts = [_context_of(item) for item in items]
+
+    def over() -> int:
+        shown = [t for t in texts if t]
+        return sum(len(t) for t in shown) + max(0, len(shown) - 1) - limit
+
+    if over() <= 0:
+        return list(items)
+    first = [i for i, m in enumerate(modules) if m == GIVES_WAY_FIRST]
+    rest = [i for i in reversed(range(len(items))) if i not in first]
+    for i in first + rest:
+        extra = over()
+        if extra <= 0:
+            break
+        if texts[i]:
+            texts[i] = _cut(texts[i], len(texts[i]) - extra)
+    return [
+        item if text == _context_of(item) else _with_context(item, text)
+        for item, text in zip(items, texts)
+    ]
 
 
 WARM_FLAG = "warm-prompt-hooks"

@@ -12,6 +12,10 @@ All notable changes to NOBLIVION. The format follows
   prompt hook (NOBLIVION-227). The label rows read the table as it is; when it
   is missing, a detached `guard_table.py --rebuild` builds it and that one
   prompt gets no label rows.
+- The joined context of a prompt keeps to one budget of 9,500 characters
+  (NOBLIVION-84). Claude Code passes a longer `additionalContext` only as a
+  file path and a short preview. Over the budget the learning context gives way
+  first, then the other parts from the last one back, each cut at a line break.
 
 ## 0.1.38 - 2026-11-18
 
