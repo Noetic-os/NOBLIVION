@@ -21,7 +21,14 @@ def isolated(tmp_path, monkeypatch):
     previous_timer = signal.setitimer(signal.ITIMER_REAL, 0)
     env = {"NOBLIVION_DATA_DIR": str(tmp_path), "HOME": str(tmp_path)}
     errors = []
-    monkeypatch.setattr(gh, "log_line", lambda *args, **kwargs: errors.append(kwargs))
+
+    def log_line(*args, **kwargs):
+        # The error line also names the step and the time used (NOBLIVION-174).
+        if "stage" in kwargs or "ms" in kwargs:
+            assert isinstance(kwargs.pop("stage"), str) and isinstance(kwargs.pop("ms"), int)
+        errors.append(kwargs)
+
+    monkeypatch.setattr(gh, "log_line", log_line)
     try:
         yield env, errors
     finally:
@@ -159,7 +166,7 @@ def test_rebuild_timeout_does_not_expire_the_outer_guard(
         def skipped_line(table):
             return ""
 
-    def decide(event, environ, pending, notes):
+    def decide(event, environ, pending, notes, stage=None):
         outer_handler = signal.getsignal(signal.SIGALRM)
         gh._rebuild_locked(Table, [], tmp_path / "fictional-table", notes)
         assert signal.getsignal(signal.SIGALRM) == outer_handler

@@ -20,6 +20,11 @@ All notable changes to NOBLIVION. The format follows
   rules and the JWT rule in `hooks/memory_text.py` started again at each `-` of
   a long word, so inputs like `"a-" * 50000` took time in the square or cube of
   their length. They now start once per word; the redacted text is the same.
+- The credential guard has a budget of 0.5 seconds per call (NOBLIVION-174).
+  Its git probes and folder walks stop there, and a check that stopped and
+  found nothing tells the user and logs `credential check timeout`. The error
+  line of a guard timeout now holds the step that ran (`stage`) and the time
+  used (`ms`). The cause of the logged timeout is not proven yet.
 
 ## 0.1.38 - 2026-11-18
 

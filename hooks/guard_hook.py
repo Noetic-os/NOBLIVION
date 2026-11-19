@@ -351,6 +351,12 @@ REBUILD_LATE_LINE = (
 REBUILD_NONE_LINE = (
     "NOBLIVION: the deny rules could not be read in time, so no deny rule is checked for this call."
 )
+# A credential check that stopped at its budget (``credential_guard.CRED_BUDGET_S``, NOBLIVION-174)
+# and found nothing: the check was not complete, so it is not silent.
+CRED_LATE_LINE = (
+    "NOBLIVION: the credential check ran out of its time for this call, "
+    "so it may have missed a credential."
+)
 LATE_SUFFIX = ".late"
 ROWS_SESSION_CHARS = 6000
 ROWS_HEADER = "Memory rules for this action (guard rows):"  # under 50 characters
@@ -1890,14 +1896,19 @@ def _cred_hint(command: str) -> bool:
 
 
 def _credential_check(
-    tool: str, ti: Mapping[str, Any], cwd: str, env: Mapping[str, str]
+    tool: str,
+    ti: Mapping[str, Any],
+    cwd: str,
+    env: Mapping[str, str],
+    notes: Optional[List[str]] = None,
 ) -> Optional[Decision]:
     """Deny a Bash, Read or Grep call that would put a git URL
     holding a credential into the model context (credential_guard).
     Runs before the table is read, so it works with no table. A cheap text
     test comes first, so most calls never load the module. Off with
     NOBLIVION_GUARD_CREDENTIAL=0. Any error allows; the log text has the URL
-    userinfo removed."""
+    userinfo removed. The check has ``CRED_BUDGET_S`` (NOBLIVION-174); one that
+    stopped there and found nothing adds ``CRED_LATE_LINE`` to ``notes``."""
     if tool not in CRED_TOOLS:
         return None
     if tool == "Bash":
@@ -1933,8 +1944,12 @@ def _credential_check(
             return None
         strip = _gt().without_heredoc_bodies if tool == "Bash" else None
         sources = cg.sources_on(env)
-        found = cg.decide_finding(tool, ti, cwd, strip=strip, sources=sources)
+        probe = cg.Probe()
+        probe.deadline = time.monotonic() + cg.CRED_BUDGET_S
+        found = cg.decide_finding(tool, ti, cwd, strip=strip, sources=sources, probe=probe)
         if found is None:
+            if probe.cut and notes is not None:
+                notes.append(CRED_LATE_LINE)
             return None
         text = (
             ti.get("command") if tool == "Bash" else (ti.get("file_path") or ti.get("path") or "")
@@ -1946,7 +1961,9 @@ def _credential_check(
             # NOBLIVION-72: a secret source takes the override; a git URL never does
             marker, seen = override_marker(text)
             if marker:
-                url = cg.decide_finding(tool, ti, cwd, strip=strip, sources=False)
+                again = cg.Probe()
+                again.deadline = probe.deadline  # one budget for the whole check
+                url = cg.decide_finding(tool, ti, cwd, strip=strip, sources=False, probe=again)
                 if url is None:
                     return Decision(
                         "",
@@ -2178,12 +2195,15 @@ def decide(
     env: Mapping[str, str],
     pending: Optional[List[bool]] = None,
     notes: Optional[List[str]] = None,
+    stage: Optional[List[str]] = None,
 ) -> Decision:
     """The decision for one PreToolUse event. Nothing is charged or logged
     here: ``main`` prints ``out`` first, then commits, then logs.
     ``pending[0]`` is set to False (``_settled``) when the deny check is done
     and found nothing. ``notes`` gets a line for the user that ``main`` adds
-    to the output (a table rebuild that ran out of time)."""
+    to the output (a table rebuild that ran out of time). ``stage[0]`` names
+    the step that runs, for the log line of a timeout (NOBLIVION-174)."""
+    stage = stage if stage is not None else [""]
     if not isinstance(event, dict):
         return Decision()
     tool = str(event.get("tool_name") or "")
@@ -2196,7 +2216,8 @@ def decide(
     if kind != "PreToolUse":
         return Decision()
     cwd = str(event.get("cwd") or os.getcwd())
-    cred = _credential_check(tool, ti, cwd, env)
+    stage[0] = "credential"
+    cred = _credential_check(tool, ti, cwd, env, notes)
     if cred is not None:
         return cred
     if tool not in BASH_TOOLS:
@@ -2212,8 +2233,10 @@ def decide(
         return Decision()  # the file-tool leg is off: nothing is read
     sid = event.get("session_id")
     agent = agent_key(event)
+    stage[0] = "table"
     tpath = table_file(env, cwd, fresh=True, notes=notes)
     table = _gt().load_table(tpath) if tpath.is_file() else {}
+    stage[0] = "match"
     if not table.get("entries"):
         _settled(pending)  # no rule
         why = "table empty or broken" if tpath.is_file() else "table missing"
@@ -2269,6 +2292,7 @@ def decide(
         query, subject = os.path.normpath(p), "file"
         label_q, label_s = (file_q[0] if file_q is not None else query), subject
     # Label rows only where no rule denies (a label never denies).
+    stage[0] = "labels"
     labs = (
         _label_candidates(label_q, label_s, table, env)
         if not hits and table.get("label_index")
@@ -2328,6 +2352,7 @@ def decide(
         if not cands and not labs:
             return Decision()
 
+    stage[0] = "state"
     state = SessionState(env, sid, agent)
     try:
         if hits:
@@ -2648,6 +2673,8 @@ def main(
     armed = None
     pending = [False]  # True while this call can still be denied
     notes: List[str] = []  # a line for the user from the table rebuild (``_rebuild``)
+    stage = ["start"]  # the step that runs, for the error line (NOBLIVION-174)
+    t0 = time.monotonic()
     told = False
     try:
         armed = _Deadline(time_limit)
@@ -2661,7 +2688,7 @@ def main(
                 tool in DENY_TOOLS
                 and str(event.get("hook_event_name") or "PreToolUse") == "PreToolUse"
             )
-        d = decide(event, env, pending, notes)
+        d = decide(event, env, pending, notes, stage)
         if armed:
             armed.finish()
             armed = None
@@ -2671,6 +2698,7 @@ def main(
             stdout.write(out + "\n")
             stdout.flush()
         told = True
+        stage[0] = "commit"
         armed = _Deadline(time_limit)  # charge and log get their own time limit
         if not armed.start():
             armed = None
@@ -2684,6 +2712,8 @@ def main(
                 log_line(env, sid, tool, dec, dids, text, agent, **dextra)
         if any(line in (REBUILD_LATE_LINE, REBUILD_NONE_LINE) for line in notes):
             log_line(env, sid, tool, "error", [], "", agent, error="table rebuild timeout")
+        if CRED_LATE_LINE in notes:
+            log_line(env, sid, tool, "error", [], "", agent, error="credential check timeout")
         if armed:
             armed.finish()
             armed = None
@@ -2716,6 +2746,8 @@ def main(
             "",
             agent,
             error=("timeout" if timed_out else f"{type(exc).__name__}: {exc}")[:300],
+            stage=stage[0],
+            ms=int((time.monotonic() - t0) * 1000),
         )
     finally:
         if armed:
