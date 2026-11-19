@@ -48,6 +48,9 @@ All notable changes to NOBLIVION. The format follows
 - The stop check `tests` counts a test run that failed (NOBLIVION-223). A
   turn that ran the tests after its last code change and reports a failure is
   no longer blocked with "no test ran".
+- The guard rows budget of a session counts the shown text too
+  (NOBLIVION-223). Once the shown rows reach 6,000 characters, a later row
+  shows its rule line only, without Apply. Which rows show does not change.
 
 ## 0.1.38 - 2026-11-18
 

@@ -105,7 +105,8 @@ Bash
     rows of one agent of a session together stay under ``ROWS_SESSION_CHARS``
     (6000 characters; env ``NOBLIVION_GUARD_ROWS_SESSION_CHARS``), counted at
     the size of the row before WI-3f (``legacy_text``), so the same rows show
-    in the same calls. A plain trigger item fires when a shell segment of
+    in the same calls. The shown text is counted too (NOBLIVION-223): once it
+    reaches the same budget, a row shows its rule line only, without Apply. A plain trigger item fires when a shell segment of
     the command (the WI-2 split, also tried with its wrappers and git global
     options removed) equals it or starts with it plus a space. A trigger that
     fires on one of the everyday commands of ``memory_fields.BENIGN_COMMANDS``
@@ -917,7 +918,7 @@ def reset_shown(env: Mapping[str, str], session_id: object, agent: str = "main")
     """NOBLIVION-56: a compaction removes the rows and full texts shown so far
     from the context, so the agent's record of them goes: the show counts
     (``rows``, ``full``, ``labels``) and the budgets they used (``row_chars``,
-    ``label_chars``, the everyday share in ``notes``). The record of what the
+    ``label_chars``, the everyday and shown shares in ``notes``). The record of what the
     agent did stays: the deny counts, the failed run-first commands and the
     one-time table error note. No state file: nothing to reset, none made.
     Returns True when a file was reset."""
@@ -927,6 +928,7 @@ def reset_shown(env: Mapping[str, str], session_id: object, agent: str = "main")
     state.rows, state.full, state.labels = {}, {}, {}
     state.row_chars = state.label_chars = 0
     state.notes.pop("everyday_chars", None)
+    state.notes.pop("shown_chars", None)
     state.close()
     return True
 
@@ -2450,6 +2452,13 @@ def decide(
         # What a row says (NOBLIVION-152): the rule line, and the apply line of a
         # strong match. Three rows stay under ROWS_MAX_CHARS (``render_rows``);
         # a row is dropped only when its fields are over the schema caps.
+        # NOBLIVION-223: the shown text is counted too (``notes["shown_chars"]``).
+        # When it reached the budget, the rows show the rule line only; which
+        # rows show is still the legacy rule above.
+        if int(state.notes.get("shown_chars", 0)) >= budget:
+            rule_only = dict(rule_only)
+            for e in rows:
+                rule_only.setdefault(str(e.get("id", "")), "")
         text_out = render_rows(rows, ROWS_MAX_CHARS, rule_only)
         while len(rows) > 1 and len(text_out) > ROWS_MAX_CHARS:
             rows = rows[:-1]
@@ -2475,6 +2484,7 @@ def decide(
 
         def charge_rows(st: SessionState) -> Optional[Dict[str, object]]:
             st.row_chars += normal_chars
+            st.notes["shown_chars"] = int(st.notes.get("shown_chars", 0)) + len(text_out)
             if everyday_chars:
                 st.notes["everyday_chars"] = int(st.notes.get("everyday_chars", 0)) + everyday_chars
             for e in rows:
