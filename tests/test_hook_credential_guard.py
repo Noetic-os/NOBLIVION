@@ -439,6 +439,13 @@ def test_hook_switch_off(call, env, cred):
     assert hso is None
 
 
+def test_the_guard_off_switch_keeps_the_credential_guard(call, env, cred):
+    # NOBLIVION-61: NOBLIVION_GUARD_OFF turns off the note rules only.
+    off = dict(env, NOBLIVION_GUARD_OFF="1")
+    hso, _ = call(off, ev("Bash", {"command": "git remote -v"}, cred))
+    assert hso["permissionDecision"] == "deny"
+
+
 def test_hook_post_tool_failure_is_not_checked(call, env, cred):
     e = ev("Bash", {"command": "git remote -v"}, cred)
     e["hook_event_name"] = "PostToolUseFailure"

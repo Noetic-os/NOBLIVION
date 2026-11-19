@@ -162,6 +162,15 @@ def similar_on(environ: Optional[dict] = None) -> bool:
     )
 
 
+OFF_ENV = "NOBLIVION_MEMORY_FIELDS_OFF"  # NOBLIVION-61: env only, no config key
+
+
+def is_off(environ: Optional[dict] = None) -> bool:
+    """``NOBLIVION_MEMORY_FIELDS_OFF``: off unless on. On: no field check and
+    no hint; the guard table is still rebuilt."""
+    return bool(_CFG.switch(OFF_ENV, False, environ if environ is not None else os.environ))
+
+
 def _supersedes_of(text: str) -> set:
     """The stems a note names in ``supersedes:``, as the indexer reads them."""
     out: set = set()
@@ -273,6 +282,8 @@ def run(stdin_text: str) -> str:
     if path is None or not path.is_file():
         return ""
     rebuild_guard_table(_cwd(event))  # every kind: the table reads them all
+    if is_off():  # NOBLIVION-61: after the rebuild, so the guard table stays fresh
+        return ""
     kind = kind_of(path)
     if kind is None:
         return ""

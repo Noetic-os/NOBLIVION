@@ -807,11 +807,15 @@ def log_line(
     try:  # best effort: a log failure never blocks a decision
         p = log_path(env)
         _make_dirs(p.parent)
-        try:  # no log yet, or another hook rotated it first: write the line anyway
-            if p.stat().st_size > LOG_MAX_BYTES:
-                os.replace(p, str(p) + ".1")
-        except OSError:
-            pass
+        rotate = getattr(_cfg(), "rotate_log", None)  # NOBLIVION-83: locked
+        if rotate is not None:
+            rotate(p, LOG_MAX_BYTES)
+        else:  # the stand-in: no hook_config.py next to this file
+            try:  # no log yet, or another hook rotated it first: write the line anyway
+                if p.stat().st_size > LOG_MAX_BYTES:
+                    os.replace(p, str(p) + ".1")
+            except OSError:
+                pass
         fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -2022,6 +2026,9 @@ REWRITE_ENV, REWRITE_KEY = "NOBLIVION_GUARD_REWRITE", "guard.rewrite"
 ASK_ENV, ASK_KEY = "NOBLIVION_GUARD_ASK", "guard.ask"
 SHADOW_ENV, SHADOW_KEY = "NOBLIVION_GUARD_ACT_SHADOW", "guard.act_shadow"
 PERM_ENV, PERM_KEY = "NOBLIVION_GUARD_REWRITE_DECISION", "guard.rewrite_decision"
+# NOBLIVION-61: the off switch of the note rules (deny, rows, label rows). Env
+# only, no config key. The credential guard has its own switch and stays on.
+OFF_ENV = "NOBLIVION_GUARD_OFF"
 
 
 def _switch(env: Mapping[str, str], name: str, key: str, default: bool = False) -> bool:
@@ -2038,6 +2045,11 @@ def everyday_on(env: Mapping[str, str]) -> bool:
     """The switch of NOBLIVION-129 (everyday triggers graded by relevance, and
     ``python -m X`` read as ``X``). On by default."""
     return _switch(env, EVERYDAY_ENV, EVERYDAY_KEY, True)
+
+
+def is_off(env: Mapping[str, str]) -> bool:
+    """``NOBLIVION_GUARD_OFF``: off unless on (NOBLIVION-61)."""
+    return _switch(env, OFF_ENV, "")
 
 
 def rewrite_on(env: Mapping[str, str]) -> bool:
@@ -2222,6 +2234,9 @@ def decide(
     cred = _credential_check(tool, ti, cwd, env, notes)
     if cred is not None:
         return cred
+    if is_off(env):  # NOBLIVION-61: after the credential guard, before the table
+        _settled(pending)
+        return Decision()
     if tool not in BASH_TOOLS:
         _settled(pending)  # only the credential guard denies these tools
     file_q: Optional[Tuple[str, str]] = None

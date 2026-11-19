@@ -773,4 +773,5 @@ tool, the check does not fire and the log row notes `notify_skipped`.
 | Quarantine of overridden deny rules | `NOBLIVION_GUARD_QUARANTINE=0` |
 | Stop checks | They do not block by default (`shadow` mode). In `enforce` mode: `NOBLIVION_STOP_CHECKS=none`, or `NOBLIVION_STOP_CHECK_MODE=shadow` |
 | Memory sync | `NOBLIVION_MEMORY_SYNC_OFF=1` |
-| Guard hook, memory fields hook | Remove the rule fields from the note, or turn off the plugin. These hooks have no switch. |
+| Guard hook | `NOBLIVION_GUARD_OFF=1`. The hook then denies nothing from a note and shows no guard rows and no label rows. The credential guard stays on (it has its own switch), and a failed run of a compliant command still unlocks the override. A landing rule then shows nowhere unless the prompt names a landing action, because the recall hook leaves it to the guard; set `NOBLIVION_RECALL_GUARD_ONLY_LANDING=0` too to keep it as a prompt row. Env var only: there is no config key. |
+| Memory fields hook | `NOBLIVION_MEMORY_FIELDS_OFF=1`. The hook then checks no fields and shows no hint of similar notes. It still rebuilds the guard table after a memory write. Env var only: there is no config key. |

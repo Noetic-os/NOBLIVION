@@ -355,7 +355,7 @@ def _shifts(n):
 def test_long_commands_with_many_heredoc_marks_are_read_fast(command):
     # Review item 5: the heredoc regex was super-linear (2 s in reads_data on
     # an 18 KB python3 -c; command_terms did not finish in 60 s).
-    for fn in (er.reads_data, er.command_terms):
+    for fn in (er.reads_data, er.command_terms, er.tool_target):
         t = time.time()
         fn(command)
         assert time.time() - t < 0.3, fn.__name__
@@ -981,6 +981,31 @@ def test_the_store_gets_the_redacted_query_only(env, store, mode):
     assert "Needed a single revision" in path
     for probe, _auth in _Store.probes:
         assert "Zz9Yy8" not in probe and "hunter2" not in probe
+
+
+@pytest.mark.parametrize("mode", ["store", "fused"])
+def test_the_store_gets_the_tool_names_as_target(env, store, mode):
+    # NOBLIVION-115: the target feeds the label boost of the store (NOBLIVION-104).
+    env = dict(env, NOBLIVION_ERROR_RECALL_MODE=mode)
+    run(fail_event(REV, command="GH_TOKEN=x git -C /r rev-parse --short a b | tail -1"), env)
+    qs = urllib.parse.parse_qs(urllib.parse.urlsplit(_Store.seen[0][1]).query)
+    assert qs["target"] == ["git rev-parse tail"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "mysql -p'hunter2secret' db",
+        'bash -c "x; hunter2secret b"',
+        "echo 'a | hunter2secret b'",
+        "sudo -u hunter2secret make",
+        "docker --password hunter2secret login",
+        'python3 -c "import x\nhunter2secret"',
+        "PW=hunter2secret make",
+    ],
+)
+def test_the_tool_target_never_holds_a_quoted_or_flag_value(command):
+    assert "hunter2" not in er.tool_target(command)
 
 
 def test_a_slow_store_is_cut_by_the_hook_time_limit(env, store):

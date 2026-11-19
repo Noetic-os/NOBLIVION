@@ -104,6 +104,9 @@ HUNG_PROBE_S = 0.15
 # wait is bounded: a hook paused with the lock held cannot stop another past it.
 HUNG_LOCK_FILE = "store.hung.lock"
 HUNG_LOCK_WAIT_S = 0.5
+# NOBLIVION-83. A ".store.hung.*" temp file older than this is left by a killed
+# hook; the next stamp write removes it.
+HUNG_TEMP_MAX_AGE_S = 60.0
 BIN_ENV = "NOBLIVION_BIN"
 BIN_KEY = "store.bin"
 AUTOSTART_ENV = "NOBLIVION_STORE_AUTOSTART"
@@ -337,6 +340,26 @@ def _read_stamp(
     return until, stamp_budget, store
 
 
+def _remove_old_stamp_temps(folder: Path) -> None:
+    """Remove each ``.store.hung.*`` temp file in ``folder`` that is older
+    than HUNG_TEMP_MAX_AGE_S (NOBLIVION-83). A hook killed between
+    ``mkstemp`` and ``os.replace`` in ``mark_hung`` leaves one behind. A
+    newer one may belong to a hook that writes now, so it stays. The age is
+    wall clock time against the file's mtime. Never raises."""
+    prefix = "." + HUNG_STAMP_FILE + "."
+    limit = time.time() - HUNG_TEMP_MAX_AGE_S
+    try:
+        entries = list(os.scandir(folder))
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.name.startswith(prefix):
+            continue
+        with contextlib.suppress(OSError):
+            if entry.is_file(follow_symlinks=False) and entry.stat().st_mtime < limit:
+                os.unlink(entry.path)
+
+
 def mark_hung(
     env: Optional[Mapping[str, str]] = None,
     budget_s: float = math.inf,
@@ -360,6 +383,7 @@ def mark_hung(
         if held is not None and held[2] == store:
             until = max(until, held[0])
             budget_s = max(budget_s, held[1])
+        _remove_old_stamp_temps(folder)
         try:
             fd, tmp = tempfile.mkstemp(prefix="." + HUNG_STAMP_FILE + ".", dir=str(folder))
         except OSError:

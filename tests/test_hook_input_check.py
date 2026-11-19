@@ -349,3 +349,76 @@ def test_only_input_that_names_its_event_is_checked(ic):
 def test_every_event_of_hooks_json_has_expected_fields(ic):
     events = json.loads((HOOKS / "hooks.json").read_text())["hooks"]
     assert set(events) <= set(ic.EXPECTED)
+
+
+# ── the transcript shape ──
+
+
+def _transcript_lines(tmp_path: Path, rows: list[dict[str, Any]]) -> None:
+    (tmp_path / "t.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def _msg(kind: str = "user", role: str = "user", content: Any = "hi") -> dict[str, Any]:
+    return {"type": kind, "version": "9.8.7", "message": {"role": role, "content": content}}
+
+
+def _noise(n: int) -> list[dict[str, Any]]:
+    return [{"type": "system", "version": "9.8.7", "n": i} for i in range(n)]
+
+
+def _drift_text(tmp_path: Path, event: str = "PreToolUse") -> str:
+    return json.dumps(_event(tmp_path, event, **BASH))
+
+
+def test_a_transcript_without_a_known_message_line_gives_one_notice_and_one_log_line(
+    ic, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("NOBLIVION_DATA_DIR", str(tmp_path))
+    # "message" renamed: type and version are still there, but no hook can read the line
+    rows = [{"type": "user", "version": "9.8.7", "msg": {"role": "user", "content": "hi"}}]
+    _transcript_lines(tmp_path, rows + _noise(ic.TRANSCRIPT_MIN_LINES))
+    text = _drift_text(tmp_path)
+    first = ic.apply(0, "", text, "demo")
+    assert "the Claude Code session transcript changed shape" in json.loads(first)["systemMessage"]
+    assert "9.8.7" in first and ic.TESTED_CLAUDE_CODE in first
+    assert ic.apply(0, "", text, "demo") == ""  # one notice for each session
+    lines = [json.loads(x) for x in (tmp_path / ic.LOG_NAME).read_text().splitlines()]
+    assert len(lines) == 1 and lines[0]["kind"] == "transcript"
+    assert lines[0]["known"] == 0 and lines[0]["lines"] > ic.TRANSCRIPT_MIN_LINES
+    assert "user" in lines[0]["types"] and lines[0]["claude_code"] == "9.8.7"
+
+
+def test_a_renamed_role_inside_message_is_drift(ic, tmp_path, monkeypatch):
+    monkeypatch.setenv("NOBLIVION_DATA_DIR", str(tmp_path))
+    rows = [_msg("user", role="human"), _msg("assistant", "assistant", [{"type": "chunk"}])]
+    _transcript_lines(tmp_path, rows + _noise(ic.TRANSCRIPT_MIN_LINES))
+    assert "changed shape" in ic.apply(0, "", _drift_text(tmp_path, "Stop"), "demo")
+
+
+def test_a_known_message_line_or_a_short_transcript_gives_no_notice(ic, tmp_path, monkeypatch):
+    monkeypatch.setenv("NOBLIVION_DATA_DIR", str(tmp_path))
+    text = _drift_text(tmp_path)
+    _transcript_lines(tmp_path, _noise(ic.TRANSCRIPT_MIN_LINES - 1))  # too early for a verdict
+    assert ic.apply(0, "", text, "demo") == ""
+    assert ic.transcript_due(text)  # no marker yet: check again on the next call
+    rows = [_msg("assistant", "assistant", [{"type": "tool_use"}])]
+    _transcript_lines(tmp_path, _noise(ic.TRANSCRIPT_MIN_LINES) + rows)
+    assert ic.apply(0, "", text, "demo") == ""
+    assert not (tmp_path / ic.LOG_NAME).exists()
+    assert not ic.transcript_due(text)  # healthy: the marker stops the check
+
+
+def test_the_transcript_check_runs_only_on_pre_tool_post_tool_and_stop(ic, tmp_path, monkeypatch):
+    monkeypatch.setenv("NOBLIVION_DATA_DIR", str(tmp_path))
+    _transcript_lines(tmp_path, _noise(2 * ic.TRANSCRIPT_MIN_LINES))
+    start = json.dumps(_event(tmp_path, "SessionStart", source="startup"))
+    assert ic.apply(0, "", start, "demo") == ""
+    assert not ic.transcript_due(start)
+    assert not (tmp_path / ic.LOG_NAME).exists()
+
+
+def test_run_shows_the_transcript_notice_and_keeps_the_hook_output(ic, tmp_path, monkeypatch):
+    monkeypatch.setenv("NOBLIVION_DATA_DIR", str(tmp_path))
+    _transcript_lines(tmp_path, _noise(2 * ic.TRANSCRIPT_MIN_LINES))
+    out = json.loads(_call_run(ic, _drift_text(tmp_path), '{"x": 1}', monkeypatch))
+    assert out["x"] == 1 and "changed shape" in out["systemMessage"]

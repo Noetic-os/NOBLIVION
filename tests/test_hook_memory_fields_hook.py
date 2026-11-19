@@ -122,6 +122,15 @@ def test_silent_on_clean_file(mem):
         assert r.returncode == 0 and r.stdout == ""
 
 
+def test_the_off_switch_silences_the_check(mem, monkeypatch):
+    # NOBLIVION-61: the bare file of test_warns_on_bare_feedback_memory, hook off.
+    p = mem / "feedback_x.md"
+    p.write_text(BARE)
+    monkeypatch.setenv("NOBLIVION_MEMORY_FIELDS_OFF", "1")
+    r, _ = run_hook(event(p), mem)
+    assert r.returncode == 0 and r.stdout == ""
+
+
 def test_a_feedback_write_rebuilds_the_guard_table_in_the_data_dir(mem, hook_env):
     p = mem / "feedback_x.md"
     p.write_text(mf.write_fields(BARE, GOOD))

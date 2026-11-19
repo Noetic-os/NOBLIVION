@@ -79,6 +79,8 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_GUARD_LABELS": lr.enabled,
     "NOBLIVION_GUARD_LABELS_FILE_TOOLS": lr.file_tools_enabled,
     "NOBLIVION_MEMORY_SIMILAR_HINT": mfh.similar_on,  # NOBLIVION-156
+    "NOBLIVION_GUARD_OFF": gh.is_off,  # NOBLIVION-61
+    "NOBLIVION_MEMORY_FIELDS_OFF": mfh.is_off,  # NOBLIVION-61
     "NOBLIVION_MEMORY_SYNC_OFF": ms.is_off,
     "NOBLIVION_MEMORY_SYNC_BASH_OFF": ms.is_bash_off,
     "NOBLIVION_TRUST_EVENTS": te.enabled,

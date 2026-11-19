@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from hookload import load_hook
 from noblivion import db
 from store_helpers import add_memory
 
@@ -86,6 +87,14 @@ def test_prompt_text_keeps_only_typed_prompts(clean_modules) -> None:
         "please deploy the widget service",
         "now deploy it again",
     ]
+
+
+def test_the_made_up_transcript_has_the_shape_the_hooks_read() -> None:
+    """The input check (NOBLIVION-118) names the Claude Code version whose shape these made-up
+    lines model: a line the check does not know would make that record wrong."""
+    ic = load_hook("input_check", "hooktest_replay_input_check")
+    assert all(ic.known_line(r) for r in _transcript())
+    assert ic.TESTED_CLAUDE_CODE.count(".") == 2
 
 
 def test_main_transcripts_skips_subagents_and_sorts_by_time(tmp_path: Path) -> None:

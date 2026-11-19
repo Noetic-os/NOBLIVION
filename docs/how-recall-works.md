@@ -155,8 +155,11 @@ prompt.
 
 ## What the prompt hook adds
 
-On each prompt, the recall hook sends the prompt (cut to 300 characters)
-and the root of the session to the store. It has a total budget of 2
+On each prompt, the recall hook sends the prompt and the root of the
+session to the store. For the note text, the prompt is cut to 300
+characters. For the ranked index, it is cut to
+`NOBLIVION_RECALL_INDEX_QUERY_CHARS` (300 by default, 2000 with the
+shipped config file). It has a total budget of 2
 seconds. It always exits with code 0, so it never blocks a prompt.
 
 The hook has two output shapes.
@@ -179,7 +182,9 @@ characters. A note shown earlier in the same session is not shown again.
 With `NOBLIVION_RECALL_INDEX` set, the hook shows up to 35 rows (30 with
 the shipped config file). It
 prints one short line per note: its id, its rule or its title, and a
-summary. The output is at most 7600 characters. Claude Code opens the
+summary. The output is at most `NOBLIVION_RECALL_INDEX_MAX_CHARS`
+characters: 7600 by default, 9000 with the shipped config file, and never
+more than 10000. Claude Code opens the
 notes it needs with the MCP tool. The shipped config file turns this
 shape on, with rule rows, apply lines and a local re-rank. See
 [configuration.md](configuration.md#ranked-index).

@@ -114,7 +114,8 @@ Environment (config file keys in design doc section 12.3)
   NOBLIVION_RECALL_INDEX        any non-empty value: serve a RANKED INDEX instead
                                 of hits (see "Ranked index" below)
   NOBLIVION_RECALL_INDEX_K      candidates the index asks for, default 35, 1..100
-  NOBLIVION_RECALL_INDEX_MAX_CHARS  output cap for the index shape, default 7600
+  NOBLIVION_RECALL_INDEX_MAX_CHARS  output cap for the index shape, default 7600,
+                                    at most 10000
   NOBLIVION_RECALL_INDEX_ROW_DEDUPE  with the rule shape: a later index of one
                                 session leaves out the rows it was already shown
   NOBLIVION_RECALL_INDEX_MIN_SCORE  a cosine, -1..1: an index row under it is
@@ -254,6 +255,10 @@ INDEX_K_MAX = 100
 # pays it on purpose; the number is the thing being measured, so it is a
 # constant here and an env override, never a silent default.
 INDEX_OUTPUT_MAX_CHARS = 7600
+# The upper limit of NOBLIVION_RECALL_INDEX_MAX_CHARS (NOBLIVION-61). Claude Code
+# keeps at most 10,000 characters of one hook output; above that it shows a file
+# with a 2,000-character preview, and the index is lost.
+INDEX_CAP_MAX = 10000
 INDEX_SUMMARY_MAX_CHARS = 200
 # Fetch on demand returns a BODY, which the hit shape never did. It is bounded
 # on three axes, because one memory file is 2,690 bytes on average and a hostile
@@ -979,11 +984,28 @@ def _qs(params: Mapping[str, Any], root: Optional[str]) -> str:
     return urllib.parse.urlencode(items)
 
 
+# NOBLIVION-115: the longest tool target a hook sends. A target is a few tool names.
+TARGET_MAX_CHARS = 300
+
+
+def _with_target(params: Dict[str, Any], target: str) -> Dict[str, Any]:
+    """``params`` plus ``target`` (cut to ``TARGET_MAX_CHARS``) when it is not empty."""
+    target = (target or "").strip()[:TARGET_MAX_CHARS]
+    if target:
+        params["target"] = target
+    return params
+
+
 def search_url(
-    base: str, query: str, k: int, project: str = PERSONA, root: Optional[str] = None
+    base: str,
+    query: str,
+    k: int,
+    project: str = PERSONA,
+    root: Optional[str] = None,
+    target: str = "",
 ) -> str:
-    qs = _qs({"q": query, "project": project, "top_k": int(k)}, root)
-    return f"{base}/api/memories/search?{qs}"
+    params = _with_target({"q": query, "project": project, "top_k": int(k)}, target)
+    return f"{base}/api/memories/search?{_qs(params, root)}"
 
 
 def index_url(
@@ -994,12 +1016,16 @@ def index_url(
     root: Optional[str] = None,
     include_mined: bool = False,
     lex: bool = False,
+    target: str = "",
 ) -> str:
     """(R1) — the ranked-index route. A different path, not a flag
     on the old one: the two answers have different shapes. ``include_mined``
     is sent only when true (the MCP tool; design doc section 11.3). ``lex`` asks the store
-    for the BM25 values of the P1h re-rank (NOBLIVION-157)."""
-    params: Dict[str, Any] = {"q": query, "project": project, "top_k": int(k)}
+    for the BM25 values of the P1h re-rank (NOBLIVION-157). ``target`` (NOBLIVION-104) is
+    sent only when it is not empty: the tool names of a failed command, from error recall
+    (NOBLIVION-115). Prompt, subagent, MCP and memory-fields recall send no target: they
+    have no tool call to name, and their query words already feed the label boost."""
+    params = _with_target({"q": query, "project": project, "top_k": int(k)}, target)
     if include_mined:
         params["include_mined"] = 1
     if lex:
@@ -2413,7 +2439,15 @@ LOG_MAX_BYTES = 5_000_000  # then a log moves to .1, as the stop check log does
 
 
 def _rotate(path: str) -> None:
-    """Move the log at ``path`` to ``<path>.1`` when it is past LOG_MAX_BYTES."""
+    """Move the log at ``path`` to ``<path>.1`` when it is past LOG_MAX_BYTES,
+    under the rotation lock of ``hook_config.rotate_log`` (NOBLIVION-83)."""
+    try:
+        rotate = _sibling_module("hook_config").rotate_log
+    except Exception:  # noqa: BLE001 - no hook_config: rotate unlocked, as before
+        rotate = None
+    if rotate is not None:
+        rotate(path, LOG_MAX_BYTES)
+        return
     with contextlib.suppress(OSError):
         if os.path.getsize(path) > LOG_MAX_BYTES:
             os.replace(path, path + ".1")
@@ -2743,13 +2777,14 @@ def index_k(environ: Optional[Mapping[str, str]] = None) -> int:
 
 
 def index_cap(environ: Optional[Mapping[str, str]] = None) -> int:
-    """The output cap for the index shape, default INDEX_OUTPUT_MAX_CHARS."""
+    """The output cap for the index shape, default INDEX_OUTPUT_MAX_CHARS,
+    0 to INDEX_CAP_MAX."""
     env = os.environ if environ is None else environ
     raw = (env.get(INDEX_CAP_ENV) or "").strip()
     if not raw:
         return INDEX_OUTPUT_MAX_CHARS
     try:
-        return max(0, int(raw))
+        return max(0, min(int(raw), INDEX_CAP_MAX))
     except ValueError:
         return INDEX_OUTPUT_MAX_CHARS
 

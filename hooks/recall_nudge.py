@@ -390,11 +390,15 @@ def log_event(cache: Path, env: Mapping[str, str], session: str, **fields: Any) 
     try:
         _make_dirs(cache, env)
         path = cache / LOG_NAME
-        try:
-            if path.stat().st_size > LOG_MAX_BYTES:
-                os.replace(path, str(path) + ".1")
-        except OSError:
-            pass
+        rotate = getattr(_cfg(), "rotate_log", None)  # NOBLIVION-83: locked
+        if rotate is not None:
+            rotate(path, LOG_MAX_BYTES)
+        else:
+            try:
+                if path.stat().st_size > LOG_MAX_BYTES:
+                    os.replace(path, str(path) + ".1")
+            except OSError:
+                pass
         with open(path, "a", encoding="utf-8") as fh:
             fh.write("%s session=%s %s\n" % (ts, session, body))
     except OSError:

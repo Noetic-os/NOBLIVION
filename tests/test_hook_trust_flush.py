@@ -298,6 +298,32 @@ def test_a_listener_that_fails_the_proof_gets_no_token(env, fake_store):
     assert _FakeStore.seen == []
 
 
+def test_a_post_timeout_writes_the_stamp_and_the_next_flush_sends_nothing(
+    env, fake_store, monkeypatch
+):
+    # NOBLIVION-81: the flush honours store.hung, as recall does. The stamp
+    # budget is POST_TIMEOUT_S (2.0), the budget of the recall stamps too.
+    _append(env, te.index_events([5], TS))
+    posts: list[float] = []
+
+    def timing_out(_url, _token, _body, timeout):
+        posts.append(timeout)
+        raise fl.PostError("timeout")
+
+    assert fl.run_child(SID, "", env, post=timing_out, refresh=_no_refresh).startswith(
+        "fail:timeout"
+    )
+    assert posts == [fl.POST_TIMEOUT_S] and fl.sc().hung(env, fl.POST_TIMEOUT_S)
+
+    def no_request(*_a, **_k):
+        raise AssertionError("a request went out while store.hung is in force")
+
+    monkeypatch.setattr(fl, "http_json", no_request)
+    status = fl.run_child(SID, "", env, post=timing_out, refresh=_no_refresh)
+    assert status.startswith("fail:store_hung") and posts == [fl.POST_TIMEOUT_S]
+    assert fl.load_state(env["NOBLIVION_RECALL_CACHE_DIR"], SID)["sent"] == 0
+
+
 def test_hook_subprocess_returns_at_once_and_the_worker_posts(env, fake_store):
     _append(env, te.guard_events("deny", ["feedback_x"], TS))
     payload = json.dumps({"session_id": SID, "transcript_path": "", "cwd": "/work/proj/demo"})

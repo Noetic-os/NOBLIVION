@@ -76,7 +76,8 @@ file that MEMORY.md links to is never a briefing row. The rows come from the
 files that only a ``topic_*.md`` file links, or that nothing links.
 
 Log: one line per call in ``continuity.log`` under ``NOBLIVION_RECALL_CACHE_DIR``
-(default ``<data dir>/cache``). It holds no memory text and no query.
+(default ``<data dir>/cache``). It holds no memory text and no query. Past
+LOG_MAX_BYTES it moves to ``continuity.log.1`` (NOBLIVION-81).
 """
 
 from __future__ import annotations
@@ -125,6 +126,7 @@ CURATED_FILES: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
 
 STATE_SUBDIR = "continuity"
 LOG_NAME = "continuity.log"
+LOG_MAX_BYTES = 5_000_000  # then the log moves to .1, as the stop check log does
 
 # The briefing. One header line plus the rows; the row limit is the sum of the
 # quotas (5 by default; 15 before NOBLIVION-138).
@@ -254,7 +256,17 @@ def log_line(
     line = f"{ts} event={event} session={sid[:128]} rows={rows} chars={chars} ms={ms} {status}\n"
     try:
         _make_dirs(cache)
-        with open(os.path.join(cache, LOG_NAME), "a", encoding="utf-8") as fh:
+        path = os.path.join(cache, LOG_NAME)
+        rotate = getattr(_CFG, "rotate_log", None)  # NOBLIVION-81: locked, as NOBLIVION-83
+        if rotate is not None:
+            rotate(path, LOG_MAX_BYTES)
+        else:  # the stand-in: no rotate_log in hook_config.py
+            try:
+                if os.path.getsize(path) > LOG_MAX_BYTES:
+                    os.replace(path, path + ".1")
+            except OSError:
+                pass
+        with open(path, "a", encoding="utf-8") as fh:
             fh.write(line)
     except OSError:
         pass

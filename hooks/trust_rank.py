@@ -346,9 +346,13 @@ def _debug(cache: str, record: Mapping[str, Any]) -> None:
     path = os.path.join(cache, DEBUG_NAME)
     try:
         _make_dirs(cache)
-        with contextlib.suppress(OSError):
-            if os.path.getsize(path) > DEBUG_MAX_BYTES:
-                os.replace(path, path + ".1")
+        rotate = getattr(_hook_config(), "rotate_log", None)  # NOBLIVION-83: locked
+        if rotate is not None:
+            rotate(path, DEBUG_MAX_BYTES)
+        else:
+            with contextlib.suppress(OSError):
+                if os.path.getsize(path) > DEBUG_MAX_BYTES:
+                    os.replace(path, path + ".1")
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, separators=(",", ":")) + "\n")
     except OSError:
@@ -420,18 +424,31 @@ def apply_index_trust(
     return trusted, note
 
 
+_HOOK_CONFIG: Any = None
+
+
+def _hook_config() -> Any:
+    """``hook_config.py`` from this file's folder, loaded once: ``_debug``
+    calls it for every line (NOBLIVION-83). Raises ImportError when it cannot
+    load."""
+    global _HOOK_CONFIG
+    if _HOOK_CONFIG is None:
+        import importlib.util
+
+        here = os.path.dirname(os.path.abspath(__file__))
+        spec = importlib.util.spec_from_file_location(
+            "hook_config", os.path.join(here, "hook_config.py")
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError("hook_config")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _HOOK_CONFIG = mod
+    return _HOOK_CONFIG
+
+
 def _make_dirs(path: Any) -> None:
     """Make a state folder, but never the data dir itself: after an uninstall
     deleted it, a hook must not make it again (hook_config.make_dirs,
     NOBLIVION-28). Raises OSError."""
-    import importlib.util
-
-    here = os.path.dirname(os.path.abspath(__file__))
-    spec = importlib.util.spec_from_file_location(
-        "hook_config", os.path.join(here, "hook_config.py")
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError("hook_config")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    mod.make_dirs(path)
+    _hook_config().make_dirs(path)

@@ -14,6 +14,16 @@ All notable changes to NOBLIVION. The format follows
 - `noblivion learning status` counts done jobs whose model proposed no candidate in any window (`zero_proposal_jobs`, per contract and model), and the job keeps a `zero_proposals` flag (NOBLIVION-271).
 - `noblivion learning retry --omit-withheld` lets a job that waits on notes withheld for a
   secret finish without them; off by default, their text never reaches a prompt (NOBLIVION-263).
+- The hook input check of NOBLIVION-118 now also reads the session transcript:
+  once for each session, on PreToolUse, PostToolUse and Stop, it counts the
+  JSON lines in the last 4 MB. When 30 or more lines have none in the message
+  shape that the hooks read, `input-drift.log` gets one `"kind": "transcript"`
+  line and the user gets one `systemMessage` with the Claude Code version and
+  the last tested version. A healthy session pays one read.
+- Error recall in the store and fused modes now sends the tool names of the
+  failed command (`git rev-parse`, `docker exec`) as `target`, so the label
+  boost of NOBLIVION-104 works; prompt and subagent recall send none, and no
+  quoted text or flag value of the command is sent (NOBLIVION-115).
 - A very deeply nested `config.json` no longer stops `noblivion index` or
   `scripts/install.sh` with a RecursionError traceback; it is read as broken
   JSON, like other broken config files (NOBLIVION-92).
@@ -34,6 +44,17 @@ All notable changes to NOBLIVION. The format follows
   of an old store after a version restart. Before, such a store could start
   later on the kept database from the deleted venv (NOBLIVION-88).
 - The learning extractor refuses status and raw-output statements (wait or countdown lines, empty-result markers, on/off lines, bare URLs, dict or JSON dumps, table headers, grep or ls listings) as `statement is operational noise`. The session-start summary and prompt context skip such stored notes and rank the rest by category, then newest first. `noblivion learning noise-scan` counts the stored notes the check would refuse and changes nothing (NOBLIVION-272).
+- `NOBLIVION_GUARD_OFF` turns off the note rules of the guard hook (the
+  credential guard stays on), `NOBLIVION_MEMORY_FIELDS_OFF` turns off the
+  memory fields hook, `NOBLIVION_RECALL_INDEX_MAX_CHARS` is clamped to 10000,
+  and the recall docs state the shipped query and output limits (NOBLIVION-61).
+- Two hooks that rotate one log at the same time no longer lose the full
+  `<name>.1`: the rotation holds a lock on `<name>.lock` and reads the size
+  again under it. The next stamp write removes a `.store.hung.*` temp file
+  that a killed hook left behind (NOBLIVION-83).
+- The trust flush, continuity and error recall logs now move to `<name>.1`
+  past 5 MB, and the trust flush sends nothing while `store.hung` is in force
+  and writes that stamp when its proof or POST times out (NOBLIVION-81).
 
 ## 0.1.39 - 2026-11-19
 

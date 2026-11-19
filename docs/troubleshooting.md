@@ -13,8 +13,9 @@ In the commands below, `<data dir>` is the NOBLIVION data dir (see
 | `<data dir>/cache/recall.log` | One line per prompt: hits, characters, time, the prompt kind (`kind=prompt` or `kind=task_notification`), and `ok`, `fail:<reason>` or `skip:<reason>`. Rotated at 5 MB. |
 | `<data dir>/logs/store.log` | Store start, stop, index scans and embedding state. |
 | `<data dir>/guard-log.jsonl` | Guard decisions. Rotated at 5 MB. |
-| `<data dir>/error-recall-log.jsonl` | Error recall decisions. |
-| `<data dir>/cache/trust-flush.log` | Trust flush runs. |
+| `<data dir>/error-recall-log.jsonl` | Error recall decisions. Rotated at 5 MB. |
+| `<data dir>/cache/trust-flush.log` | Trust flush runs. `fail:store_hung` means a recent store call timed out, so the flush sent nothing and keeps the events for a later Stop. Rotated at 5 MB. |
+| `<data dir>/cache/continuity.log` | Continuity briefing runs. Rotated at 5 MB. |
 
 The logs never hold note text or prompt text, unless you set the log level
 to `debug`.
