@@ -7,7 +7,12 @@ import hashlib
 import json
 import re
 
-from .redaction import NATURAL_SECRET_PATTERN, contains_secret, redact_at_rest
+from .redaction import (
+    NATURAL_SECRET_PATTERN,
+    contains_secret,
+    learning_secret_signal,
+    redact_at_rest,
+)
 
 # NOBLIVION-237: older redactors left markers such as "***REDACTED***" in
 # legacy memory files. A marker is not a secret, but contains_secret flags the
@@ -126,6 +131,7 @@ def neutral_note(note):
         # Read across lines too: the key word may sit on a withheld line.
         or re.search(NATURAL_SECRET_PATTERN, " ".join(statement.splitlines()))
         or "REDACTION_FAILED" in statement
+        or learning_secret_signal(statement)
         or _has_key_text(statement)
     ):
         return None
@@ -220,6 +226,9 @@ def rejection_reason(text):
         redact_at_rest(text) != text
         or re.search(NATURAL_SECRET_PATTERN, text)
         or "REDACTION_FAILED" in text
+        # NOBLIVION-262: a key format or prose form that only the learning
+        # check finds is a live secret, not a legacy marker.
+        or learning_secret_signal(text)
     ):
         return "ContextUnsafeCandidate"
     return "ContextRedactedCandidate"

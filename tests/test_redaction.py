@@ -582,3 +582,80 @@ def test_fails_closed_when_the_text_does_not_settle(monkeypatch):
 def test_would_change():
     assert redaction.would_change(f"key {SK_KEY}")
     assert not redaction.would_change("deploy-checklist")
+
+
+# -- NOBLIVION-262: key formats and prose forms of the learning check. All
+# values are synthetic; the age prefix is split so no scanner reads a key.
+_AGE = "AGE-SECRET-" + "KEY-1" + "QYQSZQGP" * 7 + "QY"
+_JWK_D = "KvipEEs_ZO1kDYx-KY0tSA8Do2EMvCszR0Mh7FkCSkh"
+_HEX32 = ["9f8e7d6c5b4a39281706f5e4d3c2b1a0", "0a1b2c3d4e5f60718293a4b5c6d7e8f9"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f'{{"kty": "OKP", "crv": "Ed25519", "d": "{_JWK_D}"}}',
+        f'{{\n  "kty": "OKP",\n  "d": "{_JWK_D}"\n}}',
+        # As JSON text: the quotes are escaped.
+        f'{{\\"d\\": \\"{_JWK_D}\\"}}',
+        f'{{"kty": "oct", "k": "{_JWK_D}"}}',
+        f"the wallet seed: {_HEX32[0]}{_HEX32[1]}",
+        "priv:\n    " + ":\n    ".join(":".join(["ab"] * 15) for _ in range(3)),
+        f"key {_AGE}",
+        "kind: Secret\u2028data:\u2028  db: QUJDREVGR0hJSktMTU5PUA==",
+        "the password.\nis hunter2",
+        "the secret\nis hunter2",
+        "the token is ab12cd34ef",
+        "the token\nis hunter2xyz",
+        "note\x0bPASS: Zq8hunter2Example",
+        "note\r  pass: Zq8hunter2example",
+    ],
+)
+def test_the_learning_check_finds_key_formats_and_prose_forms(text):
+    assert redaction.learning_secret_signal(text)
+    assert redaction.contains_secret(text)
+    # At-rest redaction is unchanged: these rules gate only the learning and
+    # capture checks.
+    assert redact_at_rest(text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Accepted limit: a key body with no name has the shape of the hashes
+        # that safe notes and the learning JSON hold.
+        "\r".join(_HEX32 * 2),
+        "\u2028".join(_HEX32 * 2),
+        "\n".join(f"{_HEX32[0]} {_HEX32[1]}" for _ in range(3)),
+        "\n".join(h[:31] for h in _HEX32 * 2),
+        "\n".join(["QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0"] * 4),
+        # Safe text.
+        f"fingerprint {_HEX32[0]}{_HEX32[1]}",
+        "the token budget is 200000",
+        "the token is expired",
+        "the secret is safe in the vault",
+        "the secret is stored in AWS_SECRET_ACCESS_KEY",
+        "Rotate the password.\nThis is done monthly.",
+        # Prose after "secret" or "token": one run of digits, or a sentence
+        # that starts on the next line.
+        "the token is base64-encoded",
+        "the secret is 256-bit",
+        "the token is 64-character hex",
+        "the token was HS256-signed",
+        "the token is OAuth2",
+        "the token is v1.2.3",
+        # As JSON text: the value stops at the escape of the next line.
+        "tokens is enforced\\n12\\t\\n34\\t-",
+        "Do not log the password.\nUse python3 -m pytest to run the tests.",
+        "Change the password.\nIs OAuth2 enabled?",
+        "seed: 42",
+        '{"d": "abc"}',
+        f'{{"p": "{_JWK_D}"}}',
+        f'{{"kty": "EC", "x": "{_JWK_D}", "y": "{_JWK_D}"}}',
+        "line one\r\nline two\r\n",
+        "Downloading 10%\rDownloading 50%\rDone",
+    ],
+)
+def test_the_learning_check_keeps_unnamed_key_bodies_and_safe_text(text):
+    assert not redaction.learning_secret_signal(text)
+    assert not redaction.contains_secret(text)

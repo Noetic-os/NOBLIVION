@@ -11,6 +11,11 @@ All notable changes to NOBLIVION. The format follows
 - A very deeply nested `config.json` no longer stops `noblivion index` or
   `scripts/install.sh` with a RecursionError traceback; it is read as broken
   JSON, like other broken config files (NOBLIVION-92).
+- The learning and capture secret check now also finds a JSON Web Key private
+  member, an age secret key, a named seed or `priv:` hex value, "the secret/token
+  is <value>", a password word with its value on the next line, and line-start
+  secrets after `\r`, U+2028 or other line breaks; an unnamed hex or base64 key
+  body stays an accepted limit (NOBLIVION-262).
 
 ## 0.1.39 - 2026-11-19
 

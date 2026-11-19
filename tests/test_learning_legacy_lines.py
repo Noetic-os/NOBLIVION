@@ -291,6 +291,26 @@ def assert_withheld_as_on_main(statement):
     assert excluded[0]["statement_available"] is False
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "seed: " + "9f8e7d6c5b4a39281706f5e4d3c2b1a0" * 2,
+        '{"kty": "OKP", "d": "KvipEEs_ZO1kDYx-KY0tSA8Do2EMvCszR0Mh7FkCSkh"}',
+        "the token is ab12cd34ef",
+    ],
+)
+def test_a_key_format_of_the_learning_check_is_an_unsafe_note(body):
+    # NOBLIVION-262: a hit that only the learning check finds is a live
+    # secret, never a legacy marker: a plain note and a marker note are both
+    # withheld as unsafe, and the marker note never takes the line path.
+    for statement in (body, f"{body}\n\nTOKEN=[REDACTED]"):
+        note = legacy(statement)
+        assert rejection_reason(encoded(core(note))) == "ContextUnsafeCandidate"
+        assert neutral_note(note) is None
+        safe, excluded = isolate_notes([note], max_chars=24000)
+        assert safe == [] and excluded[0]["reason"] == "ContextUnsafeCandidate"
+
+
 # Synthetic key text. The header lines are split so that no secret scanner
 # reads this file as a key.
 RSA_BEGIN = "-----BEGIN RSA PRIVATE " + "KEY-----"
@@ -348,10 +368,10 @@ def test_key_text_keeps_a_commit_hash_in_prose():
     ],
 )
 def test_the_kept_lines_are_read_as_one_line(words):
-    # The value line starts with the verb. In the raw text the rule stops at
-    # "\n", and in the encoded note "\\nis" has no word start before "is".
+    # The value line starts with the verb. NOBLIVION-262: the shared check now
+    # reads a key word and the verb at the start of the next line.
     statement = f"TOKEN=[REDACTED]\n\n{words}\nTOKEN=[REDACTED]\n\nis hunter2"
-    assert not contains_secret(f"{words}\nis hunter2")
+    assert contains_secret(f"{words}\nis hunter2")
     assert_withheld_as_on_main(statement)
 
 
@@ -400,7 +420,8 @@ def test_a_cut_line_is_checked_in_its_parts():
     # fails the part check, so the note stays withheld.
     statement = "Deploy notes.\r  pass: Zq8hunter2example TOKEN=[REDACTED]"
     assert redact_at_rest(statement) == statement
-    assert not contains_secret("Deploy notes.\r  pass: Zq8hunter2example [...]")
+    # NOBLIVION-262: the shared check now reads each part after a "\r" too.
+    assert contains_secret("Deploy notes.\r  pass: Zq8hunter2example [...]")
     assert_withheld_as_on_main(statement)
 
 
@@ -408,9 +429,10 @@ def test_a_cut_line_is_checked_in_its_parts():
 def test_a_part_after_another_line_break_is_checked_as_a_line(line_break):
     statement = f"Deploy notes.{line_break}  pass: Zq8hunter2example\nTOKEN=[REDACTED]"
     # Precondition: the redactor reads a line start after "\n" only, so the
-    # raw statement and its first line pass; the part after the break fails.
+    # raw statement passes it. NOBLIVION-262: the shared check reads every
+    # other line break as "\n", so the first line fails it as its part does.
     assert redact_at_rest(statement) == statement
-    assert not contains_secret(statement.split("\n")[0])
+    assert contains_secret(statement.split("\n")[0])
     assert contains_secret("  pass: Zq8hunter2example")
     # The line is withheld for the part, and it is no marker line.
     assert neutral_note(legacy(statement)) is None
@@ -521,16 +543,17 @@ def test_a_line_that_cannot_be_cut_withholds_the_note(held):
 
 
 @pytest.mark.parametrize(
-    "statement",
+    ("statement", "kept_fails"),
     [
         # The marker line holds the key word, so the kept lines do not.
-        "TOKEN=[REDACTED]\n\nthe password. [REDACTED]\nis hunter2",
-        # A bare marker line between a key word and its value.
-        "TOKEN=[REDACTED]\n\nthe secret\n[REDACTED]\nis hunter2",
+        ("TOKEN=[REDACTED]\n\nthe password. [REDACTED]\nis hunter2", False),
+        # A bare marker line between a key word and its value. NOBLIVION-262:
+        # the kept lines ("the secret", "is hunter2") now fail on their own.
+        ("TOKEN=[REDACTED]\n\nthe secret\n[REDACTED]\nis hunter2", True),
     ],
 )
-def test_a_held_line_with_other_text_does_not_cut_a_secret_apart(statement):
-    assert not contains_secret(
+def test_a_held_line_with_other_text_does_not_cut_a_secret_apart(statement, kept_fails):
+    assert kept_fails == contains_secret(
         "\n".join(line for line in statement.split("\n")[1:] if "REDACTED" not in line)
     )
     assert_withheld_as_on_main(statement)
@@ -774,8 +797,10 @@ def test_the_line_path_shows_only_text_a_plain_note_shows():
         assert not contains_secret(kept)
         safe, excluded = isolate_notes([legacy(kept)], max_chars=10**6)
         assert [note["statement"] for note in safe] == [kept] and excluded == []
-    # Not vacuous: some inputs take the line path.
-    assert shown >= 10
+    # Not vacuous: some inputs take the line path. NOBLIVION-262: the shared
+    # check now finds the key formats of 10 reproducers (JWK "d", age key,
+    # seed hex, colon hex, cluster Secret after U+2028), so 9 of 19 remain.
+    assert shown >= 9
 
 
 # -- worker ---------------------------------------------------------------------

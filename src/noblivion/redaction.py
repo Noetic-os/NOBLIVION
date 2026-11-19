@@ -512,6 +512,107 @@ NATURAL_SECRET_PATTERN = (
 )
 _NATURAL_SECRET = re.compile(NATURAL_SECRET_PATTERN)
 
+# -- NOBLIVION-262: key formats and prose forms that the at-rest redactor does
+# not mask. They gate only the learning and capture checks (contains_secret),
+# so stored text and the hook copy of the shapes stay as they are. Each rule
+# is bound to a name or to a fixed prefix, and works on raw text and on JSON
+# text (a quote may have backslashes in front of it, a line break may be the
+# escape "\n"), because callers check both.
+#
+# Accepted limits (a test pins them): a bare key body with no name is not
+# detected. Hex lines (also two groups on a line, 31-hex lines, lines joined
+# by "\r" or U+2028) and base64 lines (short lines, lower case only, no digit)
+# have the shape of the sha256 fingerprints, source hashes, commit hashes,
+# UUIDs and digests that safe notes and the learning JSON hold, so a rule for
+# them would withhold safe notes and fail jobs. The key-text rule of the
+# learning line path (learning_context._has_key_text) stays the only one.
+_Q = r'\\*"'  # a quote, raw or escaped once or more
+# A match starts only at the first backslash of a run, so a long run of
+# backslashes is read once, not once from each of them.
+_Q_START = r"(?<!\\)" + _Q
+# One line break, raw or as a JSON escape, with spaces or tabs around it.
+_NEXT_LINE = r"[ \t]*(?:\n|\\+n)[ \t]*"
+# The verb at the start of the next line, in small letters only: a sentence
+# that starts there ("Is OAuth2 on?", "Use python3 ...") is no value line.
+_NEXT_LINE_VERB = r"(?-i:is|was|equals|set\s+to)[ \t]+"
+# A value in prose: one word of 6 to 64 characters with a letter and a digit.
+# A count (``200000``) and a plain word (``expired``) are no value. A
+# backslash ends the word: in JSON text a line break or a tab is an escape,
+# and the word must not run on into the next line ("is enforced\\n12\\t").
+_PROSE_VALUE = r"(?=[^\s'\"\\]{0,63}[0-9])(?=[^\s'\"\\]{0,63}[A-Za-z])[^\s'\"\\]{6,64}"
+# A value on the same line as "secret" or "token": also two runs of digits
+# with a letter between them (``ab12cd34ef``). Prose such as ``OAuth2``,
+# ``HS256-signed``, ``256-bit`` or ``v1.2.3`` is no value.
+_SAME_LINE_VALUE = (
+    r"(?=[^\s'\"\\]{0,63}[0-9][^\s0-9'\"\\]{0,63}[A-Za-z][^\s0-9'\"\\]{0,63}[0-9])" + _PROSE_VALUE
+)
+_SECRET_SIGNALS = (
+    # An age secret key: the prefix and 58 bech32 characters.
+    re.compile(r"AGE-SECRET-KEY-1[02-9AC-HJ-NP-Z]{58}"),
+    # The private member "d" of a JSON Web Key (EC, OKP, RSA), on one line or
+    # pretty-printed. Its value is 43 or more base64url characters.
+    re.compile(_Q_START + r"d" + _Q + r"\s*:\s*" + _Q + r"[A-Za-z0-9_-]{40,}={0,2}" + _Q),
+    # A seed or an ``openssl -text`` private value: a name, ":" or "=", then 64
+    # hex characters or 21 or more colon-joined hex pairs, also across lines.
+    re.compile(
+        r"(?i)(?<![A-Za-z0-9])(?:seed|priv)(?:" + _Q + r")?\s*[:=]\s*(?:" + _Q + r")?"
+        r"(?:[0-9a-f]{64}|(?:(?:\s|\\+[nrt])*[0-9a-f]{2}:){20,}(?:\s|\\+[nrt])*[0-9a-f]{2})"
+    ),
+    # "the secret is <value>": the verb right after the word, so "token
+    # budget is 200000" stays, and a value with two runs of digits.
+    re.compile(
+        r"(?i)\b(?:secret|token)s?[ \t]+(?:is|was|equals|set\s+to)[ \t]+" + _SAME_LINE_VALUE
+    ),
+    # "the token\nis <value>": the verb at the start of the next line.
+    re.compile(
+        r"(?i)(?:\b|(?<=\\[nrt]))(?:secret|token)s?[.:,;]?"
+        + _NEXT_LINE
+        + _NEXT_LINE_VERB
+        + _PROSE_VALUE
+    ),
+    # A key word of the natural-language rule, a full stop or no punctuation,
+    # and the verb at the start of the next line: "the password.\nis hunter2".
+    # The natural-language rule stops at the full stop and at the line end.
+    # The window does not run over an escaped line break either, so the rule
+    # reads one line break in raw text and in JSON text alike.
+    re.compile(
+        r"(?i)\b(?:password|passphrase|passwd|api[ _-]?key|access[ _-]?token|"
+        r"private[ _-]?key|client[ _-]?secret|recovery[ _-]?code)\b"
+        r"(?:(?!\\+[nr])[^\n.!?]){0,50}[.!?:,;]?" + _NEXT_LINE + _NEXT_LINE_VERB + _PROSE_VALUE
+    ),
+)
+# The other members of a private or symmetric JSON Web Key count only in a text
+# that names a key type: "p", "q" and "k" are common JSON keys.
+_JWK_MEMBER = re.compile(
+    _Q_START + r"(?:p|q|dp|dq|qi|k)" + _Q + r"\s*:\s*" + _Q + r"[A-Za-z0-9_-]{40,}={0,2}" + _Q
+)
+_JWK_KTY = re.compile(_Q_START + r"kty" + _Q + r"\s*:")
+# The line breaks of str.splitlines other than "\n": "\r", VT, FF, FS, GS,
+# RS, NEL, U+2028 and U+2029. The rules that read a line start see "\n" only.
+_OTHER_BREAK = re.compile(r"[\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]")
+
+
+def learning_secret_signal(text: str) -> bool:
+    """True for a secret shape that the at-rest redactor does not mask.
+
+    Key formats and prose forms bound to a name (see ``_SECRET_SIGNALS``), and
+    the redactor and natural-language rules read again after every other line
+    break is made a "\\n", so a rule that reads a line start sees each line.
+    """
+    if not isinstance(text, str):
+        return True
+    try:
+        flat = "\n".join(text.splitlines()) if _OTHER_BREAK.search(text) else text
+        if any(rule.search(flat) for rule in _SECRET_SIGNALS):
+            return True
+        if _JWK_MEMBER.search(flat) and _JWK_KTY.search(flat):
+            return True
+        return flat is not text and (
+            redact_at_rest(flat) != flat or bool(_NATURAL_SECRET.search(flat))
+        )
+    except Exception:  # noqa: BLE001 - fail closed
+        return True
+
 
 def contains_secret(text: str) -> bool:
     """Return True for unsafe or already-redacted input; no raw value escapes."""
@@ -526,4 +627,5 @@ def contains_secret(text: str) -> bool:
         or bool(_NATURAL_SECRET.search(text))
         or "REDACTED" in text
         or "REDACTION_FAILED" in text
+        or learning_secret_signal(text)
     )
