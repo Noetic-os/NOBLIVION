@@ -672,6 +672,38 @@ def _todo_chunks(
     return todo, copies
 
 
+def count_pending(
+    conn: sqlite3.Connection, model_id: str, project: str, dim: int | None = None
+) -> tuple[int, int]:
+    """``(rows, chunks)`` of live rows in ``project`` that the backfill still has
+    to do for ``model_id``: no vector, a vector of an older text or, with ``dim``,
+    a vector of another size. Empty text is skipped, as the backfill skips it. A
+    chunk that the pass will copy from its file vector counts too. Runs in the
+    caller's read transaction (NOBLIVION-44)."""
+    rows = 0
+    for content, have, have_dim in conn.execute(
+        "SELECT m.content, v.content_hash, v.dim FROM memories m "
+        "LEFT JOIN vectors v ON v.memory_id = m.id AND v.model = ? "
+        "WHERE m.project = ? AND m.archived_at IS NULL AND m.deleted_at IS NULL",
+        (model_id, project),
+    ):
+        text = embed_text(content)
+        if text and (text_hash(text) != have or (dim is not None and have_dim != dim)):
+            rows += 1
+    chunks = 0
+    for search_text, have, have_dim in conn.execute(
+        "SELECT c.search_text, v.content_hash, v.dim FROM memory_chunks c "
+        "JOIN memories m ON m.id = c.parent_id "
+        "LEFT JOIN chunk_vectors v ON v.chunk_id = c.id AND v.model = ? "
+        "WHERE m.project = ? AND m.archived_at IS NULL AND m.deleted_at IS NULL",
+        (model_id, project),
+    ):
+        text = str(search_text).strip()[:MAX_EMBED_CHARS]
+        if text and (text_hash(text) != have or (dim is not None and have_dim != dim)):
+            chunks += 1
+    return rows, chunks
+
+
 def _copy_vectors(
     conn: sqlite3.Connection, model_id: str, copies: Sequence[tuple[int, str, int, bytes]]
 ) -> int:
@@ -965,6 +997,12 @@ class EmbeddingService:
         if embedder is not None and self.state in (STATE_READY, STATE_REEMBEDDING):
             return embedder.model_id
         return None
+
+    @property
+    def vector_dim(self) -> int | None:
+        """The vector size the model returned last, the size the backfill
+        checks; None before the first vector."""
+        return self._dim
 
     @property
     def include_mined(self) -> bool:

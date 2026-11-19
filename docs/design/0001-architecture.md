@@ -729,6 +729,7 @@ With a valid token:
   "vector_rev": 1088,
   "embedding": {"backend": "fastembed", "model": "BAAI/bge-small-en-v1.5",
                 "dim": 384, "state": "ready", "missing_vectors": 0,
+                "chunk_vectors_pending": 0,
                 "consent": "not_needed"},
   "mode": "hybrid",
   "trust_ranking": "shadow",
@@ -739,6 +740,11 @@ With a valid token:
 
 - `status` is `ok`, or `degraded` when the model failed to load. A degraded store still answers every route.
 - `embedding.state`: `loading`, `ready`, `reembedding`, `failed`, `off`.
+- `embedding.missing_vectors`: live rows of the project that the backfill
+  still has to embed: no vector, a vector of an older text, or a vector of
+  another size than the model returns. `embedding.chunk_vectors_pending` is
+  the same count for the chunks, which the ranking reads. Both are 0 when
+  the backfill is done (NOBLIVION-44).
 - `index_state`: `idle`, `scanning`, or `stopped` when the background jobs
   thread has ended (no scan, backfill or maintenance until a restart).
 - `embedding.consent`: `not_needed` for a backend that keeps text on the

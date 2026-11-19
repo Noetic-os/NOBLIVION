@@ -11,6 +11,10 @@ All notable changes to NOBLIVION. The format follows
 - A very deeply nested `config.json` no longer stops `noblivion index` or
   `scripts/install.sh` with a RecursionError traceback; it is read as broken
   JSON, like other broken config files (NOBLIVION-92).
+- The full health answer now counts a row whose vector is of an older text
+  in `embedding.missing_vectors`, and gives `embedding.chunk_vectors_pending`
+  for the chunks, so it no longer reports 0 before the backfill is done
+  (NOBLIVION-44).
 
 ## 0.1.39 - 2026-11-19
 

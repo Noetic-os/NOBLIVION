@@ -230,6 +230,7 @@ def test_health_full_form_with_token(running):
         "dim",
         "state",
         "missing_vectors",
+        "chunk_vectors_pending",
         "consent",
     }
     assert body["embedding"]["consent"] == "not_needed"  # a local backend
@@ -962,24 +963,18 @@ def test_index_command_changes_get_vectors_with_periodic_scans_off(tmp_path):
     run = Running(make_store(tmp_path, embedding_service=fake_service(embedder)))
     db_path = run.store.settings.db_path
 
-    def stale_rows() -> list[str]:
-        with closing(db.connect(db_path, create=False)) as conn:
-            rows = conn.execute(
-                "SELECT m.content, v.content_hash FROM memories m "
-                "LEFT JOIN vectors v ON v.memory_id = m.id AND v.model = ? "
-                "WHERE m.deleted_at IS NULL",
-                (embedder.model_id,),
-            ).fetchall()
-        return [c for c, h in rows if h != embedding.text_hash(embedding.embed_text(c))]
+    def done() -> bool:
+        # A vector of an older text counts as missing (NOBLIVION-44).
+        emb = run.get("/health")[1]["embedding"]
+        return emb["missing_vectors"] == 0 and emb["chunk_vectors_pending"] == 0
 
     try:
         assert wait_for(lambda: run.store.embedding.state == embedding.STATE_READY)
-        assert wait_for(lambda: run.get("/health")[1]["embedding"]["missing_vectors"] == 0)
-        assert stale_rows() == []
+        assert wait_for(done)
         write_memory(folder, "lantern rule", "Light the lantern first.", "Lantern after dawn.")
         write_memory(folder, "kettle rule", "Fill the kettle.", "Kettle before tea.")
         assert indexer.main(["--memory-dir", str(folder), "--db", str(db_path)]) == 0
-        assert wait_for(lambda: stale_rows() == [])
+        assert wait_for(done)
         embedded = [text for call in embedder.calls for text in call]
         assert any("Lantern after dawn." in text for text in embedded)
         assert any("Kettle before tea." in text for text in embedded)

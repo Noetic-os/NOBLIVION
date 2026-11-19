@@ -226,6 +226,7 @@ class Running:
                 h.get("index_state") == "idle"
                 and emb.get("state") == "ready"
                 and emb.get("missing_vectors") == 0
+                and not emb.get("chunk_vectors_pending")
                 and h.get("memories")
             ):
                 return time.monotonic() - self.started

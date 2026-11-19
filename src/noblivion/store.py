@@ -445,7 +445,8 @@ class Store:
             learning_enabled = False
         emb = self.embedding
         model_id = emb.model_id
-        memories = missing = schema_version = content_rev = vector_rev = consent = None
+        memories = missing = chunks_pending = None
+        schema_version = content_rev = vector_rev = consent = None
         dim = getattr(emb.embedder, "dim", None) if emb.embedder is not None else None
         try:
             with self.connection() as conn, db.read_tx(conn):
@@ -457,14 +458,13 @@ class Store:
                     "AND archived_at IS NULL AND deleted_at IS NULL",
                     (self.namespace,),
                 ).fetchone()[0]
-                missing = 0
+                missing = chunks_pending = 0
                 if model_id is not None:
-                    missing = conn.execute(
-                        "SELECT count(*) FROM memories m WHERE m.project = ? "
-                        "AND m.archived_at IS NULL AND m.deleted_at IS NULL AND NOT EXISTS "
-                        "(SELECT 1 FROM vectors v WHERE v.memory_id = m.id AND v.model = ?)",
-                        (self.namespace, model_id),
-                    ).fetchone()[0]
+                    # A vector of an older text or size is not done (NOBLIVION-44).
+                    # Only the size the model returns counts, never the stored one.
+                    missing, chunks_pending = embedding.count_pending(
+                        conn, model_id, self.namespace, emb.vector_dim
+                    )
                     if dim is None:
                         row = conn.execute(
                             "SELECT dim FROM vectors WHERE model = ? LIMIT 1", (model_id,)
@@ -485,6 +485,7 @@ class Store:
                 "dim": dim,
                 "state": "off" if emb.state == embedding.STATE_NONE else emb.state,
                 "missing_vectors": missing,
+                "chunk_vectors_pending": chunks_pending,
                 "consent": consent,
             },
             "mode": self.mode(),
