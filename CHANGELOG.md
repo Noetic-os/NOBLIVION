@@ -8,6 +8,12 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- The hook input check of NOBLIVION-118 now also reads the session transcript:
+  once for each session, on PreToolUse, PostToolUse and Stop, it counts the
+  JSON lines in the last 4 MB. When 30 or more lines have none in the message
+  shape that the hooks read, `input-drift.log` gets one `"kind": "transcript"`
+  line and the user gets one `systemMessage` with the Claude Code version and
+  the last tested version. A healthy session pays one read.
 - Error recall in the store and fused modes now sends the tool names of the
   failed command (`git rev-parse`, `docker exec`) as `target`, so the label
   boost of NOBLIVION-104 works; prompt and subagent recall send none, and no
