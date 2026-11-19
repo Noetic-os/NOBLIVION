@@ -405,9 +405,15 @@ def delivered(state: Any, env: Mapping[str, str], session_id: Any, agent: str) -
 # --------------------------------------------------------------------------
 def _memory(m: Any, table: Mapping[str, Any]) -> Tuple[Dict[str, Any], bool]:
     """``(memory, body_known)``: rule, apply, description and body from
-    ``<table source>/<id>.md``; the index's short text when it cannot be read."""
+    ``<folder of the match>/<id>.md``; the index's short text when it cannot be read."""
     mem: Dict[str, Any] = {"id": m.id, "rule": "", "apply": "", "description": m.text, "body": ""}
     src = str(table.get("source") or "")
+    # NOBLIVION-168: a note from the global folder or a shared root lives in
+    # the folder its index number names, not in the project folder.
+    folders = table.get("folders")
+    root = getattr(m, "root", 0)
+    if isinstance(folders, list) and isinstance(root, int) and 0 <= root < len(folders):
+        src = str(folders[root] or "") or src
     if not src or not _SAFE_ID.match(m.id) or m.id.startswith("."):
         return mem, False
     try:

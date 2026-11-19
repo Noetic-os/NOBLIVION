@@ -25,6 +25,10 @@ All notable changes to NOBLIVION. The format follows
   found nothing tells the user and logs `credential check timeout`. The error
   line of a guard timeout now holds the step that ran (`stage`) and the time
   used (`ms`). The cause of the logged timeout is not proven yet.
+- A label row for a note in the global folder or a shared root now shows
+  (NOBLIVION-168). The label rows read the note from the folder its index
+  number names (the new table key `folders`), not from the project folder
+  only. The guard table version goes to 6, so each table is rebuilt once.
 
 ## 0.1.38 - 2026-11-18
 
