@@ -30,6 +30,9 @@ All notable changes to NOBLIVION. The format follows
   `<name>.1`: the rotation holds a lock on `<name>.lock` and reads the size
   again under it. The next stamp write removes a `.store.hung.*` temp file
   that a killed hook left behind (NOBLIVION-83).
+- The trust flush, continuity and error recall logs now move to `<name>.1`
+  past 5 MB, and the trust flush sends nothing while `store.hung` is in force
+  and writes that stamp when its proof or POST times out (NOBLIVION-81).
 
 ## 0.1.39 - 2026-11-19
 

@@ -4,7 +4,8 @@
 ``recall.log`` and ``memory-dir.log`` (one line per prompt), the guard log
 (it holds command text) and the memory sync log grew without a limit. Each
 now moves to ``<name>.1`` past ``LOG_MAX_BYTES``, the way the stop check log
-does: a log is at most about twice that size.
+does: a log is at most about twice that size. NOBLIVION-81 added the trust
+flush, continuity and error recall logs.
 """
 
 from __future__ import annotations
@@ -18,6 +19,9 @@ from hookload import load_hook
 rh = load_hook("recall_hook", "hooktest_log_rotation_recall")
 gh = load_hook("guard_hook", "hooktest_log_rotation_guard")
 ms = load_hook("memory_sync_hook", "hooktest_log_rotation_sync")
+tf = load_hook("trust_flush", "hooktest_log_rotation_flush")
+ch = load_hook("continuity_hook", "hooktest_log_rotation_continuity")
+er = load_hook("error_recall_hook", "hooktest_log_rotation_error_recall")
 
 
 @pytest.fixture(autouse=True)
@@ -49,11 +53,30 @@ def _sync(folder: Path) -> Path:
     return folder / ms.LOG_NAME
 
 
+def _flush(folder: Path) -> Path:
+    tf.log(str(folder), "s-demo-1", "ok:nothing bad=0")
+    return folder / tf.LOG_NAME
+
+
+def _continuity(folder: Path) -> Path:
+    ch.log_line(str(folder), "SessionStart", "s-demo-1", 0, 0, 5, "ok")
+    return folder / ch.LOG_NAME
+
+
+def _error_recall(folder: Path) -> Path:
+    path = folder / "error-recall-log.jsonl"
+    assert er.log_line({"NOBLIVION_ERROR_RECALL_LOG": str(path)}, {"decision": "none"})
+    return path
+
+
 WRITERS = [
     pytest.param(rh, _recall, "recall.log", id="recall"),
     pytest.param(rh, _memory_dir, "memory-dir.log", id="memory-dir"),
     pytest.param(gh, _guard, "guard-log.jsonl", id="guard"),
     pytest.param(ms, _sync, "memory_sync.log", id="memory-sync"),
+    pytest.param(tf, _flush, "trust-flush.log", id="trust-flush"),  # NOBLIVION-81
+    pytest.param(ch, _continuity, "continuity.log", id="continuity"),
+    pytest.param(er, _error_recall, "error-recall-log.jsonl", id="error-recall"),
 ]
 
 
@@ -135,3 +158,4 @@ def test_a_rotation_after_a_stale_size_check_keeps_the_dot_1(tmp_path, monkeypat
 def test_the_limit_matches_the_stop_check_log():
     sc = load_hook("stop_checks", "hooktest_log_rotation_stop")
     assert rh.LOG_MAX_BYTES == gh.LOG_MAX_BYTES == ms.LOG_MAX_BYTES == sc.LOG_MAX
+    assert tf.LOG_MAX_BYTES == ch.LOG_MAX_BYTES == er.LOG_MAX_BYTES == sc.LOG_MAX

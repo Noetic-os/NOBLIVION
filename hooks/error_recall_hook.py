@@ -117,7 +117,8 @@ Log and state
   Every show, and every error, is one JSON line in the log (env
   ``NOBLIVION_ERROR_RECALL_LOG``, default ``<data dir>/error-recall-log.jsonl``):
   ``ts``, ``session_id``, ``agent_id``, ``event``, ``decision``, ``ids``,
-  ``scores``, ``source``, ``ms``, ``query`` (the redacted query). State is one
+  ``scores``, ``source``, ``ms``, ``query`` (the redacted query). Past
+  LOG_MAX_BYTES the log moves to ``<log>.1`` (NOBLIVION-81). State is one
   file per agent of a session, ``er-<hash>.json``, in the WI-3 guard state
   folder (env ``NOBLIVION_ERROR_RECALL_STATE_DIR``, then
   ``NOBLIVION_GUARD_STATE_DIR``, default ``<data dir>/guard-state/``). Files are
@@ -225,6 +226,7 @@ def _mf():
 _MT = _load("memory_text")
 _CFG = _load("hook_config")
 DEFAULT_LOG = _CFG.data_dir() / "error-recall-log.jsonl"
+LOG_MAX_BYTES = 5_000_000  # then the log moves to .1, as the stop check log does
 DEFAULT_STATE = _CFG.data_dir() / "guard-state"
 MEMORY_DIR_ENVS = (
     "NOBLIVION_ERROR_RECALL_MEMORY_DIR",
@@ -1392,6 +1394,15 @@ def log_line(env: Mapping[str, str], rec: Dict[str, object]) -> bool:
     try:
         p = log_path(env)
         _make_dirs(p.parent)
+        rotate = getattr(_CFG, "rotate_log", None)  # NOBLIVION-81: locked, as NOBLIVION-83
+        if rotate is not None:
+            rotate(p, LOG_MAX_BYTES)
+        else:  # the stand-in: no rotate_log in hook_config.py
+            try:
+                if p.stat().st_size > LOG_MAX_BYTES:
+                    os.replace(p, str(p) + ".1")
+            except OSError:
+                pass
         fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")

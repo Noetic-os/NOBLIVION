@@ -36,12 +36,13 @@ lock:
 A repeated Stop is safe: the store keeps one event per (session, memory,
 kind), so a repeat is a duplicate, not a second count. One line per flush
 goes to ``<cache>/trust-flush.log`` (counts and a reason only; no token, no
-memory text).
+memory text). Past LOG_MAX_BYTES the log moves to ``trust-flush.log.1``.
 
 The store is found and proved through ``store_client`` (``store.json``, the
 health nonce and its HMAC proof); only a proven listener gets the token. The
 flush never starts a store: a store that is down keeps the offset (section
-3.5).
+3.5). While ``store.hung`` is in force, the flush sends nothing and keeps the
+offset; a proof or a POST that times out writes that stamp (NOBLIVION-81).
 
 Standard library only. Hooks load their siblings by path.
 """
@@ -67,6 +68,7 @@ ROUTE = "/api/memory/feedback/batch"
 STATE_NAME = "trust-flush.json"
 LOCK_NAME = "trust-flush.lock"
 LOG_NAME = "trust-flush.log"
+LOG_MAX_BYTES = 5_000_000  # then the log moves to .1, as the stop check log does
 SHOWN_NAME = "trust-shown.jsonl"  # trust_signals.SHOWN_NAME
 POST_TIMEOUT_S = 2.0
 MAX_EVENTS = 500
@@ -180,11 +182,28 @@ def session_lock(cache: str, sid: str, wait_s: Optional[float] = None):
                 os.close(fd)
 
 
+def _rotate(path: str) -> None:
+    """Move the log to ``<path>.1`` past LOG_MAX_BYTES (NOBLIVION-81), under
+    the rotation lock of ``hook_config.rotate_log``. Never raises."""
+    try:
+        rotate = getattr(_load("hook_config"), "rotate_log", None)
+    except Exception:  # noqa: BLE001 - no hook_config: rotate unlocked
+        rotate = None
+    if rotate is not None:
+        rotate(path, LOG_MAX_BYTES)
+        return
+    with contextlib.suppress(OSError):
+        if os.path.getsize(path) > LOG_MAX_BYTES:
+            os.replace(path, path + ".1")
+
+
 def log(cache: str, sid: str, status: str) -> None:
     ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     try:
         _make_dirs(cache)
-        with open(os.path.join(cache, LOG_NAME), "a", encoding="utf-8") as fh:
+        path = os.path.join(cache, LOG_NAME)
+        _rotate(path)
+        with open(path, "a", encoding="utf-8") as fh:
             fh.write(f"{ts} session={sid} {status}\n")
     except OSError:
         return
@@ -438,13 +457,29 @@ def http_json(
 
 def connect_store(environ: Mapping[str, str], timeout_s: float = POST_TIMEOUT_S) -> Tuple[str, str]:
     """``(base_url, token)`` of a proven store (``store_client.connect``).
-    Raises PostError with the store_client reason."""
+    Raises PostError with the store_client reason.
+
+    NOBLIVION-81. While the "down until" stamp (``store.hung``) is in force
+    for ``timeout_s``, this raises ``PostError("store_hung")`` and sends
+    nothing: the events stay queued for a later Stop. A proof request that
+    times out writes the stamp (``store_client.mark_hung``)."""
     client = sc()
+    if client.hung_age(environ, timeout_s) is not None:
+        raise PostError(client.HUNG)
+    store = client.store_identity(environ)
     probe_s = min(timeout_s, max(client.PROBE_TIMEOUT_S, timeout_s / 2.0))
+
+    def _probe(url: str, budget: float) -> Any:
+        try:
+            return http_json("GET", url, "", None, budget)
+        except PostError as exc:
+            if exc.reason == "timeout":
+                with contextlib.suppress(Exception):
+                    client.mark_hung(environ, timeout_s, store)
+            raise
+
     try:
-        return client.connect(
-            environ, lambda url, budget: http_json("GET", url, "", None, budget), probe_s
-        )
+        return client.connect(environ, _probe, probe_s)
     except client.StoreUnavailable as exc:
         raise PostError(exc.reason) from None
 
@@ -489,6 +524,9 @@ def flush_events(
         if end != state.get("sent"):
             state["sent"] = end
         return f"ok:nothing bad={bad}"
+    store = ""
+    with contextlib.suppress(Exception):
+        store = sc().store_identity(environ)  # before the calls: the stamp names it
     try:
         base, token = (connect or connect_store)(environ)
     except PostError as exc:
@@ -508,6 +546,9 @@ def flush_events(
                 n = len(json.loads(body)["events"])
                 dropped[exc.reason] = dropped.get(exc.reason, 0) + n
                 continue
+            if exc.reason == "timeout":  # NOBLIVION-81: the next Stop does not wait
+                with contextlib.suppress(Exception):
+                    sc().mark_hung(environ, POST_TIMEOUT_S, store)
             if not exc.reason.startswith("http_"):
                 with contextlib.suppress(Exception):
                     sc().forget(environ)  # no answer: prove again next time
