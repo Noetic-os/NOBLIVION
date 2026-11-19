@@ -72,6 +72,12 @@ def _parser() -> argparse.ArgumentParser:
                 "--error",
                 help="retry every exhausted job of the scope with this exact last error",
             )
+            command.add_argument(
+                "--omit-withheld",
+                action="store_true",
+                help="run without existing notes withheld for a secret; "
+                "duplicate notes are not merged yet",
+            )
         if name == "prune":
             command.add_argument("--pending-days", type=float, default=14.0)
             command.add_argument("--retention-days", type=float, default=14.0)
@@ -196,9 +202,11 @@ def _run(ledger: LearningLedger, args: argparse.Namespace):
         if (args.job_id is None) == (args.error is None):
             raise LearningError("retry needs a job id or --error, not both")
         if args.job_id is not None:
-            ledger.retry(args.job_id)
+            ledger.retry(args.job_id, omit_withheld=args.omit_withheld)
             return {"job_id": args.job_id, "status": "pending"}
-        ids = ledger.retry_by_error(args.project, args.root, args.error)
+        ids = ledger.retry_by_error(
+            args.project, args.root, args.error, omit_withheld=args.omit_withheld
+        )
         return {"error": args.error, "retried": len(ids), "job_ids": ids}
     if args.command == "prune":
         return ledger.prune(

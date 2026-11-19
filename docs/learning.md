@@ -548,6 +548,13 @@ that the shared check misses reaches the model, as in any note without a
 marker. A job that waits on such a note (`ContextDependencyDeferred`) builds
 its context again when it resumes.
 
+To let such a job finish, retry it with `noblivion learning retry <id>
+--omit-withheld` (or with `--error`). The job runs without the notes that are
+withheld for a secret. Their text never reaches a prompt, and the model cannot
+update or supersede them. The mark `withheld_omitted` stays in the job record.
+A note left out only for the context size still blocks. The mode is off by
+default. Duplicate notes are not merged by this mode (NOBLIVION-269).
+
 Before enabling paused learning, verify provider readiness and budgets, capture
 cadence and retention, and one bounded capture-to-accepted-note-to-recall path.
 Use normal existing context for that check. Clean fixture yield does not prove

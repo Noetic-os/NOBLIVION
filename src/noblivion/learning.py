@@ -1016,8 +1016,12 @@ class LearningLedger:
             self._expire_reservations()
         return outcome
 
-    def retry(self, job_id: str) -> None:
-        """Explicit operator recovery; retained budget usage still applies."""
+    def retry(self, job_id: str, *, omit_withheld: bool = False) -> None:
+        """Explicit operator recovery; retained budget usage still applies.
+
+        omit_withheld marks the job to run without the notes withheld for a
+        secret (NOBLIVION-263). The mark stays in the job record. Off by default.
+        """
         with db.write_tx(self.conn):
             row = self.conn.execute(
                 "SELECT progress FROM learning_jobs WHERE id=? AND status='exhausted'",
@@ -1034,6 +1038,8 @@ class LearningLedger:
             progress.pop("unavailable_deferrals", None)
             progress.pop("unavailable_since", None)
             progress.pop("embedding_deferrals", None)  # NOBLIVION-243
+            if omit_withheld:
+                progress["withheld_omitted"] = True
             from .learning_pages import retry_rejected
 
             retry_rejected(self.conn, job_id)
@@ -1043,7 +1049,9 @@ class LearningLedger:
                 (canonical_json(progress), time.time(), job_id),
             )
 
-    def retry_by_error(self, project: str, root: str, error: str) -> list[str]:
+    def retry_by_error(
+        self, project: str, root: str, error: str, *, omit_withheld: bool = False
+    ) -> list[str]:
         """Retry every exhausted job of one scope with this exact last error.
 
         After an outage many jobs end with the same error (NOBLIVION-253). Each
@@ -1060,7 +1068,7 @@ class LearningLedger:
             )
         ]
         for job_id in ids:
-            self.retry(job_id)
+            self.retry(job_id, omit_withheld=omit_withheld)
         return ids
 
     def current_notes(self, project: str, root: str) -> list[dict[str, Any]]:

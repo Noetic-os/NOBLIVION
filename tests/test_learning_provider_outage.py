@@ -418,7 +418,9 @@ def test_retry_by_error_retries_only_matching_exhausted_jobs_of_the_scope(ledger
     with pytest.raises(LearningError):
         ledger.retry_by_error("demo", "", "Provider:transport")
 
-    args = SimpleNamespace(command="retry", project="demo", root="third", job_id=None, error=None)
+    args = SimpleNamespace(
+        command="retry", project="demo", root="third", job_id=None, error=None, omit_withheld=False
+    )
     with pytest.raises(LearningError):
         learning_cli._run(ledger, args)
     args.error = "Provider:timeout"

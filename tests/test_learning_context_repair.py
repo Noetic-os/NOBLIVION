@@ -102,6 +102,39 @@ def test_withheld_statement_defers_without_repeating_extraction_and_can_resolve(
     assert ledger.current_notes("demo", "scope")[0]["statement"] == record["content"]
 
 
+def test_a_retry_with_omit_withheld_runs_without_the_withheld_note(ledger):
+    # NOBLIVION-263: the opt-in mode lets the job finish without the withheld
+    # note. Its text reaches no prompt, in extraction or in the semantic stage,
+    # and the job record keeps the mark.
+    record = capture(ledger, "new", "The indigo service uses port 8443.")
+    held = old_note()
+    held.update(statement="The cobalt job reads GH_TOKEN=***REDACTED*** first.", read_only=False)
+    ledger.reconciliation_context = lambda *a, **k: [old_note(), held]
+    provider = ScriptedProvider(ledger, [candidate(record, category="fact")], "distinct")
+    seen = []
+    original = provider.complete
+
+    def checked(messages, **kwargs):
+        seen.append(json.dumps(messages))
+        return original(messages, **kwargs)
+
+    provider.complete = checked
+    run = worker(ledger, provider)
+    assert run.run_once()["error"] == "ContextDependencyDeferred"
+    managed = {k: held[k] for k in ("note_id", "revision", "statement", "scope")}
+    ledger.semantic_notes = lambda *a, **k: [dict(managed, note_id="n1", read_only=False)]
+    job_id = ledger.conn.execute("SELECT id FROM learning_jobs").fetchone()[0]
+    ledger.conn.execute("UPDATE learning_jobs SET status='exhausted'")
+    ledger.retry(job_id, omit_withheld=True)
+    assert run.run_once()["status"] == "done"
+    assert provider.calls == ["extract", "semantic"]
+    assert not any("GH_TOKEN" in text or "cobalt job" in text for text in seen)
+    progress = json.loads(ledger.conn.execute("SELECT progress FROM learning_jobs").fetchone()[0])
+    assert progress["withheld_omitted"] is True
+    assert progress["context_exclusions"] and progress["semantic_exclusions"]
+    assert ledger.current_notes("demo", "scope")[0]["statement"] == record["content"]
+
+
 def test_a_checkpointed_context_that_fails_as_raw_text_is_isolated_again(ledger):
     # NOBLIVION-259: a context checkpointed before the raw text check may hold
     # a line-start secret that the encoded check misses. The job isolates it

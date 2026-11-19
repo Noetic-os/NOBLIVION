@@ -407,6 +407,26 @@ class DependencyDeferred(RuntimeError):
     """A hidden existing statement may change a proposed write."""
 
 
+def blocking_exclusions(exclusions: list[dict], state: dict) -> list[dict]:
+    """The exclusions that may block a decision of this job (NOBLIVION-263).
+
+    By default all of them. A job retried with ``--omit-withheld`` has
+    ``withheld_omitted`` in its progress: a note withheld for a secret then no
+    longer blocks, so the job runs without it. The model never sees its text
+    (it was never in the context). Extraction accepts only targets from the
+    sent context, so no decision can update or supersede the withheld note. A
+    note left out only for the context size still blocks. The stored
+    exclusions stay complete for status and audit.
+    """
+    if not state.get("withheld_omitted"):
+        return exclusions
+    return [
+        note
+        for note in exclusions
+        if note.get("statement_available") or note.get("reason") == "ContextSizeLimit"
+    ]
+
+
 class EmbeddingDeferred(RuntimeError):
     """The embedding model is set up but gave no vector now (NOBLIVION-243)."""
 
@@ -1147,7 +1167,9 @@ class LearningWorker:
                 # A job frozen under an older contract or another reasoning
                 # effort that has done no work yet starts again as a new job
                 # under the newest contract and the current effort.
-                progress = {key: progress[key] for key in ("provider_metrics",) if key in progress}
+                # The operator's omit mode is not partial work; it stays (NOBLIVION-263).
+                kept = ("provider_metrics", "withheld_omitted")
+                progress = {key: progress[key] for key in kept if key in progress}
                 progress["refrozen_from"] = self._job_contract(job["progress"], sources)
                 if frozen_effort:
                     progress["refrozen_effort"] = self.provider.reasoning_effort
@@ -1225,7 +1247,7 @@ class LearningWorker:
                 state["inconsistent_decisions"] = len(conflicting)
             else:
                 state.pop("inconsistent_decisions", None)
-            dependent = dependent_decisions(decisions, exclusions)
+            dependent = dependent_decisions(decisions, blocking_exclusions(exclusions, state))
             if dependent:
                 state["deferred_decisions"] = dependent
                 raise DependencyDeferred()
@@ -2041,7 +2063,7 @@ class LearningWorker:
             safe_notes.extend(kept)
             exclusions.extend(rejected)
         state["semantic_exclusions"] = exclusions
-        dependent = dependent_decisions(decisions, exclusions)
+        dependent = dependent_decisions(decisions, blocking_exclusions(exclusions, state))
         if dependent:
             state["deferred_decisions"] = dependent
             raise DependencyDeferred()

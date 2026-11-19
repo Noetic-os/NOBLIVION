@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- `noblivion learning retry --omit-withheld` lets a job that waits on notes withheld for a
+  secret finish without them; off by default, their text never reaches a prompt (NOBLIVION-263).
 - A very deeply nested `config.json` no longer stops `noblivion index` or
   `scripts/install.sh` with a RecursionError traceback; it is read as broken
   JSON, like other broken config files (NOBLIVION-92).
