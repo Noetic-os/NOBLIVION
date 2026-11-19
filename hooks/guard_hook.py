@@ -2022,6 +2022,9 @@ REWRITE_ENV, REWRITE_KEY = "NOBLIVION_GUARD_REWRITE", "guard.rewrite"
 ASK_ENV, ASK_KEY = "NOBLIVION_GUARD_ASK", "guard.ask"
 SHADOW_ENV, SHADOW_KEY = "NOBLIVION_GUARD_ACT_SHADOW", "guard.act_shadow"
 PERM_ENV, PERM_KEY = "NOBLIVION_GUARD_REWRITE_DECISION", "guard.rewrite_decision"
+# NOBLIVION-61: the off switch of the note rules (deny, rows, label rows). Env
+# only, no config key. The credential guard has its own switch and stays on.
+OFF_ENV = "NOBLIVION_GUARD_OFF"
 
 
 def _switch(env: Mapping[str, str], name: str, key: str, default: bool = False) -> bool:
@@ -2038,6 +2041,11 @@ def everyday_on(env: Mapping[str, str]) -> bool:
     """The switch of NOBLIVION-129 (everyday triggers graded by relevance, and
     ``python -m X`` read as ``X``). On by default."""
     return _switch(env, EVERYDAY_ENV, EVERYDAY_KEY, True)
+
+
+def is_off(env: Mapping[str, str]) -> bool:
+    """``NOBLIVION_GUARD_OFF``: off unless on (NOBLIVION-61)."""
+    return _switch(env, OFF_ENV, "")
 
 
 def rewrite_on(env: Mapping[str, str]) -> bool:
@@ -2222,6 +2230,9 @@ def decide(
     cred = _credential_check(tool, ti, cwd, env, notes)
     if cred is not None:
         return cred
+    if is_off(env):  # NOBLIVION-61: after the credential guard, before the table
+        _settled(pending)
+        return Decision()
     if tool not in BASH_TOOLS:
         _settled(pending)  # only the credential guard denies these tools
     file_q: Optional[Tuple[str, str]] = None

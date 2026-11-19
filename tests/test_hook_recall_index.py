@@ -421,6 +421,14 @@ def test_the_default_cap_is_the_notes_own_budget():
     assert hook.INDEX_OUTPUT_MAX_CHARS == 7600
 
 
+def test_the_cap_is_clamped_to_the_hook_output_limit():
+    # NOBLIVION-61: Claude Code keeps at most 10,000 characters of one hook output.
+    cap = hook.INDEX_CAP_ENV
+    assert hook.index_cap({cap: "9000"}) == 9000  # the shipped config
+    assert hook.index_cap({cap: "50000"}) == hook.INDEX_CAP_MAX == 10000
+    assert hook.index_cap({cap: "0"}) == 0
+
+
 # -- 4. fail open ---------------------------------------------------------------------
 
 

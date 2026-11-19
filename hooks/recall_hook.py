@@ -114,7 +114,8 @@ Environment (config file keys in design doc section 12.3)
   NOBLIVION_RECALL_INDEX        any non-empty value: serve a RANKED INDEX instead
                                 of hits (see "Ranked index" below)
   NOBLIVION_RECALL_INDEX_K      candidates the index asks for, default 35, 1..100
-  NOBLIVION_RECALL_INDEX_MAX_CHARS  output cap for the index shape, default 7600
+  NOBLIVION_RECALL_INDEX_MAX_CHARS  output cap for the index shape, default 7600,
+                                    at most 10000
   NOBLIVION_RECALL_INDEX_ROW_DEDUPE  with the rule shape: a later index of one
                                 session leaves out the rows it was already shown
   NOBLIVION_RECALL_INDEX_MIN_SCORE  a cosine, -1..1: an index row under it is
@@ -254,6 +255,10 @@ INDEX_K_MAX = 100
 # pays it on purpose; the number is the thing being measured, so it is a
 # constant here and an env override, never a silent default.
 INDEX_OUTPUT_MAX_CHARS = 7600
+# The upper limit of NOBLIVION_RECALL_INDEX_MAX_CHARS (NOBLIVION-61). Claude Code
+# keeps at most 10,000 characters of one hook output; above that it shows a file
+# with a 2,000-character preview, and the index is lost.
+INDEX_CAP_MAX = 10000
 INDEX_SUMMARY_MAX_CHARS = 200
 # Fetch on demand returns a BODY, which the hit shape never did. It is bounded
 # on three axes, because one memory file is 2,690 bytes on average and a hostile
@@ -2764,13 +2769,14 @@ def index_k(environ: Optional[Mapping[str, str]] = None) -> int:
 
 
 def index_cap(environ: Optional[Mapping[str, str]] = None) -> int:
-    """The output cap for the index shape, default INDEX_OUTPUT_MAX_CHARS."""
+    """The output cap for the index shape, default INDEX_OUTPUT_MAX_CHARS,
+    0 to INDEX_CAP_MAX."""
     env = os.environ if environ is None else environ
     raw = (env.get(INDEX_CAP_ENV) or "").strip()
     if not raw:
         return INDEX_OUTPUT_MAX_CHARS
     try:
-        return max(0, int(raw))
+        return max(0, min(int(raw), INDEX_CAP_MAX))
     except ValueError:
         return INDEX_OUTPUT_MAX_CHARS
 

@@ -22,6 +22,10 @@ All notable changes to NOBLIVION. The format follows
 - `scripts/uninstall.sh` now also stops a new store that waits for the lock
   of an old store after a version restart. Before, such a store could start
   later on the kept database from the deleted venv (NOBLIVION-88).
+- `NOBLIVION_GUARD_OFF` turns off the note rules of the guard hook (the
+  credential guard stays on), `NOBLIVION_MEMORY_FIELDS_OFF` turns off the
+  memory fields hook, `NOBLIVION_RECALL_INDEX_MAX_CHARS` is clamped to 10000,
+  and the recall docs state the shipped query and output limits (NOBLIVION-61).
 
 ## 0.1.39 - 2026-11-19
 

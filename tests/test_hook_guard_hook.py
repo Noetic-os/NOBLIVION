@@ -220,6 +220,11 @@ def test_compliant_command_is_not_denied(env):
     assert out is None or "permissionDecision" not in out
 
 
+def test_the_off_switch_stops_the_note_rules(env):
+    # NOBLIVION-61: the same deny as above, with the guard hook off.
+    assert call(dict(env, NOBLIVION_GUARD_OFF="1"), bash("git push --force origin x")) is None
+
+
 def test_a_heredoc_that_a_shell_reads_is_denied_and_a_file_body_is_not(env):
     # NOBLIVION-52: the body of ``bash <<EOF`` is code; the body of ``cat > f <<EOF`` is data
     body = "\ngit push --force origin main\nEOF"

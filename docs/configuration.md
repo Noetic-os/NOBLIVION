@@ -270,7 +270,7 @@ model is the default model, `BAAI/bge-small-en-v1.5`.
 | --- | --- | --- | --- |
 | `NOBLIVION_RECALL_INDEX` | none | off (switch) | Shows the ranked index. |
 | `NOBLIVION_RECALL_INDEX_K` | `recall.index_k` | `35` | How many candidates the hook asks for, 1 to 100. |
-| `NOBLIVION_RECALL_INDEX_MAX_CHARS` | none | `7600` | The most characters the index adds to the prompt. |
+| `NOBLIVION_RECALL_INDEX_MAX_CHARS` | none | `7600` | The most characters the index adds to the prompt, up to 10000. A larger value gives 10000, because Claude Code keeps at most 10,000 characters of one hook output. |
 | `NOBLIVION_RECALL_INDEX_QUERY_CHARS` | none | `300` | The most characters of the prompt sent as the query, up to 8000. |
 | `NOBLIVION_RECALL_INDEX_MIN_SCORE` | none | `0.68` with the embedding model `BAAI/bge-small-en-v1.5`, else no floor | A cosine floor from -1 to 1. A row below it is not shown. `off`, `none`, `false` or `no` turns the floor off. A value that is not a number from -1 to 1 gives the default. The default `0.68` was measured for the embedding model `BAAI/bge-small-en-v1.5`. The store names its model in each index answer, and the hook uses the default only for that model. With another model, or with a store of an older version that names no model, the default is no floor. A value that you set applies to every model. Not used in keyword-only mode. |
 | `NOBLIVION_RECALL_SCORE_WINDOW` | `recall.score_window` | `0` (off) | A prompt row stays only when its score is at most this far under the top score of the rows that passed the floor, 0 to 2. `0` turns the window off. Off by default: on the held-out dev set and on the delivery checks, 0.04 to 0.06 lost delivery (see `docs/how-recall-works.md`). A value that is not a number in that range gives the default. The store's rank 1 also stays when it is at most 0.02 under the floor and shares an informative word with the prompt (needs `NOBLIVION_RECALL_INDEX_RERANK`). |
@@ -409,6 +409,7 @@ See [guards.md](guards.md) for what each guard does.
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
 | `NOBLIVION_MEMORY_DIR` | none | the session's memory folder (see "The session's memory folder") | One fixed memory folder for every hook and every session. It wins over the folder of the session's `cwd`. When it is set, the store indexes this folder too, in addition to `NOBLIVION_MEMORY_DIRS`. |
+| `NOBLIVION_GUARD_OFF` | none | off (switch) | Turns the guard hook off: no deny from a note, no guard rows and no label rows. The credential guard stays on. Set `NOBLIVION_RECALL_GUARD_ONLY_LANDING=0` too, or a landing rule shows only for a prompt that names a landing action. |
 | `NOBLIVION_GUARD_TABLE` | none | `<data dir>/guard-tables/<slug of the memory folder>.json` | The guard table file. By default each project has its own table. When this is set, every session uses this one file, and the guard hook does not rebuild it when a memory file changes outside a session start or a memory write. |
 | `NOBLIVION_GUARD_LOG` | none | `<data dir>/guard-log.jsonl` | The guard log. |
 | `NOBLIVION_GUARD_STATE_DIR` | none | `<data dir>/guard-state` | State per agent and session. |
@@ -436,6 +437,7 @@ See [guards.md](guards.md) for what each guard does.
 | --- | --- | --- | --- |
 | `NOBLIVION_MEMORY_SYNC_CMD` | `sync.index_command` | `<data dir>/venv/bin/noblivion index` when it exists | The command that re-indexes the notes after a write. |
 | `NOBLIVION_MEMORY_SIMILAR_HINT` | `memory.similar_hint` | on (switch) | After a write of a memory file that the store has not indexed yet, the memory fields hook asks the running store for the notes nearest to the new rule and description. It names up to 3 notes at a cosine of 0.70 or more that share a trigger or a subject label with the new note, and says to add `supersedes:` or merge. The call stays on the loopback address, starts no store, and stops after 1.5 seconds. With no store the hook says nothing. |
+| `NOBLIVION_MEMORY_FIELDS_OFF` | none | off (switch) | Turns the memory fields hook off: no field check and no hint. The hook still rebuilds the guard table after a memory write. |
 | `NOBLIVION_MEMORY_SYNC_OFF` | none | off (switch) | Turns the hook off. |
 | `NOBLIVION_MEMORY_SYNC_BASH_OFF` | none | off (switch) | Turns off only the check after shell commands. |
 | `NOBLIVION_MEMORY_SYNC_STATE_DIR` | none | `<data dir>/cache` | Stamps and the log of the hook. |
