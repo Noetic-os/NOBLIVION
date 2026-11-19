@@ -55,7 +55,7 @@ from .learning_nearest import (
     candidate_key,
     nearest_targets,
 )
-from .learning_pages import CoverageExhausted, ExtractionPages, coverage
+from .learning_pages import NO_CALL, NO_PROPOSAL, CoverageExhausted, ExtractionPages, coverage
 from .learning_semantic import (
     MAX_BATCH_ITEMS,
     SEMANTIC_BATCH_PROMPT,
@@ -1254,6 +1254,21 @@ class LearningWorker:
             reconciled = self._semantic(job, decisions, existing, state)
             state.pop("dependency_deferred", None)
             state.pop("deferred_decisions", None)
+            # NOBLIVION-271: every model call of the job ended with no proposal.
+            # The flag sits in progress because a forget erases the receipts.
+            calls = [r for r in pages._rows() if r["reason"] != NO_CALL]
+            if calls and all(
+                r["status"] == "no_lesson" and r["reason"] == NO_PROPOSAL for r in calls
+            ):
+                state["zero_proposals"] = {
+                    "windows": len(calls),
+                    "contract": contract,
+                    "model": getattr(self.provider, "model", ""),
+                    "reasoning_effort": getattr(self.provider, "reasoning_effort", ""),
+                    "reason": NO_PROPOSAL,
+                }
+            else:
+                state.pop("zero_proposals", None)
             self.ledger.checkpoint(ident, lease, state)
             if cfg.enable_consolidation:
                 result = self.ledger.finish(ident, lease, reconciled, enqueue_consolidation=True)
@@ -1561,7 +1576,7 @@ class LearningWorker:
                         piece,
                         [],
                         "no_lesson",
-                        "no tool or direct user text in the window; no model call",
+                        NO_CALL,
                     )
                     # The resume path below reads the saved receipt and goes on.
                     continue
@@ -1704,7 +1719,7 @@ class LearningWorker:
                     if status == "processed"
                     else "every candidate failed an evidence check"
                     if outcome["mismatches"]
-                    else "provider reported no eligible lesson"
+                    else NO_PROPOSAL
                 )
                 receipt = pages.save(unit_index, page, piece, accepted, status, reason)
             if receipt["status"] == "rejected" and receipt["reason"] in CONTINUING_REJECTIONS:

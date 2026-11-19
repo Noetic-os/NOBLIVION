@@ -20,6 +20,7 @@ from noblivion.learning_extract import (
     validate_response,
     validate_sources,
 )
+from noblivion.learning_pages import NO_PROPOSAL
 from noblivion.learning_worker import LearningWorker, ProviderResponse
 from noblivion.redaction import contains_secret
 from test_learning_review_fixes import (
@@ -294,6 +295,35 @@ def test_all_dropped_page_is_no_lesson_with_a_visible_reason(ledger):
     page = ledger.conn.execute("SELECT status,reason FROM learning_extraction_pages").fetchone()
     assert page["status"] == "no_lesson"
     assert page["reason"] == "every candidate failed an evidence check"
+
+
+def zero_flag(ledger):
+    row = ledger.conn.execute("SELECT status,progress FROM learning_jobs").fetchone()
+    return row["status"], json.loads(row["progress"]).get("zero_proposals")
+
+
+def test_a_job_with_no_proposal_in_any_window_is_flagged_and_counted(ledger):
+    capture(ledger, "style", "Keep responses short.")
+    assert worker(ledger, PagedProvider([[]])).run_once()["status"] == "done"
+    status, flag = zero_flag(ledger)
+    assert status == "done" and flag["windows"] == 1 and flag["reason"] == NO_PROPOSAL
+    assert sum(ledger.status()["zero_proposal_jobs"].values()) == 1
+
+
+def test_a_normal_answer_or_an_all_dropped_answer_leaves_the_flag_unset(ledger):
+    record = capture(ledger, "style", "Keep responses short.")
+    good = candidate(record, statement="Keep responses short.")
+    assert worker(ledger, PagedProvider([[good]])).run_once()["status"] == "done"
+    assert zero_flag(ledger) == ("done", None)
+    assert ledger.status()["zero_proposal_jobs"] == {}
+
+
+def test_an_all_dropped_answer_does_not_set_the_zero_proposal_flag(ledger):
+    record = capture(ledger, "style", "Keep responses short.")
+    bad = candidate(record, statement="Keep answers brief.")
+    bad["evidence"] = [{"source_id": "style", "quote": "Keep answers brief."}]
+    assert worker(ledger, PagedProvider([[bad]])).run_once()["status"] == "done"
+    assert zero_flag(ledger) == ("done", None)
 
 
 # -- fix 2: a legacy redaction marker no longer withholds a read-only note ----------

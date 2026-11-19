@@ -31,6 +31,12 @@ WINDOW_EXHAUSTED = "continuation dropped every candidate; window coverage incomp
 # The reason of every exhausted receipt before NOBLIVION-247. It also marks the
 # hard decision limit, which still ends the job.
 LEGACY_EXHAUSTED = "hard limit or repeated saturated response; coverage incomplete"
+# NOBLIVION-271: the two reasons of a no_lesson receipt. NO_CALL is a piece with
+# no text a note can cite, so no model call ran. NO_PROPOSAL is a model reply
+# with no candidate at all. A job whose model calls all ended in NO_PROPOSAL is
+# flagged zero_proposals when it finishes.
+NO_CALL = "no tool or direct user text in the window; no model call"
+NO_PROPOSAL = "provider reported no eligible lesson"
 
 
 class CoverageExhausted(ValidationError):

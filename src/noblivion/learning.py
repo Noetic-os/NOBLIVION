@@ -2383,6 +2383,9 @@ class LearningLedger:
         # Windows that stopped on a continuation with every candidate dropped;
         # the job went on (NOBLIVION-247).
         exhausted_windows = 0
+        # Done jobs whose every model call proposed nothing, per contract and
+        # model (NOBLIVION-271).
+        zero_proposal_jobs: dict[str, int] = {}
         # Candidates not stored because a check could not validate them, and the
         # semantic re-asks spent (NOBLIVION-240). Counts and classes only.
         rejected_candidates: dict[str, int] = {}
@@ -2407,6 +2410,10 @@ class LearningLedger:
             progress = json.loads(row["progress"])
             rejected_windows += len(progress.get("rejected_windows", []))
             exhausted_windows += len(progress.get("exhausted_windows", []))
+            flag = progress.get("zero_proposals")
+            if row["status"] == "done" and isinstance(flag, dict):
+                label = f"contract {flag.get('contract')} / {flag.get('model') or 'unknown'}"
+                zero_proposal_jobs[label] = zero_proposal_jobs.get(label, 0) + 1
             semantic_restarts += progress.get("semantic_restarts", 0)
             semantic_reused += progress.get("semantic_reused", 0)
             semantic = progress.get("semantic") or {}
@@ -2464,6 +2471,7 @@ class LearningLedger:
             "candidate_mismatches": mismatches,
             "rejected_windows": rejected_windows,
             "exhausted_windows": exhausted_windows,
+            "zero_proposal_jobs": zero_proposal_jobs,
             "rejected_candidates": rejected_candidates,
             "semantic_reasks": semantic_reasks,
             "semantic_restarts": semantic_restarts,

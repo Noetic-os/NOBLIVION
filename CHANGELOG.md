@@ -8,6 +8,7 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- `noblivion learning status` counts done jobs whose model proposed no candidate in any window (`zero_proposal_jobs`, per contract and model), and the job keeps a `zero_proposals` flag (NOBLIVION-271).
 - `noblivion learning retry --omit-withheld` lets a job that waits on notes withheld for a
   secret finish without them; off by default, their text never reaches a prompt (NOBLIVION-263).
 - A very deeply nested `config.json` no longer stops `noblivion index` or

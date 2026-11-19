@@ -512,7 +512,13 @@ all twelve are dropped, the window makes no more progress. That page gets an
 `exhausted_windows` in the job progress, and the job goes on with the next
 window. The candidates of the earlier pages of the window stay. Learning
 status counts these windows in `exhausted_windows`. The hard decision limit
-(`max_decisions`) still ends the job. The
+(`max_decisions`) still ends the job. A job that ends `done` while its model proposed
+no candidate in any window (every model call ended `no_lesson` with the reason
+"provider reported no eligible lesson") gets a `zero_proposals` entry in its progress with
+`windows`, `contract`, `model` and `reasoning_effort`. Learning status counts these jobs in
+`zero_proposal_jobs`, keyed `contract <n> / <model>`. A window with no text to cite makes no
+model call and does not count. A job with any other window result, such as a dropped
+candidate or a rejected window, is not flagged. The
 records of one job use at most 256 KiB. An exact-quote failure has a detail: `repeated`,
 `whitespace`, `case`, `typography` or `absent`. The progress row of each job keeps
 one record per page (`unit`, `continuation`) with the cited source IDs, so a
