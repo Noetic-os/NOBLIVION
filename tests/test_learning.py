@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 
-from noblivion import db
+from noblivion import db, learning_cli
 from noblivion.learning import (
     BudgetExceeded,
     BudgetLimits,
@@ -520,6 +520,42 @@ def test_summary_is_bounded_deterministic_and_derived(ledger):
     assert ledger.summary("test", "sample-project", limit_chars=5) == ""
     ledger.exclude(first["note_id"])
     assert ledger.summary("test", "sample-project") == ""
+
+
+def test_summary_skips_noise_and_ranks_before_the_cut(ledger, tmp_path, capsys):
+    """NOBLIVION-272: stored status lines stay out; a high id still gets a place."""
+    first = learn(ledger)
+
+    def add(note_id, statement, category, updated_at):
+        ledger.conn.execute(
+            "INSERT INTO learning_notes SELECT ?,project,root,?,?,revision,status,scope,?,title,"
+            "?,observed_at,effective_at,file_hash,created_at,? FROM learning_notes WHERE note_id=?",
+            (
+                note_id,
+                "k-" + note_id,
+                "p-" + note_id,
+                category,
+                statement,
+                updated_at,
+                first["note_id"],
+            ),
+        )
+
+    add("0000-noise", "auto-resume: ON", "preference", 9.0)
+    add("0001-fact", "The store is local.", "fact", 9.0)
+    add("0002-old", "Run lint first.", "workflow", 1.0)
+    add("0003-new", "Run tests first.", "workflow", 2.0)
+    ledger.conn.commit()
+    lines = ledger.summary("test", "sample-project").splitlines()
+    ids = [line.split("[memory:")[1].split(" ")[0] for line in lines]
+    assert ids[1:] == ["0003-new", "0002-old", "0001-fact"]
+    assert first["note_id"] == ids[0] and "0000-noise" not in ids
+    one_line = len(lines[0])
+    assert ledger.summary("test", "sample-project", limit_chars=one_line).startswith("- ")
+    path = tmp_path / "test.db"
+    assert learning_cli.main(["--database", str(path), "noise-scan"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert (report["noise_notes"], report["note_ids"]) == (1, ["0000-noise"])
 
 
 def test_legacy_context_is_read_only(ledger):

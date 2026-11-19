@@ -37,11 +37,14 @@ def _parser() -> argparse.ArgumentParser:
         "retry",
         "prune",
         "batch-report",
+        "noise-scan",
     ):
         command = commands.add_parser(name)
         command.add_argument(
             "--project",
-            default=None if name in {"inspect", "batch-report"} else config.DEFAULT_NAMESPACE,
+            default=None
+            if name in {"inspect", "batch-report", "noise-scan"}
+            else config.DEFAULT_NAMESPACE,
         )
         command.add_argument("--root", default="", help="explicit project root")
         command.add_argument("--session", default="")
@@ -98,6 +101,8 @@ def main(argv: list[str] | None = None) -> int:
     path = args.database or config.data_dir() / config.DB_FILE
     if args.command == "batch-report":
         return _batch_report(path, args)
+    if args.command == "noise-scan":
+        return _noise_scan(path, args)
     try:
         conn = db.open_db(path, allow_migrate=False)
         try:
@@ -139,6 +144,46 @@ def _batch_report(path: Path, args: argparse.Namespace) -> int:
         print("noblivion learning: " + type(exc).__name__, file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _noise_scan(path: Path, args: argparse.Namespace) -> int:
+    """Count the active notes the admission check would refuse. Read-only, no migration.
+
+    It covers every active note in the store unless --project or --root narrows it.
+    It prints note ids and counts, never a statement.
+    """
+    from noblivion.learning_extract import is_noise_note
+
+    try:
+        if not Path(path).is_file():
+            raise OSError("database missing")
+        conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=ON")
+            query = "SELECT note_id,category,statement FROM learning_notes WHERE status='active'"
+            params: list[str] = []
+            if args.project is not None:
+                query += " AND project=?"
+                params.append(args.project)
+            if args.root:
+                query += " AND root=?"
+                params.append(args.root)
+            rows = conn.execute(query + " ORDER BY note_id", params).fetchall()
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        print("noblivion learning: " + type(exc).__name__, file=sys.stderr)
+        return 1
+    noise = [row["note_id"] for row in rows if is_noise_note(dict(row))]
+    print(
+        json.dumps(
+            {"active_notes": len(rows), "noise_notes": len(noise), "note_ids": noise},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

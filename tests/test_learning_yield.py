@@ -484,6 +484,7 @@ SOURCES = [
     source("Should we pin versions?", "s3"),
     {**source("Prefer small commits.", "s4"), "metadata": {"direct_user": False}},
     source("Run lint before push.", "s5"),
+    source("auto-resume: ON", "s6"),
     tool("1 failed", "t1", 1, hour=10),
     tool("3 passed", "t2", 0),
     tool("All checks passed", "t3", 0, command="ruff check"),
@@ -561,6 +562,10 @@ MOVED = [
             "evidence": [ref("s3", "Should we pin versions?")],
         },
         "a question is not a durable assertion",
+    ),
+    (
+        {"statement": "auto-resume: ON", "evidence": [ref("s6", "auto-resume: ON")]},
+        "statement is operational noise",
     ),
     (
         {"statement": "Prefer small commits.", "evidence": [ref("s4", "Prefer small commits.")]},

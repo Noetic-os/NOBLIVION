@@ -32,6 +32,7 @@ All notable changes to NOBLIVION. The format follows
 - `scripts/uninstall.sh` now also stops a new store that waits for the lock
   of an old store after a version restart. Before, such a store could start
   later on the kept database from the deleted venv (NOBLIVION-88).
+- The learning extractor refuses status and raw-output statements (wait or countdown lines, empty-result markers, on/off lines, bare URLs, dict or JSON dumps, table headers, grep or ls listings) as `statement is operational noise`. The session-start summary and prompt context skip such stored notes and rank the rest by category, then newest first. `noblivion learning noise-scan` counts the stored notes the check would refuse and changes nothing (NOBLIVION-272).
 
 ## 0.1.39 - 2026-11-19
 

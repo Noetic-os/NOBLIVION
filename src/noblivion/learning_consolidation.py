@@ -20,6 +20,7 @@ from . import db
 from .learning_extract import (
     contains_authority,
     contains_injection,
+    is_noise_note,
     is_quoted_or_injected,
     source_date,
 )
@@ -663,6 +664,8 @@ class ConsolidationLedger:
         items = []
         for note in self.ledger.semantic_notes(project, root, session_id=session_id):
             if not self.ledger.read_allowed(project, note["root"], session_id):
+                continue
+            if is_noise_note(note):  # NOBLIVION-272: status or raw output is not a claim
                 continue
             refs = self.note_supports(note)
             try:

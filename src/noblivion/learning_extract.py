@@ -7,6 +7,7 @@ immutable captured text, not against offsets or hashes invented by a model.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -25,6 +26,69 @@ _INJECTION = re.compile(
     r"|\b(?:system|developer)\s*:"
 )
 _KEY = re.compile(r"[a-z][a-z0-9_.:/-]{2,159}\Z")
+
+# NOBLIVION-272: a line copied word for word from a tool is not a lesson when it is
+# only status or raw output. The prompt asks the model to abstain on these; this is
+# the check in code. Each pattern fits one whole line.
+_NOISE_LINE = re.compile(
+    r"""(?ix)
+    [\W_]*(?:
+      (?:no|0|zero)\s+(?:entries|results?|output|matches|rows|data|items|files)(?:\s+found)?
+      | none | empty | n/a | null | \(?empty\)?
+    )[\W_]*
+    | (?:please\s+)?wait\s+~?\d+\s*\w*\b.{0,60}
+    | (?:retry(?:ing)?|try\s+again|resum\w+|next\s+\w+)\s+in\s+~?\d+\s*\w*\b.{0,40}
+    | \d+\s*(?:s|secs?|seconds?|m|mins?|minutes?)\s+(?:left|remaining)\b.{0,40}
+    | [\w .\-/]{1,60}\s*:\s*(?:on|off|enabled|disabled)\s*\.?
+    | <?https?://\S+>?
+    | [\s|:+=\-]{3,}
+    | \|.*\|.*
+    | (?:[A-Z][A-Z0-9_/]*(?:\ {2,}|\t))+[A-Z][A-Z0-9_/]*
+    | [-dlcbps][rwxsStT-]{9}[.+@]?\s.*
+    """
+)
+_NOISE_THEN_AGAIN = re.compile(r"(?i)\bthen\s+(?:run|try)\s+(?:this|it)\s+again\b")
+_NOISE_KEYVAL = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*=\S*")
+_NOISE_STRUCT_KEY = re.compile(r"""['"]\w[\w .-]*['"]\s*:""")
+
+
+def is_noise_note(note: dict) -> bool:
+    """A stored note that the admission check would now refuse (proven_fix is exempt)."""
+    return note.get("category") != "proven_fix" and is_noise_statement(note.get("statement", ""))
+
+
+def is_noise_statement(text: str) -> bool:
+    """True when a statement is status or raw command output with no claim in it.
+
+    Refused: wait, retry and countdown lines, empty-result markers, on/off state
+    lines, bare URLs, dict or JSON dumps, table header and separator lines, and
+    grep or ls listings. A single KEY=VALUE line can be a real fact; KEY=VALUE
+    counts as noise only in a listing of more than one line.
+    """
+    lines = [line.strip() for line in str(text).splitlines() if line.strip()]
+    if not lines:
+        return True
+    if len(lines) > 1 and all(_NOISE_KEYVAL.fullmatch(line) for line in lines):
+        return True
+    whole = " ".join(lines)
+    if lines[0][0] in "{[" and lines[-1][-1] in "}]":
+        try:
+            json.loads(whole)
+            return True
+        except ValueError:
+            pass
+        try:
+            ast.literal_eval(whole)
+            return True
+        except (ValueError, SyntaxError):
+            pass
+        if lines[0][0] == "{" and _NOISE_STRUCT_KEY.search(whole):
+            return True
+    if len(whole) <= 120 and _NOISE_THEN_AGAIN.search(whole):
+        return True
+    return all(_NOISE_LINE.fullmatch(line) for line in lines) or any(
+        re.fullmatch(r"[^\s:]+\.\w+:\d+:.*", line) for line in lines[:1]
+    )
 
 
 class ValidationError(ValueError):
@@ -305,6 +369,7 @@ CANDIDATE_FAILURES = frozenset(
         "statement is not extractive evidence",
         "general scope requires explicit cross-project evidence",
         "a question is not a durable assertion",
+        "statement is operational noise",
         "human evidence required",
         "observed fact evidence required",
         "indirect human evidence",
@@ -589,6 +654,8 @@ def _candidate(candidate, lookup: dict[str, dict], existing: list, ids: dict) ->
         raise ValidationError("general scope requires explicit cross-project evidence")
     if statement.rstrip().endswith("?"):
         raise ValidationError("a question is not a durable assertion")
+    if category != "proven_fix" and is_noise_statement(statement):
+        raise ValidationError("statement is operational noise")
     roles = {lookup[str(e["source_id"])]["role"] for e in primary}
     if category in {"preference", "workflow", "decision"}:
         if "user" not in roles:

@@ -9,7 +9,12 @@ import json
 
 import pytest
 
-from noblivion.learning_extract import ValidationError, build_windows, validate_response
+from noblivion.learning_extract import (
+    ValidationError,
+    build_windows,
+    is_noise_statement,
+    validate_response,
+)
 from noblivion.redaction import contains_secret
 
 
@@ -243,3 +248,33 @@ def test_project_preference_cannot_become_general():
     p = proposal(s)
     p["scope"] = "project"
     assert validate_response(response([p]), [s])[0]["scope"] == "project"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "-- No entries --",
+        "Wait 596s (~10m), then run this again.",
+        "auto-resume: ON",
+        "src/a.py:12:FLAG_A=1\nsrc/b.py:30:FLAG_B=0",
+        "| Name | Status | Owner |",
+        "{'name': 'str', 'count': int}",
+        "https://github.com/example/repo/pull/12",
+    ],
+)
+def test_status_and_raw_output_are_operational_noise(text):
+    """NOBLIVION-272: the seven rows seen in a session-start block are refused."""
+    assert is_noise_statement(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Use short sentences.",
+        "Wait for CI before a merge.",
+        "FLAG_A=1",
+        "auto-resume is on by default.",
+    ],
+)
+def test_a_claim_is_not_operational_noise(text):
+    assert not is_noise_statement(text)

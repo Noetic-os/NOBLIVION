@@ -23,11 +23,14 @@ from typing import Any
 
 from noblivion import db, learning_batch, learning_ranges
 
+from .learning_extract import is_noise_note
 from .learning_values import LearningError as LearningError
 from .learning_values import SemanticSnapshotChanged as SemanticSnapshotChanged
 from .learning_values import canonical_json, text_hash, validate_safe_text, validate_text
 
 CATEGORIES = frozenset({"preference", "workflow", "fact", "decision", "proven_fix"})
+# Summary order by category: what the user asked for comes before what a tool showed.
+_SUMMARY_RANK = {"preference": 0, "workflow": 1, "decision": 2, "proven_fix": 3, "fact": 4}
 MAX_RECORDS = 256
 # Output token counts per job in provider_metrics (NOBLIVION-261). output_calls
 # and reasoning_calls count the calls that reported each count.
@@ -2243,7 +2246,21 @@ class LearningLedger:
         if not 0 <= limit_chars <= 64000:
             raise LearningError("invalid summary size")
         lines: list[str] = []
-        for note in self.semantic_notes(project, root, session_id=session_id):
+        # NOBLIVION-272: rank before the cut, so a low note id does not win a place.
+        # A stored status line or raw output is skipped; the row stays in the store.
+        notes = [
+            note
+            for note in self.semantic_notes(project, root, session_id=session_id)
+            if not is_noise_note(note)
+        ]
+        notes.sort(
+            key=lambda note: (
+                _SUMMARY_RANK.get(note["category"], len(_SUMMARY_RANK)),
+                -float(note.get("updated_at") or 0),
+                note["note_id"],
+            )
+        )
+        for note in notes:
             if not self.read_allowed(project, note["root"], session_id):
                 continue
             line = f"- {note['statement']} [memory:{note['note_id']} revision:{note['revision']}]"
@@ -2258,7 +2275,7 @@ class LearningLedger:
         notes = sum(
             1
             for note in self.semantic_notes(project, root, session_id=session_id)
-            if self.read_allowed(project, note["root"], session_id)
+            if self.read_allowed(project, note["root"], session_id) and not is_noise_note(note)
         )
         claims = self.conn.execute(
             "SELECT count(*) FROM learning_claims WHERE project=? AND status='active' "
