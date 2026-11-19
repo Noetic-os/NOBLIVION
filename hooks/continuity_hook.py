@@ -35,7 +35,8 @@ SessionStart, source ``startup``, ``resume``, ``clear`` (and ``fork``)
     one, with the whole file name less ``.md``. The name is never cut: the
     row text is cut instead, all rows to one length between 80 and 60
     characters, the longest that fits. Rows that still do not fit are left out.
-    ``NOBLIVION_CONTINUITY_BRIEFING=0`` turns the briefing off.
+    Off by default (NOBLIVION-223): ``NOBLIVION_CONTINUITY_BRIEFING=1`` turns the
+    briefing on.
 
 The ``status:`` field of a memory (``open``, ``closed`` or ``parked``; read by
 ``memory_fields.read_fields``, at the top level of the front matter
@@ -728,7 +729,7 @@ def session_start(
 ) -> Tuple[str, int, str]:
     if event.get("source") == "compact":
         return after_compact(event, env)
-    if not _flag(env, BRIEFING_ENV, True):
+    if not _flag(env, BRIEFING_ENV, False):  # NOBLIVION-223: off unless asked for
         return "", 0, "briefing_off"
     if warm_resume(event):
         return "", 0, "warm_resume"

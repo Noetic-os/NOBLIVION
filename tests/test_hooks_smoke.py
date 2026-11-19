@@ -242,6 +242,7 @@ def test_continuity_briefing_works_when_the_store_is_down(hook_env) -> None:
     cont = load("continuity_hook")
     env = {
         "NOBLIVION_CONTINUITY": "1",
+        "NOBLIVION_CONTINUITY_BRIEFING": "1",  # off by default since NOBLIVION-223
         "NOBLIVION_RECALL_MEMORY_DIR": str(memory),
         "NOBLIVION_RECALL_CACHE_DIR": str(hook_env["data"] / "cache"),
     }

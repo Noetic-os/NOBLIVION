@@ -65,7 +65,7 @@ READERS: dict[str, Reader] = {
     "NOBLIVION_RECALL_NUDGE_SHADOW": rn.shadow_on,
     "NOBLIVION_SUBAGENT_RULES_OFF": sr.is_off,
     "NOBLIVION_CONTINUITY": ch.is_on,
-    "NOBLIVION_CONTINUITY_BRIEFING": lambda e: ch._flag(e, ch.BRIEFING_ENV, True),
+    "NOBLIVION_CONTINUITY_BRIEFING": lambda e: ch._flag(e, ch.BRIEFING_ENV, False),
     "NOBLIVION_CONTINUITY_PRECOMPACT_PRINT": lambda e: ch._flag(e, ch.PRECOMPACT_PRINT_ENV, True),
     "NOBLIVION_CONTINUITY_REQUIRE_STATUS": lambda e: ch._flag(e, ch.REQUIRE_STATUS_ENV, False),
     "NOBLIVION_CONTINUITY_CURATED": lambda e: ch._flag(e, ch.CURATED_ENV, True),

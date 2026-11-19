@@ -390,7 +390,7 @@ prints a short briefing at session start. It is off by default.
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
 | `NOBLIVION_CONTINUITY` | none | off (switch) | Turns the hook on. |
-| `NOBLIVION_CONTINUITY_BRIEFING` | none | on (switch) | The briefing at session start. |
+| `NOBLIVION_CONTINUITY_BRIEFING` | none | off (switch) | The briefing at session start. Off by default (NOBLIVION-223). |
 | `NOBLIVION_CONTINUITY_PRECOMPACT_PRINT` | none | on (switch) | Before a compaction, print the saved rules as well as save them. |
 | `NOBLIVION_CONTINUITY_BUDGET_S` | none | `4.0` | The time budget, in seconds. |
 | `NOBLIVION_CONTINUITY_MAX_CHARS` | none | `1500` | The most characters of the briefing, 500 to 2000. |

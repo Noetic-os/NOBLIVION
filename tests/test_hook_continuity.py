@@ -175,6 +175,7 @@ def world(tmp_path):
     )
     env = {
         "NOBLIVION_CONTINUITY": "1",
+        "NOBLIVION_CONTINUITY_BRIEFING": "1",  # off by default since NOBLIVION-223
         "NOBLIVION_RECALL_CACHE_DIR": str(cache),
         "NOBLIVION_MEMORY_DIR": str(mem),
         "HOME": str(tmp_path / "home"),

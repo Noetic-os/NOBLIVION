@@ -73,14 +73,14 @@ def _plugin_version() -> str:
 SERVER_VERSION = _plugin_version()
 PROTOCOL_VERSION = "2025-06-18"
 
-# NOBLIVION-123: Claude Code lists a plugin's MCP tools by name only when it defers them, so the
-# tool descriptions are not in the model's view. The server instructions are. One short text, on
-# by default; ``NOBLIVION_MCP_INSTRUCTIONS=0`` leaves it out.
+# NOBLIVION-123: one short text, on by default; ``NOBLIVION_MCP_INSTRUCTIONS=0`` leaves it out.
+# NOBLIVION-223: the recall moments are stated once, in the tool description. ``.mcp.json`` loads
+# the tools always (``alwaysLoad``), so the description is in the model's view; a second copy here
+# was paid on every call.
 INSTRUCTIONS_ENV = "NOBLIVION_MCP_INSTRUCTIONS"
 INSTRUCTIONS = (
-    "NOBLIVION memory. Call noblivion_recall before you write 'cannot verify', before a "
-    "merge, before a restart of a shared service, and before you file or comment on a ticket. "
-    "Call it before noblivion_remember, so you do not duplicate a note."
+    "NOBLIVION memory. Call noblivion_recall before noblivion_remember, so you do not "
+    "duplicate a note."
 )
 
 

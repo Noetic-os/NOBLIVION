@@ -51,6 +51,10 @@ All notable changes to NOBLIVION. The format follows
 - The guard rows budget of a session counts the shown text too
   (NOBLIVION-223). Once the shown rows reach 6,000 characters, a later row
   shows its rule line only, without Apply. Which rows show does not change.
+- The recall moments are stated once, in the `noblivion_recall` tool
+  description; the MCP server instructions keep only the recall-before-remember
+  sentence. The session briefing of the continuity hook is off by default
+  (NOBLIVION-223): `NOBLIVION_CONTINUITY_BRIEFING=1` turns it on.
 
 ## 0.1.38 - 2026-11-18
 
