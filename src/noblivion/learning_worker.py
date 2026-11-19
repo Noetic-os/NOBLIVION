@@ -1717,7 +1717,7 @@ class LearningWorker:
                     if status == "saturated"
                     else "provider reported remaining lessons"
                     if status == "processed"
-                    else "every candidate failed an evidence check"
+                    else "every candidate failed a candidate check"
                     if outcome["mismatches"]
                     else NO_PROPOSAL
                 )

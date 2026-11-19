@@ -426,11 +426,15 @@ def _screen(candidate, lookup) -> str | None:
     texts += [item.get("quote") for item in items]
     if any(isinstance(text, str) and contains_secret(text) for text in texts):
         return "secret-bearing field"
+    # A reference without a source_id key is a malformed reference of this one
+    # candidate (_object drops it as "missing required fields"). Only a named
+    # source that is not in the window rejects the whole response.
+    items = [item for item in items if "source_id" in item]
     for item in items:
-        if str(item.get("source_id")) not in lookup:
+        if str(item["source_id"]) not in lookup:
             return "unknown evidence source"
     for item in items:
-        source, quote = lookup[str(item.get("source_id"))], item.get("quote")
+        source, quote = lookup[str(item["source_id"])], item.get("quote")
         if not isinstance(quote, str) or not quote:
             continue
         start = source["content"].find(quote)

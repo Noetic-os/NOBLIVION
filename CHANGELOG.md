@@ -8,6 +8,7 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- A nested correction or proof reference without a `source_id` now drops only its own candidate instead of the whole response, and a page whose candidates all failed says "every candidate failed a candidate check" (NOBLIVION-237).
 - A learning job whose sources are gone is cancelled with `last_error` "job sources missing (0 present)" instead of with no reason (NOBLIVION-240).
 - `noblivion learning status` counts done jobs whose model proposed no candidate in any window (`zero_proposal_jobs`, per contract and model), and the job keeps a `zero_proposals` flag (NOBLIVION-271).
 - `noblivion learning retry --omit-withheld` lets a job that waits on notes withheld for a
