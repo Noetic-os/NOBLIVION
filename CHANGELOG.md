@@ -16,6 +16,10 @@ All notable changes to NOBLIVION. The format follows
   (NOBLIVION-84). Claude Code passes a longer `additionalContext` only as a
   file path and a short preview. Over the budget the learning context gives way
   first, then the other parts from the last one back, each cut at a line break.
+- The hook redactor reads each key name once (NOBLIVION-80). Three key-name
+  rules and the JWT rule in `hooks/memory_text.py` started again at each `-` of
+  a long word, so inputs like `"a-" * 50000` took time in the square or cube of
+  their length. They now start once per word; the redacted text is the same.
 
 ## 0.1.38 - 2026-11-18
 

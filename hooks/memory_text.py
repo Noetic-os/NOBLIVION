@@ -84,9 +84,22 @@ def _mod(name: str):
 # --------------------------------------------------------------------------
 _REDACT = "[REDACTED]"
 _RX_SCHEME = (r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}", 0)
+# NOBLIVION-80: a key name is one run of ``[\w-]`` characters, read once. The
+# old form ``\b([\w-]*KEY[\w-]*)`` started at every word boundary in the run
+# (each ``-``) and read the rest of the run again from each: the square of the
+# run length, the cube with many key words. The match set is the same: group 1
+# always ends at the end of its run (``:``, ``=`` or a blank must follow), and
+# when the first start in a run fails, no later start in it can match. So a
+# match starts only at the start of a run (the lookbehind), and one lookahead
+# tests for the key word. Group 1 can now hold leading ``-`` characters, which
+# ``redact`` prints back unchanged. ``api key`` with a blank or a tab in it
+# joins two runs: the first branch, tried first as the old form did.
+_KEY_IN_RUN = r"(?:password|passwd|pwd|secret|token|api[_-]*key|auth|credential|private[_-]?key)"
+_KEY_NAME = (
+    r"(?<![\w-])([\w-]*api[_-]*[ \t][ \t_-]*key[\w-]*|(?=[\w-]*?" + _KEY_IN_RUN + r")[\w-]+)"
+)
 _RX_KEY_NAME = (
-    r"(?i)\b([\w-]*(?:password|passwd|pwd|secret|token|api[ \t_-]*key|auth|credential|private[_-]?key)[\w-]*)"
-    r"(\s*[:=]\s*|\s+)(['\"]?)[^\s'\"&,;]{4,}\3",
+    r"(?i)" + _KEY_NAME + r"(\s*[:=]\s*|\s+)(['\"]?)[^\s'\"&,;]{4,}\3",
     0,
 )
 # Memory text is prose: "token budget", "auth hook", "unauthenticated calls"
@@ -101,8 +114,7 @@ _RX_SCHEME_MEMORY = (
     0,
 )
 _RX_KEY_NAME_MEMORY = (
-    r"(?i)\b([\w-]*(?:password|passwd|pwd|secret|token|api[ \t_-]*key|auth|credential|private[_-]?key)[\w-]*)"
-    r"(\s*[:=]\s*)(['\"]?)(?!\d{1,9}(?:[\s'\"&,;]|$))[^\s'\"&,;]{4,}\3",
+    r"(?i)" + _KEY_NAME + r"(\s*[:=]\s*)(['\"]?)(?!\d{1,9}(?:[\s'\"&,;]|$))[^\s'\"&,;]{4,}\3",
     0,
 )
 # A key in quotes, the JSON form ``"password": "value"``: the closing quote of
@@ -136,9 +148,11 @@ _RX_QUOTED_VALUE = (
     r"(\s*[:=]\s*)(?:(['\"])(?:(?!\3)[^\\\n]|\\.){4,}\3|-?[\d.]{4,}(?=[\s'\"&,;}\]]|$))",
     0,
 )
-# pass / session / cookie keys only with ":" or "=" ("3 passed" stays).
+# pass / session / cookie keys only with ":" or "=" ("3 passed" stays). One
+# start per run, as ``_KEY_NAME`` above (NOBLIVION-80).
 _RX_PASS_KEY = (
-    r"(?i)\b([\w-]*(?:pass|session|cookie)[\w-]*)(\s*[:=]\s*)(['\"]?)[^\s'\"&,;]{3,}\3",
+    r"(?i)(?<![\w-])(?=[\w-]*?(?:pass|session|cookie))([\w-]+)"
+    r"(\s*[:=]\s*)(['\"]?)[^\s'\"&,;]{3,}\3",
     0,
 )
 # In memory text ``pass`` is a word of prose, of a compiler and of a test
@@ -209,6 +223,20 @@ _RX_DASH_P_MEMORY = (
 _KEY_BEGIN = r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
 _KEY_END = r"-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
 _KEY_TEXT = r"[A-Za-z0-9+/=]{16,}"
+# A JWT: ``eyJ`` after a non-word character, then three parts of 8 or more
+# base64url characters. The old form ``\beyJ...`` started at each ``eyJ`` in a
+# run of base64url characters and read the run again from each: on
+# ``eyJ-eyJ-...`` the square of its length. Every ``eyJ`` in one run has the
+# same run end, so when the first one does not start a JWT, no later one does.
+# A match now starts at the run start only and reads up to the first ``eyJ``
+# once (the lookahead keeps no backtrack point; the ``lead`` copy consumes it).
+# ``redact`` prints ``lead`` back, so the redacted text is the same
+# (NOBLIVION-80; the store rule ``_JWT_RE`` has the same shape).
+_RX_JWT = (
+    r"(?<![A-Za-z0-9_-])(?=(?P<lead>[A-Za-z0-9_-]*?)\beyJ)(?P=lead)"
+    r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+    0,
+)
 _KEY_LAST_LINE = (
     r"(?:(?:\r?\n|\\r\\n|\\n)[ \t]*(?=[A-Za-z]{0,14}[0-9+/=])[A-Za-z0-9+/=]{1,15}"
     r"(?=[ \t]*(?:[\r\n'\"]|\\[rn]|$)))?"
@@ -256,7 +284,7 @@ _SECRET_PATTERNS = _SHARED_SHAPES + (
     (r"\bsk-(?:ant-|proj-|or-)?[A-Za-z0-9_-]{16,}", 0),
     (r"\bxox[abposr]-[A-Za-z0-9-]{10,}", 0),
     (r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b", 0),
-    (r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}", 0),
+    _RX_JWT,
     # URL user info up to the LAST @ before the host: a token with no colon
     # (https://<token>@github.com) and a password that holds an @.
     (r"(?<=://)[^/\s]+(?=@[^@/\s]*(?:[/\s:?#]|$))", 0),
@@ -290,7 +318,9 @@ def redact(text: str, patterns: Optional[List[re.Pattern[str]]] = None) -> str:
     defaults to the query set (``_SECRET_RX``)."""
     out = text or ""
     for rx in _SECRET_RX if patterns is None else patterns:
-        if rx.groups >= 3:
+        if "lead" in rx.groupindex:  # text in front of the secret, kept (``_RX_JWT``)
+            out = rx.sub(lambda m: f"{m.group('lead')}{_REDACT}", out)
+        elif rx.groups >= 3:
             out = rx.sub(lambda m: f"{m.group(1)}{m.group(2)}{_REDACT}", out)
         elif rx.groups == 1:
             out = rx.sub(lambda m: f"{m.group(1)} {_REDACT}", out)
