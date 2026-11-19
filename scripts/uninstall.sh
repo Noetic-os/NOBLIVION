@@ -80,8 +80,10 @@ python3 "$(dirname "${BASH_SOURCE[0]}")/install_codex.py" "${CODEX_ARGS[@]}"
 
 # Stop the store and wait for it to exit (NOBLIVION-28): a store that still
 # stops after this script ends could write in the data dir after Claude Code
-# deleted it. SIGTERM to the pid in store.json, if that process is the store.
-# The store finishes its current job batch first (at most about 70 s).
+# deleted it. SIGTERM to the pid in store.json and to the pid in every
+# store.wait.<pid>.json (a new store that waits for the lock of an old one
+# after a restart, NOBLIVION-88), if that process is a store. The store
+# finishes its current job batch first (at most about 81 s).
 STOP_WAIT_S=90
 is_store() {
     if [ -r "/proc/$1/cmdline" ]; then
@@ -92,27 +94,44 @@ is_store() {
         return 1
     fi
 }
-PID="$(python3 -c 'import json, sys
-try:
-    print(int(json.load(open(sys.argv[1]))["pid"]))
-except Exception:
-    pass' "$DATA_DIR/store.json" 2>/dev/null || true)"
-if [ -n "$PID" ] && is_store "$PID"; then
-    run kill -TERM "$PID"
+ALL_PIDS="$(python3 -c 'import glob, json, os, sys
+seen = []
+for path in [os.path.join(sys.argv[1], "store.json")] + sorted(
+    glob.glob(os.path.join(glob.escape(sys.argv[1]), "store.wait.*.json"))
+):
+    try:
+        pid = int(json.load(open(path))["pid"])
+    except Exception:
+        continue
+    if pid > 0 and pid not in seen:
+        seen.append(pid)
+print(" ".join(str(pid) for pid in seen))' "$DATA_DIR" 2>/dev/null || true)"
+PIDS=""
+for pid in $ALL_PIDS; do
+    if is_store "$pid"; then PIDS="$PIDS $pid"; fi
+done
+PIDS="${PIDS# }"
+if [ -n "$PIDS" ]; then
+    for pid in $PIDS; do run kill -TERM "$pid"; done
     if [ "$DRY_RUN" = 1 ]; then
-        printf 'would wait up to %s s for the store (pid %s) to exit\n' "$STOP_WAIT_S" "$PID"
+        printf 'would wait up to %s s for the store (pid %s) to exit\n' "$STOP_WAIT_S" "$PIDS"
     else
-        printf 'noblivion uninstall: waiting for the store (pid %s) to exit\n' "$PID"
+        printf 'noblivion uninstall: waiting for the store (pid %s) to exit\n' "$PIDS"
+        # One shared limit for all pids.
         waited=0
-        while kill -0 "$PID" 2>/dev/null && is_store "$PID" && [ "$waited" -lt $((STOP_WAIT_S * 10)) ]; do
-            sleep 0.1
-            waited=$((waited + 1))
+        for pid in $PIDS; do
+            while kill -0 "$pid" 2>/dev/null && is_store "$pid" && [ "$waited" -lt $((STOP_WAIT_S * 10)) ]; do
+                sleep 0.1
+                waited=$((waited + 1))
+            done
         done
-        if kill -0 "$PID" 2>/dev/null && is_store "$PID"; then
-            printf 'noblivion uninstall: the store did not exit in %s s; sending SIGKILL\n' "$STOP_WAIT_S" >&2
-            kill -KILL "$PID" 2>/dev/null || true
-            while kill -0 "$PID" 2>/dev/null; do sleep 0.1; done
-        fi
+        for pid in $PIDS; do
+            if kill -0 "$pid" 2>/dev/null && is_store "$pid"; then
+                printf 'noblivion uninstall: the store (pid %s) did not exit in %s s; sending SIGKILL\n' "$pid" "$STOP_WAIT_S" >&2
+                kill -KILL "$pid" 2>/dev/null || true
+                while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done
+            fi
+        done
         printf 'noblivion uninstall: the store stopped\n'
     fi
 fi
@@ -131,6 +150,8 @@ if [ "$PURGE" = 1 ]; then
     printf 'noblivion uninstall: now remove the plugin: claude plugin uninstall noblivion\n'
 else
     rm -rf -- "$DATA_DIR/venv" "$DATA_DIR/models"
+    # Wait files of stores that stopped or were killed: no process uses them.
+    rm -f -- "$DATA_DIR"/store.wait.*.json
     printf 'noblivion uninstall: removed the venv and the model cache; kept the database, config and token in %s\n' "$DATA_DIR"
     printf 'noblivion uninstall: now remove the plugin and keep this data: claude plugin uninstall noblivion --keep-data\n'
     printf 'noblivion uninstall: without --keep-data, Claude Code deletes %s, the database included\n' "$DATA_DIR"

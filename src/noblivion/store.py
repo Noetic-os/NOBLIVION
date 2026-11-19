@@ -153,9 +153,12 @@ def acquire_lock(
     *,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    stop: Callable[[], bool] = lambda: False,
 ) -> int:
     """``flock(LOCK_EX | LOCK_NB)`` on ``store.lock``; returns the fd to keep open.
-    ``wait_s``: how long to wait for a store that stops (``--lock-wait``)."""
+    ``wait_s``: how long to wait for a store that stops (``--lock-wait``).
+    ``stop``: when it returns true, the wait ends at once (a SIGTERM during
+    the wait, NOBLIVION-88)."""
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     deadline = clock() + max(0.0, wait_s)
     while True:
@@ -166,6 +169,9 @@ def acquire_lock(
             if exc.errno not in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
                 os.close(fd)
                 raise
+            if stop():
+                os.close(fd)
+                raise StoreLockedError("stopped while waiting for the lock") from None
             if clock() >= deadline:
                 os.close(fd)
                 raise StoreLockedError("another store holds the lock") from None
@@ -247,24 +253,52 @@ class Store:
         if self.host != LOOPBACK:
             raise BindRefusedError(f"the store binds {LOOPBACK} only")
         config.private_dir(self.data_dir, create=False)
-        self._lock_fd = acquire_lock(self.lock_path, self.lock_wait_s)
+        # A store that waits for the lock has no store.json yet. The wait file
+        # lets uninstall.sh find and stop it (NOBLIVION-88). It stays until
+        # store.json names this process, or until open() fails.
+        wait_file = self._write_wait_file() if self.lock_wait_s > 0 else None
         try:
-            self.token = ensure_token(self.data_dir)
-            # A new database only after install.sh has run (NOBLIVION-28).
-            create = config.is_installed(self.data_dir)
-            db.open_db(self.settings.db_path, allow_migrate=True, create=create).close()
-            self.server = make_server(self.host, self.store_settings.port, self)
-            self.port = int(self.server.server_address[1])
-            self.started_at = time.time()
-            self._last_request = self.clock()
-            self._write_store_json()
-        except BaseException:
-            if self.server is not None:
-                self.server.server_close()
-                self.server = None
-            self._release_lock()
-            raise
+            self._lock_fd = acquire_lock(
+                self.lock_path, self.lock_wait_s, stop=lambda: bool(self._signal_stop_reason)
+            )
+            try:
+                self.token = ensure_token(self.data_dir)
+                # A new database only after install.sh has run (NOBLIVION-28).
+                create = config.is_installed(self.data_dir)
+                db.open_db(self.settings.db_path, allow_migrate=True, create=create).close()
+                self.server = make_server(self.host, self.store_settings.port, self)
+                self.port = int(self.server.server_address[1])
+                self.started_at = time.time()
+                self._last_request = self.clock()
+                self._write_store_json()
+            except BaseException:
+                if self.server is not None:
+                    self.server.server_close()
+                    self.server = None
+                self._release_lock()
+                raise
+        finally:
+            if wait_file is not None:
+                try:
+                    wait_file.unlink()
+                except OSError:
+                    pass
         log.info("store %s listening on port %d", __version__, self.port)
+
+    @property
+    def wait_file_path(self) -> Path:
+        return self.data_dir / f"{config.STORE_WAIT_PREFIX}{os.getpid()}.json"
+
+    def _write_wait_file(self) -> Path | None:
+        """Write ``store.wait.<pid>.json``. One file per pid, so two waiting
+        stores never remove each other's file. A failed write only logs."""
+        path = self.wait_file_path
+        try:
+            _write_private(path, (json.dumps({"pid": os.getpid()}) + "\n").encode("utf-8"))
+        except OSError as exc:
+            log.warning("could not write %s: %s", path.name, type(exc).__name__)
+            return None
+        return path
 
     def _write_store_json(self) -> None:
         info = {
@@ -445,7 +479,8 @@ class Store:
             learning_enabled = False
         emb = self.embedding
         model_id = emb.model_id
-        memories = missing = schema_version = content_rev = vector_rev = consent = None
+        memories = missing = chunks_pending = None
+        schema_version = content_rev = vector_rev = consent = None
         dim = getattr(emb.embedder, "dim", None) if emb.embedder is not None else None
         try:
             with self.connection() as conn, db.read_tx(conn):
@@ -457,14 +492,13 @@ class Store:
                     "AND archived_at IS NULL AND deleted_at IS NULL",
                     (self.namespace,),
                 ).fetchone()[0]
-                missing = 0
+                missing = chunks_pending = 0
                 if model_id is not None:
-                    missing = conn.execute(
-                        "SELECT count(*) FROM memories m WHERE m.project = ? "
-                        "AND m.archived_at IS NULL AND m.deleted_at IS NULL AND NOT EXISTS "
-                        "(SELECT 1 FROM vectors v WHERE v.memory_id = m.id AND v.model = ?)",
-                        (self.namespace, model_id),
-                    ).fetchone()[0]
+                    # A vector of an older text or size is not done (NOBLIVION-44).
+                    # Only the size the model returns counts, never the stored one.
+                    missing, chunks_pending = embedding.count_pending(
+                        conn, model_id, self.namespace, emb.vector_dim
+                    )
                     if dim is None:
                         row = conn.execute(
                             "SELECT dim FROM vectors WHERE model = ? LIMIT 1", (model_id,)
@@ -485,6 +519,7 @@ class Store:
                 "dim": dim,
                 "state": "off" if emb.state == embedding.STATE_NONE else emb.state,
                 "missing_vectors": missing,
+                "chunk_vectors_pending": chunks_pending,
                 "consent": consent,
             },
             "mode": self.mode(),
@@ -850,7 +885,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         store.open()
     except StoreLockedError:
-        log.info("another store runs; exiting")
+        if store._signal_stop_reason:
+            log.info("stopped by %s while waiting for the lock", store._signal_stop_reason)
+        else:
+            log.info("another store runs; exiting")
         return EXIT_OK
     except db.SchemaError as exc:
         log.error("schema: %s", exc)

@@ -171,6 +171,46 @@ def test_uninstall_waits_for_the_store_to_exit(tmp_path):
         _kill(pid)
 
 
+def test_uninstall_stops_a_store_that_waits_for_the_lock(tmp_path):
+    """NOBLIVION-88: after a restart the new store waits for the lock of the
+    old one and has no store.json yet. Before the fix uninstall.sh stopped only
+    the pid in store.json, and the waiting store started later from a deleted
+    venv."""
+    env = store_env(tmp_path)
+    data = Path(env["NOBLIVION_DATA_DIR"])
+    db.open_db(data / config.DB_FILE, create=True).close()
+    held = store.acquire_lock(data / config.STORE_LOCK_FILE)  # the old store
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "noblivion.store", "--lock-wait", "90"],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        wait_file = data / f"{config.STORE_WAIT_PREFIX}{proc.pid}.json"
+        assert wait_for(wait_file.exists, 20), "no wait file"
+        assert json.loads(wait_file.read_text())["pid"] == proc.pid
+        assert launcher.read_store_json(data) is None
+        out = subprocess.run(
+            ["bash", str(UNINSTALL), "--data-dir", str(data)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert out.returncode == 0, out.stderr
+        assert f"pid {proc.pid}" in out.stdout and "the store stopped" in out.stdout
+        assert "SIGKILL" not in out.stderr  # the SIGTERM ended the wait
+        assert proc.wait(5) == 0
+        assert not list(data.glob(config.STORE_WAIT_GLOB))
+        assert launcher.read_store_json(data) is None
+    finally:
+        os.close(held)
+        _kill(proc.pid)
+
+
 # -- the rules behind the fix ------------------------------------------------------------
 
 

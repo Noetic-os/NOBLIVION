@@ -546,7 +546,11 @@ def loop_gate(run: Run, a: argparse.Namespace, prof: profiles.Profile | None = N
     connects = sum(int(r.get("external_connects", 0)) for r in sandbox_rows)
     health = loop.final_health or {}
     embedding = health.get("embedding") or {}
-    embedding_ready = embedding.get("state") == "ready" and not embedding.get("missing_vectors")
+    embedding_ready = (
+        embedding.get("state") == "ready"
+        and not embedding.get("missing_vectors")
+        and not embedding.get("chunk_vectors_pending")
+    )
     archive_pilot_loop(run)
     out = {
         "rows": rows,
@@ -557,7 +561,10 @@ def loop_gate(run: Run, a: argparse.Namespace, prof: profiles.Profile | None = N
         "heartbeat": cadence,
         "external_connects": connects,
         "embedding_ready": bool(embedding_ready),
-        "embedding": {k: embedding.get(k) for k in ("state", "missing_vectors", "model")},
+        "embedding": {
+            k: embedding.get(k)
+            for k in ("state", "missing_vectors", "chunk_vectors_pending", "model")
+        },
         "memories": health.get("memories"),
         "status_failed": res["failed"],
         "status_notes": res["notes"],

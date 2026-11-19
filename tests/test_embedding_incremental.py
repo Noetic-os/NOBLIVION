@@ -114,6 +114,25 @@ def test_missing_vectors_are_repaired_without_a_content_revision(conn, service, 
     assert_current_vectors(conn)
 
 
+def test_pending_counts_a_vector_of_an_older_text_or_size(conn, service):
+    """Health counts a row whose vector is of its old text (NOBLIVION-44)."""
+    model_id = service.embedder.model_id
+    memory_id = add_memory(conn, "orchard", "prune the trees")
+    add_memory(conn, "other", "water the roses", project="elsewhere")
+    service.backfill(conn)
+    with db.read_tx(conn):
+        assert embedding.count_pending(conn, model_id, "claude_code") == (0, 0)
+        dim = conn.execute("SELECT dim FROM vectors LIMIT 1").fetchone()[0]
+        assert embedding.count_pending(conn, model_id, "claude_code", dim + 1)[0] == 1
+    change_memory(conn, memory_id, "graft the trees")
+    with db.read_tx(conn):
+        rows, chunks = embedding.count_pending(conn, model_id, "claude_code", dim)
+    assert rows == 1 and chunks >= 1
+    service.backfill(conn)
+    with db.read_tx(conn):
+        assert embedding.count_pending(conn, model_id, "claude_code", dim) == (0, 0)
+
+
 def test_stale_vectors_retry_after_a_partial_failure_without_a_new_revision(conn, service):
     first = add_memory(conn, "first", "old text")
     second = add_memory(conn, "second", "old text")

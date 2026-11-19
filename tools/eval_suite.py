@@ -88,7 +88,8 @@ SCHEMA = 1
 DATA_NAME = "noblivion-noblivion"
 DB_NAME = "noblivion.db"
 # As the store picks the chunks to embed: live rows, a text that is not empty. A vector
-# of an older text counts as there.
+# of an older text counts as there. Only for a build whose health has no
+# ``embedding.chunk_vectors_pending`` (NOBLIVION-44).
 CHUNK_BACKLOG = (
     "SELECT count(*) FROM memory_chunks c JOIN memories m ON m.id = c.parent_id "
     "WHERE m.archived_at IS NULL AND m.deleted_at IS NULL "
@@ -639,10 +640,11 @@ class Store:
             self._get("/api/memories/index?" + query, 60)
 
     def chunk_backlog(self) -> int:
-        """Chunks of live rows that have no vector yet. The health answer does not
-        count them (``embedding.missing_vectors`` is file rows only), and the ranking
-        reads the chunk vectors: a store that still embeds them answers late. 0 for a
-        database from before the chunks, and when there is no database yet."""
+        """Chunks of live rows that have no vector yet, for a build whose health
+        answer does not count them: a newer build gives
+        ``embedding.chunk_vectors_pending``. The ranking reads the chunk vectors, so a
+        store that still embeds them answers late. 0 for a database from before the
+        chunks, and when there is no database yet."""
         db = self.data / DB_NAME
         if not db.is_file():
             return 0
@@ -658,9 +660,9 @@ class Store:
 
     def wait_ready(self) -> dict:
         """The health answer once the index is idle and every vector is there, the
-        chunk vectors too (``chunk_backlog``). Two equal answers in a row, so a scan
-        that starts late is not missed. A store that gives up says how many chunks
-        were left."""
+        chunk vectors too (``chunk_vectors_pending``, else ``chunk_backlog``). Two
+        equal answers in a row, so a scan that starts late is not missed. A store
+        that gives up says how many chunks were left."""
         end = time.monotonic() + self.wait_s
         last = None
         left: int | None = None
@@ -683,10 +685,13 @@ class Store:
                     embeds and embedding.get("missing_vectors")
                 )
                 if embeds and not busy:
-                    try:
-                        left = self.chunk_backlog()
-                    except sqlite3.Error:  # the database is busy: not known, so not ready
-                        left = None
+                    if "chunk_vectors_pending" in embedding:
+                        left = embedding["chunk_vectors_pending"]  # None: not known, not ready
+                    else:  # a build from before the health field (NOBLIVION-44)
+                        try:
+                            left = self.chunk_backlog()
+                        except sqlite3.Error:  # the database is busy: not known, so not ready
+                            left = None
                     if left is not None and self.backlog is None:
                         self.backlog, seen_at = left, time.monotonic()
                     if left == 0 and self.drain_s is None:

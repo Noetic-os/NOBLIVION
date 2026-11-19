@@ -24,6 +24,10 @@ DB_FILE = "noblivion.db"
 INDEX_LOCK_FILE = "index.lock"
 STORE_LOCK_FILE = "store.lock"
 STORE_JSON_FILE = "store.json"
+# One per store that waits for the lock: {"pid": N}. uninstall.sh stops these
+# pids too, because a waiting store has no store.json yet (NOBLIVION-88).
+STORE_WAIT_PREFIX = "store.wait."
+STORE_WAIT_GLOB = STORE_WAIT_PREFIX + "*.json"
 TOKEN_FILE = "token"
 SPAWN_STAMP_FILE = "spawn.stamp"
 STORE_LOG_FILE = "logs/store.log"

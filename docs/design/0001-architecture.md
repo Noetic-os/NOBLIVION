@@ -96,6 +96,7 @@ Python versions:
 | `noblivion.db` (+ `-wal`, `-shm`) | store, CLI | the SQLite database |
 | `store.lock` | store | `flock` held for the store's lifetime |
 | `store.json` | store | `{pid, port, version, started_at}`, written atomically after bind |
+| `store.wait.<pid>.json` | store | `{pid}` of a store that waits for the lock (`--lock-wait`); removed when `store.json` names that store or the start fails, so `uninstall.sh` can stop a store that has no `store.json` yet (NOBLIVION-88) |
 | `token` | store | 32 random bytes, hex, mode 0600 (section 4.1); the store makes it at start when it is missing or malformed (section 19) |
 | `spawn.stamp` | hooks | mtime marks the last start attempt |
 | `cache/by-session/` | hooks | per-session recall cache and trust event spool |
@@ -139,9 +140,11 @@ empty `noblivion.db` again.
    redactor, and goes to step 4 (it skips the stamp check). The new store
    gets `--lock-wait 90`, so it waits up to 90 s for the old store to
    release `store.lock` instead of exiting at step 5. A busy old store can
-   need about 71 s to stop: 5 s for open requests, 60 s for the jobs
-   thread, 1 s per model thread and 5 s for the database. No proof: go to
-   step 3.
+   need about 81 s to stop: 5 s for open requests, 60 s for the jobs
+   thread, 10 s for the learning leases, 1 s per model thread and 5 s for
+   the database. Before the wait the new store writes
+   `store.wait.<pid>.json`, and a `SIGTERM` ends the wait (NOBLIVION-88).
+   No proof: go to step 3.
 3. The hook checks `spawn.stamp`. If its mtime is less than 30 s old,
    another hook started the store already. The hook stops. The check and
    the touch of step 4 run under `flock` on `spawn.stamp` (a caller that
@@ -729,6 +732,7 @@ With a valid token:
   "vector_rev": 1088,
   "embedding": {"backend": "fastembed", "model": "BAAI/bge-small-en-v1.5",
                 "dim": 384, "state": "ready", "missing_vectors": 0,
+                "chunk_vectors_pending": 0,
                 "consent": "not_needed"},
   "mode": "hybrid",
   "trust_ranking": "shadow",
@@ -739,6 +743,11 @@ With a valid token:
 
 - `status` is `ok`, or `degraded` when the model failed to load. A degraded store still answers every route.
 - `embedding.state`: `loading`, `ready`, `reembedding`, `failed`, `off`.
+- `embedding.missing_vectors`: live rows of the project that the backfill
+  still has to embed: no vector, a vector of an older text, or a vector of
+  another size than the model returns. `embedding.chunk_vectors_pending` is
+  the same count for the chunks, which the ranking reads. Both are 0 when
+  the backfill is done (NOBLIVION-44).
 - `index_state`: `idle`, `scanning`, or `stopped` when the background jobs
   thread has ended (no scan, backfill or maintenance until a restart).
 - `embedding.consent`: `not_needed` for a backend that keeps text on the
@@ -2169,8 +2178,10 @@ token, and starts the store. Run it again after a plugin update.
 
 ### 13.3 Uninstall
 
-`uninstall.sh [--data-dir DIR] [--purge] [--dry-run]` stops the store,
-waits until it has exited (90 s, then `SIGKILL`; NOBLIVION-28), and
+`uninstall.sh [--data-dir DIR] [--purge] [--dry-run]` stops the store
+(the pid in `store.json` and the pid in every `store.wait.<pid>.json`, so a
+new store that waits for the lock after a restart stops too; NOBLIVION-88),
+waits until each has exited (90 s in all, then `SIGKILL`; NOBLIVION-28), and
 removes the venv and the model cache. It keeps `noblivion.db`, the config
 and the token unless `--purge` is given. It refuses a folder that holds no
 venv, store file or database. It never touches memory files. Then the

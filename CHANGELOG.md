@@ -20,6 +20,13 @@ All notable changes to NOBLIVION. The format follows
   and message string as raw text, so a line-start secret or a value on the next
   line is withheld; the whole-note marker swap needs the raw guard first, and a
   context checkpointed before this is isolated again, not failed (NOBLIVION-259).
+- The full health answer now counts a row whose vector is of an older text
+  in `embedding.missing_vectors`, and gives `embedding.chunk_vectors_pending`
+  for the chunks, so it no longer reports 0 before the backfill is done
+  (NOBLIVION-44).
+- `scripts/uninstall.sh` now also stops a new store that waits for the lock
+  of an old store after a version restart. Before, such a store could start
+  later on the kept database from the deleted venv (NOBLIVION-88).
 
 ## 0.1.39 - 2026-11-19
 

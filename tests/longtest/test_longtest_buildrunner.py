@@ -256,6 +256,23 @@ def test_a_store_with_an_embedding_backlog_is_not_ready(tmp_path, monkeypatch):
     assert len(looks) == 4 and store.backlog == 2 and store.drain_s == 1.0
 
 
+def test_a_health_answer_with_the_chunk_count_is_read_before_the_database(tmp_path, monkeypatch):
+    """A build whose health gives ``chunk_vectors_pending`` is not asked through its
+    database: that count also sees a vector of an older text (NOBLIVION-44)."""
+    chunk_db(tmp_path, chunks=7)  # the database says 7: the health answer wins
+    store, looks = ready_store(tmp_path, monkeypatch, on_look=lambda n: 9 + min(n, 3))
+    plain = store.health
+
+    def health():
+        answer = plain()
+        answer["embedding"]["chunk_vectors_pending"] = max(0, 3 - len(looks))
+        return answer
+
+    store.health = health
+    store.wait_ready()
+    assert len(looks) == 4 and store.backlog == 2 and store.drain_s == 1.0
+
+
 def test_a_backlog_that_does_not_drain_ends_the_wait_and_says_what_was_left(tmp_path, monkeypatch):
     chunk_db(tmp_path, chunks=7, with_vector=2)
     store, looks = ready_store(tmp_path, monkeypatch)

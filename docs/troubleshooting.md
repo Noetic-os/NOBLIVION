@@ -102,6 +102,7 @@ exits with code 1.
 | --- | --- | --- |
 | `bind failed on port N: Address already in use` | Another program uses the port. This happens only with a fixed `port`. | Stop that program, or set `port` (or `NOBLIVION_PORT`) to `0` (the default: the system picks a free port) or to another port. |
 | `another store runs; exiting` | A store already holds `store.lock`. | Nothing. The running store serves the hooks. |
+| `stopped by SIGTERM while waiting for the lock` | A new store waited for the lock of an old store, and got SIGTERM, for example from `uninstall.sh` (NOBLIVION-88). | Nothing. |
 | `schema: ...` | The database is from a newer version, or is damaged. | Update the plugin, or move `noblivion.db` away and run `noblivion index` to build a new one. Trust history is in the old file. |
 | `store stopping: idle` | The store had no request for 30 minutes, and no learning job could run. | Nothing. The next prompt starts it again. |
 | `not installed: no database at ...` | There is no `noblivion.db`, and `install.sh` has not run for this data dir. The store makes no new database then (NOBLIVION-28). | Type `/noblivion:setup`, or run `install.sh`. |
@@ -114,8 +115,10 @@ ensure-running` prints `noblivion: not installed: no data dir at ...` and
 exits 1 when the data dir is missing. Neither makes the data dir.
 
 To stop the store, send SIGTERM to the process id in
-`<data dir>/store.json`. The uninstall script does the same, and waits
-until the store has exited.
+`<data dir>/store.json`. A new store that waits for the lock of an old
+store after a restart has no `store.json` yet: its process id is in
+`<data dir>/store.wait.<pid>.json`. The uninstall script sends SIGTERM to
+both, and waits until each store has exited.
 
 ## Handshake failure
 
