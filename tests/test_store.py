@@ -42,6 +42,7 @@ from store_helpers import (
     FakeEmbedder,
     FakeRemote,
     add_memory,
+    change_memory,
     mark_installed,
     remote_service,
 )
@@ -1008,6 +1009,30 @@ def test_index_command_changes_get_vectors_with_periodic_scans_off(tmp_path):
         assert any("Kettle before tea." in text for text in embedded)
     finally:
         run.stop()
+
+
+def test_full_health_counts_a_vector_of_an_older_text_as_pending(tmp_path):
+    """A changed row keeps its old vector until the next backfill pass. The
+    full health counts it in ``missing_vectors`` and its chunks in
+    ``chunk_vectors_pending`` (NOBLIVION-44)."""
+    st = make_store(tmp_path, embedding_service=fake_service())
+    with closing(db.open_db(st.settings.db_path, create=True)) as conn:
+        st.embedding.start(conn)
+        try:
+            memory_id = add_memory(conn, "orchard", "prune the trees")
+            st.embedding.backfill(conn)
+            assert st.embedding.state == embedding.STATE_READY
+            emb = st.health(nonce=None, full=True)["embedding"]
+            assert (emb["missing_vectors"], emb["chunk_vectors_pending"]) == (0, 0)
+            change_memory(conn, memory_id, "graft the trees")
+            emb = st.health(nonce=None, full=True)["embedding"]
+            assert emb["missing_vectors"] == 1
+            assert emb["chunk_vectors_pending"] >= 1
+            st.embedding.backfill(conn)
+            emb = st.health(nonce=None, full=True)["embedding"]
+            assert (emb["missing_vectors"], emb["chunk_vectors_pending"]) == (0, 0)
+        finally:
+            st.embedding.close()
 
 
 def test_a_revoked_consent_stops_a_running_store_from_sending_text(tmp_path, monkeypatch):
