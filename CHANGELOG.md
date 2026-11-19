@@ -33,6 +33,11 @@ All notable changes to NOBLIVION. The format follows
   the row limit (NOBLIVION-233). The own-row and older-note steps work on a
   fixed count of top rows (5 for the prompt hook, 3 for the subagent hook);
   the limit only cuts. At the default limits the output is the same.
+- The keyword-only gate keeps the rows of a short title prompt (NOBLIVION-231).
+  A top row with one informative word of the prompt now passes when it holds
+  0.25 of the score the prompt can reach (`GATE_ONE_WORD_SCORE_SHARE`, from the
+  recorded off-topic share of 0.211 at most). Only stores with no embedder use
+  this gate.
 
 ## 0.1.38 - 2026-11-18
 

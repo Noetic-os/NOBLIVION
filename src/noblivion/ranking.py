@@ -73,6 +73,12 @@ GATE_MIN_WORDS = 2
 # words); the on-topic one-rare-word prompts had 0.59 and up, 0.23 and up with one unknown
 # word, 0.14 and up with two. 0.12 sits between 0.104 and 0.14: two unknown words still pass.
 GATE_MIN_SCORE_SHARE = 0.12
+# NOBLIVION-231. A title prompt of 1 to 5 words holds one informative word of the top row and
+# fails the two-word rule. The gate also passes 1 informative word with this score share.
+# Recorded on two 20-prompt dumps of a real store copy (``~/.cache/nob153-work``): the off-topic
+# prompts the gate drops reach 0.211 at most; the dropped title prompts sit at 0.33 or more in
+# 4 of 5 and 5 of 6. 0.25 sits between them.
+GATE_ONE_WORD_SCORE_SHARE = 0.25
 _MARKER_LINE_RE = re.compile(r"^\[(?:claude_code_md|transcript_mined): [^\]\n]*\][ \t]*$", re.M)
 
 
@@ -256,10 +262,11 @@ def keyword_gate(
     """The relevance gate of keyword-only mode (NOBLIVION-153). Without a cosine no floor can
     judge a row, so any prompt with a word in common got its rows. The gate keeps the rows
     only when the top row holds at least ``GATE_MIN_WORDS`` informative words of the query, or
-    when every term of the query that the pool knows is rare and in the top row and the top row
-    reaches ``GATE_MIN_SCORE_SHARE`` of the score the query can reach (a short prompt with one
-    rare word, ``score_share``), or when a label of the top row is named by the query; else it
-    returns no row.
+    one informative word and ``GATE_ONE_WORD_SCORE_SHARE`` of the score the query can reach
+    (NOBLIVION-231), or when every term of the query that the pool knows is rare and in the top
+    row and the top row reaches ``GATE_MIN_SCORE_SHARE`` of the score the query can reach (a
+    short prompt with one rare word, ``score_share``), or when a label of the top row is named
+    by the query; else it returns no row.
 
     A stop word is not a term for the gate unless the query has no other term. ``tokens`` are
     the tokens of the query and ``named`` those of the query and the target (the label match
@@ -280,7 +287,10 @@ def keyword_gate(
     cap = index.n // 2
     informative = min(index.df_cut(GATE_INFORMATIVE_MASS), cap)
     rare = min(index.df_cut(GATE_RARE_MASS), cap)
-    if sum(1 for w in shared if index.df[w] <= informative) >= GATE_MIN_WORDS:
+    n_informative = sum(1 for w in shared if index.df[w] <= informative)
+    if n_informative >= GATE_MIN_WORDS:
+        return ranked
+    if n_informative >= 1 and score_share(index, top, terms, tokens) >= GATE_ONE_WORD_SCORE_SHARE:
         return ranked
     if (
         terms

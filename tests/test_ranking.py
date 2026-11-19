@@ -594,8 +594,11 @@ def _gate(query: str, top: int, mode: str = ranking.MODE_KEYWORD, rows=None, ind
     return ranking.keyword_gate(ranking.RankResult(mode, [hit], len(rows)), index, tokens, tokens)
 
 
-def test_the_gate_drops_the_rows_for_one_ordinary_shared_word():
-    assert _gate("mid", 0).hits == []
+def test_the_gate_needs_a_score_share_for_one_ordinary_shared_word():
+    # NOBLIVION-231: one informative word passes when the top row holds
+    # GATE_ONE_WORD_SCORE_SHARE of what the query can score (0.50 here) ...
+    assert len(_gate("mid", 0).hits) == 1
+    # ... and not when words the pool does not hold pull the share under it (0.12 here).
     assert _gate("mid and some other words", 0).hits == []
 
 
@@ -616,10 +619,12 @@ def test_the_gate_drops_a_rare_word_among_words_the_pool_does_not_hold():
     assert _gate("please explain u15 xyzzy", 15).hits == []
 
 
-def test_the_gate_drops_the_rows_for_a_rare_word_next_to_a_common_one():
-    # "all" is in every unit: it is a term of the query that the pool knows, and it is not rare.
-    assert _gate("u3 all", 3).hits == []
-    # A rare word that the top row does not hold gives no row either.
+def test_a_rare_word_next_to_a_common_one_passes_on_the_score_share():
+    # "all" is in every unit: it is a term of the query that the pool knows, and it is not rare,
+    # so the rare-word rule fails. The top row holds "u3", one informative word, and 0.41 of
+    # the score the query can reach: the one-word rule passes it (NOBLIVION-231).
+    assert len(_gate("u3 all", 3).hits) == 1
+    # A rare word that the top row does not hold gives no row.
     assert _gate("u3", 4).hits == []
 
 
@@ -634,7 +639,10 @@ def test_the_gate_does_not_count_a_stop_word_next_to_a_real_term():
     tokens_in_top = ("until", "which", "mid")
     rows[0] = ranking.PoolRow(**{**rows[0].__dict__, "tokens": rows[0].tokens + tokens_in_top})
     index = bm25.BM25([list(r.tokens) for r in rows])
-    assert _gate("mid until which", 0, rows=rows, index=index).hits == []
+    # With the stop words counted, three informative words would pass. Counted right, "mid" is
+    # one informative word, and the unknown "xyzzy" keeps the share under
+    # GATE_ONE_WORD_SCORE_SHARE (NOBLIVION-231), so no row.
+    assert _gate("mid until which xyzzy", 0, rows=rows, index=index).hits == []
 
 
 def test_the_gate_leaves_hybrid_answers_and_small_pools_alone():
