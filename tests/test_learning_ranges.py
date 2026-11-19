@@ -142,6 +142,17 @@ def test_excluding_a_source_cancels_the_ranged_job(ledger):
     assert status[0] == "cancelled"
 
 
+def test_a_job_whose_sources_are_gone_is_cancelled_with_a_reason(ledger):
+    # NOBLIVION-240: claim cancels an extract job that has no sources, and says why.
+    job = ledger.capture_batch(batch(1))["job_id"]
+    ledger.conn.execute("DELETE FROM learning_job_ranges WHERE job_id=?", (job,))
+    ledger.conn.execute("DELETE FROM learning_job_sources WHERE job_id=?", (job,))
+    assert ledger.claim("w") is None
+    assert ledger.conn.execute(
+        "SELECT status,last_error FROM learning_jobs WHERE id=?", (job,)
+    ).fetchone()[:] == ("cancelled", "job sources missing (0 present)")
+
+
 def test_a_source_stored_before_the_range_links_keeps_explicit_rows(ledger):
     ledger.capture_batch(batch(1))
     ledger.conn.execute("UPDATE learning_sources SET seq=0")

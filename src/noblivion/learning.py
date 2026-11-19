@@ -580,9 +580,11 @@ class LearningLedger:
                     continue
                 sources = self._job_sources(row["id"])
                 if not sources and row["kind"] == "extract":
+                    # NOBLIVION-240: say why, so a job that lost its sources is not silent.
                     self.conn.execute(
-                        "UPDATE learning_jobs SET status='cancelled',updated_at=? WHERE id=?",
-                        (now, row["id"]),
+                        "UPDATE learning_jobs SET status='cancelled',last_error=?,updated_at=? "
+                        "WHERE id=?",
+                        ("job sources missing (0 present)", now, row["id"]),
                     )
                     continue
                 token = _id()
