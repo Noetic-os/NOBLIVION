@@ -8,6 +8,11 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- The first prompt in a project no longer builds the guard table inside the
+  prompt hook (NOBLIVION-227). The label rows read the table as it is; when it
+  is missing, a detached `guard_table.py --rebuild` builds it and that one
+  prompt gets no label rows.
+
 ## 0.1.38 - 2026-11-18
 
 - Learning can run only in a night window (NOBLIVION-266). A new optional
