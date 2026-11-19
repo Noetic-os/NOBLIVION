@@ -676,7 +676,9 @@ class RankIndex:
                 path_tokens = bm25.tokenize(marker.group(0)) if marker else []
                 snap.units[mid] = tuple(
                     replace(u, slot=idx.add(bm25.tokenize(text) + path_tokens + field_tokens))
-                    for u, text in zip(snap.units[mid], texts, strict=True)
+                    # One text per unit, both in chunk order (``_add_rows``). No ``strict``:
+                    # the eval suite runs this code on Python 3.9.
+                    for u, text in zip(snap.units[mid], texts)  # noqa: B905
                 )
             else:
                 snap.units[mid] = (
