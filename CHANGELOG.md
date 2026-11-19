@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.39 - 2026-11-19
+
 - Per-session batch learning (NOBLIVION-267), off by default. With
   `"batch": {"enabled": true}` in `learning.json`, the worker runs one batch
   item per session instead of one extract job per capture. An item reads only
