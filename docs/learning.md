@@ -279,8 +279,9 @@ instead. It is off by default:
   or leased item. Capture is unchanged: it still makes and extends the capture
   jobs, but never changes the range of an item.
 - A capture job holds no work when it is pending and has no page receipt, no
-  window position (`next_window` 0), no continuation, no decision and no other
-  partial-work key in its progress. This is the same test that lets the worker
+  window position (`next_window` 0), no continuation, no decision, no other
+  partial-work key and no `withheld_omitted` mark (from `retry --omit-withheld`)
+  in its progress. This is the same test that lets the worker
   freeze such a job again under a newer contract. Attempts, budget charges, a
   frozen configuration and `provider_metrics` do not count: a job that failed
   before its first saved result (a provider outage, for example) holds nothing
@@ -329,6 +330,9 @@ Limits to know:
   other text again, as on a store with the flag off. A retried item whose text
   done capture jobs read only in part, or while a capture job of its session
   still runs, reads that text again.
+- A job with no work whose text an earlier item skipped (when the job still
+  counted as started) holds text below the watermark. No item reads that text,
+  so the job runs as a per-capture job, with its earlier context.
 - The claim keeps its order: the oldest due job first. An item is made when it
   is planned, so it waits behind the older capture jobs that hold work, and
   behind consolidation and draft jobs. Items do not go first, because a stream

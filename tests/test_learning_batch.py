@@ -817,6 +817,55 @@ def test_an_item_replaces_a_job_that_failed_before_any_saved_work(ledger):
     assert learning_batch.report(ledger.conn, "j.kind='extract'", [])["cancelled_jobs"] == 2
 
 
+def test_an_item_replaces_the_only_job_of_a_session_that_failed_before_work(ledger):
+    failed = failed_before_work(ledger)
+    item = ledger.claim("w", batch=True)
+    assert learning_batch.is_item(ledger.conn, item["id"])
+    assert [s["seq"] for s in item["sources"]] == [1, 2]
+    # While the item waits, the failed job neither runs nor keeps the store up.
+    ledger.defer(item["id"], item["lease_token"], retry_delay=3600, error="BudgetExceeded")
+    assert learning_batch.held_ids(ledger.conn) == {failed}
+    limits = BudgetLimits(max_calls=1000, max_seconds=10**7, max_tokens=10**9)
+    scopes = {(PROJECT, ROOT)}
+    assert not ledger.work_open(set(), scopes, max_attempts=4, limits=limits, batch=True)
+    assert ledger.claim("w", batch=True) is None
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE id=?", (item["id"],))
+    item = ledger.claim("w", batch=True)
+    ledger.finish(item["id"], item["lease_token"], [])
+    state = {j["id"]: (j["status"], j["last_error"]) for j in jobs(ledger)}
+    assert state[failed] == ("cancelled", "batch")
+
+
+def test_a_job_whose_text_an_earlier_item_skipped_runs_on_its_own(ledger, monkeypatch):
+    # The state a store can hold from before this fix: an item skipped the text of
+    # a job that counted as started and committed past it. The job holds no work
+    # now, but no item reads text below the watermark, so the job reads it.
+    monkeypatch.setattr(learning_ranges, "CONTEXT_SOURCES", 0)
+    failed = failed_before_work(ledger)
+    with db.write_tx(ledger.conn):
+        ledger.conn.execute(
+            "INSERT INTO learning_extraction_pages VALUES (?,0,0,'f','[]','[]','no_lesson','r',?)",
+            (failed, time.time()),
+        )
+    ledger.conn.execute(
+        "UPDATE learning_jobs SET next_attempt=3600+? WHERE id=?", (time.time(), failed)
+    )
+    later = ledger.capture_batch(payload(3))["job_id"]
+    item = ledger.claim("w", batch=True)
+    assert [s["seq"] for s in item["sources"]] == [3]
+    ledger.finish(item["id"], item["lease_token"], [])
+    ledger.conn.execute("DELETE FROM learning_extraction_pages WHERE job_id=?", (failed,))
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE id=?", (failed,))
+    assert failed in no_work_ids(ledger)
+    assert failed not in learning_batch.superseded_ids(ledger.conn)
+    job = ledger.claim("w", batch=True)
+    assert job["id"] == failed and [s["seq"] for s in job["sources"]] == [1, 2]
+    ledger.finish(job["id"], job["lease_token"], [])
+    state = {j["id"]: (j["status"], j["last_error"]) for j in jobs(ledger)}
+    assert state[failed] == ("done", "") and state[later] == ("cancelled", "batch")
+    assert ledger.claim("w", batch=True) is None
+
+
 def test_with_batch_off_a_job_that_failed_before_work_runs_as_before(ledger):
     failed = failed_before_work(ledger)
     ledger.capture_batch(payload(3))
@@ -864,6 +913,7 @@ WORK = [
     ("next_continuation", 1),
     ("decisions", [{"action": "add"}]),
     ("decisions", {"action": "add"}),
+    ("withheld_omitted", True),
 ] + [(key, {}) for key in learning_ranges.PARTIAL_WORK]
 
 

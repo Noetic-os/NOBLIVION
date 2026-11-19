@@ -70,6 +70,9 @@ NO_WORK = (
     + "".join(
         "AND json_type(j.progress,'$." + key + "') IS NULL " for key in learning_ranges.PARTIAL_WORK
     )
+    # An operator retry with --omit-withheld marks the job itself; an item would
+    # run without the mark, so such a job keeps its text.
+    + "AND json_type(j.progress,'$.withheld_omitted') IS NULL "
     + "AND NOT EXISTS (SELECT 1 FROM learning_extraction_pages p WHERE p.job_id=j.id)"
 )
 # Jobs ``c`` that read their text: done ones, and started ones that still run.
