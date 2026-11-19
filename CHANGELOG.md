@@ -29,6 +29,10 @@ All notable changes to NOBLIVION. The format follows
   (NOBLIVION-168). The label rows read the note from the folder its index
   number names (the new table key `folders`), not from the project folder
   only. The guard table version goes to 6, so each table is rebuilt once.
+- The order of the prompt rows and the subagent rule rows no longer depends on
+  the row limit (NOBLIVION-233). The own-row and older-note steps work on a
+  fixed count of top rows (5 for the prompt hook, 3 for the subagent hook);
+  the limit only cuts. At the default limits the output is the same.
 
 ## 0.1.38 - 2026-11-18
 

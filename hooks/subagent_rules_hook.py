@@ -434,7 +434,10 @@ def _rules_for(text: str, label: str, sid: Optional[str], t0: float, env: Mappin
         rh.log_line(cache, label, sid, 0, 0, 0, "skip:empty_query")
         return ""
     buf = io.StringIO()
-    rh._serve_index(query, label, sid, cache, t0, buf, ienv, DEFAULT_INDEX_MIN_SCORE)
+    # NOBLIVION-233: the row order works on the default count; the limit only cuts.
+    rh._serve_index(
+        query, label, sid, cache, t0, buf, ienv, DEFAULT_INDEX_MIN_SCORE, order_rows=ROWS_DEFAULT
+    )
     body = buf.getvalue().strip("\n")
     return f"{HEADER}\n{body}" if body else ""
 

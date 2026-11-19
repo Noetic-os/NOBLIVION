@@ -4191,8 +4191,13 @@ def _serve_index(
     default_floor: float = DEFAULT_INDEX_MIN_SCORE,
     diagnostic: Optional[Dict[str, Any]] = None,
     candidates_override: Optional[Sequence[IndexLine]] = None,
+    order_rows: int = PROMPT_ROWS_DEFAULT,
 ) -> None:
     """The ranked-index shape of one hook call (R1).
+
+    ``order_rows`` (NOBLIVION-233) is the fixed number of top rows that the own-row
+    and older-note steps work on. The row limit only cuts the ordered list, so the
+    rows at a limit of N are the first N rows at any higher limit.
 
     TWO DELIBERATE DIFFERENCES from the hit shape:
 
@@ -4507,15 +4512,18 @@ def _serve_index(
         note += f":hub{hub_seen}" + (f":hubcut{hub_cut}" if hub_cut else "")
     if desc_row is not None and desc_row.title in hub_names:
         desc_row = None  # a hub note fits almost every prompt: no description row for it
-    if own_on and by_name and k_shown >= 2:
+    if own_on and by_name:
         # NOBLIVION-160. After the hub demotion, before the cut to k.
-        lines, own_moved, desc_in = place_own_rows(lines, k_shown, by_name, desc_row, desc_ahead)
+        # NOBLIVION-233: on a fixed count of top rows, not the row limit; the rows
+        # that are not in the returned head follow it in their order.
+        head, own_moved, desc_in = place_own_rows(lines, order_rows, by_name, desc_row, desc_ahead)
+        lines = head + [ln for ln in lines if not any(ln is h for h in head)]
         trace("own_rows", lines)
         note += (":own1" if own_moved else "") + (":desc1" if desc_in else "")
     if by_name and older_mark(environ):
         # NOBLIVION-156. After the cuts and the own rows, before the cut to k: the newer note of
         # two on one subject is shown first, and the older row says so.
-        lines, marked = mark_older_rows(lines, k_shown, by_name)
+        lines, marked = mark_older_rows(lines, order_rows, by_name)
         if marked:
             note += f":older{marked}"
     if row_cap > 0 and min(len(lines), k) > k_shown:
