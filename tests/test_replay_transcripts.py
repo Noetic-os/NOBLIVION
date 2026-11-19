@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from noblivion import db
 from hookload import load_hook
+from noblivion import db
 from store_helpers import add_memory
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
