@@ -57,6 +57,7 @@ from .learning_nearest import (
     nearest_targets,
 )
 from .learning_pages import NO_CALL, NO_PROPOSAL, CoverageExhausted, ExtractionPages, coverage
+from .learning_ranges import PARTIAL_WORK
 from .learning_semantic import (
     MAX_BATCH_ITEMS,
     SEMANTIC_BATCH_PROMPT,
@@ -560,20 +561,8 @@ NEAREST_CONTRACT = 3
 # unchanged. They freeze version 1, so their started stages keep matching.
 DERIVATION_CONTRACT = 1
 # Progress keys that show partial work of an extraction job. A job with one of
-# them never freezes again under a newer contract.
-PARTIAL_WORK = (
-    "semantic",
-    "semantic_exclusions",
-    "deferred_decisions",
-    "dependency_deferred",
-    "format_repair",
-    "output_limit_hold",
-    "candidate_mismatches",
-    # NOBLIVION-245: split slots address pieces of the frozen windows. Under
-    # other windows they would split other text.
-    "length_splits",
-    "rejected_windows",
-)
+# them never freezes again under a newer contract. The tuple lives in
+# learning_ranges, so batch planning can use it without an import cycle.
 # Characters per window are window_chars times this factor.
 WINDOW_SCALE = {1: 1, 2: 2, 3: 2}
 # The exact configuration shape frozen by releases up to 0.1.24.

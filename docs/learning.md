@@ -270,36 +270,46 @@ instead. It is off by default:
   the session's sources and no earlier context.
 - Each session and client has a watermark: the last source that a committed
   batch item covered (`learning_session_watermarks`). An item starts at the
-  first source after the watermark that an unstarted capture job holds and that
-  no done job and no started job reads. It ends at the newest such source, or
+  first source after the watermark that a capture job with no work holds and
+  that no done job and no job with work reads. It ends at the newest such source, or
   before the next source would pass 200,000 characters. Text that is left goes
   to the next item.
 - The worker plans items when it claims a job, so only inside the night window
   and after the load probe lets it go on. One session has at most one pending
   or leased item. Capture is unchanged: it still makes and extends the capture
   jobs, but never changes the range of an item.
-- While the flag is on, the worker does not claim a capture job that no worker
-  has started (no attempt, no checkpoint, no page, no budget charge). It waits
-  for its session item. While its session has a pending or leased item, such a
+- A capture job holds no work when it is pending and has no page receipt, no
+  window position (`next_window` 0), no continuation, no decision and no other
+  partial-work key in its progress. This is the same test that lets the worker
+  freeze such a job again under a newer contract. Attempts, budget charges, a
+  frozen configuration and `provider_metrics` do not count: a job that failed
+  before its first saved result (a provider outage, for example) holds nothing
+  that an item could lose. Capture still extends only a job that no worker has
+  touched (no attempt and no budget charge), because a frozen job must keep its
+  range.
+- While the flag is on, the worker does not claim a capture job that holds no
+  work. It waits for its session item. While its session has a pending or leased item, such a
   job does not keep an idle store up; the item counts for itself.
 - When an item commits, in the same transaction, the watermark moves to the
-  last source of the item. Each unstarted capture job of the session that ends
+  last source of the item. Each capture job of the session with no work that ends
   at or below the watermark, and whose text is read, is cancelled with
   `last_error` `batch`. Text is read when an item read it or a done job read it.
-  A second run of the cancel changes nothing.
-- A started capture job keeps its work. It is never cancelled by an item, and it
+  A second run of the cancel changes nothing. The cancel keeps the budget rows
+  and the `provider_metrics` of the job, so budget windows and reports count
+  them as before.
+- A capture job with work keeps its work. It is never cancelled by an item, and it
   runs to its end as before. No item reads the text that it reads, so an item
   can skip that text and still move the watermark past it. A legacy job without
   a range and a consolidation or draft job are not changed.
-- An unstarted capture job that holds skipped text is not cancelled until a done
-  job has read that text. While a started job still reads it, the capture job
+- A capture job with no work that holds skipped text is not cancelled until a
+  done job has read that text. While a job with work still reads it, the capture job
   waits. When no job reads it (the started job is exhausted, or it was released
   before its first checkpoint), the capture job runs as a per-capture job, as in
   fallback mode, because no item reads text below the watermark.
 - An exhausted item stops batch learning for its session: the capture jobs of
   that session run as before, so no item repeats the failed range. `noblivion
   learning retry <id>` runs the item again; its commit then cancels the covered
-  capture jobs that are still unstarted. When done capture jobs already read all
+  capture jobs that still hold no work. When done capture jobs already read all
   of its text, the claim cancels the retried item with `last_error` `batch` and
   moves the watermark to its last source, so the text is not read again.
 - With the flag off again, the worker claims every job as before. An item that
@@ -319,6 +329,10 @@ Limits to know:
   other text again, as on a store with the flag off. A retried item whose text
   done capture jobs read only in part, or while a capture job of its session
   still runs, reads that text again.
+- The claim keeps its order: the oldest due job first. An item is made when it
+  is planned, so it waits behind the older capture jobs that hold work, and
+  behind consolidation and draft jobs. Items do not go first, because a stream
+  of new items would then hold back the jobs with work without end.
 - With the flag off, learning works as before. Only the reports change:
   `noblivion learning status` shows `settings.batch` and `batch-report` has a
   `batch` part.
@@ -693,7 +707,10 @@ status, the characters of source text in the job ranges and the part that an ear
 same session also holds in its range (`overlap_chars`). A new job takes earlier text of its session
 as context, so this text goes through extraction more than once. Under `pending` it also prints the number of sessions,
 the distinct characters, the distinct characters no done job read, and how many pending jobs hold
-stored work, were charged without stored work, or are unstarted. `unranged_extract_jobs` counts
+stored work, were charged without stored work, or are unstarted. With batch learning on, a job
+charged without stored work is treated like an unstarted one: a batch item reads its text and
+cancels it. One exception: batch learning keeps a job whose progress has a partial-work key with
+an empty value, but this report counts it as charged without stored work. `unranged_extract_jobs` counts
 jobs without a range per status; they are not sized. Prune deletes sources of finished jobs, so the
 counts for done jobs can be low.
 The `batch` part counts the batch items per status, the jobs cancelled with the reason `batch`,

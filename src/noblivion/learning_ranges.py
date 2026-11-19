@@ -35,6 +35,22 @@ UNSTARTED = (
     "AND NOT EXISTS (SELECT 1 FROM learning_budget b WHERE b.job_id=j.id)"
 )
 
+# Progress keys that show partial work of an extraction job (the worker's
+# LearningWorker._may_refreeze and batch planning's learning_batch.NO_WORK).
+PARTIAL_WORK = (
+    "semantic",
+    "semantic_exclusions",
+    "deferred_decisions",
+    "dependency_deferred",
+    "format_repair",
+    "output_limit_hold",
+    "candidate_mismatches",
+    # NOBLIVION-245: split slots address pieces of the frozen windows. Under
+    # other windows they would split other text.
+    "length_splits",
+    "rejected_windows",
+)
+
 _IN_RANGE = (
     "s.project=r.project AND s.root=r.root AND s.session_id=r.session_id "
     "AND s.source_client=r.source_client AND s.seq BETWEEN r.first_seq AND r.last_seq"

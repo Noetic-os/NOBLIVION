@@ -736,3 +736,175 @@ def test_many_held_capture_jobs_do_not_hide_a_due_item(ledger):
     )
     assert len(items(ledger)) == 70
     assert ledger.work_open(set(), {(PROJECT, ROOT)}, max_attempts=4, limits=limits, batch=True)
+
+
+# --- a job that holds no saved work ---------------------------------------------
+
+
+def no_work_ids(ledger):
+    return {
+        row[0]
+        for row in ledger.conn.execute(
+            "SELECT j.id FROM learning_jobs j WHERE " + learning_batch.NO_WORK
+        )
+    }
+
+
+def failed_before_work(ledger):
+    """A job of seqs 1-2 that a provider outage exhausted, then an operator retry
+    reset: attempts 0, no page, but a frozen configuration, provider_metrics and
+    four budget rows. This is the shape such jobs have in a real store."""
+    from test_learning_context_repair import ready
+    from test_learning_provider_outage import LIMITS, OutageProvider
+
+    for number in (1, 2):
+        ledger.capture_batch(payload(number))
+    settings = WorkerSettings()
+    run = LearningWorker(ledger, OutageProvider(ledger, "transport"), settings, LIMITS)
+    for _ in range(settings.max_attempts):
+        ready(ledger)
+        assert run.run_once()["status"] == "failed"
+    (job_id,) = [j["id"] for j in jobs(ledger)]
+    ledger.retry(job_id)
+    row = ledger.conn.execute(
+        "SELECT status,attempts,last_error,progress FROM learning_jobs WHERE id=?", (job_id,)
+    ).fetchone()
+    progress = json.loads(row["progress"])
+    assert (row["status"], row["attempts"], row["last_error"]) == ("pending", 0, "")
+    assert progress["next_window"] == 0 and progress["decisions"] == []
+    assert "execution_configuration" in progress
+    assert progress["provider_metrics"]["calls"] == settings.max_attempts
+    assert set(progress["provider_metrics"]["reasons"]) == {"transport"}
+    assert len(rows_of(ledger, "SELECT 1 FROM learning_budget WHERE job_id=?", job_id)) == 4
+    assert rows_of(ledger, "SELECT 1 FROM learning_extraction_pages WHERE job_id=?", job_id) == []
+    return job_id
+
+
+def rows_of(ledger, sql, *args):
+    return ledger.conn.execute(sql, args).fetchall()
+
+
+def test_an_item_replaces_a_job_that_failed_before_any_saved_work(ledger):
+    failed = failed_before_work(ledger)
+    # Capture extension still sees the job as started; batch planning does not.
+    unstarted = {
+        row[0]
+        for row in ledger.conn.execute(
+            "SELECT j.id FROM learning_jobs j WHERE " + learning_ranges.UNSTARTED
+        )
+    }
+    assert failed not in unstarted and failed in no_work_ids(ledger)
+    later = ledger.capture_batch(payload(3))["job_id"]
+    assert later != failed
+    assert learning_batch.superseded_ids(ledger.conn) >= {failed}
+    item = ledger.claim("w", batch=True)
+    assert learning_batch.is_item(ledger.conn, item["id"])
+    # The item reads the text of the failed job: nothing is held back for it.
+    assert [s["seq"] for s in item["sources"]] == [1, 2, 3]
+    ledger.finish(item["id"], item["lease_token"], [])
+    assert marks(ledger) == {"s1": 3}
+    state = {j["id"]: (j["status"], j["last_error"]) for j in jobs(ledger)}
+    assert state[failed] == state[later] == ("cancelled", "batch")
+    assert ledger.claim("w", batch=True) is None
+    # The cancel keeps the budget charges and the call record of the failed job.
+    assert len(rows_of(ledger, "SELECT 1 FROM learning_budget WHERE job_id=?", failed)) == 4
+    progress = json.loads(
+        ledger.conn.execute("SELECT progress FROM learning_jobs WHERE id=?", (failed,)).fetchone()[
+            0
+        ]
+    )
+    assert progress["provider_metrics"]["calls"] == 4
+    assert learning_batch.report(ledger.conn, "j.kind='extract'", [])["cancelled_jobs"] == 2
+
+
+def test_with_batch_off_a_job_that_failed_before_work_runs_as_before(ledger):
+    failed = failed_before_work(ledger)
+    ledger.capture_batch(payload(3))
+    job = ledger.claim("w")
+    assert job["id"] == failed and items(ledger) == []
+
+
+def test_a_job_with_a_page_keeps_its_text_and_runs_to_done_after_the_item(ledger, monkeypatch):
+    monkeypatch.setattr(learning_ranges, "CONTEXT_SOURCES", 0)
+    for number in (1, 2):
+        ledger.capture_batch(payload(number))
+    started = ledger.claim("w")
+    # One page receipt and nothing else: no window position, no decision.
+    with db.write_tx(ledger.conn):
+        ledger.conn.execute(
+            "INSERT INTO learning_extraction_pages VALUES (?,0,0,'f','[]','[]','no_lesson','r',?)",
+            (started["id"], time.time()),
+        )
+    ledger.defer(started["id"], started["lease_token"], retry_delay=3600, error="StepAside")
+    row = ledger.conn.execute(
+        "SELECT status,progress FROM learning_jobs WHERE id=?", (started["id"],)
+    ).fetchone()
+    assert row["status"] == "pending" and json.loads(row["progress"])["next_window"] == 0
+    assert started["id"] not in no_work_ids(ledger)
+    later = ledger.capture_batch(payload(3))["job_id"]
+    item = ledger.claim("w", batch=True)
+    assert learning_batch.is_item(ledger.conn, item["id"])
+    # The item stops before the text of the job with the page.
+    assert [s["seq"] for s in item["sources"]] == [3]
+    ledger.finish(item["id"], item["lease_token"], [])
+    assert marks(ledger) == {"s1": 3}
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE id=?", (started["id"],))
+    job = ledger.claim("w", batch=True)
+    assert job["id"] == started["id"]
+    assert [s["seq"] for s in job["sources"]] == [1, 2]
+    ledger.finish(job["id"], job["lease_token"], [])
+    state = {j["id"]: (j["status"], j["last_error"]) for j in jobs(ledger)}
+    assert state[started["id"]] == ("done", "")
+    assert state[later] == ("cancelled", "batch")
+    assert ledger.claim("w", batch=True) is None
+
+
+WORK = [
+    ("next_window", 1),
+    ("next_continuation", 1),
+    ("decisions", [{"action": "add"}]),
+    ("decisions", {"action": "add"}),
+] + [(key, {}) for key in learning_ranges.PARTIAL_WORK]
+
+
+@pytest.mark.parametrize("key,value", WORK)
+def test_a_progress_key_with_work_keeps_the_job_started(ledger, key, value):
+    ledger.capture_batch(payload(1))
+    (job_id,) = [j["id"] for j in jobs(ledger)]
+    progress = {"next_window": 0, "decisions": [], "provider_metrics": {"calls": 1}}
+    progress[key] = value
+    ledger.conn.execute(
+        "UPDATE learning_jobs SET progress=? WHERE id=?", (json.dumps(progress), job_id)
+    )
+    assert no_work_ids(ledger) == set()
+    del progress[key]
+    ledger.conn.execute(
+        "UPDATE learning_jobs SET progress=? WHERE id=?", (json.dumps(progress), job_id)
+    )
+    assert no_work_ids(ledger) == {job_id}
+
+
+def test_no_work_holds_every_unstarted_job_and_no_other_kind_or_status(ledger):
+    for number in (1, 2):
+        ledger.capture_batch(payload(number, f"s{number}"))
+    first, second = (j["id"] for j in jobs(ledger))
+    unstarted = "SELECT j.id FROM learning_jobs j WHERE " + learning_ranges.UNSTARTED
+    assert {row[0] for row in ledger.conn.execute(unstarted)} == no_work_ids(ledger)
+    ledger.conn.execute("UPDATE learning_jobs SET progress='{}',attempts=2 WHERE id=?", (second,))
+    assert no_work_ids(ledger) == {first, second}
+    ledger.conn.execute("UPDATE learning_jobs SET progress='[]' WHERE id=?", (second,))
+    assert no_work_ids(ledger) == {first}
+    ledger.conn.execute("UPDATE learning_jobs SET kind='consolidate' WHERE id=?", (first,))
+    assert no_work_ids(ledger) == set()
+    ledger.conn.execute(
+        "UPDATE learning_jobs SET kind='extract',progress='{}' WHERE id IN (?,?)",
+        (first, second),
+    )
+    leased = ledger.claim("w")
+    assert no_work_ids(ledger) == {first, second} - {leased["id"]}
+
+
+def test_the_partial_work_keys_are_the_worker_keys():
+    from noblivion import learning_worker
+
+    assert learning_worker.PARTIAL_WORK is learning_ranges.PARTIAL_WORK
