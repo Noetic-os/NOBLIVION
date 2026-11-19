@@ -10,7 +10,8 @@ call it adds one line of ``additionalContext``::
     Recall first: call noblivion_recall with query "<topic>", then act.
 
 The line is under 120 characters. It is added only when the main session made no recall call and
-got no nudge in its last 10 tool calls, so a burst of ticket comments gets one line, not ten.
+got no nudge in its last 10 tool calls, so a burst of ticket comments gets one line, not ten. A
+session gets one line per kind of call (ticket, merge), not one per burst (NOBLIVION-223).
 
 Off by default. Two settings, each an environment variable and a config key:
 
@@ -40,7 +41,8 @@ silent. A call from a subagent gets no line (the transcript of the hook input is
 
 Log: ``<cache>/nudge.log``, one line per matching call and one per recall call, no query text.
 ``recall.log`` is not touched, because tools read it as one line per prompt. State:
-``<cache>/nudge-state.json``, the id of the last nudged call per session (50 sessions).
+``<cache>/nudge-state.json``, the id of the last nudged call and the kinds nudged per session
+(50 sessions).
 
 Fail open: any error prints nothing and exits 0. Standard library only.
 """
@@ -318,14 +320,20 @@ def recent_calls(
     return None
 
 
-def window_verdict(prior: Sequence[Tuple[str, str]], last_nudged_id: str = "") -> str:
-    """``fire``, ``recent_recall`` or ``cooldown`` for a matching call, from the newest-first
-    ``prior`` calls (at most 10 are read). The one rule, shared with the replay tool."""
+def window_verdict(
+    prior: Sequence[Tuple[str, str]], last_nudged_id: str = "", kind_nudged: bool = False
+) -> str:
+    """``fire``, ``recent_recall``, ``cooldown`` or ``once`` for a matching call, from the
+    newest-first ``prior`` calls (at most 10 are read). ``once``: the session got a line for this
+    kind of call (ticket or merge) already (NOBLIVION-223). The one rule, shared with the replay
+    tool (it passes no ``kind_nudged``)."""
     window = list(prior)[:WINDOW]
     if any(name.endswith(RECALL_SUFFIX) for _id, name in window):
         return "recent_recall"
     if last_nudged_id and any(ident == last_nudged_id for ident, _name in window):
         return "cooldown"
+    if kind_nudged:
+        return "once"
     return "fire"
 
 
@@ -350,7 +358,7 @@ def _make_dirs(path: Path, env: Mapping[str, str]) -> None:
         raise OSError("no hook_config")
 
 
-def load_state(cache: Path) -> Dict[str, Dict[str, str]]:
+def load_state(cache: Path) -> Dict[str, Dict[str, Any]]:
     try:
         doc = json.loads((cache / STATE_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -358,7 +366,7 @@ def load_state(cache: Path) -> Dict[str, Dict[str, str]]:
     return doc if isinstance(doc, dict) else {}
 
 
-def save_state(cache: Path, env: Mapping[str, str], session: str, entry: Dict[str, str]) -> None:
+def save_state(cache: Path, env: Mapping[str, str], session: str, entry: Dict[str, Any]) -> None:
     """Record ``entry`` for ``session``, keep the newest ``STATE_SESSIONS`` sessions. A lost
     update (two sessions at once) costs one extra line, so there is no lock."""
     try:
@@ -443,14 +451,17 @@ def decide(payload: Any, env: Mapping[str, str]) -> Optional[Dict[str, Any]]:
     if prior is None:
         log_event(cache, env, session, event="nudge", moment=moment, result="skip_no_window")
         return None
-    last = (load_state(cache).get(session) or {}).get("id", "")
-    verdict = window_verdict(prior, last if isinstance(last, str) else "")
+    entry = load_state(cache).get(session) or {}
+    last = entry.get("id", "")
+    kinds = entry.get("kinds")
+    kinds = [k for k in kinds if isinstance(k, str)] if isinstance(kinds, list) else []
+    verdict = window_verdict(prior, last if isinstance(last, str) else "", moment in kinds)
     if verdict != "fire":
         log_event(cache, env, session, event="nudge", moment=moment, result="skip_" + verdict)
         return None
     branch = branch_for(payload.get("cwd")) if moment == "command" and payload.get("cwd") else ""
     line = nudge_line(topic_for(moment, tool_input, variant, match, branch))
-    save_state(cache, env, session, {"id": call_id, "moment": moment})
+    save_state(cache, env, session, {"id": call_id, "moment": moment, "kinds": kinds + [moment]})
     log_event(
         cache,
         env,

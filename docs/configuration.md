@@ -343,7 +343,7 @@ measure it.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_RECALL_NUDGE` | `recall.nudge` | off (switch) | Before a matching call, adds one line of context: call `noblivion_recall` first. Only when the main session made no recall call and got no line in its last 10 tool calls. |
+| `NOBLIVION_RECALL_NUDGE` | `recall.nudge` | off (switch) | Before a matching call, adds one line of context: call `noblivion_recall` first. Only when the main session made no recall call and got no line in its last 10 tool calls, and at most once per session for each kind of call (ticket, merge). |
 | `NOBLIVION_RECALL_NUDGE_SHADOW` | `recall.nudge_shadow` | off (switch) | Logs what the nudge would do in `nudge.log` and prints nothing. |
 | none | `recall.nudge_tools` | generic ticket create and comment tool patterns | A list of regular expressions over the MCP tool name. A list that is set replaces the default. |
 | none | `recall.nudge_commands` | `gh pr merge` and `glab mr merge` | A list of regular expressions over each simple command of a Bash call, at its start. A list that is set replaces the default. |

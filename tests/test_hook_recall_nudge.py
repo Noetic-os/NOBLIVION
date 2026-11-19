@@ -387,7 +387,7 @@ def test_the_current_call_in_the_transcript_is_not_counted(tmp_path, env):
     assert nudge.decide(payload(path, tool_use_id="c12"), env) is not None
 
 
-def test_a_burst_gets_one_line_and_the_next_after_ten_calls(tmp_path, env):
+def test_a_burst_gets_one_line_and_the_same_kind_no_second_line(tmp_path, env):
     first = nudge.decide(payload(transcript(tmp_path, ["Read"]), tool_use_id="t1"), env)
     assert first is not None
     # the nudged call t1 is in the window of the next matching call
@@ -400,7 +400,11 @@ def test_a_burst_gets_one_line_and_the_next_after_ten_calls(tmp_path, env):
     assert log_lines(env)[-1].endswith("result=skip_cooldown")
     lines = [tool_line("t1", TICKET)] + [tool_line(f"r{i}", "Read") for i in range(10)]
     Path(p).write_text("\n".join(lines) + "\n", encoding="utf-8")
-    assert nudge.decide(payload(p, name=COMMENT, tool_use_id="t3"), env) is not None
+    # NOBLIVION-223: one line per session and kind; a merge is another kind
+    assert nudge.decide(payload(p, name=COMMENT, tool_use_id="t3"), env) is None
+    assert log_lines(env)[-1].endswith("result=skip_once")
+    merge = {"command": "gh pr merge 12"}
+    assert nudge.decide(payload(p, name="Bash", tool_input=merge, tool_use_id="m1"), env)
 
 
 def test_state_is_kept_per_session(tmp_path, env):
