@@ -2439,7 +2439,15 @@ LOG_MAX_BYTES = 5_000_000  # then a log moves to .1, as the stop check log does
 
 
 def _rotate(path: str) -> None:
-    """Move the log at ``path`` to ``<path>.1`` when it is past LOG_MAX_BYTES."""
+    """Move the log at ``path`` to ``<path>.1`` when it is past LOG_MAX_BYTES,
+    under the rotation lock of ``hook_config.rotate_log`` (NOBLIVION-83)."""
+    try:
+        rotate = _sibling_module("hook_config").rotate_log
+    except Exception:  # noqa: BLE001 - no hook_config: rotate unlocked, as before
+        rotate = None
+    if rotate is not None:
+        rotate(path, LOG_MAX_BYTES)
+        return
     with contextlib.suppress(OSError):
         if os.path.getsize(path) > LOG_MAX_BYTES:
             os.replace(path, path + ".1")

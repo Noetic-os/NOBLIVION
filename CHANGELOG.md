@@ -26,6 +26,10 @@ All notable changes to NOBLIVION. The format follows
   credential guard stays on), `NOBLIVION_MEMORY_FIELDS_OFF` turns off the
   memory fields hook, `NOBLIVION_RECALL_INDEX_MAX_CHARS` is clamped to 10000,
   and the recall docs state the shipped query and output limits (NOBLIVION-61).
+- Two hooks that rotate one log at the same time no longer lose the full
+  `<name>.1`: the rotation holds a lock on `<name>.lock` and reads the size
+  again under it. The next stamp write removes a `.store.hung.*` temp file
+  that a killed hook left behind (NOBLIVION-83).
 
 ## 0.1.39 - 2026-11-19
 

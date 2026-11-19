@@ -202,9 +202,13 @@ def log_line(state: Path, event: str, **fields: Any) -> None:
         parts.append(f"{key}={_SAFE_NAME.sub('_', str(value))[:120]}")
     try:
         _make_dirs(state)
-        with contextlib.suppress(OSError):
-            if (state / LOG_NAME).stat().st_size > LOG_MAX_BYTES:
-                os.replace(state / LOG_NAME, state / (LOG_NAME + ".1"))
+        rotate = getattr(_CFG, "rotate_log", None)  # NOBLIVION-83: locked
+        if rotate is not None:
+            rotate(state / LOG_NAME, LOG_MAX_BYTES)
+        else:
+            with contextlib.suppress(OSError):
+                if (state / LOG_NAME).stat().st_size > LOG_MAX_BYTES:
+                    os.replace(state / LOG_NAME, state / (LOG_NAME + ".1"))
         with open(state / LOG_NAME, "a", encoding="utf-8") as fh:
             fh.write(" ".join(parts) + "\n")
     except OSError:

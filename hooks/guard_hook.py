@@ -807,11 +807,15 @@ def log_line(
     try:  # best effort: a log failure never blocks a decision
         p = log_path(env)
         _make_dirs(p.parent)
-        try:  # no log yet, or another hook rotated it first: write the line anyway
-            if p.stat().st_size > LOG_MAX_BYTES:
-                os.replace(p, str(p) + ".1")
-        except OSError:
-            pass
+        rotate = getattr(_cfg(), "rotate_log", None)  # NOBLIVION-83: locked
+        if rotate is not None:
+            rotate(p, LOG_MAX_BYTES)
+        else:  # the stand-in: no hook_config.py next to this file
+            try:  # no log yet, or another hook rotated it first: write the line anyway
+                if p.stat().st_size > LOG_MAX_BYTES:
+                    os.replace(p, str(p) + ".1")
+            except OSError:
+                pass
         fd = os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")

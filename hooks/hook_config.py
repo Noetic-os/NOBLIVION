@@ -24,6 +24,7 @@ Standard library only. Hooks load this file by path, as a sibling.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -127,6 +128,42 @@ def make_dirs(path: Any, env: Optional[Mapping[str, str]] = None) -> Path:
 def cache_dir(env: Optional[Mapping[str, str]] = None) -> Path:
     """``<data dir>/cache``: the per-session recall cache and the trust spool."""
     return data_dir(env) / CACHE_SUBDIR
+
+
+def rotate_log(path: Any, max_bytes: int) -> None:
+    """Move the log at ``path`` to ``<path>.1`` when it is past ``max_bytes``.
+
+    Two hooks can see one big log at the same time (NOBLIVION-83). Without a
+    lock, the second ``os.replace`` moves the new short log, which already
+    holds a line of the first hook, over the full ``.1``: the old lines are
+    lost. So the rotation holds ``flock`` on ``<path>.lock`` (no wait) and
+    reads the size again under it. A hook that does not get the lock skips:
+    the hook that holds it rotates. A log under the limit costs one ``stat``
+    and makes no lock file. Without ``fcntl``, or on a file system with no
+    lock support, it rotates unlocked, as before. Never raises."""
+    try:
+        name = os.fspath(path)
+        if os.path.getsize(name) <= max_bytes:
+            return
+        try:
+            import fcntl
+        except ImportError:  # no flock on this platform: rotate as before
+            os.replace(name, name + ".1")
+            return
+        fd = os.open(name + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                    return  # another hook rotates this log now
+                # no lock support on this file system: rotate unlocked, as before
+            if os.path.getsize(name) > max_bytes:  # it may have rotated already
+                os.replace(name, name + ".1")
+        finally:
+            os.close(fd)  # closing the file releases the lock
+    except Exception:  # noqa: BLE001 - a log problem never stops a hook
+        return
 
 
 def config_path(env: Optional[Mapping[str, str]] = None) -> Path:

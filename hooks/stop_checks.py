@@ -1288,7 +1288,10 @@ def log(row: dict) -> None:
     try:
         path = log_path()
         _make_dirs(path.parent)
-        if path.exists() and path.stat().st_size > LOG_MAX:
+        rotate = getattr(_CFG, "rotate_log", None)  # NOBLIVION-83: locked
+        if rotate is not None:
+            rotate(path, LOG_MAX)
+        elif path.exists() and path.stat().st_size > LOG_MAX:
             os.replace(path, str(path) + ".1")
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(

@@ -237,6 +237,24 @@ def test_a_stamp_for_a_store_with_another_pid_on_the_same_port_does_not_count(sc
     assert sc.hung(env, 2.0, clock=lambda: now)
 
 
+def test_a_stamp_write_removes_an_old_temp_file_of_a_killed_hook(sc, tmp_path):
+    # NOBLIVION-83: a hook killed between mkstemp and os.replace left the temp file.
+    env = hook_env(tmp_path)
+    data = Path(env["NOBLIVION_DATA_DIR"])
+    write_store_files(data, 40123)
+    old = data / ".store.hung.killed"
+    new = data / ".store.hung.writing"
+    old.write_text("1 2\n", encoding="ascii")
+    new.write_text("1 2\n", encoding="ascii")
+    past = time.time() - sc.HUNG_TEMP_MAX_AGE_S - 10
+    os.utime(old, (past, past))
+    sc.mark_hung(env)
+    assert not old.exists()
+    assert new.exists()  # it may belong to a hook that writes now
+    assert (data / sc.HUNG_STAMP_FILE).exists()
+    assert (data / sc.HUNG_LOCK_FILE).exists()
+
+
 def test_the_stamp_never_makes_the_data_dir(sc, tmp_path):
     env = hook_env(tmp_path)
     sc.mark_hung(env)
