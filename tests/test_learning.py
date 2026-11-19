@@ -596,6 +596,11 @@ def test_cli_reads_existing_store_and_changes_controls(ledger, tmp_path, capsys)
     assert json.loads(capsys.readouterr().out)["use"] is False
     assert main([*args, "status", "--project", "test"]) == 0
     assert json.loads(capsys.readouterr().out)["jobs"] == {}
+    # A root is a folder slug that starts with a dash; argparse must not read it as a flag.
+    assert main([*args, "list", "--project", "test", "--root", "-home-u-p"]) == 0
+    capsys.readouterr()
+    with pytest.raises(SystemExit):
+        main([*args, "list", "--project", "test", "--root", "--json"])
     assert main(["--database", str(tmp_path / "missing.db"), "status"]) == 1
     assert not (tmp_path / "missing.db").exists()
 

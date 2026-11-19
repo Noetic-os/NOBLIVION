@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from noblivion import config, db, doctor, launcher, ranking, rest
+from noblivion.cli_args import join_root
 from noblivion.learning_runtime import use_allowed
 
 MAX_QUERY = 4096
@@ -321,25 +322,6 @@ class Parser(argparse.ArgumentParser):
         elif message.startswith("the following arguments are required"):
             reason = "Invalid diagnostic arguments: the prompt is missing; use --help."
         raise Unavailable(reason)
-
-
-def join_root(argv):
-    """``--root -slug`` as ``--root=-slug``. A root is a folder slug and starts
-    with a dash, which argparse reads as a flag. A value that starts with
-    ``--`` stays an option, so ``--root --json`` is still an error."""
-    items = list(argv)
-    out = []
-    i = 0
-    while i < len(items):
-        item = items[i]
-        nxt = items[i + 1] if i + 1 < len(items) else None
-        if item == "--root" and nxt and nxt.startswith("-") and not nxt.startswith("--"):
-            out.append(f"--root={nxt}")
-            i += 2
-            continue
-        out.append(item)
-        i += 1
-    return out
 
 
 def main(argv=None):

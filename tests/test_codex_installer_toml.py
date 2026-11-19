@@ -14,6 +14,14 @@ def replacement(installer):
     )
 
 
+def test_installer_joins_a_root_that_starts_with_a_dash():
+    join = _installer()._join_root
+    assert join(["--root", "-home-u-p", "--json"]) == ["--root=-home-u-p", "--json"]
+    assert join(["--root", "--json"]) == ["--root", "--json"]
+    assert join(["--root", "plain"]) == ["--root", "plain"]
+    assert join(["--root"]) == ["--root"]
+
+
 def without_owned_mcp(text):
     tomllib = pytest.importorskip("tomllib")
     parsed = tomllib.loads(text)

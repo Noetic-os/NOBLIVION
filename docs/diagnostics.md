@@ -12,8 +12,8 @@ python -m noblivion explain 'your prompt' --json --root YOUR_ROOT
 
 Set `NOBLIVION_DATA_DIR` or pass `--data-dir` for a non-default store. `--root`
 selects the memory root, not an arbitrary filesystem search. A Claude Code root is a
-folder slug and starts with a dash (`--root -home-alice`); `explain` accepts it with or
-without the equals sign. In Codex, the
+folder slug and starts with a dash (`--root -home-alice`); `doctor`, `explain` and
+`learning` accept it with or without the equals sign. In Codex, the
 current workspace mapping in `CODEX_HOME/noblivion/config.json` can supply the
 root and memory folder. The diagnostic does not guess another project's root.
 The namespace follows the configured store or `--namespace`.

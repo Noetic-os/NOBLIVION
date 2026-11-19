@@ -26,6 +26,7 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 from noblivion import config, db, launcher
+from noblivion.cli_args import join_root
 
 MAX_FILE_BYTES = 1024 * 1024
 MAX_ITEMS = 256
@@ -1139,7 +1140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--timeout", type=float, default=1.0, help="Per-check limit in seconds (0.05 to 2)."
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(join_root(sys.argv[1:] if argv is None else argv))
     if not math.isfinite(args.timeout) or not 0.05 <= args.timeout <= 2:
         parser.error("timeout outside range")
     try:

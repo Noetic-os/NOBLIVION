@@ -526,6 +526,9 @@ def test_bad_arguments_do_not_echo_input(args, capsys):
 def test_cli_json(installed, monkeypatch, capsys):
     folder, env = installed
     monkeypatch.setattr(doctor.os, "environ", env)
+    # A root is a folder slug that starts with a dash; it must not parse as a flag.
+    doctor.main(["--json", "--data-dir", str(folder), "--root", "-home-u-p"])
+    assert json.loads(capsys.readouterr().out)["schema_version"] == 1
     assert doctor.main(["--json", "--data-dir", str(folder)]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["schema_version"] == 1

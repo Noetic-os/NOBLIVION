@@ -474,6 +474,18 @@ def install(args: argparse.Namespace) -> dict[str, str]:
     return {"config": str(cfg_path), "hooks": str(hook_path), "mcp": str(toml_path)}
 
 
+def _join_root(argv: list[str]) -> list[str]:
+    """``--root -slug`` as ``--root=-slug``; a root slug starts with a dash.
+    Copy of noblivion.cli_args.join_root: this script does not import the package."""
+    out: list[str] = []
+    for item in argv:
+        if out and out[-1] == "--root" and item.startswith("-") and not item.startswith("--"):
+            out[-1] = f"--root={item}"
+        else:
+            out.append(item)
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -497,7 +509,7 @@ def main() -> int:
     parser.add_argument(
         "--codex-home", default=os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
     )
-    args = parser.parse_args()
+    args = parser.parse_args(_join_root(sys.argv[1:]))
     if not args.uninstall and not all((args.data_dir, args.memory_dir, args.workspace)):
         parser.error("installation requires --data-dir, --memory-dir and --workspace")
     if args.dry_run and not args.uninstall:

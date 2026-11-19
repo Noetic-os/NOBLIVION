@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from noblivion import config, db
+from noblivion.cli_args import join_root
 from noblivion.learning import LearningError, LearningLedger
 
 
@@ -92,7 +93,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(join_root(sys.argv[1:] if argv is None else argv))
     if (
         args.command in {"list", "summary", "context", "drafts", "consolidate", "controls"}
         and not args.root
