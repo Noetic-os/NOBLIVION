@@ -3687,7 +3687,10 @@ def _search_text(md: MemoryFile) -> str:
 
 
 def text_search(
-    query: str, corpus: Sequence[MemoryFile], deadline: Optional[float] = None
+    query: str,
+    corpus: Sequence[MemoryFile],
+    deadline: Optional[float] = None,
+    charge_unknown: bool = False,
 ) -> List[Tuple[int, float]]:
     """``(corpus index, score)`` of the notes that match ``query``, best first.
 
@@ -3697,7 +3700,13 @@ def text_search(
     weighted words (one when the prompt has one word) and FALLBACK_MIN_SHARE
     of the weight of the prompt words that some note holds. A tie goes to the
     lower path. Past ``deadline`` (``time.monotonic``, checked every 64 notes)
-    the notes not yet read are left out."""
+    the notes not yet read are left out.
+
+    ``charge_unknown`` (NOBLIVION-226, the store-silent fallback only): a prompt
+    word that no note holds and that is no stop word adds the weight of a word
+    in no note to the prompt's weight, as the store's keyword gate charges it
+    (``ranking.score_share``). So a topic word among words from outside the
+    notes no longer carries the share alone."""
     words = {w for w in _search_words(query) if len(w) >= 2}
     if not words or not corpus:
         return []
@@ -3711,6 +3720,7 @@ def text_search(
         n += 1
         for word in words.intersection(_search_words(_search_text(md))):
             holders.setdefault(word, []).append(i)
+    held = set(holders)  # NOBLIVION-226: the prompt words some note holds
     weight: Dict[str, float] = {}
     for word in list(holders):
         df = len(holders[word])
@@ -3721,6 +3731,11 @@ def text_search(
     total = sum(weight.values())
     if total <= 0.0:
         return []
+    if charge_unknown:
+        # Document frequency 0: the weight of a word in no note, the highest weight
+        # the corpus can give. A common word (deleted above) is held, so no charge.
+        unknown = sum(1 for w in words if w not in held and w not in _CORPUS.STOP_WORDS)
+        total += unknown * math.log(1.0 + (n + 0.5) / 0.5)
     score: Dict[int, float] = {}
     count: Dict[int, int] = {}
     for word, docs in holders.items():
@@ -3777,7 +3792,9 @@ def fallback_index(
     # files not read yet are left for the next prompt, so one prompt never
     # waits for the whole folder; the files read stay cached.
     corpus = load_session_corpus(environ, start + FALLBACK_READ_S)
-    found = text_search(query, corpus, start + FALLBACK_BUDGET_S)
+    # NOBLIVION-226: prompt words that no note holds count against the share here;
+    # the fresh-note leg on the healthy-store path keeps the search as it was.
+    found = text_search(query, corpus, start + FALLBACK_BUDGET_S, charge_unknown=True)
     rows = [_search_row(corpus[i], r, FALLBACK_MARK) for r, (i, _v) in enumerate(found[:k], 1)]
     return rows, corpus
 
@@ -4191,8 +4208,13 @@ def _serve_index(
     default_floor: float = DEFAULT_INDEX_MIN_SCORE,
     diagnostic: Optional[Dict[str, Any]] = None,
     candidates_override: Optional[Sequence[IndexLine]] = None,
+    order_rows: int = PROMPT_ROWS_DEFAULT,
 ) -> None:
     """The ranked-index shape of one hook call (R1).
+
+    ``order_rows`` (NOBLIVION-233) is the fixed number of top rows that the own-row
+    and older-note steps work on. The row limit only cuts the ordered list, so the
+    rows at a limit of N are the first N rows at any higher limit.
 
     TWO DELIBERATE DIFFERENCES from the hit shape:
 
@@ -4507,15 +4529,18 @@ def _serve_index(
         note += f":hub{hub_seen}" + (f":hubcut{hub_cut}" if hub_cut else "")
     if desc_row is not None and desc_row.title in hub_names:
         desc_row = None  # a hub note fits almost every prompt: no description row for it
-    if own_on and by_name and k_shown >= 2:
+    if own_on and by_name:
         # NOBLIVION-160. After the hub demotion, before the cut to k.
-        lines, own_moved, desc_in = place_own_rows(lines, k_shown, by_name, desc_row, desc_ahead)
+        # NOBLIVION-233: on a fixed count of top rows, not the row limit; the rows
+        # that are not in the returned head follow it in their order.
+        head, own_moved, desc_in = place_own_rows(lines, order_rows, by_name, desc_row, desc_ahead)
+        lines = head + [ln for ln in lines if not any(ln is h for h in head)]
         trace("own_rows", lines)
         note += (":own1" if own_moved else "") + (":desc1" if desc_in else "")
     if by_name and older_mark(environ):
         # NOBLIVION-156. After the cuts and the own rows, before the cut to k: the newer note of
         # two on one subject is shown first, and the older row says so.
-        lines, marked = mark_older_rows(lines, k_shown, by_name)
+        lines, marked = mark_older_rows(lines, order_rows, by_name)
         if marked:
             note += f":older{marked}"
     if row_cap > 0 and min(len(lines), k) > k_shown:

@@ -92,6 +92,7 @@ import os
 import re
 import shlex
 import subprocess
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -100,6 +101,10 @@ ENV_SOURCES = (
     "NOBLIVION_GUARD_CREDENTIAL_SOURCES"  # the secret sources of NOBLIVION-72 only; on unless off
 )
 PROBE_TIMEOUT_S = 0.6
+# NOBLIVION-174: the share of the guard hook's 1.5 s that one credential check may use when the
+# caller sets ``Probe.deadline``. The git probes and the folder walks stop at it and set
+# ``Probe.cut``; the check then fails open, and the caller tells the user.
+CRED_BUDGET_S = 0.5
 WALK_MAX_DIRS = (
     3000  # a recursive grep deeper or wider than this is a design limit (RESULT-V2-FU3 L6)
 )
@@ -179,6 +184,23 @@ class Probe:
             True  # look for the secret sources too (``secret_source``); False: git URLs only
         )
         self.named: dict = {}  # (folder, word) -> the secret sources that the word names
+        self.deadline: Optional[float] = (
+            None  # time.monotonic() when the check must end; None: none
+        )
+        self.cut = False  # a probe or a walk stopped at the deadline or at its own time limit
+
+    def out_of_time(self) -> bool:
+        """True, and ``cut`` set, when the deadline has passed (NOBLIVION-174)."""
+        if self.deadline is None or time.monotonic() < self.deadline:
+            return False
+        self.cut = True
+        return True
+
+    def _timeout(self) -> float:
+        """The time limit of one git probe: ``PROBE_TIMEOUT_S``, never past the deadline."""
+        if self.deadline is None:
+            return PROBE_TIMEOUT_S
+        return min(PROBE_TIMEOUT_S, max(0.05, self.deadline - time.monotonic()))
 
     def config_entries(
         self, cwd: str, git_dir: Optional[str], scope: Sequence[str]
@@ -191,6 +213,8 @@ class Probe:
             argv += ["--git-dir", git_dir]
         argv += ["config", *scope, "--list", "--null"]
         out: List[Tuple[str, str]] = []
+        if self.out_of_time():
+            return out
         try:
             r = subprocess.run(
                 argv,
@@ -198,7 +222,7 @@ class Probe:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                timeout=PROBE_TIMEOUT_S,
+                timeout=self._timeout(),
                 env=dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0"),
             )
             if r.returncode == 0:
@@ -206,6 +230,9 @@ class Probe:
                     if rec:
                         k, _, v = rec.partition("\n")
                         out.append((k.lower(), v))
+        except subprocess.TimeoutExpired:
+            self.cut = True
+            out = []
         except Exception:  # noqa: BLE001 - a probe fails open
             out = []
         self._cfg[key] = out
@@ -217,6 +244,8 @@ class Probe:
         if key in self._cfg:
             return self._cfg[key]
         out: List[str] = []
+        if self.out_of_time():
+            return out
         try:
             r = subprocess.run(
                 ["git", "config", "--list", "--null", "--show-origin"],
@@ -224,7 +253,7 @@ class Probe:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                timeout=PROBE_TIMEOUT_S,
+                timeout=self._timeout(),
                 env=dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0"),
             )
             recs = r.stdout.decode("utf-8", "replace").split("\0") if r.returncode == 0 else []
@@ -235,6 +264,9 @@ class Probe:
                 path = os.path.normpath(os.path.join(d, origin))
                 if is_git_config(path) and self.cred_lines(path):
                     out.append(path)
+        except subprocess.TimeoutExpired:
+            self.cut = True
+            out = []
         except Exception:  # noqa: BLE001 - a probe fails open
             out = []
         self._cfg[key] = out
@@ -304,9 +336,9 @@ def is_git_config(path: str) -> bool:
     return base in ("config", "config.worktree") and is_git_dir(os.path.dirname(path))
 
 
-def configs_under(root: str) -> List[str]:
+def configs_under(root: str, probe: Optional[Probe] = None) -> List[str]:
     """Git config files and git credential stores in ``root`` (a file, a git dir
-    or a tree), bounded walk."""
+    or a tree), bounded walk. It also stops at the deadline of ``probe``."""
     if os.path.isfile(root):
         return [root] if is_git_config(root) else []
     if not os.path.isdir(root):
@@ -316,7 +348,7 @@ def configs_under(root: str) -> List[str]:
     base = root.rstrip(os.sep).count(os.sep)
     for d, dirs, files in os.walk(root):
         seen += 1
-        if seen > WALK_MAX_DIRS:
+        if seen > WALK_MAX_DIRS or (probe is not None and probe.out_of_time()):
             break
         for name in (".git-credentials", ".gitconfig", "gitconfig"):
             if name in files:
@@ -1577,7 +1609,7 @@ def _reader(words: List[str]) -> bool:
 def _cred_files_under(probe: Probe, cwd: str, roots: Sequence[str]) -> List[str]:
     out: List[str] = []
     for r in roots:
-        out.extend(c for c in configs_under(_resolve(cwd, r)) if probe.cred_lines(c))
+        out.extend(c for c in configs_under(_resolve(cwd, r), probe) if probe.cred_lines(c))
     return out
 
 
@@ -1656,7 +1688,7 @@ def _file_stage(
     if grep is not None and grep["recursive"] and (not grep["rg"] or grep["hidden"]):
         roots = grep["paths"] or ["."]
         for r in roots:
-            cands.extend(configs_under(_resolve(cwd, r)))
+            cands.extend(configs_under(_resolve(cwd, r), probe))
     seen = set()
     for c in cands:
         if c in seen or not is_git_config(c):
@@ -1844,9 +1876,10 @@ def _source_finding(label: str, path: str, cwd: str) -> Finding:
     return f
 
 
-def _sources_under(root: str, hidden: bool = True) -> List[str]:
+def _sources_under(root: str, hidden: bool = True, probe: Optional[Probe] = None) -> List[str]:
     """The secret sources in ``root`` (a file or a tree), bounded walk. With ``hidden`` False the
-    files in a hidden folder and hidden files are left out (the search of ``rg`` without ``--hidden``)."""
+    files in a hidden folder and hidden files are left out (the search of ``rg`` without ``--hidden``).
+    It also stops at the deadline of ``probe``."""
     if not os.path.isdir(root):
         return [root] if secret_source(root) else []
     found: List[str] = []
@@ -1854,7 +1887,7 @@ def _sources_under(root: str, hidden: bool = True) -> List[str]:
     base = root.rstrip(os.sep).count(os.sep)
     for d, dirs, files in os.walk(root):
         seen += 1
-        if seen > WALK_MAX_DIRS:
+        if seen > WALK_MAX_DIRS or (probe is not None and probe.out_of_time()):
             break
         for name in files:
             cheap = name.startswith(".env") or name in _SRC_NAMES or name in _KEY_NAMES
@@ -1959,7 +1992,9 @@ def _source_stage(
             words = [*grep["paths"], *extra]
             if grep["recursive"]:
                 for r in grep["paths"] or ["."]:
-                    hits += _sources_under(_resolve(cwd, r), not grep["rg"] or grep["hidden"])
+                    hits += _sources_under(
+                        _resolve(cwd, r), not grep["rg"] or grep["hidden"], probe
+                    )
         hits += _named_sources(cwd, words, probe)
     for c in dict.fromkeys(hits):
         lines = probe.file_lines(c)
@@ -2159,7 +2194,7 @@ def check_grep(
             return 99
 
     ctx = num("-C") or num("context")
-    for c in configs_under(root):
+    for c in configs_under(root, probe):
         if glob_ and not (
             fnmatch.fnmatch(os.path.basename(c), glob_)
             or fnmatch.fnmatch(c, glob_)
@@ -2178,7 +2213,7 @@ def check_grep(
             after=max(num("-A"), ctx),
         ):
             return _file_finding(probe, cwd, c, "Grep of a git config file")
-    for c in _sources_under(root) if probe.sources else ():
+    for c in _sources_under(root, probe=probe) if probe.sources else ():
         if glob_ and not (
             fnmatch.fnmatch(os.path.basename(c), glob_)
             or fnmatch.fnmatch(c, glob_)
@@ -2233,11 +2268,13 @@ def decide_finding(
     cwd: str,
     strip: Optional[Callable[[str], str]] = None,
     sources: bool = True,
+    probe: Optional[Probe] = None,
 ) -> Optional[Finding]:
     """What the call would reveal, else None. ``sources`` False: git URLs only (the check after a
-    ``# guard-ok`` override of a secret source). Every error is an allow."""
+    ``# guard-ok`` override of a secret source). ``probe``: the caller's, to set a deadline and to
+    read ``cut`` after the call. Every error is an allow."""
     try:
-        probe = Probe()
+        probe = probe if probe is not None else Probe()
         probe.sources = sources
         f: Optional[Finding] = None
         if tool == "Bash":

@@ -17,7 +17,7 @@ moments where a lookup pays. The moments are:
 | Part | State | What it does |
 | --- | --- | --- |
 | Tool descriptions of `noblivion_recall` and `noblivion_remember` | on | Name the moments. The tool list is 1,815 characters (NOBLIVION-161). |
-| MCP server instructions | on | One text of about 70 tokens with the same moments. Claude Code lists a plugin's MCP tools by name only when it defers them, so the descriptions are not in the model's view then; the server instructions are. Set `NOBLIVION_MCP_INSTRUCTIONS=0` to leave them out. |
+| MCP server instructions | on | One sentence: call `noblivion_recall` before `noblivion_remember`. The moments are stated once, in the tool description, because `.mcp.json` loads the tools always (`alwaysLoad`) and every copy is paid on every call (NOBLIVION-223). Set `NOBLIVION_MCP_INSTRUCTIONS=0` to leave it out. |
 | Skill `recall-first` | on | The plugin skill `noblivion:recall-first`. Its name and description (about 50 tokens) are listed each turn. Its steps load only when the model uses it. Remove the folder `skills/recall-first` to undo. |
 | The nudge (`hooks/recall_nudge.py`) | off | One line before a ticket tool or a merge command. See below. |
 

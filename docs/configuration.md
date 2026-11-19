@@ -343,7 +343,7 @@ measure it.
 
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
-| `NOBLIVION_RECALL_NUDGE` | `recall.nudge` | off (switch) | Before a matching call, adds one line of context: call `noblivion_recall` first. Only when the main session made no recall call and got no line in its last 10 tool calls. |
+| `NOBLIVION_RECALL_NUDGE` | `recall.nudge` | off (switch) | Before a matching call, adds one line of context: call `noblivion_recall` first. Only when the main session made no recall call and got no line in its last 10 tool calls, and at most once per session for each kind of call (ticket, merge). |
 | `NOBLIVION_RECALL_NUDGE_SHADOW` | `recall.nudge_shadow` | off (switch) | Logs what the nudge would do in `nudge.log` and prints nothing. |
 | none | `recall.nudge_tools` | generic ticket create and comment tool patterns | A list of regular expressions over the MCP tool name. A list that is set replaces the default. |
 | none | `recall.nudge_commands` | `gh pr merge` and `glab mr merge` | A list of regular expressions over each simple command of a Bash call, at its start. A list that is set replaces the default. |
@@ -390,7 +390,7 @@ prints a short briefing at session start. It is off by default.
 | Env var | Config key | Default | Meaning |
 | --- | --- | --- | --- |
 | `NOBLIVION_CONTINUITY` | none | off (switch) | Turns the hook on. |
-| `NOBLIVION_CONTINUITY_BRIEFING` | none | on (switch) | The briefing at session start. |
+| `NOBLIVION_CONTINUITY_BRIEFING` | none | off (switch) | The briefing at session start. Off by default (NOBLIVION-223). |
 | `NOBLIVION_CONTINUITY_PRECOMPACT_PRINT` | none | on (switch) | Before a compaction, print the saved rules as well as save them. |
 | `NOBLIVION_CONTINUITY_BUDGET_S` | none | `4.0` | The time budget, in seconds. |
 | `NOBLIVION_CONTINUITY_MAX_CHARS` | none | `1500` | The most characters of the briefing, 500 to 2000. |

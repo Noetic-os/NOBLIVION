@@ -33,6 +33,60 @@ All notable changes to NOBLIVION. The format follows
   cancelled with the reason `batch`, sessions with a watermark and the measured
   model seconds per done item. `noblivion learning status` shows the flag under
   `settings.batch`.
+- The first prompt in a project no longer builds the guard table inside the
+  prompt hook (NOBLIVION-227). The label rows read the table as it is; when it
+  is missing, a detached `guard_table.py --rebuild` builds it and that one
+  prompt gets no label rows.
+- The joined context of a prompt keeps to one budget of 9,500 characters
+  (NOBLIVION-84). Claude Code passes a longer `additionalContext` only as a
+  file path and a short preview. Over the budget the learning context gives way
+  first, then the other parts from the last one back, each cut at a line break.
+- The hook redactor reads each key name once (NOBLIVION-80). Three key-name
+  rules and the JWT rule in `hooks/memory_text.py` started again at each `-` of
+  a long word, so inputs like `"a-" * 50000` took time in the square or cube of
+  their length. They now start once per word; the redacted text is the same.
+- The credential guard has a budget of 0.5 seconds per call (NOBLIVION-174).
+  Its git probes and folder walks stop there, and a check that stopped and
+  found nothing tells the user and logs `credential check timeout`. The error
+  line of a guard timeout now holds the step that ran (`stage`) and the time
+  used (`ms`). The cause of the logged timeout is not proven yet.
+- A label row for a note in the global folder or a shared root now shows
+  (NOBLIVION-168). The label rows read the note from the folder its index
+  number names (the new table key `folders`), not from the project folder
+  only. The guard table version goes to 6, so each table is rebuilt once.
+- The order of the prompt rows and the subagent rule rows no longer depends on
+  the row limit (NOBLIVION-233). The own-row and older-note steps work on a
+  fixed count of top rows (5 for the prompt hook, 3 for the subagent hook);
+  the limit only cuts. At the default limits the output is the same.
+- The keyword-only gate keeps the rows of a short title prompt (NOBLIVION-231).
+  A top row with one informative word of the prompt now passes when it holds
+  0.25 of the score the prompt can reach (`GATE_ONE_WORD_SCORE_SHARE`, from the
+  recorded off-topic share of 0.211 at most). Only stores with no embedder use
+  this gate.
+- The text search for a store that does not answer charges the prompt words
+  that no note holds (NOBLIVION-226), as the store's keyword gate does. A topic
+  word among words from outside the notes no longer carries the share alone.
+  The fresh-note rows of a healthy store are unchanged. `FALLBACK_MIN_SHARE`
+  stays 0.3: no recorded value exists to set it again.
+- The recall nudge adds its line once per session and kind of call, ticket or
+  merge (NOBLIVION-223). A later call of the same kind logs `skip_once`.
+- The stop check `tests` counts a test run that failed (NOBLIVION-223). A
+  turn that ran the tests after its last code change and reports a failure is
+  no longer blocked with "no test ran".
+- The guard rows budget of a session counts the shown text too
+  (NOBLIVION-223). Once the shown rows reach 6,000 characters, a later row
+  shows its rule line only, without Apply. Which rows show does not change.
+- The recall moments are stated once, in the `noblivion_recall` tool
+  description; the MCP server instructions keep only the recall-before-remember
+  sentence. The session briefing of the continuity hook is off by default
+  (NOBLIVION-223): `NOBLIVION_CONTINUITY_BRIEFING=1` turns it on.
+- The first search of a new store process no longer builds the postings of
+  every row in both keyword indexes (NOBLIVION-184). A row enters the indexes
+  at the first use of a pool that holds it; scores are the same. A search with
+  no `root` still indexes every row at its first use.
+- The long-run harness gives the memory-sync worker the indexer command of its
+  build (`NOBLIVION_MEMORY_SYNC_CMD`, NOBLIVION-192). Before, the worker logged
+  `no_indexer` and a new note waited for the 30 s periodic scan of the store.
 
 ## 0.1.38 - 2026-11-18
 

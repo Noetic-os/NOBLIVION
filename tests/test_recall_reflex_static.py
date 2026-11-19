@@ -71,12 +71,12 @@ def test_tool_list_did_not_grow_past_the_budget():
     assert size <= OLD_TOOL_LIST_CHARS + TOOL_LIST_GROWTH_MAX, size
 
 
-def test_initialize_carries_short_instructions_with_the_moments():
+def test_initialize_carries_short_instructions_without_a_second_copy_of_the_moments():
     result = _rpc("initialize")
     text = result["instructions"]
     assert len(text) <= INSTRUCTIONS_MAX
-    for moment in MOMENTS:
-        assert moment in text, moment
+    for moment in MOMENTS:  # NOBLIVION-223: stated once, in the tool description
+        assert moment not in text, moment
     assert "noblivion_remember" in text
 
 

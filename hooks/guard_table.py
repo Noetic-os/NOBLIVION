@@ -103,8 +103,8 @@ _CFG = _hook_config()
 DEFAULT_TABLE = _CFG.data_dir() / "guard-table.json"
 TABLES_SUBDIR = "guard-tables"
 # 2: label index key; 3: its roots, counts, paths (152); 4: where, repos (155);
-# 5: repos from violates and triggers only (173)
-TABLE_VERSION = 5
+# 5: repos from violates and triggers only (173); 6: folders, by index root (168)
+TABLE_VERSION = 6
 # Index and topic files are not memories.
 _NOT_MEMORY = re.compile(r"^(MEMORY|MEMORY_ARCHIVE|topic_.*)\.md$")
 
@@ -403,6 +403,9 @@ def build(folder: Any) -> Dict[str, Any]:
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source": str(folders[0]),
         "sources": [str(f) for f in present],
+        # NOBLIVION-168: every configured folder, in the order the index's
+        # folder number ``r`` counts them; "sources" skips absent folders.
+        "folders": [str(f) for f in folders],
         "stamp": stamp,
         "entries": entries,
         "skipped": skipped,

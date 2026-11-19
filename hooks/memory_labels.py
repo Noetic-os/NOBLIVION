@@ -518,7 +518,7 @@ def weak_label(label: str, kind: str) -> bool:
 class Match:
     """One memory that shares labels with the query."""
 
-    __slots__ = ("doc", "id", "name", "labels", "score", "mtime", "text", "exact")
+    __slots__ = ("doc", "id", "name", "labels", "score", "mtime", "text", "exact", "root")
 
     def __init__(
         self,
@@ -538,6 +538,12 @@ class Match:
         # NOBLIVION-131: True when only an exact file match above the cutoff let
         # this memory match.
         self.exact = exact
+        # NOBLIVION-168: the position of the note's folder in the table's
+        # ``folders`` list (0 = the project folder), so its file can be read.
+        try:
+            self.root = int(row.get("r") or 0)
+        except (TypeError, ValueError):
+            self.root = 0
 
     def as_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {

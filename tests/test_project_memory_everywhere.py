@@ -253,7 +253,8 @@ def test_continuity_uses_the_project_folder(world):
     (world["folder"] / "feedback_trap.md").write_text(
         memory("feedback_trap", STASH, "git stash pop", "git stash list", "Never pop the stash.")
     )
-    env = dict(world["env"], NOBLIVION_CONTINUITY="1")
+    # the briefing is off by default since NOBLIVION-223
+    env = dict(world["env"], NOBLIVION_CONTINUITY="1", NOBLIVION_CONTINUITY_BRIEFING="1")
     event = {
         "session_id": "s31",
         "hook_event_name": "SessionStart",

@@ -405,9 +405,15 @@ def delivered(state: Any, env: Mapping[str, str], session_id: Any, agent: str) -
 # --------------------------------------------------------------------------
 def _memory(m: Any, table: Mapping[str, Any]) -> Tuple[Dict[str, Any], bool]:
     """``(memory, body_known)``: rule, apply, description and body from
-    ``<table source>/<id>.md``; the index's short text when it cannot be read."""
+    ``<folder of the match>/<id>.md``; the index's short text when it cannot be read."""
     mem: Dict[str, Any] = {"id": m.id, "rule": "", "apply": "", "description": m.text, "body": ""}
     src = str(table.get("source") or "")
+    # NOBLIVION-168: a note from the global folder or a shared root lives in
+    # the folder its index number names, not in the project folder.
+    folders = table.get("folders")
+    root = getattr(m, "root", 0)
+    if isinstance(folders, list) and isinstance(root, int) and 0 <= root < len(folders):
+        src = str(folders[root] or "") or src
     if not src or not _SAFE_ID.match(m.id) or m.id.startswith("."):
         return mem, False
     try:
@@ -530,6 +536,38 @@ def _guard_log(
         pass
 
 
+def _build_detached(gt: Any, env: Mapping[str, str], cwd: Optional[str], tpath: Path) -> None:
+    """Start ``guard_table.py --rebuild`` as a detached process and do not wait
+    for it (NOBLIVION-227). A build that runs already (its lock is held) starts
+    nothing. The child holds no pipe of this hook: all three streams are
+    ``DEVNULL`` and no other descriptor passes, so the caller that reads this
+    hook's output to its end never waits for the build. Any error starts
+    nothing (fail open)."""
+    try:
+        # The child finds the project from its working dir, as the hook does
+        # from the event ``cwd`` (a relative or absent one means this process's).
+        run_dir = cwd if cwd and os.path.isabs(cwd) else None
+        if run_dir is not None and not os.path.isdir(run_dir):
+            return
+        with gt.rebuild_lock(tpath, blocking=False) as free:
+            if not free:
+                return
+        import subprocess  # only the cold path needs it
+
+        subprocess.Popen(
+            [sys.executable, str(_TOOLS / "guard_table.py"), "--rebuild"],
+            cwd=run_dir,
+            env=dict(env),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception:  # noqa: BLE001, S110 - a hook fails open
+        pass
+
+
 def prompt_leg(stdin_text: str, stdout: Any, env: Mapping[str, str]) -> int:
     """Add label rows for a ``UserPromptSubmit`` event, after the recall
     hook's own output. Returns the characters written. Never raises."""
@@ -548,11 +586,18 @@ def prompt_leg(stdin_text: str, stdout: Any, env: Mapping[str, str]) -> int:
         if not isinstance(prompt, str) or not prompt.strip():
             return 0
         gh = _load("guard_hook")
+        gt = _load("guard_table")
         cwd = payload.get("cwd")
-        tpath = gh.table_file(env, cwd if isinstance(cwd, str) else None)
+        cwd = cwd if isinstance(cwd, str) else None
+        # NOBLIVION-227: read the table as it is. A missing table is built by a
+        # detached process, never inline: this prompt gets no label rows.
+        folders = gt.source_dirs(cwd, env)
+        tpath = gt.table_path(folders[0] if folders else None, env)
         if not tpath.is_file():
+            if folders and any(f.is_dir() for f in folders):
+                _build_detached(gt, env, cwd, tpath)
             return 0
-        table = _load("guard_table").load_table(tpath)
+        table = gt.load_table(tpath)
         matches = candidates(prompt, "prompt", table, env)
         if not matches:
             return 0
