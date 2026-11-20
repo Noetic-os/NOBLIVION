@@ -116,8 +116,12 @@ _ALL_READ = (
     + _read_by(_DONE)
     + ")"
 )
+# The job ``c`` is older than the job ``j`` of the range ``r``.
+_OLDER = "(c.created_at<j.created_at OR (c.created_at=j.created_at AND c.id<j.id))"
 # The job ``r`` holds text below the watermark that an item skipped and that no
-# done or started job reads. No item ever reads text below the watermark, so this
+# done or started job reads. When several pending jobs that hold no work share
+# such text, the oldest one reads it and the later ones wait for it, so the
+# text is read once. No item ever reads text below the watermark, so this
 # job runs as a per-capture job, as in fallback mode.
 _ORPHAN = (
     "EXISTS ("
@@ -127,7 +131,7 @@ _ORPHAN = (
     + " AND "
     + _SKIPPED
     + " AND NOT "
-    + _read_by(_DONE_OR_STARTED)
+    + _read_by("(" + _DONE_OR_STARTED + " OR (c.status='pending' AND " + _OLDER + "))")
     + ")"
 )
 

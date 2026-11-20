@@ -57,6 +57,10 @@ from .learning_nearest import (
     nearest_targets,
 )
 from .learning_pages import NO_CALL, NO_PROPOSAL, CoverageExhausted, ExtractionPages, coverage
+
+# PARTIAL_WORK: the progress keys that show partial work of an extraction job. A
+# job with one of them never freezes again under a newer contract. The tuple
+# lives in learning_ranges, so batch planning can use it without an import cycle.
 from .learning_ranges import PARTIAL_WORK
 from .learning_semantic import (
     MAX_BATCH_ITEMS,
@@ -560,9 +564,6 @@ NEAREST_CONTRACT = 3
 # Consolidation and draft jobs use only version 1 text, which version 2 keeps
 # unchanged. They freeze version 1, so their started stages keep matching.
 DERIVATION_CONTRACT = 1
-# Progress keys that show partial work of an extraction job. A job with one of
-# them never freezes again under a newer contract. The tuple lives in
-# learning_ranges, so batch planning can use it without an import cycle.
 # Characters per window are window_chars times this factor.
 WINDOW_SCALE = {1: 1, 2: 2, 3: 2}
 # The exact configuration shape frozen by releases up to 0.1.24.

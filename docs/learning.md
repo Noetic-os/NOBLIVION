@@ -332,7 +332,10 @@ Limits to know:
   still runs, reads that text again.
 - A job with no work whose text an earlier item skipped (when the job still
   counted as started) holds text below the watermark. No item reads that text,
-  so the job runs as a per-capture job, with its earlier context.
+  so the job runs as a per-capture job, with its earlier context. When several
+  such jobs share skipped text (a later job holds it as context), only the
+  oldest one runs; the later ones wait and are cancelled when their text is read.
+  If the oldest one is exhausted, the next one reads the text.
 - The claim keeps its order: the oldest due job first. An item is made when it
   is planned, so it waits behind the older capture jobs that hold work, and
   behind consolidation and draft jobs. Items do not go first, because a stream
@@ -711,10 +714,11 @@ status, the characters of source text in the job ranges and the part that an ear
 same session also holds in its range (`overlap_chars`). A new job takes earlier text of its session
 as context, so this text goes through extraction more than once. Under `pending` it also prints the number of sessions,
 the distinct characters, the distinct characters no done job read, and how many pending jobs hold
-stored work, were charged without stored work, or are unstarted. With batch learning on, a job
-charged without stored work is treated like an unstarted one: a batch item reads its text and
-cancels it. One exception: batch learning keeps a job whose progress has a partial-work key with
-an empty value, but this report counts it as charged without stored work. `unranged_extract_jobs` counts
+stored work, were charged without stored work, or are unstarted. The report uses the tests
+of batch learning: a job holds stored work unless it holds no work as batch learning defines it
+(see "Batch learning per session"); a job with an `--omit-withheld` mark counts as holding work.
+With batch learning on, a batch item reads the text of a job charged without stored work, or of
+an unstarted job, and cancels it. `unranged_extract_jobs` counts
 jobs without a range per status; they are not sized. Prune deletes sources of finished jobs, so the
 counts for done jobs can be low.
 The `batch` part counts the batch items per status, the jobs cancelled with the reason `batch`,

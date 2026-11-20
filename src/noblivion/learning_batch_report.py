@@ -14,30 +14,11 @@ deletes sources of finished jobs, so the figures for done jobs can be low.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections import defaultdict
 from typing import Any
 
-from noblivion import learning_batch
-from noblivion.learning_worker import PARTIAL_WORK
-
-_FRESH_PROGRESS = {"next_window": 0, "decisions": []}
-
-
-def _holds_work(progress: str, pages: int) -> bool:
-    """True when the job stored extraction pages, a window position, decisions or other
-    partial work (the worker's ``PARTIAL_WORK`` keys)."""
-    if pages:
-        return True
-    try:
-        state = json.loads(progress)
-    except ValueError:
-        return True
-    if not isinstance(state, dict):
-        return True
-    keys = ("next_window", "next_continuation", "decisions") + PARTIAL_WORK
-    return any(bool(state.get(key)) for key in keys)
+from noblivion import learning_batch, learning_ranges
 
 
 def _share(part: int, whole: int) -> float | None:
@@ -111,22 +92,28 @@ def batch_report(
             pending_union += sum(sizes[s] for s in pending)
             pending_union_not_done += sum(sizes[s] for s in pending - done)
 
+    # The batch planner's own tests (NOBLIVION-267): a job that holds no work
+    # (learning_batch.NO_WORK) is replaced by a batch item when batch learning is on.
+    no_work = {
+        row[0]
+        for row in conn.execute("SELECT j.id FROM learning_jobs j WHERE " + learning_batch.NO_WORK)
+    }
+    unstarted = {
+        row[0]
+        for row in conn.execute(
+            "SELECT j.id FROM learning_jobs j WHERE " + learning_ranges.UNSTARTED
+        )
+    }
     started = {"holds_work": 0, "charged_no_work": 0, "unstarted": 0}
     for job in jobs:
         if job["status"] != "pending":
             continue
-        pages = conn.execute(
-            "SELECT count(*) FROM learning_extraction_pages WHERE job_id=?", (job["id"],)
-        ).fetchone()[0]
-        charged = conn.execute(
-            "SELECT 1 FROM learning_budget WHERE job_id=? LIMIT 1", (job["id"],)
-        ).fetchone()
-        if _holds_work(job["progress"], pages):
+        if job["id"] not in no_work:
             started["holds_work"] += 1
-        elif charged or job["attempts"] or json.loads(job["progress"]) not in ({}, _FRESH_PROGRESS):
-            started["charged_no_work"] += 1
-        else:
+        elif job["id"] in unstarted:
             started["unstarted"] += 1
+        else:
+            started["charged_no_work"] += 1
 
     other = conn.execute(
         "SELECT j.kind,j.status,count(*) FROM learning_jobs j WHERE "

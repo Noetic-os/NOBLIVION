@@ -836,11 +836,11 @@ def test_an_item_replaces_the_only_job_of_a_session_that_failed_before_work(ledg
     assert state[failed] == ("cancelled", "batch")
 
 
-def test_a_job_whose_text_an_earlier_item_skipped_runs_on_its_own(ledger, monkeypatch):
+def test_a_job_whose_text_an_earlier_item_skipped_runs_on_its_own(ledger):
     # The state a store can hold from before this fix: an item skipped the text of
     # a job that counted as started and committed past it. The job holds no work
-    # now, but no item reads text below the watermark, so the job reads it.
-    monkeypatch.setattr(learning_ranges, "CONTEXT_SOURCES", 0)
+    # now, but no item reads text below the watermark, so the job reads it. The
+    # later job holds the same text as context; it waits and is not read.
     failed = failed_before_work(ledger)
     with db.write_tx(ledger.conn):
         ledger.conn.execute(
@@ -851,19 +851,73 @@ def test_a_job_whose_text_an_earlier_item_skipped_runs_on_its_own(ledger, monkey
         "UPDATE learning_jobs SET next_attempt=3600+? WHERE id=?", (time.time(), failed)
     )
     later = ledger.capture_batch(payload(3))["job_id"]
+    assert [s["seq"] for s in ledger._job_sources(later)] == [1, 2, 3]
     item = ledger.claim("w", batch=True)
     assert [s["seq"] for s in item["sources"]] == [3]
     ledger.finish(item["id"], item["lease_token"], [])
     ledger.conn.execute("DELETE FROM learning_extraction_pages WHERE job_id=?", (failed,))
     ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE id=?", (failed,))
     assert failed in no_work_ids(ledger)
-    assert failed not in learning_batch.superseded_ids(ledger.conn)
+    assert learning_batch.superseded_ids(ledger.conn) == {later}
     job = ledger.claim("w", batch=True)
     assert job["id"] == failed and [s["seq"] for s in job["sources"]] == [1, 2]
     ledger.finish(job["id"], job["lease_token"], [])
+    # The next claim cancels the later job: all its text is read.
+    assert ledger.claim("w", batch=True) is None
     state = {j["id"]: (j["status"], j["last_error"]) for j in jobs(ledger)}
     assert state[failed] == ("done", "") and state[later] == ("cancelled", "batch")
+
+
+def test_a_later_job_waits_for_an_older_job_that_failed_on_skipped_text(ledger):
+    # Default context. F (seqs 1-2) is leased while the item plans; L (seqs 1-3)
+    # comes later. The item reads seq 3 and commits. F then fails before any work.
+    # F alone reads seqs 1-2; L must not read them again, nor seq 3.
+    for number in (1, 2):
+        ledger.capture_batch(payload(number))
+    first = ledger.claim("w")
+    later = ledger.capture_batch(payload(3))["job_id"]
+    item = ledger.claim("w", batch=True)
+    assert [s["seq"] for s in item["sources"]] == [3]
+    ledger.finish(item["id"], item["lease_token"], [])
+    ledger.fail(first["id"], first["lease_token"], "transport", retry_delay=3600)
+    assert {first["id"], later} <= no_work_ids(ledger)
+    assert learning_batch.superseded_ids(ledger.conn) == {later}
     assert ledger.claim("w", batch=True) is None
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE id=?", (first["id"],))
+    job = ledger.claim("w", batch=True)
+    assert job["id"] == first["id"] and [s["seq"] for s in job["sources"]] == [1, 2]
+    ledger.finish(job["id"], job["lease_token"], [])
+    assert ledger.claim("w", batch=True) is None
+    state = {j["id"]: (j["status"], j["last_error"]) for j in jobs(ledger)}
+    assert state[first["id"]] == ("done", "") and state[later] == ("cancelled", "batch")
+
+
+def test_of_two_jobs_made_at_the_same_time_the_lower_id_reads_skipped_text(ledger):
+    # The claim order is created_at, then id; the reader of skipped text follows it.
+    for number in (1, 2):
+        ledger.capture_batch(payload(number))
+    first = ledger.claim("w")
+    later = ledger.capture_batch(payload(3))["job_id"]
+    item = ledger.claim("w", batch=True)
+    ledger.finish(item["id"], item["lease_token"], [])
+    ledger.fail(first["id"], first["lease_token"], "transport", retry_delay=3600)
+    ledger.conn.execute(
+        "UPDATE learning_jobs SET created_at=1 WHERE id IN (?,?)", (first["id"], later)
+    )
+    assert learning_batch.superseded_ids(ledger.conn) == {max(first["id"], later)}
+
+
+def test_a_later_job_reads_skipped_text_when_the_older_job_exhausts(ledger):
+    # As above, but F exhausts: no job reads seqs 1-2 any more, so L runs.
+    for number in (1, 2):
+        ledger.capture_batch(payload(number))
+    first = ledger.claim("w")
+    later = ledger.capture_batch(payload(3))["job_id"]
+    item = ledger.claim("w", batch=True)
+    ledger.finish(item["id"], item["lease_token"], [])
+    ledger.fail(first["id"], first["lease_token"], "transport", permanent=True)
+    job = ledger.claim("w", batch=True)
+    assert job["id"] == later and [s["seq"] for s in job["sources"]] == [1, 2, 3]
 
 
 def test_with_batch_off_a_job_that_failed_before_work_runs_as_before(ledger):
