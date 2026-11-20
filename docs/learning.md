@@ -332,10 +332,13 @@ Limits to know:
   still runs, reads that text again.
 - A job with no work whose text an earlier item skipped (when the job still
   counted as started) holds text below the watermark. No item reads that text,
-  so the job runs as a per-capture job, with its earlier context. When several
-  such jobs share skipped text (a later job holds it as context), only the
-  oldest one runs; the later ones wait and are cancelled when their text is read.
-  If the oldest one is exhausted, the next one reads the text.
+  so the job runs as a per-capture job, with its earlier context. A later job
+  with no work waits when older pending jobs hold all of its skipped text. It is
+  cancelled when its text is read. If an older job is exhausted, the later job
+  reads that text.
+- A later job runs when it holds skipped text that no older job holds. It then
+  also reads the skipped text that the older jobs hold, so that text is read
+  twice. A store with the flag off reads it twice as well.
 - The claim keeps its order: the oldest due job first. An item is made when it
   is planned, so it waits behind the older capture jobs that hold work, and
   behind consolidation and draft jobs. Items do not go first, because a stream

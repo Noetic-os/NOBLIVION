@@ -172,6 +172,19 @@ def test_partial_work_keys_count_as_stored_work(store):
     assert report["pending"]["started"]["holds_work"] == 2
 
 
+@pytest.mark.parametrize(
+    "extra", [{"withheld_omitted": True}, {"semantic": {}}], ids=["omit_withheld", "empty_key"]
+)
+def test_a_mark_or_an_empty_partial_work_key_counts_as_stored_work(store, extra):
+    # The report uses the planner's test: batch learning keeps such a job.
+    path, jobs = store
+    progress = json.dumps({"next_window": 0, "decisions": [], **extra})
+    report = report_after(
+        path, ("UPDATE learning_jobs SET progress=? WHERE id=?", (progress, jobs["d"]))
+    )
+    assert report["pending"]["started"] == {"holds_work": 2, "charged_no_work": 1, "unstarted": 0}
+
+
 def test_a_job_without_a_range_is_counted_by_status(store):
     path, jobs = store
     report = report_after(path, ("DELETE FROM learning_job_ranges WHERE job_id=?", (jobs["a"],)))
