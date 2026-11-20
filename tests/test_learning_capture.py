@@ -598,6 +598,40 @@ def test_claude_session_start_writes_the_note_only_and_end_captures_all(cfg, tmp
     assert wakes == [1]
 
 
+@pytest.mark.parametrize("source", ["resume", "compact"])
+def test_claude_session_start_after_a_capture_queues_nothing_and_keeps_the_cursor(
+    cfg, tmp_path, monkeypatch, source
+):
+    # NOBLIVION-149: a resume or compact SessionStart after an earlier capture reads
+    # nothing and leaves the cursor alone, so SessionEnd captures only the new rows.
+    monkeypatch.setattr(capture, "wake", lambda scoped: None)
+    path = tmp_path / "native.jsonl"
+    write_rows(path, [message("Said before the compaction.")])
+    capture.capture_hook(cfg, event(cfg, transcript_path=str(path)), "claude")
+    pre = event(cfg, "PreCompact", transcript_path=str(path))
+    first = capture.capture_hook(cfg, pre, "claude")
+    assert first["chunks"] == 1
+    write_rows(path, [message("Said after the compaction.")])
+
+    def cursor_and_queue():
+        spool = capture.Spool(
+            capture.scoped_config(cfg, {"cwd": cfg["project_mappings"][0]["workspace"]})
+        )
+        try:
+            row = spool.conn.execute("SELECT offset FROM cursors").fetchone()
+            return row[0], [r["content"] for r in records(spool)]
+        finally:
+            spool.close()
+
+    before = cursor_and_queue()
+    start = event(cfg, source=source, transcript_path=str(path))
+    assert capture.capture_hook(cfg, start, "claude") == {"status": "ignored"}
+    assert cursor_and_queue() == before
+    end = event(cfg, "SessionEnd", transcript_path=str(path))
+    assert capture.capture_hook(cfg, end, "claude")["chunks"] == 1
+    assert cursor_and_queue()[1] == ["Said before the compaction.", "Said after the compaction."]
+
+
 def elsewhere(cfg, name="elsewhere"):
     return str(Path(cfg["state_dir"]).parent / name)
 

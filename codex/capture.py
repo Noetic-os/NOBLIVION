@@ -801,7 +801,7 @@ def capture_hook(cfg: dict, event: dict, client: str = "codex") -> dict:
     name = event.get("hook_event_name")
     # Codex captures at the start too; Claude writes the note only (observe_only below).
     capture_point = name in (CLAUDE_CAPTURE_EVENTS if client == "claude" else CAPTURE_EVENTS)
-    if client == "claude" and not capture_point and name not in CLAUDE_NOTE_EVENTS:
+    if client == "claude" and name not in CAPTURE_EVENTS:
         return {"status": "ignored"}
     scoped = scoped_config(cfg, event)
     if scoped is None:
