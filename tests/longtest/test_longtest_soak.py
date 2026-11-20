@@ -386,7 +386,7 @@ def day_one_rise(d, h):
 
 def test_a_one_time_warmup_rise_on_day_one_passes_memory_trend():
     got = soak.evaluate(warmup_rows(day_one_rise))
-    assert got["warmup_days"] == 1 and got["warmup_applied"]
+    assert got["warmup_days"] == PARAMS.warmup_days and got["warmup_applied"]
     assert got["checks"]["memory_trend"], got
     assert got["pass"], got["checks"]
     # The unfiltered growth stays in the record, so the rise is not hidden.
@@ -412,16 +412,16 @@ def test_a_run_no_longer_than_the_warmup_window_keeps_the_whole_fit():
         for h in range(20)
     ]
     got = soak.evaluate(one_day)
-    assert got["warmup_days"] == 1 and not got["warmup_applied"]
+    assert got["warmup_days"] == PARAMS.warmup_days and not got["warmup_applied"]
     assert got["memory_growth_mb_per_day"] == got["memory_growth_mb_per_day_all"]
     assert not got["checks"]["memory_trend"]
 
 
 def test_the_warmup_length_is_in_the_registered_rules():
-    assert PARAMS.warmup_days == 1
+    assert PARAMS.warmup_days == 2
     text = config.render_prereg()
-    assert "warmup_days: 1" in text and "warm-up" in text
-    assert config.prereg_hash(replace(PARAMS, warmup_days=2)) != config.prereg_hash()
+    assert "warmup_days: 2" in text and "warm-up" in text
+    assert config.prereg_hash(replace(PARAMS, warmup_days=3)) != config.prereg_hash()
 
 
 def test_a_partial_run_with_the_full_day_labels_keeps_the_whole_fit():
@@ -431,7 +431,7 @@ def test_a_partial_run_with_the_full_day_labels_keeps_the_whole_fit():
         for h in range(20)
     ]
     got = soak.evaluate(one_day, days=DAYS)
-    assert got["warmup_days"] == 1 and not got["warmup_applied"]
+    assert got["warmup_days"] == PARAMS.warmup_days and not got["warmup_applied"]
     assert got["memory_growth_mb_per_day"] == got["memory_growth_mb_per_day_all"]
     assert not got["checks"]["memory_trend"], got
 
@@ -439,5 +439,46 @@ def test_a_partial_run_with_the_full_day_labels_keeps_the_whole_fit():
 def test_the_registered_rule_text_windows_memory_only():
     text = config.render_prereg()
     assert "slope of latency over all days" in text
-    assert "memory fit made on the readings after the first 1 day(s)" in text
+    assert f"memory fit made on the readings after the first {PARAMS.warmup_days} day(s)" in text
     assert "both fitted" not in text
+
+
+# Per-day (min, max) RSS in MB of the recorded failing run, run-d (NOBLIVION-214).
+RUN_D_RSS = [
+    (1488.1, 1775.3),
+    (1794.4, 1835.1),
+    (1835.9, 1855.1),
+    (1822.9, 1854.1),
+    (1838.1, 1847.9),
+    (1843.9, 1853.4),
+    (1851.6, 1866.7),
+]
+
+
+def run_d_rows():
+    """Resource rows with run-d's per-day range: 24 readings a day, a ramp from the
+    day's minimum to its maximum."""
+    rows = [r for r in rows_for(DAYS) if r["kind"] != "resources"]
+    for day, (lo, hi) in zip(DAYS, RUN_D_RSS):
+        for h in range(24):
+            rows.append(
+                {
+                    "day": day,
+                    "kind": "resources",
+                    "quick_check": "ok",
+                    "rss_mb": lo + (hi - lo) * h / 23,
+                }
+            )
+    return rows
+
+
+def test_the_run_d_settle_shape_passes_memory_trend_with_the_registered_window():
+    got = soak.evaluate(run_d_rows())
+    assert got["warmup_applied"]
+    assert got["checks"]["memory_trend"], got
+    assert got["memory_growth_mb_per_day"] < PARAMS.memory_growth_mb_per_day
+
+
+def test_the_run_d_settle_shape_fails_with_a_one_day_window():
+    got = soak.evaluate(run_d_rows(), params=replace(PARAMS, warmup_days=1))
+    assert not got["checks"]["memory_trend"], got

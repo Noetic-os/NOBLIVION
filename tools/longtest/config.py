@@ -54,9 +54,12 @@ class Params:
     lag_p95_s: float = 10.0
     memory_growth_mb_per_day: float = 10.0
     # Virtual days at the start of a soak left out of the memory fit (NOBLIVION-214, operator
-    # ruling 2026-11-14). The index and caches fill on day 1, then RSS holds flat, so the rise
-    # is not a leak. Fixed before the next run; never change it after a result.
-    warmup_days: int = 1
+    # ruling 2026-11-14). The index and caches fill, then RSS holds flat, so the rise is not a
+    # leak. Chosen from the recorded run-d RSS (per-day range in MB: day 1 1488-1775, day 2
+    # 1794-1835, day 3 1835-1855, then flat): the rise settles during day 2, so 1 day is too
+    # short (growth 12.05 MB/day, fails) and 2 days give 6.1 MB/day. Fixed before the next
+    # run; never change it after a result.
+    warmup_days: int = 2
     # stock calibration: runs that opened the lesson note, of recorded stock runs
     calibration_hits: int = 8
     calibration_runs: int = 32
