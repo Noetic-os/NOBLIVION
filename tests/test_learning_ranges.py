@@ -379,7 +379,7 @@ class _Conn:
         return False
 
 
-def test_claude_capture_runs_only_at_session_start_compaction_and_end(tmp_path):
+def test_claude_capture_runs_only_at_compaction_and_end_and_the_start_writes_a_note(tmp_path):
     capture = load("codex/capture.py", "_ranges_capture")
     cfg = {
         "repo_root": str(ROOT),
@@ -394,7 +394,8 @@ def test_claude_capture_runs_only_at_session_start_compaction_and_end(tmp_path):
         result = capture.capture_hook(cfg, {**event, "hook_event_name": name}, "claude")
         assert result == {"status": "ignored"}
     assert not (tmp_path / "state").exists()
-    assert capture.CLAUDE_CAPTURE_EVENTS == {"SessionStart", "PreCompact", "SessionEnd"}
+    assert capture.CLAUDE_CAPTURE_EVENTS == {"PreCompact", "SessionEnd"}
+    assert capture.CLAUDE_NOTE_EVENTS == {"SessionStart"}
 
 
 def test_prompt_hook_skips_its_store_call_when_the_session_started_with_no_items(

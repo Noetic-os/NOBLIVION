@@ -781,9 +781,13 @@ def wake(cfg: dict) -> None:
 
 
 # A session is captured at these events only. The transcript holds every
-# turn, so one read at a compaction or at the end sees all of it (NOBLIVION-143). A
-# settings file from an older release can still call the hook on every tool event.
-CLAUDE_CAPTURE_EVENTS = frozenset({"SessionStart", "PreCompact", "SessionEnd"})
+# turn, so one read at a compaction or at the end sees all of it (NOBLIVION-143). At
+# SessionStart the Claude hook writes a note only: the fresh start and the session
+# scope, with no transcript read, no batch and no delivery wake (NOBLIVION-149).
+# A settings file from an older release can still call the hook on every tool event.
+CLAUDE_CAPTURE_EVENTS = frozenset({"PreCompact", "SessionEnd"})
+CLAUDE_NOTE_EVENTS = frozenset({"SessionStart"})
+CAPTURE_EVENTS = CLAUDE_CAPTURE_EVENTS | CLAUDE_NOTE_EVENTS
 
 
 def capture_hook(cfg: dict, event: dict, client: str = "codex") -> dict:
@@ -794,8 +798,10 @@ def capture_hook(cfg: dict, event: dict, client: str = "codex") -> dict:
     if contributes:
         with contextlib.suppress(OSError, sqlite3.Error):
             note_fresh_start(cfg, event)
-    capture_point = event.get("hook_event_name") in CLAUDE_CAPTURE_EVENTS
-    if client == "claude" and not capture_point:
+    name = event.get("hook_event_name")
+    # Codex captures at the start too; Claude writes the note only (observe_only below).
+    capture_point = name in (CLAUDE_CAPTURE_EVENTS if client == "claude" else CAPTURE_EVENTS)
+    if client == "claude" and not capture_point and name not in CLAUDE_NOTE_EVENTS:
         return {"status": "ignored"}
     scoped = scoped_config(cfg, event)
     if scoped is None:

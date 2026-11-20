@@ -10,6 +10,7 @@ All notable changes to NOBLIVION. The format follows
 
 - The long-run health check C2 now leaves a registered warm-up window (`warmup_days`, 1 virtual day, written into the test rules and the run record) out of the `memory_trend` fit, so the one-time day-1 RSS rise no longer fails it; a climb after day 1 still fails. The window counts the days that have rows, so a partial run with rows on day 1 only is fitted whole, and the written rule says the window covers memory only, not latency (NOBLIVION-214).
 - A note over 256 KB that only grows at its end now takes a new file hash without a row rewrite: no `content_rev` bump and no chunk sync. The store logs the held-delete warning, and the skipped-file summary, once for each held line until the root is fine again (NOBLIVION-85).
+- Hooks: at SessionStart the Claude `learning_capture` hook now writes the fresh-start note and the session scope only. It reads no transcript, queues no batch and wakes no delivery. Capture runs at PreCompact and SessionEnd, as before; Codex capture is unchanged. `CLAUDE_CAPTURE_EVENTS` is now `{PreCompact, SessionEnd}` and `CLAUDE_NOTE_EVENTS` is `{SessionStart}` (NOBLIVION-149).
 
 ## 0.1.41 - 2026-11-20
 

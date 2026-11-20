@@ -579,6 +579,25 @@ def test_codex_reads_and_delivers_only_at_session_points(cfg, tmp_path, monkeypa
     assert len(wakes) == 3
 
 
+def test_claude_session_start_writes_the_note_only_and_end_captures_all(cfg, tmp_path, monkeypatch):
+    # NOBLIVION-149: at SessionStart the Claude hook records the fresh start and the
+    # session scope. It reads no transcript, queues no batch and wakes no delivery.
+    wakes = []
+    monkeypatch.setattr(capture, "wake", lambda scoped: wakes.append(1))
+    path = tmp_path / "native.jsonl"
+    write_rows(path, [message("Said before the first hook ran.")])
+    start = event(cfg, transcript_path=str(path))
+    assert capture.capture_hook(cfg, start, "claude") == {"status": "ignored"}
+    assert wakes == []
+    assert scope_records(cfg) == []
+    assert capture.seen_fresh_start(cfg, "new-session")
+    write_rows(path, [message("Said later in the session.")])
+    end = event(cfg, "SessionEnd", transcript_path=str(path))
+    assert capture.capture_hook(cfg, end, "claude")["chunks"] == 2
+    assert scope_records(cfg) == ["Said before the first hook ran.", "Said later in the session."]
+    assert wakes == [1]
+
+
 def elsewhere(cfg, name="elsewhere"):
     return str(Path(cfg["state_dir"]).parent / name)
 
