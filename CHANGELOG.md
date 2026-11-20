@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.40 - 2026-11-20
+
 - `doctor`, `learning` and the Codex installer now accept `--root -home-user-project` without an equals sign, as `explain` already did; the join step moved to `noblivion.cli_args` (NOBLIVION-239).
 - A nested correction or proof reference without a `source_id` now drops only its own candidate instead of the whole response, and a page whose candidates all failed says "every candidate failed a candidate check" (NOBLIVION-237).
 - A learning job whose sources are gone is cancelled with `last_error` "job sources missing (0 present)" instead of with no reason. A started job whose sources changed or lost rows now fails with "job sources missing or changed (N present)" instead of "window configuration changed during a job", and `retry` and `retry_by_error` refuse such a job (NOBLIVION-240).
