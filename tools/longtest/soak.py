@@ -413,10 +413,24 @@ def evaluate(
     res = [r for r in rows if r["kind"] == "resources"]
     xs = list(range(len(daily_p95)))
     latency_trend = stats.theil_sen(xs, [daily_p95[d] for d in days]) if len(days) >= 3 else None
-    mem_x = [i for i, _ in enumerate(res)]
-    mem_trend = stats.theil_sen(mem_x, [r["rss_mb"] for r in res]) if len(res) >= 3 else None
-    span_days = max(1, len(days))
-    growth = (res[-1]["rss_mb"] - res[0]["rss_mb"]) / span_days if len(res) >= 2 else 0.0
+    # Warm-up window (NOBLIVION-214): the readings of the first ``warmup_days`` days are
+    # left out of the memory fit, because the index and caches fill then and RSS holds
+    # flat after. A run no longer than the window keeps the whole fit.
+    warm = set(days[: params.warmup_days]) if len(days) > params.warmup_days else set()
+    steady_res = [r for r in res if r["day"] not in warm]
+    mem_x = [i for i, _ in enumerate(steady_res)]
+    mem_trend = (
+        stats.theil_sen(mem_x, [r["rss_mb"] for r in steady_res]) if len(steady_res) >= 3 else None
+    )
+    span_days = max(1, len(days) - len(warm))
+    growth = (
+        (steady_res[-1]["rss_mb"] - steady_res[0]["rss_mb"]) / span_days
+        if len(steady_res) >= 2
+        else 0.0
+    )
+    growth_all = (
+        (res[-1]["rss_mb"] - res[0]["rss_mb"]) / max(1, len(days)) if len(res) >= 2 else 0.0
+    )
     checks = {
         "budget_recall": all(v <= params.budget_recall_ms for v in daily_p95.values()),
         "error_rate": upper < params.error_rate_upper or (not enough and errors == 0),
@@ -447,5 +461,8 @@ def evaluate(
         "drift_max": max((abs(d) for d in drifts), default=0),
         "drift_unsettled": unsettled,
         "memory_growth_mb_per_day": round(growth, 2),
+        "memory_growth_mb_per_day_all": round(growth_all, 2),
+        "warmup_days": params.warmup_days,
+        "warmup_applied": bool(warm),
         "error_rate_by_day": error_rate_by_day,
     }

@@ -156,7 +156,12 @@ def c2_report(
     behind the compressed clock the run fell, the measure of whether the registered
     ``speed`` actually held under the known NOBLIVION-192 lag (ticket cli.cmd_health_c2
     quantifies the risk: at 28 to 32 s a churn, 660 churns can use most of the
-    compressed week's own length)."""
+    compressed week's own length).
+
+    ``memory_trend`` is judged after the registered warm-up window (``Params.warmup_days``,
+    NOBLIVION-214): the day-1 RSS rise while the index and caches fill is not a leak. The
+    record keeps ``warmup_days`` and the growth over the whole run
+    (``memory_growth_mb_per_day_all``) beside the judged growth."""
     day_labels = [f"vday-{n}" for n in range(1, days + 1)]
     judged = soak.evaluate(rows, days=day_labels, params=params)
     failed_rules = [name for name, ok in judged["checks"].items() if not ok]

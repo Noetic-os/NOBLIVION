@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- The long-run health check C2 now leaves a registered warm-up window (`warmup_days`, 1 virtual day, written into the test rules and the run record) out of the `memory_trend` fit, so the one-time day-1 RSS rise no longer fails it; a climb after day 1 still fails (NOBLIVION-214).
+
 ## 0.1.41 - 2026-11-20
 
 - Batch learning: a batch item now replaces a capture job that holds no saved work (no page receipt, no window position, no decision, no partial-work key, no `--omit-withheld` mark), even when the job has attempts, budget rows or a frozen configuration, for example after a provider outage and a retry. Before, such a job counted as started: the item stopped before its text and the job ran on its own. Capture extension still uses the stricter unstarted test. A job with a page receipt keeps its text and runs to its end as before (NOBLIVION-267).

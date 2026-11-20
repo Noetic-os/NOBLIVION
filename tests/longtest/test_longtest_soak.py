@@ -8,13 +8,15 @@ import json
 import re
 import sqlite3
 import threading
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import longtest_path  # noqa: F401 - puts tools on the path
 import pytest
 
-from longtest import soak
+from longtest import config, soak
+from longtest.config import PARAMS
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -364,3 +366,59 @@ def test_a_churn_marker_is_new_after_a_restart(tmp_path):
     for _ in range(2):  # the serial starts at 1 again after a restart
         assert soak.churn(folder, Client(), 1, lambda p: None)[0]["ok"]
     assert len(set(seen)) == 2 and all(t.startswith("zqx000001") for t in seen)
+
+
+def warmup_rows(settle, readings=(40, 3)):
+    """Resource rows of a week: day 1 holds ``readings[0]`` readings, later days
+    ``readings[1]``. ``settle(day_index, reading_index)`` gives the RSS in MB."""
+    rows = [r for r in rows_for(DAYS) if r["kind"] != "resources"]
+    for d, day in enumerate(DAYS):
+        for h in range(readings[0] if d == 0 else readings[1]):
+            rows.append(
+                {"day": day, "kind": "resources", "quick_check": "ok", "rss_mb": settle(d, h)}
+            )
+    return rows
+
+
+def day_one_rise(d, h):
+    return 1488.0 + 9.0 * h if d == 0 else 1850.0 + (h % 2)
+
+
+def test_a_one_time_warmup_rise_on_day_one_passes_memory_trend():
+    got = soak.evaluate(warmup_rows(day_one_rise))
+    assert got["warmup_days"] == 1 and got["warmup_applied"]
+    assert got["checks"]["memory_trend"], got
+    assert got["pass"], got["checks"]
+    # The unfiltered growth stays in the record, so the rise is not hidden.
+    assert got["memory_growth_mb_per_day_all"] > 10.0
+
+
+def test_the_same_rise_without_a_warmup_window_still_fails():
+    off = replace(PARAMS, warmup_days=0)
+    got = soak.evaluate(warmup_rows(day_one_rise), params=off)
+    assert got["warmup_days"] == 0 and not got["warmup_applied"]
+    assert not got["checks"]["memory_trend"], got
+
+
+def test_a_climb_after_the_warmup_window_still_fails_memory_trend():
+    got = soak.evaluate(warmup_rows(lambda d, h: 1488.0 + 80.0 * d + h))
+    assert not got["checks"]["memory_trend"], got
+    assert got["memory_growth_mb_per_day"] > 10.0
+
+
+def test_a_run_no_longer_than_the_warmup_window_keeps_the_whole_fit():
+    one_day = [r for r in rows_for(DAYS[:1]) if r["kind"] != "resources"] + [
+        {"day": DAYS[0], "kind": "resources", "quick_check": "ok", "rss_mb": 500.0 + 30.0 * h}
+        for h in range(20)
+    ]
+    got = soak.evaluate(one_day)
+    assert got["warmup_days"] == 1 and not got["warmup_applied"]
+    assert got["memory_growth_mb_per_day"] == got["memory_growth_mb_per_day_all"]
+    assert not got["checks"]["memory_trend"]
+
+
+def test_the_warmup_length_is_in_the_registered_rules():
+    assert PARAMS.warmup_days == 1
+    text = config.render_prereg()
+    assert "warmup_days: 1" in text and "warm-up" in text
+    assert config.prereg_hash(replace(PARAMS, warmup_days=2)) != config.prereg_hash()

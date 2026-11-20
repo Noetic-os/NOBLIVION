@@ -156,6 +156,8 @@ def test_c2_report_has_no_failed_rules_on_a_clean_week():
     got = health.c2_report(rows, params=PARAMS)
     assert got["evaluate"]["pass"]
     assert got["failed_rules"] == {}
+    # The registered warm-up length is part of the run record (NOBLIVION-214).
+    assert got["evaluate"]["warmup_days"] == PARAMS.warmup_days
 
 
 def test_cold_start_trial_within_budget_with_rows():

@@ -53,6 +53,10 @@ class Params:
     error_rate_upper: float = 0.005
     lag_p95_s: float = 10.0
     memory_growth_mb_per_day: float = 10.0
+    # Virtual days at the start of a soak left out of the memory fit (NOBLIVION-214, operator
+    # ruling 2026-11-14). The index and caches fill on day 1, then RSS holds flat, so the rise
+    # is not a leak. Fixed before the next run; never change it after a result.
+    warmup_days: int = 1
     # stock calibration: runs that opened the lesson note, of recorded stock runs
     calibration_hits: int = 8
     calibration_runs: int = 32
@@ -144,7 +148,9 @@ RULES = (
         "error rate upper bound under {error_rate_upper}; "
         "drift 0 at every hourly check; lag p95 {lag_p95_s} s or less; Theil-Sen slope of "
         "latency and memory with an interval that holds 0, or memory growth under "
-        "{memory_growth_mb_per_day} MB a day; PRAGMA quick_check ok.",
+        "{memory_growth_mb_per_day} MB a day, both fitted on the readings after the first "
+        "{warmup_days} day(s) of the run (a warm-up window, fixed in advance; a run no longer "
+        "than the window is fitted whole); PRAGMA quick_check ok.",
     ),
 )
 
