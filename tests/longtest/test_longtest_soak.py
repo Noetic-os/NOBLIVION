@@ -459,7 +459,8 @@ def run_d_rows():
     """Resource rows with run-d's per-day range: 24 readings a day, a ramp from the
     day's minimum to its maximum."""
     rows = [r for r in rows_for(DAYS) if r["kind"] != "resources"]
-    for day, (lo, hi) in zip(DAYS, RUN_D_RSS):
+    for i, day in enumerate(DAYS):
+        lo, hi = RUN_D_RSS[i]
         for h in range(24):
             rows.append(
                 {
