@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.41 - 2026-11-20
+
 - Batch learning: a batch item now replaces a capture job that holds no saved work (no page receipt, no window position, no decision, no partial-work key, no `--omit-withheld` mark), even when the job has attempts, budget rows or a frozen configuration, for example after a provider outage and a retry. Before, such a job counted as started: the item stopped before its text and the job ran on its own. Capture extension still uses the stricter unstarted test. A job with a page receipt keeps its text and runs to its end as before (NOBLIVION-267).
 
 ## 0.1.40 - 2026-11-20
