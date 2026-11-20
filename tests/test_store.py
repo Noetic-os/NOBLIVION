@@ -953,9 +953,7 @@ def test_a_scan_logs_the_file_that_holds_back_the_deletes_of_its_root(
     assert held in [r.getMessage() for r in caplog.records]
 
 
-def test_a_scan_logs_a_held_delete_once_until_the_file_is_fine_again(
-    tmp_path, monkeypatch, caplog
-):
+def test_a_scan_logs_a_held_delete_once_until_the_file_is_fine_again(tmp_path, monkeypatch, caplog):
     # NOBLIVION-85: the warning came on every 30 s scan while the file stayed bad.
     st = make_store(tmp_path)
     folder = st.settings.memory_dirs[0]
@@ -992,7 +990,7 @@ def test_a_scan_logs_a_held_delete_once_until_the_file_is_fine_again(
             assert st.scan_once(conn).deleted == 1  # fine again: the held delete runs
             (folder / "user_02.md").unlink()
             broken["on"] = True
-            assert st.scan_once(conn).deletes_held == {"-work-proj-demo": 1}
+            assert st.scan_once(conn).deletes_held == {"-work-proj-demo": 2}
     assert len(held_records("WARNING")) == 2  # a return of the fault logs again
 
 

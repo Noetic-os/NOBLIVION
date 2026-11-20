@@ -758,6 +758,57 @@ def _prepare(entry: FileEntry, labeller: Labeller | None) -> _Prepared | None:
     )
 
 
+def _touch_unchanged_heads(
+    conn: sqlite3.Connection,
+    project: str,
+    work: list[tuple[Op, _Prepared | None]],
+    named: Collection[tuple[str, str]],
+    redo: Collection[int],
+    result: ScanResult,
+) -> list[tuple[Op, _Prepared | None]]:
+    """Store the new hash of a file whose stored text did not change, and leave
+    it out of the batch writes (NOBLIVION-85). A note over ``MAX_FILE_BYTES``
+    that only grows at its end has the same head, so the same text, labels and
+    category, but a new file hash. A full rewrite would bump ``content_rev``
+    (the ranking index reloads) and run ``sync_chunks`` for nothing. The hash
+    is set in its own transaction, so ``content_rev`` stays as it is. The
+    caller does not call this for a forced or stale scan. A row on the redo
+    list, a note that another note supersedes, a note that is not active, and a
+    row managed by a learning note keep the full path. The touched row counts
+    as unchanged."""
+    candidates = [
+        (op, prep)
+        for op, prep in work
+        if op.kind == "update"
+        and op.row_id is not None
+        and op.row_id not in redo
+        and prep is not None
+        and prep.active
+        and (prep.entry.root, prep.entry.path.removesuffix(".md")) not in named
+    ]
+    if not candidates:
+        return work
+    touched: set[int] = set()
+    with db.write_tx(conn):
+        for op, prep in candidates:
+            assert op.row_id is not None and prep is not None
+            if db.touch_hash(
+                conn,
+                project,
+                op.row_id,
+                root=prep.entry.root,
+                path=prep.entry.path,
+                category=prep.category,
+                content=prep.content,
+                content_hash=prep.entry.hash,
+                labels=prep.labels,
+                index_text=prep.index_text,
+            ):
+                touched.add(op.row_id)
+    result.unchanged += len(touched)
+    return [(op, prep) for op, prep in work if op.row_id not in touched or op.kind != "update"]
+
+
 def _apply_batch(
     conn: sqlite3.Connection,
     project: str,
@@ -962,6 +1013,8 @@ def scan(
 
     supersedes = update_supersedes(_read_supersedes(stored_supersedes), folders, work)
     named = superseded_set(supersedes)
+    if not (force or stale):
+        work = _touch_unchanged_heads(conn, project, work, named, redo, result)
     for start in range(0, len(work), db.BATCH_ROWS):
         batch = work[start : start + db.BATCH_ROWS]
         _apply_batch(

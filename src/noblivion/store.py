@@ -226,6 +226,8 @@ class Store:
         self._learning_pool = None
         self._learning_check = (float("-inf"), False)
         self._stat_cache: indexer.StatCache = {}
+        self._held_logged: set[str] = set()  # held-delete lines of the last scan, logged once
+        self._skipped_logged: set[str] = set()  # skipped files of the last scan, logged once
         self._cut_logged: set[str] = set()  # files stored by their head, logged at info once
         self.stop_reason = ""
         from noblivion.read_capability import Authority
@@ -576,10 +578,19 @@ class Store:
         finally:
             self.index_state = INDEX_IDLE
         self.index_blocked = result.blocked
-        if result.changed or result.skipped or result.blocked:
+        # A file that stays unreadable is the same fact on every 30 s scan: log it
+        # once, and again only after it was fine in between (NOBLIVION-85).
+        held = set(result.held_lines())
+        skipped = set(result.skipped)
+        new_skipped = skipped - self._skipped_logged
+        if result.changed or result.blocked or new_skipped:
             log.info("index scan: %s", result.summary())
-        for line in result.held_lines():
+        elif result.skipped:
+            log.debug("index scan: %s", result.summary())
+        for line in sorted(held - self._held_logged):
             log.warning("index scan: %s", line)
+        self._held_logged = held
+        self._skipped_logged = skipped
         new_cut = [name for name in result.cut if name not in self._cut_logged]
         if new_cut:
             # One line per scan, and each file once per process: a scan reads

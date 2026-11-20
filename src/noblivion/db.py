@@ -517,6 +517,49 @@ def rewrite_memory(
     return True
 
 
+def touch_hash(
+    conn: sqlite3.Connection,
+    project: str,
+    memory_id: int,
+    *,
+    root: str,
+    path: str,
+    category: str,
+    content: str,
+    content_hash: str,
+    labels: str,
+    index_text: str,
+) -> bool:
+    """Store a new file hash on a live row whose stored text is already the
+    given text, and change nothing else: no ``rev``, no ``updated_at``, no
+    chunk work. This is a file that grew past the cut of the indexer, so its
+    head and its text stay the same while its hash changes (NOBLIVION-85).
+    Call inside ``write_tx``, outside the batch that bumps ``content_rev``.
+    False, with no change, when the row is not live, holds other text, or is
+    managed by a learning note: the caller then does a full rewrite."""
+    cur = conn.execute(
+        "UPDATE memories SET hash = ? WHERE id = ? AND project = ? AND root = ? AND path = ? "
+        "AND archived_at IS NULL AND deleted_at IS NULL AND category = ? AND content = ? "
+        "AND labels = ? AND index_text = ? "
+        "AND NOT EXISTS (SELECT 1 FROM learning_notes WHERE project = ? AND root = ? AND path = ?)",
+        (
+            content_hash,
+            memory_id,
+            project,
+            root,
+            path,
+            category,
+            content,
+            labels,
+            index_text,
+            project,
+            root,
+            path,
+        ),
+    )
+    return cur.rowcount == 1
+
+
 def fileless_row_ids(
     conn: sqlite3.Connection, project: str, *, after_rev: int | None = None
 ) -> list[int]:
