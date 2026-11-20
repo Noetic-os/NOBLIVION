@@ -222,6 +222,87 @@ def test_a_large_file_is_stored_by_its_head(conn, tmp_path):
     assert indexer.MAX_FILE_BYTES - 100 < len(body.encode()) < indexer.MAX_FILE_BYTES
 
 
+def _big_note(extra: str = "") -> str:
+    lines = [f"line {i}: run the tests with the venv python\n" for i in range(8000)]
+    return "---\nname: big note\n---\n" + "".join(lines) + extra
+
+
+def _chunk_rows(conn):
+    return conn.execute(
+        "SELECT id, parent_id, chunk_index, text, rev FROM memory_chunks ORDER BY id"
+    ).fetchall()
+
+
+def test_a_note_that_grows_past_the_cut_only_takes_a_new_hash(conn, tmp_path):
+    # NOBLIVION-85: an append past the cut rewrote the row, bumped content_rev
+    # and ran the chunk sync, though the stored head did not change.
+    import hashlib
+
+    folder = make_folder(tmp_path, "proj-demo", {"reference_big.md": _big_note()})
+    assert indexer.scan(conn, [folder]).inserted == 1
+    before = rows(conn)[("proj-demo", "reference_big.md")]
+    revs = db.revisions(conn)
+    chunks = [tuple(r) for r in _chunk_rows(conn)]
+    updated_at = conn.execute("SELECT updated_at FROM memories").fetchone()[0]
+
+    grown = _big_note("one more line\n")
+    (folder / "reference_big.md").write_text(grown, encoding="utf-8")
+    result = indexer.scan(conn, [folder])
+
+    assert (result.updated, result.inserted, result.changed) == (0, 0, 0)
+    assert result.unchanged == 1
+    assert result.cut == ["proj-demo/reference_big.md"]
+    after = rows(conn)[("proj-demo", "reference_big.md")]
+    assert after["hash"] == hashlib.sha256(grown.encode()).hexdigest()
+    assert {k: v for k, v in after.items() if k != "hash"} == {
+        k: v for k, v in before.items() if k != "hash"
+    }
+    assert db.revisions(conn) == revs
+    assert result.content_rev == revs[0]
+    assert [tuple(r) for r in _chunk_rows(conn)] == chunks
+    assert conn.execute("SELECT updated_at FROM memories").fetchone()[0] == updated_at
+    # The new hash is stored, so the next scan finds nothing to do.
+    again = indexer.scan(conn, [folder])
+    assert (again.changed, again.unchanged) == (0, 1)
+
+
+def test_a_change_inside_the_head_of_a_large_note_still_rewrites_the_row(conn, tmp_path):
+    folder = make_folder(tmp_path, "proj-demo", {"reference_big.md": _big_note()})
+    indexer.scan(conn, [folder])
+    revs = db.revisions(conn)
+    text = _big_note("tail\n").replace("line 3:", "line three:")
+    (folder / "reference_big.md").write_text(text, encoding="utf-8")
+    result = indexer.scan(conn, [folder])
+    assert result.updated == 1
+    assert db.revisions(conn)[0] == revs[0] + 1
+    assert "line three:" in rows(conn)[("proj-demo", "reference_big.md")]["content"]
+
+
+def test_force_and_a_redactor_version_change_still_rewrite_a_grown_note(
+    conn, tmp_path, monkeypatch
+):
+    folder = make_folder(tmp_path, "proj-demo", {"reference_big.md": _big_note()})
+    indexer.scan(conn, [folder])
+    (folder / "reference_big.md").write_text(_big_note("more\n"), encoding="utf-8")
+    assert indexer.scan(conn, [folder], force=True).updated == 1
+    (folder / "reference_big.md").write_text(_big_note("more\nand more\n"), encoding="utf-8")
+    monkeypatch.setattr(redaction, "REDACTOR_VERSION", "next-version")
+    assert indexer.scan(conn, [folder]).updated == 1
+
+
+@pytest.mark.parametrize("state", ["archived", "deleted"])
+def test_a_grown_note_whose_row_is_not_live_is_not_only_touched(conn, tmp_path, state):
+    folder = make_folder(tmp_path, "proj-demo", {"reference_big.md": _big_note()})
+    indexer.scan(conn, [folder])
+    column = "archived_at" if state == "archived" else "deleted_at"
+    conn.execute(f"UPDATE memories SET {column} = '2026-01-01T00:00:00.000Z'")
+    conn.commit()
+    (folder / "reference_big.md").write_text(_big_note("more\n"), encoding="utf-8")
+    result = indexer.scan(conn, [folder])
+    assert result.revived + result.unarchived == 1
+    assert ("proj-demo", "reference_big.md") in live(conn)
+
+
 @pytest.mark.parametrize(
     ("raw", "head"),
     [

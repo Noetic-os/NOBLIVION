@@ -953,6 +953,49 @@ def test_a_scan_logs_the_file_that_holds_back_the_deletes_of_its_root(
     assert held in [r.getMessage() for r in caplog.records]
 
 
+def test_a_scan_logs_a_held_delete_once_until_the_file_is_fine_again(
+    tmp_path, monkeypatch, caplog
+):
+    # NOBLIVION-85: the warning came on every 30 s scan while the file stayed bad.
+    st = make_store(tmp_path)
+    folder = st.settings.memory_dirs[0]
+    folder.mkdir(parents=True)
+    for i in range(20):
+        (folder / f"user_{i:02}.md").write_text(f"note {i}\n", encoding="utf-8")
+    (folder / "reference_ci.md").write_text("ci note\n", encoding="utf-8")
+    real = Path.read_bytes
+    broken = {"on": False}
+
+    def read_bytes(self):
+        if broken["on"] and self.name == "reference_ci.md":
+            raise PermissionError(13, "Permission denied")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    def held_records(level: str) -> list[str]:
+        return [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelname == level and "reference_ci.md" in r.getMessage()
+        ]
+
+    with closing(db.open_db(st.settings.db_path, create=True)) as conn:
+        with caplog.at_level("DEBUG", logger="noblivion.store"):
+            assert st.scan_once(conn).inserted == 21
+            (folder / "user_01.md").unlink()
+            broken["on"] = True
+            for _ in range(3):
+                assert st.scan_once(conn).deletes_held == {"-work-proj-demo": 2}
+            assert len(held_records("WARNING")) == 1
+            broken["on"] = False
+            assert st.scan_once(conn).deleted == 1  # fine again: the held delete runs
+            (folder / "user_02.md").unlink()
+            broken["on"] = True
+            assert st.scan_once(conn).deletes_held == {"-work-proj-demo": 1}
+    assert len(held_records("WARNING")) == 2  # a return of the fault logs again
+
+
 def test_a_scan_logs_a_file_stored_by_its_head_once(tmp_path, caplog):
     # One info line names a file over 256 KB. The store scans every 30 s and
     # reads the file again after each change: the line is not repeated.
