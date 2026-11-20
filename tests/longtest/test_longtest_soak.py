@@ -422,3 +422,22 @@ def test_the_warmup_length_is_in_the_registered_rules():
     text = config.render_prereg()
     assert "warmup_days: 1" in text and "warm-up" in text
     assert config.prereg_hash(replace(PARAMS, warmup_days=2)) != config.prereg_hash()
+
+
+def test_a_partial_run_with_the_full_day_labels_keeps_the_whole_fit():
+    # c2_report passes 7 day labels even when the run has rows for day 1 only.
+    one_day = [r for r in rows_for(DAYS[:1]) if r["kind"] != "resources"] + [
+        {"day": DAYS[0], "kind": "resources", "quick_check": "ok", "rss_mb": 500.0 + 30.0 * h}
+        for h in range(20)
+    ]
+    got = soak.evaluate(one_day, days=DAYS)
+    assert got["warmup_days"] == 1 and not got["warmup_applied"]
+    assert got["memory_growth_mb_per_day"] == got["memory_growth_mb_per_day_all"]
+    assert not got["checks"]["memory_trend"], got
+
+
+def test_the_registered_rule_text_windows_memory_only():
+    text = config.render_prereg()
+    assert "slope of latency over all days" in text
+    assert "memory fit made on the readings after the first 1 day(s)" in text
+    assert "both fitted" not in text

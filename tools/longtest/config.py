@@ -147,9 +147,10 @@ RULES = (
         "is reported as burst_p95_ms and counts for the error rate); "
         "error rate upper bound under {error_rate_upper}; "
         "drift 0 at every hourly check; lag p95 {lag_p95_s} s or less; Theil-Sen slope of "
-        "latency and memory with an interval that holds 0, or memory growth under "
-        "{memory_growth_mb_per_day} MB a day, both fitted on the readings after the first "
-        "{warmup_days} day(s) of the run (a warm-up window, fixed in advance; a run no longer "
+        "latency over all days with an interval that holds 0; Theil-Sen slope of memory with "
+        "an interval that holds 0, or memory growth under {memory_growth_mb_per_day} MB a day, "
+        "the memory fit made on the readings after the first {warmup_days} day(s) of the run "
+        "(a warm-up window for memory only, fixed in advance; a run with rows on no more days "
         "than the window is fitted whole); PRAGMA quick_check ok.",
     ),
 )

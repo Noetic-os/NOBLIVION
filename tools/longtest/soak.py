@@ -415,21 +415,23 @@ def evaluate(
     latency_trend = stats.theil_sen(xs, [daily_p95[d] for d in days]) if len(days) >= 3 else None
     # Warm-up window (NOBLIVION-214): the readings of the first ``warmup_days`` days are
     # left out of the memory fit, because the index and caches fill then and RSS holds
-    # flat after. A run no longer than the window keeps the whole fit.
-    warm = set(days[: params.warmup_days]) if len(days) > params.warmup_days else set()
+    # flat after. The window counts the days that have rows, not the day labels: a
+    # partial run keeps the whole fit when it has no more days than the window.
+    seen = [d for d in days if d in by_day]
+    warm = set(seen[: params.warmup_days]) if len(seen) > params.warmup_days else set()
     steady_res = [r for r in res if r["day"] not in warm]
     mem_x = [i for i, _ in enumerate(steady_res)]
     mem_trend = (
         stats.theil_sen(mem_x, [r["rss_mb"] for r in steady_res]) if len(steady_res) >= 3 else None
     )
-    span_days = max(1, len(days) - len(warm))
+    span_days = max(1, len(seen) - len(warm))
     growth = (
         (steady_res[-1]["rss_mb"] - steady_res[0]["rss_mb"]) / span_days
         if len(steady_res) >= 2
         else 0.0
     )
     growth_all = (
-        (res[-1]["rss_mb"] - res[0]["rss_mb"]) / max(1, len(days)) if len(res) >= 2 else 0.0
+        (res[-1]["rss_mb"] - res[0]["rss_mb"]) / max(1, len(seen)) if len(res) >= 2 else 0.0
     )
     checks = {
         "budget_recall": all(v <= params.budget_recall_ms for v in daily_p95.values()),

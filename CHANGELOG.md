@@ -8,7 +8,7 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
-- The long-run health check C2 now leaves a registered warm-up window (`warmup_days`, 1 virtual day, written into the test rules and the run record) out of the `memory_trend` fit, so the one-time day-1 RSS rise no longer fails it; a climb after day 1 still fails (NOBLIVION-214).
+- The long-run health check C2 now leaves a registered warm-up window (`warmup_days`, 1 virtual day, written into the test rules and the run record) out of the `memory_trend` fit, so the one-time day-1 RSS rise no longer fails it; a climb after day 1 still fails. The window counts the days that have rows, so a partial run with rows on day 1 only is fitted whole, and the written rule says the window covers memory only, not latency (NOBLIVION-214).
 
 ## 0.1.41 - 2026-11-20
 
