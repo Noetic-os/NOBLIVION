@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""A note enters the prompt context only when it shares enough real words with the query (NOBLIVION-160).
+"""A note enters the prompt context only when it shares enough real words (NOBLIVION-160).
 
 Before: one shared word of any kind was enough, so a long prompt (hundreds of words) matched
 notes of other work through words such as "status", "summary", "home" or "command".
