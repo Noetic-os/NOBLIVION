@@ -1012,3 +1012,41 @@ def test_the_partial_work_keys_are_the_worker_keys():
     from noblivion import learning_worker
 
     assert learning_worker.PARTIAL_WORK is learning_ranges.PARTIAL_WORK
+
+
+def test_an_item_takes_the_age_of_the_oldest_job_it_reads_and_runs_in_that_order(ledger):
+    # NOBLIVION-275: the claim runs the oldest job first, over all job kinds. An item
+    # that took the plan time would wait behind every job that is older than that.
+    ages = {"s1": 10.0, "s3": 20.0, "s2": 30.0}
+    for session, age in ages.items():
+        job = ledger.capture_batch(payload(1, session))["job_id"]
+        ledger.conn.execute("UPDATE learning_jobs SET created_at=? WHERE id=?", (age, job))
+    order = []
+    for _ in ages:
+        item = ledger.claim("w", batch=True)
+        order.append(
+            ledger.conn.execute(
+                "SELECT session_id FROM learning_jobs WHERE id=?", (item["id"],)
+            ).fetchone()[0]
+        )
+        ledger.finish(item["id"], item["lease_token"], [])
+    assert order == ["s1", "s3", "s2"]
+    assert {
+        row[0]: row[1]
+        for row in ledger.conn.execute(
+            "SELECT j.session_id,j.created_at FROM learning_jobs j "
+            "JOIN learning_batch_items i ON i.job_id=j.id"
+        )
+    } == ages
+
+
+def test_an_item_is_claimed_before_a_younger_job_of_another_session(ledger):
+    # A capture job younger than the session of the item, older than the plan time.
+    old = ledger.capture_batch(payload(1, "s1"))["job_id"]
+    young = ledger.capture_batch(payload(1, "s2"))["job_id"]
+    ledger.conn.execute("UPDATE learning_jobs SET created_at=10 WHERE id=?", (old,))
+    ledger.conn.execute("UPDATE learning_jobs SET created_at=20 WHERE id=?", (young,))
+    first = ledger.claim("w", batch=True)
+    assert ledger.conn.execute(
+        "SELECT session_id,created_at FROM learning_jobs WHERE id=?", (first["id"],)
+    ).fetchone()[:] == ("s1", 10.0)

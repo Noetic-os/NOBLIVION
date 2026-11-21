@@ -196,7 +196,7 @@ def plan(conn, now: float) -> list[str]:
 def _plan_session(conn, key: tuple, now: float) -> str | None:
     mark = watermark(conn, key)
     jobs = conn.execute(
-        "SELECT j.status,r.first_seq,r.last_seq,"
+        "SELECT j.status,j.created_at,r.first_seq,r.last_seq,"
         "(" + NO_WORK + ") AS fresh,"
         "EXISTS (SELECT 1 FROM learning_batch_items i WHERE i.job_id=j.id) AS item,"
         "(" + _ORPHAN + ") AS orphan "
@@ -254,6 +254,17 @@ def _plan_session(conn, key: tuple, now: float) -> str | None:
         total += source["size"]
         last = source["seq"]
     first = sources[start]["seq"]
+    # The claim runs the oldest job first, over all job kinds. The item takes the
+    # creation time of the oldest job whose text it reads, so it does not wait
+    # behind every job that is older than the plan time (NOBLIVION-275).
+    born = min(
+        (
+            j["created_at"]
+            for j in waiting
+            if not j["orphan"] and j["first_seq"] <= last and j["last_seq"] >= first
+        ),
+        default=now,
+    )
     job_id = uuid.uuid4().hex
     receipt = RECEIPT_PREFIX + job_id
     digest = hashlib.sha256(
@@ -267,7 +278,7 @@ def _plan_session(conn, key: tuple, now: float) -> str | None:
     conn.execute(
         "INSERT INTO learning_jobs "
         "(id,batch_id,project,root,session_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
-        (job_id, receipt, project, root, session, now, now),
+        (job_id, receipt, project, root, session, min(born, now), now),
     )
     conn.execute(
         "INSERT INTO learning_job_ranges VALUES (?,?,?,?,?,?,?)",
