@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.42 - 2026-11-21
+
 - Batch learning: a batch item now takes the creation time of the oldest waiting job whose text it reads, not the plan time. The claim runs the oldest job first over all job kinds, so an item used to wait behind every older extract and consolidate job (NOBLIVION-275).
 - The long-run health check C2 now leaves a registered warm-up window (`warmup_days`, 2 virtual days, chosen from the recorded run-d RSS, which settles during day 2; written into the test rules and the run record) out of the `memory_trend` fit, so the one-time day-1 RSS rise no longer fails it; a climb after day 1 still fails. The window counts the days that have rows, so a partial run with rows on day 1 only is fitted whole, and the written rule says the window covers memory only, not latency (NOBLIVION-214).
 - A note over 256 KB that only grows at its end now takes a new file hash without a row rewrite: no `content_rev` bump and no chunk sync. The store logs the held-delete warning, and the skipped-file summary, once for each held line until the root is fine again (NOBLIVION-85).
