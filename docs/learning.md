@@ -831,18 +831,22 @@ noblivion learning status --root ROOT
 ```
 
 The authenticated `POST /learning/context` accepts
-`{project, root, session_id, query, limit_chars}`. `GET /learning/context` accepts
-the same query parameters. The response contains `context`, `claims`, `conflicts`,
+`{project, root, session_id, query, limit_chars, include_conflicts}`. `GET /learning/context` accepts
+the same query parameters (`include_conflicts=1`). The response contains `context`, `claims`, `conflicts`,
 `deferred` and `reason`. A disabled caller receives empty context. Nonempty queries
 require meaningful term overlap; unrelated queries abstain. An empty query keeps
 the startup-summary behavior. The new prompt hook supplies this bounded context
 to Codex and Claude. Existing `/learning/summary` clients remain compatible.
 
 Delivered bullets label explicit statements, observations and inferences. They
-include scope, support dates, claim/revision IDs and exact support IDs. Unresolved
-conflicts include the actual proposed value, date and affected revision, labelled
-`unresolved/not admitted`. If a complete conflict cannot fit, affected guidance
-is omitted and the response records that disposition. Content is never cut into
+include scope, support dates, claim/revision IDs and exact support IDs. An unresolved
+conflict is a proposal that was not admitted. By default it is not in `context` and not in
+`conflicts`, so no hook injects it (NOBLIVION-276). A caller that sets `include_conflicts`
+(CLI: `noblivion learning context --include-conflicts`) gets the conflicts of its own scope, with the
+actual proposed value, date and affected revision, labelled `unresolved/not admitted`. A proposal
+made in another scope is not shown, even when its target note is in this scope. With conflicts
+requested, if a complete conflict cannot fit, affected guidance is omitted and the response records
+that disposition. The note that a conflict targets stays in the default context. Content is never cut into
 a superficially complete claim to meet a size limit.
 
 Default hard limits are twelve proposals per call, 32 exact supports per claim

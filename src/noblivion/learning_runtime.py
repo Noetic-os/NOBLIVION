@@ -703,5 +703,10 @@ def context(store, body: dict) -> dict:
         raise ValueError("invalid context namespace")
     with store.connection() as conn:
         return ConsolidationLedger(LearningLedger(conn)).context(
-            project, root, query, session_id=session, limit_chars=body.get("limit_chars", 6000)
+            project,
+            root,
+            query,
+            session_id=session,
+            limit_chars=body.get("limit_chars", 6000),
+            include_conflicts=body.get("include_conflicts") is True,
         )

@@ -661,6 +661,7 @@ class Handler(BaseHTTPRequestHandler):
                             "session_id": first(params, "session_id"),
                             "query": first(params, "query", first(params, "q")),
                             "limit_chars": clamp_int(first(params, "limit_chars"), 6000, 0, 12000),
+                            "include_conflicts": first(params, "include_conflicts") == "1",
                         }
                     )
                     return 200, learning_runtime.context(self.store, body)

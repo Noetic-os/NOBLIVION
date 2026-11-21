@@ -52,6 +52,11 @@ def _parser() -> argparse.ArgumentParser:
         if name == "context":
             command.add_argument("--query", default="")
             command.add_argument("--limit-chars", type=int, default=6000)
+            command.add_argument(
+                "--include-conflicts",
+                action="store_true",
+                help="also show open conflicts (proposals that were not admitted)",
+            )
         if name == "claim":
             command.add_argument("claim_id")
         if name in {"inspect", "edit", "exclude", "forget"}:
@@ -204,6 +209,7 @@ def _run(ledger: LearningLedger, args: argparse.Namespace):
                 args.query,
                 session_id=args.session,
                 limit_chars=args.limit_chars,
+                include_conflicts=args.include_conflicts,
             )
         if args.command == "claim":
             return consolidation.inspect(args.claim_id)

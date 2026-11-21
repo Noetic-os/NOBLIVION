@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Learning context: the prompt context no longer holds open conflicts, the lines labelled `unresolved/not admitted`. They are proposals that were not admitted, and they were about 47% of the rows in a measured session. `/learning/context` leaves them out of `context` and `conflicts` unless the caller sets `include_conflicts` (`noblivion learning context --include-conflicts`). A conflict whose proposal came from another scope is never shown, even on request, when its target note is in this scope. The hooks do not ask for conflicts. `noblivion_recall` is unchanged (NOBLIVION-276, NOBLIVION-160).
+
 ## 0.1.42 - 2026-11-21
 
 - Batch learning: a batch item now takes the creation time of the oldest waiting job whose text it reads, not the plan time. The claim runs the oldest job first over all job kinds, so an item used to wait behind every older extract and consolidate job (NOBLIVION-275).

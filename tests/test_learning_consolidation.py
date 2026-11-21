@@ -204,7 +204,8 @@ def test_unsupported_and_incomplete_claims_stay_visible_but_unserved(ledgers, re
     ledger, store, _, _, claim = seeded(ledgers)
     rejected = store.admit(claim["claim_id"], verdict(claim, relation=relation, complete=complete))
     assert rejected["status"] == "conflicted"
-    context = store.context("test", "demo")
+    assert "unresolved" not in store.context("test", "demo")["context"]  # NOBLIVION-276
+    context = store.context("test", "demo", include_conflicts=True)
     assert not any(c["claim_id"] == claim["claim_id"] for c in context["claims"])
     assert "unresolved/not admitted" in context["context"]
     assert claim["claim_id"] in context["context"] and context["conflicts"]
@@ -539,11 +540,11 @@ def test_dated_unresolved_conflict_preserves_both_values_and_affected_revision(l
             }
         ],
     )
-    context = store.context("test", "demo", "cobalt port")
+    context = store.context("test", "demo", "cobalt port", include_conflicts=True)
     assert "port 80" in context["context"] and "port 443" in context["context"]
     assert "unresolved/not admitted 2026-10-14" in context["context"]
     assert f"affected:{note['note_id']} revision:1" in context["context"]
-    tiny = store.context("test", "demo", "cobalt port", limit_chars=100)
+    tiny = store.context("test", "demo", "cobalt port", limit_chars=100, include_conflicts=True)
     assert "port 80" not in tiny["context"] and tiny["deferred"]
 
 

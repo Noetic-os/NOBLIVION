@@ -645,14 +645,29 @@ class ConsolidationLedger:
             return False
         return True
 
-    def context(self, project, root, query="", *, session_id="", limit_chars=6000):
+    def context(
+        self, project, root, query="", *, session_id="", limit_chars=6000, include_conflicts=False
+    ):
+        """Current context for one caller and root.
+
+        An open conflict is a proposal that was not admitted. By default it is not
+        in the text and not in ``conflicts``, so a hook never injects it (NOBLIVION-276).
+        An explicit caller passes ``include_conflicts=True`` to read it.
+        """
         # One transaction prevents a concurrent revocation publishing stale context.
         with db.write_tx(self.conn):
             return self._context(
-                project, root, query, session_id=session_id, limit_chars=limit_chars
+                project,
+                root,
+                query,
+                session_id=session_id,
+                limit_chars=limit_chars,
+                include_conflicts=include_conflicts,
             )
 
-    def _context(self, project, root, query="", *, session_id="", limit_chars=6000):
+    def _context(
+        self, project, root, query="", *, session_id="", limit_chars=6000, include_conflicts=False
+    ):
         validate_text(project, "project")
         validate_text(root, "root")
         validate_text(query, "context query", 8000, empty=True)
@@ -761,8 +776,12 @@ class ConsolidationLedger:
             else:
                 merged[key] = item
         conflicts = []
-        for conflict in self.ledger.iter_conflicts(project, root):
+        for conflict in self.ledger.iter_conflicts(project, root) if include_conflicts else ():
             if conflict["state"] != "open":
+                continue
+            # A proposal made in another scope is not this scope's text, even when
+            # its target note lives here.
+            if conflict.get("source_scope", {}).get("root") != root:
                 continue
             statement = conflict.get("proposed_statement") or ""
             if query.strip() and not (terms & _terms(statement)):
@@ -784,11 +803,15 @@ class ConsolidationLedger:
             conflicts.append(conflict)
             if len(conflicts) >= 16:
                 break
-        for row in self.conn.execute(
-            "SELECT claim_id,revision,statement,observed_at,semantic_relation FROM learning_claims "
-            "WHERE project=? AND root=? AND status='conflicted' ORDER BY updated_at DESC LIMIT 16",
-            (project, root),
-        ):
+        conflicted = []
+        if include_conflicts:
+            conflicted = self.conn.execute(
+                "SELECT claim_id,revision,statement,observed_at,semantic_relation "
+                "FROM learning_claims WHERE project=? AND root=? AND status='conflicted' "
+                "ORDER BY updated_at DESC LIMIT 16",
+                (project, root),
+            ).fetchall()
+        for row in conflicted:
             if query.strip() and not (terms & _terms(row["statement"])):
                 continue
             conflicts.append(dict(row))
