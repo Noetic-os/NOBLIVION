@@ -10,6 +10,7 @@ All notable changes to NOBLIVION. The format follows
 
 - Two flaky fallback tests no longer fail on a slow runner: one counts connections to the store instead of timing the hook, the other lifts the corpus read limit (NOBLIVION-251, NOBLIVION-273).
 - Shorten recall rule headers while keeping fetch directions for bare rows and the reminder that earlier rules still apply (NOBLIVION-161).
+- Wait for the evaluation store health response before calling real hooks, and include child stderr on failure (NOBLIVION-279).
 
 - The prompt context hook shows a learned note once per session. A note with a new revision shows again (NOBLIVION-282).
 - A learned note needs more than plain words in common with the prompt: more plain words are ignored, a trailing dot is cut from a word, and a long prompt needs three shared words (NOBLIVION-283).
