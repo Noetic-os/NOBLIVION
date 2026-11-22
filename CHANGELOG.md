@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Wait for the evaluation store health response before calling real hooks, and include child stderr on failure (NOBLIVION-279).
+
 - The prompt context hook shows a learned note once per session. A note with a new revision shows again (NOBLIVION-282).
 - Codex guards receive a host-local journal with usable prompt context. Remote bridges can bind recall to their own MCP server to prevent conflicts between configured workspaces.
 

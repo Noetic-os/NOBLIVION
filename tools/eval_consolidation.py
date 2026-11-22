@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 from contextlib import closing
 from pathlib import Path
 
@@ -200,6 +201,21 @@ def batch(text, number=1):
     )
 
 
+def wait_for_store(st, thread, timeout_s=10):
+    deadline = time.monotonic() + timeout_s
+    while thread.is_alive() and time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{st.port}/health", timeout=0.5
+            ) as response:
+                if response.status == 200:
+                    return
+        except OSError:
+            pass
+        time.sleep(0.05)
+    raise RuntimeError("the evaluation store did not answer before the deadline")
+
+
 def child(source, memory_on, corpus_path):
     # Set before importing the product: one interpreter uses exactly one source.
     sys.path.insert(0, str(source / "src"))
@@ -243,6 +259,7 @@ def child(source, memory_on, corpus_path):
         worker_settings = WorkerSettings()
         result = {}
         try:
+            wait_for_store(st, thread)
             with closing(db.open_db(settings.db_path)) as conn:
                 ledger = LearningLedger(conn)
                 captured = ledger.capture_batch(
