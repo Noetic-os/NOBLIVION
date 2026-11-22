@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.45 - 2026-11-22
+
 - Two flaky fallback tests no longer fail on a slow runner: one counts connections to the store instead of timing the hook, the other lifts the corpus read limit (NOBLIVION-251, NOBLIVION-273).
 - Shorten recall rule headers while keeping fetch directions for bare rows and the reminder that earlier rules still apply (NOBLIVION-161).
 - Wait for the evaluation store health response before calling real hooks, and include child stderr on failure (NOBLIVION-279).
