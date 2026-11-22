@@ -309,6 +309,16 @@ def test_the_header_with_apply_is_shorter_by_the_sentence():
     assert full == short + " " + FETCH_SENTENCE
 
 
+@pytest.mark.parametrize("reduced", [False, True])
+@pytest.mark.parametrize("tier_k,all_apply", [(0, False), (3, False), (3, True)])
+def test_each_rule_header_is_short_and_preserves_its_instructions(reduced, tier_k, all_apply):
+    head = hook.index_header(3, 5, "p", True, tier_k=tier_k, reduced=reduced, all_apply=all_apply)
+    assert len(head) <= 160
+    assert "Apply matching rules" in head
+    assert ("Earlier rules still apply" in head) == reduced
+    assert (FETCH_SENTENCE in head) == (not all_apply)
+
+
 def test_the_skill_says_to_call_recall_in_the_same_message():
     body = " ".join(
         (ROOT_DIR / "skills" / "recall-first" / "SKILL.md").read_text(encoding="utf-8").split()
