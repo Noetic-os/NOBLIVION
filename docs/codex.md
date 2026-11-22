@@ -121,6 +121,7 @@ argument list. For example, `/absolute/client/remote-client.json`:
 ```json
 {
   "repo_root": "/absolute/client/NOBLIVION",
+  "mcp_server_name": "noblivion",
   "state_dir": "/absolute/client/state",
   "learning": {"contribute": false},
   "project_mappings": [
@@ -165,6 +166,9 @@ The PreToolUse matcher must include `mcp__noblivion__noblivion_recall`. Review a
 trust the commands in Codex, then start a new chat. Both scripts accept
 `--config`; without it they read the corresponding `remote-client.json` or
 `remote-server.json` beside the script.
+
+If multiple bridges match recall, set each client's `mcp_server_name` to its
+name in `[mcp_servers.<name>]`. Each bridge handles recall for its own server.
 
 The gateway always starts MCP with required-capability mode. It forwards native
 PreToolUse through the real adapter and returns its complete input rewrite.

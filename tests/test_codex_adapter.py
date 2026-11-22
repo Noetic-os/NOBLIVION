@@ -336,6 +336,29 @@ def test_mcp_fs_read_maps_to_shared_file_guard(cfg: dict) -> None:
     assert translated[0]["tool_input"]["file_path"] == ".git/config"
 
 
+def test_claude_guard_gets_codex_journal(cfg: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    payloads = []
+
+    def invoke(_cfg: dict, _env: dict, name: str, payload: dict, *args: str) -> dict:
+        if name == "guard_hook":
+            payloads.append(payload)
+        return {}
+
+    monkeypatch.setattr(adapter, "_invoke", invoke)
+    prompt = "Inspect the application settings."
+    adapter.handle_hook(cfg, event(cfg, "UserPromptSubmit", prompt=prompt))
+    adapter.handle_hook(
+        cfg,
+        event(cfg, "PreToolUse", tool_name="exec_command", tool_input={"cmd": "pwd"}),
+    )
+
+    assert len(payloads) == 1
+    transcript = Path(payloads[0]["transcript_path"])
+    assert transcript.is_relative_to(cfg["state_dir"])
+    row = json.loads(transcript.read_text(encoding="utf-8"))
+    assert row["message"] == {"role": "user", "content": prompt}
+
+
 def test_spawn_agent_saves_its_task_for_subagent_start(
     cfg: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:

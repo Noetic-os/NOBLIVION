@@ -234,7 +234,7 @@ def _journal(cfg: dict, event: dict, translated: list[dict]) -> Path:
             {
                 **common,
                 "type": "user",
-                "message": {"content": str(event.get("prompt") or "")},
+                "message": {"role": "user", "content": str(event.get("prompt") or "")},
             }
         )
     elif name == "PostToolUse":
@@ -253,6 +253,7 @@ def _journal(cfg: dict, event: dict, translated: list[dict]) -> Path:
                         **common,
                         "type": "assistant",
                         "message": {
+                            "role": "assistant",
                             "content": [
                                 {
                                     "type": "tool_use",
@@ -260,13 +261,14 @@ def _journal(cfg: dict, event: dict, translated: list[dict]) -> Path:
                                     "name": item.get("tool_name"),
                                     "input": item.get("tool_input", {}),
                                 }
-                            ]
+                            ],
                         },
                     },
                     {
                         **common,
                         "type": "user",
                         "message": {
+                            "role": "user",
                             "content": [
                                 {
                                     "type": "tool_result",
@@ -274,7 +276,7 @@ def _journal(cfg: dict, event: dict, translated: list[dict]) -> Path:
                                     "is_error": failed,
                                     "content": body,
                                 }
-                            ]
+                            ],
                         },
                     },
                 )
@@ -284,7 +286,10 @@ def _journal(cfg: dict, event: dict, translated: list[dict]) -> Path:
             {
                 **common,
                 "type": "assistant",
-                "message": {"content": str(event.get("last_assistant_message") or "")},
+                "message": {
+                    "role": "assistant",
+                    "content": str(event.get("last_assistant_message") or ""),
+                },
             }
         )
     if rows:
@@ -424,7 +429,11 @@ def handle_hook(cfg: dict, event: dict) -> dict:
         print("NOBLIVION capture deferred: " + type(exc).__name__, file=sys.stderr)
     env = environment(cfg, event)
     translated = tool_events(event)
-    transcript = _journal(cfg, event, translated)
+    # Claude hooks read their own transcript format. The Codex journal uses
+    # that format and is readable on the host running the hooks.
+    transcript = str(_journal(cfg, event, translated))
+    event = {**event, "transcript_path": transcript}
+    translated = [{**item, "transcript_path": transcript} for item in translated]
     out: list[dict] = []
     if name == "SessionStart":
         _invoke(cfg, env, "store_client", event)
@@ -499,9 +508,8 @@ def handle_hook(cfg: dict, event: dict) -> dict:
             {"hookSpecificOutput": {"additionalContext": GUIDANCE}},
         ]
     elif name == "Stop":
-        stop = {**event, "transcript_path": str(transcript)}
-        out.append(_invoke(cfg, env, "stop_checks", stop))
-        _invoke(cfg, env, "trust_flush", stop)
+        out.append(_invoke(cfg, env, "stop_checks", event))
+        _invoke(cfg, env, "trust_flush", event)
     return _merge(name, out)
 
 

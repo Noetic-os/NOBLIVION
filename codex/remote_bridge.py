@@ -222,6 +222,11 @@ def _deny(reason: str) -> dict:
 
 
 def hook(cfg: dict, event: dict) -> dict:
+    server = cfg.get("mcp_server_name")
+    if server and _recall(event) and event["tool_name"] != f"mcp__{server}__noblivion_recall":
+        # A second bridge can own this recall call. Only its hook may
+        # supply a capability or deny the call for an unmapped workspace.
+        return {}
     capture = module(Path(cfg["repo_root"]) / "codex/capture.py", "_bridge_capture")
     redaction = module(Path(cfg["repo_root"]) / "src/noblivion/redaction.py", "_bridge_redaction")
     # A rewritten argument may appear in a later native tool result/transcript.
