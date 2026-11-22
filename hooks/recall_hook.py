@@ -352,34 +352,28 @@ INDEX_ROW_NO_ID = "- [no id] "
 # (review (a) #5), and no "whole" memory, because a fetch cuts a long one
 # (review (b) #2: 109 of 661 files).
 INDEX_RULE_HEADER = (
-    "MEMORY RULES ranked for this task. {tiers}Follow a rule where it fits the "
-    "task before your first command. noblivion_recall fetch_id=<id> returns the "
-    "memory."
+    "MEMORY RULES ranked for this task. {tiers}Apply matching rules first. "
+    "noblivion_recall fetch_id=<id> returns the memory."
 )
 # WI-17. The header of a REDUCED rule index (rows were left out because this
 # session already has them). It must say that the list is not the whole ranking
 # and that the earlier rows still bind, or the model reads a short list as "only
 # these rules fit".
 INDEX_RULE_HEADER_REDUCED = (
-    "MEMORY RULES new for this task. Rules shown earlier in this session still "
-    "apply and are not repeated. {tiers}Follow a rule where it fits the task "
-    "before your first command. noblivion_recall fetch_id=<id> returns the memory."
+    "MEMORY RULES new for this task. Earlier rules still apply. "
+    "{tiers}Apply matching rules first. "
+    "noblivion_recall fetch_id=<id> returns the memory."
 )
 # NOBLIVION-161. A row that carries an APPLY block already holds the instruction, so the header
 # of an index in which EVERY shown row carries one drops the fetch sentence. An index with one
 # bare row keeps it: that row is only a rule, and its id is the way on. (Dropping it for a
 # mixed index was tried on the recorded bench runs: 2 of the 13 lessons that came through a
 # fetch sat on a bare row of such an index.)
-INDEX_RULE_HEADER_APPLY = (
-    "MEMORY RULES ranked for this task. {tiers}Follow a rule where it fits the "
-    "task before your first command."
-)
+INDEX_RULE_HEADER_APPLY = "MEMORY RULES ranked for this task. {tiers}Apply matching rules first."
 INDEX_RULE_HEADER_REDUCED_APPLY = (
-    "MEMORY RULES new for this task. Rules shown earlier in this session still "
-    "apply and are not repeated. {tiers}Follow a rule where it fits the task "
-    "before your first command."
+    "MEMORY RULES new for this task. Earlier rules still apply. {tiers}Apply matching rules first."
 )
-INDEX_RULE_HEADER_TIERS = "An indented APPLY line under a row says how to apply it. "
+INDEX_RULE_HEADER_TIERS = "APPLY is the action. "
 # F3. The rows the model was last shown, written by the hook and read by the MCP
 # server, which is a separate process and knows no session id. One file per
 # recall-cache folder, and the bench gives every run its own folder, so "the

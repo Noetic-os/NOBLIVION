@@ -603,7 +603,7 @@ TIDE_NOTE = {
 # same store answer, the same notes, the same session. Do not regenerate it from
 # this branch; it pins the healthy output of before.
 BEFORE_OUTPUT = (
-    "MEMORY RULES ranked for this task. An indented APPLY line under a row says how to apply it. Follow a rule where it fits the task before your first command.\n"  # noqa: E501 - one printed line
+    "MEMORY RULES ranked for this task. APPLY is the action. Apply matching rules first.\n"  # noqa: E501 - one printed line
     "- [id 19001] Start the kiln drain with --ember-gap=4417 before any glaze migration runs. (Drain the kiln queue before a glaze migration)\n"  # noqa: E501 - one printed line
     "  APPLY: Wait until the kiln backlog reads zero, then run the glaze migration.\n"
     "- [id 19002] Restart the loom service with --weft-hold=219 after each thread rotation. (Restart the loom service after a thread rotation)\n"  # noqa: E501 - one printed line
