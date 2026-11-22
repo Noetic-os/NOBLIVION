@@ -131,6 +131,19 @@ def test_local_optout_denies_recall_even_when_capture_off(cfg, monkeypatch):
     assert "updatedInput" not in output
 
 
+def test_bridge_ignores_recall_owned_by_another_server(cfg, monkeypatch):
+    cfg["mcp_server_name"] = "project_memory"
+    monkeypatch.setattr(
+        bridge.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("unmapped recall reached gateway"),
+    )
+    other = {**event(cfg), "cwd": "/other-workspace"}
+    assert bridge.hook(cfg, other) == {}
+    own = {**other, "tool_name": "mcp__project_memory__noblivion_recall"}
+    assert bridge.hook(cfg, own)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 def test_forwarding_preserves_full_native_rewrite_and_scrubs_before_capture(cfg, monkeypatch):
     captured = []
     sent = []
