@@ -199,7 +199,7 @@ def test_only_rows_with_a_rule_and_an_apply_text_are_shown(tmp_path, corpus, dae
 def test_rows_carry_their_apply_text_without_the_apply_switch(tmp_path, corpus, daemon):
     text = _serve(_env(tmp_path, corpus, **RULES))
     assert len(_apply_lines(text)) >= 5
-    assert "An indented APPLY line" in text
+    assert "APPLY is the action." in text
 
 
 def test_the_admission_runs_before_the_cut_to_k(tmp_path, corpus, daemon):
