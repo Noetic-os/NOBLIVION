@@ -8,6 +8,7 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Two flaky fallback tests no longer fail on a slow runner: one counts connections to the store instead of timing the hook, the other lifts the corpus read limit (NOBLIVION-251, NOBLIVION-273).
 - The prompt context hook shows a learned note once per session. A note with a new revision shows again (NOBLIVION-282).
 - A learned note needs more than plain words in common with the prompt: more plain words are ignored, a trailing dot is cut from a word, and a long prompt needs three shared words (NOBLIVION-283).
 - Codex guards receive a host-local journal with usable prompt context. Remote bridges can bind recall to their own MCP server to prevent conflicts between configured workspaces.

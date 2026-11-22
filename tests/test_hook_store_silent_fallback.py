@@ -146,7 +146,9 @@ def silent_store(tmp_path):
 # -- NOBLIVION-224: the text search answers ---------------------------------------
 
 
-def test_a_stopped_store_gets_rows_from_the_text_search(rh, tmp_path):
+def test_a_stopped_store_gets_rows_from_the_text_search(rh, tmp_path, monkeypatch):
+    # This test checks rows, not speed: a slow runner must not cut the corpus read (NOBLIVION-273).
+    monkeypatch.setattr(rh, "FALLBACK_READ_S", 30.0)
     folder = tmp_path / "memory"
     write_notes(folder)
     env = shipped_env(tmp_path, folder)
@@ -169,7 +171,12 @@ def test_a_hung_stamp_gets_rows_at_once_with_no_store_call(rh, sc, tmp_path, sil
     out, took = prompt(rh, env)
     assert "--ember-gap=4417" in context_of(out)
     assert statuses(env)[-1].startswith("ok:fallback:store_hung")
-    assert took < 0.4, "inside the probe gap no request goes out"
+    # The property is "no request goes out", so count the connections the store got
+    # (NOBLIVION-251). The time bound only proves the hook did not wait for the hung store.
+    silent_store.setblocking(False)
+    with pytest.raises(BlockingIOError):
+        silent_store.accept()
+    assert took < 1.5, "the hook did not wait for the hung store"
 
 
 def test_the_notice_shows_once_per_session(rh, tmp_path):
