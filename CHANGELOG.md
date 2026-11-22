@@ -8,6 +8,7 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- The prompt context hook shows a learned note once per session. A note with a new revision shows again (NOBLIVION-282).
 - Codex guards receive a host-local journal with usable prompt context. Remote bridges can bind recall to their own MCP server to prevent conflicts between configured workspaces.
 
 ## 0.1.44 - 2026-11-22

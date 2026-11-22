@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -43,6 +44,41 @@ def no_context_items(root: Path, env: dict, session: str) -> bool:
         return path.read_text(encoding="utf-8").strip() == "0"
     except (OSError, ValueError, AttributeError):
         return False
+
+
+SHOWN_MAX = 2000
+CLAIM_KEY = re.compile(r"\[claim:(\S+) revision:(\d+)")
+
+
+def shown_path(root: Path, env: dict, session: str) -> Path:
+    config = load(root / "hooks/hook_config.py", "_context_shown_config")
+    name = hashlib.sha256(session.encode("utf-8")).hexdigest()[:32]
+    return config.data_dir(env) / "cache" / "learning-shown" / name
+
+
+def drop_shown(context: str, shown: set) -> tuple:
+    """Remove the notes this session already received. Return the text and the new keys.
+
+    A note counts as shown by claim id plus revision, so a changed note appears again.
+    A row without a claim key (an open conflict) always stays.
+    """
+    entries = []
+    for line in context.split("\n"):
+        if line.startswith("- ") or not entries:
+            entries.append([line])
+        else:
+            entries[-1].append(line)
+    kept, new = [], []
+    for entry in entries:
+        text = "\n".join(entry)
+        found = CLAIM_KEY.search(text)
+        key = found.group(1) + "@" + found.group(2) if found else None
+        if key is not None and key in shown:
+            continue
+        if key is not None:
+            new.append(key)
+        kept.append(text)
+    return "\n".join(kept), new
 
 
 def run(event: dict, environ: dict, *, codex: bool = False) -> dict:
@@ -92,6 +128,26 @@ def run(event: dict, environ: dict, *, codex: bool = False) -> dict:
         or response.get("reason")
     ):
         return {}
+    # A note shown once in this session is not shown again (NOBLIVION-160 follow-up).
+    # The file is a convenience: any read or write error means "show everything".
+    seen, path = set(), None
+    try:
+        path = shown_path(root, env, event["session_id"])
+        seen = set(path.read_text(encoding="utf-8").split())
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, AttributeError):
+        path = None
+    context, new = drop_shown(context, seen)
+    if not context.strip():
+        return {}
+    if path is not None and new and len(seen) < SHOWN_MAX:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write("\n".join(new) + "\n")
+        except OSError:
+            pass
     return {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
