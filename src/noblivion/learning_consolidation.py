@@ -1173,13 +1173,67 @@ def _terms(text):
         "phoenix",
         "status",
         "summary",
+        # Plain words that joined unrelated notes to long prompts (NOBLIVION-283).
+        "about",
+        "after",
+        "all",
+        "also",
+        "any",
+        "been",
+        "before",
+        "being",
+        "but",
+        "check",
+        "did",
+        "does",
+        "done",
+        "has",
+        "had",
+        "if",
+        "into",
+        "its",
+        "just",
+        "last",
+        "may",
+        "more",
+        "must",
+        "need",
+        "new",
+        "now",
+        "only",
+        "other",
+        "out",
+        "over",
+        "same",
+        "see",
+        "should",
+        "shows",
+        "sign",
+        "so",
+        "some",
+        "statement",
+        "still",
+        "such",
+        "than",
+        "there",
+        "these",
+        "they",
+        "those",
+        "today",
+        "todays",
+        "up",
+        "very",
+        "were",
+        "who",
     }
-    return {t for t in re.findall(r"[\w.-]+", text.casefold()) if len(t) > 1 and t not in stopwords}
+    words = re.findall(r"\w+(?:[.-]\w+)*", text.casefold())
+    return {t for t in words if len(t) > 1 and t not in stopwords}
 
 
 def _shares_terms(terms, text):
-    """True when ``text`` shares two real words with the query (one, when the query has one)."""
-    need = min(2, len(terms))
+    """True when ``text`` shares two real words with the query (three for a long query)."""
+    # A long prompt holds many words, so two chance matches are likely: ask for three.
+    need = min(3 if len(terms) >= 12 else 2, len(terms))
     return need > 0 and len(terms & _terms(text)) >= need
 
 
