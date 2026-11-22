@@ -743,7 +743,7 @@ class ConsolidationLedger:
                 )
         terms = _terms(query)
         if query.strip():
-            items = [item for item in items if terms & _terms(item["statement"])]
+            items = [item for item in items if _shares_terms(terms, item["statement"])]
         items.sort(
             key=lambda c: (
                 -len(terms & set(re.findall(r"[\w.-]+", c["statement"].casefold()))),
@@ -784,7 +784,7 @@ class ConsolidationLedger:
             if conflict.get("source_scope", {}).get("root") != root:
                 continue
             statement = conflict.get("proposed_statement") or ""
-            if query.strip() and not (terms & _terms(statement)):
+            if query.strip() and not _shares_terms(terms, statement):
                 continue
             dates = []
             for ref in conflict.get("evidence", []):
@@ -812,7 +812,7 @@ class ConsolidationLedger:
                 (project, root),
             ).fetchall()
         for row in conflicted:
-            if query.strip() and not (terms & _terms(row["statement"])):
+            if query.strip() and not _shares_terms(terms, row["statement"]):
                 continue
             conflicts.append(dict(row))
         blocked_notes = set()
@@ -1162,8 +1162,25 @@ def _terms(text):
         "would",
         "you",
         "your",
+        # Words of every prompt on this host, not of one subject (NOBLIVION-160).
+        "background",
+        "command",
+        "each",
+        "home",
+        "no",
+        "not",
+        "one",
+        "phoenix",
+        "status",
+        "summary",
     }
     return {t for t in re.findall(r"[\w.-]+", text.casefold()) if len(t) > 1 and t not in stopwords}
+
+
+def _shares_terms(terms, text):
+    """True when ``text`` shares two real words with the query (one, when the query has one)."""
+    need = min(2, len(terms))
+    return need > 0 and len(terms & _terms(text)) >= need
 
 
 def _readonly_command(command):

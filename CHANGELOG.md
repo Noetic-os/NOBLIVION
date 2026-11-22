@@ -8,6 +8,7 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- Learning context: a note now enters the prompt context only when it shares two real words with the prompt (one, when the prompt holds one real word), and ten words that appear in every prompt on a host (`home`, `phoenix`, `status`, `summary`, `command`, `background`, `each`, `one`, `no`, `not`) no longer count. One shared word of any kind used to be enough, so a long prompt matched notes of other work (NOBLIVION-160). On 60 recent prompts replayed against a copy of the live store, rows fell from 655 to 455 and the injected size from about 63,400 to 47,500 tokens (-25%).
 - Codex guards receive a host-local journal with usable prompt context. Remote bridges can bind recall to their own MCP server to prevent conflicts between configured workspaces.
 
 ## 0.1.43 - 2026-11-21

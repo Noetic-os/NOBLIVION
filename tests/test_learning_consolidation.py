@@ -368,7 +368,7 @@ def test_relevance_floor_long_query_and_bounded_caches(ledgers):
     ledger, store, _, _, claim = seeded(ledgers)
     store.admit(claim["claim_id"], verdict(claim))
     assert store.context("test", "demo", "Tell me about banana orchards")["context"] == ""
-    assert "cobalt" in store.context("test", "demo", "cobalt " + "z" * 6000)["context"]
+    assert "cobalt" in store.context("test", "demo", "cobalt otter " + "z" * 6000)["context"]
     for index in range(300):
         store.context("test", "demo", f"query-{index}", session_id=f"caller-{index}")
     assert ledger.conn.execute("SELECT count(*) FROM learning_context_cache").fetchone()[0] == 256
