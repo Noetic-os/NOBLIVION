@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.46 - 2026-11-24
+
 - A failed learning job now keeps the fixed message of a LearningError in its last error, so the cause of a failed consolidate job can be read (NOBLIVION-280).
 
 ## 0.1.45 - 2026-11-22
