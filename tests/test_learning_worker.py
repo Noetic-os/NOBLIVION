@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from noblivion.learning_values import LearningError
 from noblivion.learning_worker import (
     LearningWorker,
     OpenAICompatibleProvider,
@@ -78,6 +79,7 @@ class Ledger:
     def fail(self, *args, **kwargs):
         self.events.append("fail")
         self.failure = kwargs
+        self.failure_args = args
 
 
 class Provider:
@@ -146,6 +148,21 @@ def test_all_windows_accounted_before_finish():
     assert result["status"] == "done" and provider.calls > 1
     assert ledger.events.count("reserve") == ledger.events.count("settle") == provider.calls
     assert ledger.events[-1] == "finish"
+
+
+def test_a_learning_error_keeps_its_fixed_message_for_diagnosis():
+    # NOBLIVION-280: 144 consolidate jobs ended as a bare "LearningError".
+    # The raise sites use fixed text, so the message is safe to store.
+    ledger = Ledger()
+    provider = Provider(ledger)
+
+    def refuse(*args):
+        raise LearningError("claim support identity mismatch")
+
+    ledger.finish = refuse
+    result = worker(ledger, provider).run_once()
+    assert result["status"] == "failed" and not result["permanent"]
+    assert ledger.failure_args[2] == "LearningError: claim support identity mismatch"
 
 
 def test_invalid_model_output_never_written():

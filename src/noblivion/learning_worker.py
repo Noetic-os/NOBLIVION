@@ -70,7 +70,7 @@ from .learning_semantic import (
     semantic_batches,
     validate_semantic_batch,
 )
-from .learning_values import canonical_json
+from .learning_values import LearningError, canonical_json
 
 LOG = logging.getLogger(__name__)
 _FORMAT_RETRY = (
@@ -1357,9 +1357,12 @@ class LearningWorker:
         except Exception as exc:
             # Error class is enough for operational diagnosis without persisting
             # a provider error body, credentials, or raw conversation fragments.
+            # A LearningError carries fixed text, so its message is kept too:
+            # 144 consolidate jobs ended as a bare class name (NOBLIVION-280).
             permanent = isinstance(exc, ValidationError)
             reason = type(exc).__name__
-            diagnostic = reason + (": " + str(exc) if permanent else "")
+            keep_message = permanent or isinstance(exc, LearningError)
+            diagnostic = reason + (": " + str(exc) if keep_message else "")
             self.ledger.fail(
                 ident,
                 lease,

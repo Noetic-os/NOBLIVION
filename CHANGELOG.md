@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- A failed learning job now keeps the fixed message of a LearningError in its last error, so the cause of a failed consolidate job can be read (NOBLIVION-280).
+
 ## 0.1.45 - 2026-11-22
 
 - Two flaky fallback tests no longer fail on a slow runner: one counts connections to the store instead of timing the hook, the other lifts the corpus read limit (NOBLIVION-251, NOBLIVION-273).
