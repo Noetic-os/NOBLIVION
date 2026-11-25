@@ -295,18 +295,25 @@ def run_derivation(ledger, job, validated_call):
     configuration = owner._configuration() if owner is not None else None
     runtime_fingerprint = _runtime_fingerprint(store.settings.fingerprint, configuration)
     state = dict(job.get("progress") or {})
-    with db.write_tx(ledger.conn):
-        ledger.validate_lease(job["id"], job["lease_token"])
-        current = ledger.current_notes(job["project"], job["root"])
-        # Source links are cleanup ancestry only. Attach before persisting any
-        # new support payload, including notes added since this receipt queued.
-        source_ids = sorted({ref["source_id"] for note in current for ref in note["evidence"]})
-        for index, source_id in enumerate(source_ids):
-            ledger.conn.execute(
-                "INSERT OR IGNORE INTO learning_job_sources VALUES (?,?,?)",
-                (job["id"], source_id, index),
-            )
+    legacy = state.get("derivation")
+    if legacy is not None and "notes" not in legacy and legacy["deferred"]:
+        # A stage of 0.1.48 or earlier kept limit records in deferred, which now
+        # fail nothing. Rebuild it in the new shape (NOBLIVION-284).
+        state.pop("derivation")
     while True:
+        with db.write_tx(ledger.conn):
+            ledger.validate_lease(job["id"], job["lease_token"])
+            # Read the notes again for each slice: notes added during an
+            # earlier slice join their slice now (NOBLIVION-284).
+            current = ledger.current_notes(job["project"], job["root"])
+            # Source links are cleanup ancestry only. Attach before persisting any
+            # new support payload, including notes added since this receipt queued.
+            source_ids = sorted({ref["source_id"] for note in current for ref in note["evidence"]})
+            for index, source_id in enumerate(source_ids):
+                ledger.conn.execute(
+                    "INSERT OR IGNORE INTO learning_job_sources VALUES (?,?,?)",
+                    (job["id"], source_id, index),
+                )
         # NOBLIVION-284: one slice of at most max_notes notes at a time. The
         # cursor lives outside the stage, so a snapshot reset restarts only
         # the current slice.
@@ -341,15 +348,22 @@ def run_derivation(ledger, job, validated_call):
             )
             return {"status": "exhausted", "job_id": job["id"], "deferred": stage["deferred"]}
         state["slices_done"] = state.get("slices_done", 0) + 1
+        for key in ("saturated", "overflow", "omitted"):
+            state.setdefault(key, []).extend(stage.get(key, []))
+        state.setdefault("claim_ids", []).extend(stage["staged"])
         if stage.get("slice_end") is None:
             break
-        for key in ("saturated", "overflow"):
-            state.setdefault(key, []).extend(stage.get(key, []))
         state["slice_after"] = stage["slice_end"]
         # The next pass checkpoints the new stage together with the cursor.
         state.pop("derivation")
     _complete(ledger, job, state, next_kind="draft")
-    return {"status": "done", "job_id": job["id"], "claim_ids": stage["staged"]}
+    return {
+        "status": "done",
+        "job_id": job["id"],
+        "claim_ids": state["claim_ids"],
+        "slices": state["slices_done"],
+        **{key: len(state[key]) for key in ("saturated", "overflow", "omitted")},
+    }
 
 
 def _new_stage(store, part_notes, snapshot, runtime_fingerprint):
@@ -396,7 +410,10 @@ def _new_stage(store, part_notes, snapshot, runtime_fingerprint):
         "next_unit": 0,
         "staged": [],
         "next_support": 0,
-        "deferred": omitted,
+        # A note over the support or input limit is omitted; it does not fail
+        # the job. Nothing writes deferred now; the key stays for readers.
+        "deferred": [],
+        "omitted": omitted,
     }
 
 
@@ -477,9 +494,10 @@ def _run_stage(
                 stage["staged"].append(claim["claim_id"])
             stage.setdefault("unit_of", {}).setdefault(claim["claim_id"], index)
         if len(proposals) == store.settings.max_claims:
-            # A full reply may have cut claims off: ask each half once more
-            # (NOBLIVION-284). A single note that still fills a reply is kept
-            # as saturated; it does not fail the job.
+            # A full reply may have cut claims off: ask each half again. A
+            # half that also fills a reply splits again, so a unit of n notes
+            # gives at most 2n-1 units (NOBLIVION-284). A single note that
+            # still fills a reply is kept as saturated; it does not fail the job.
             whole = stage["units"][index]
             if len(whole) > 1:
                 half = len(whole) // 2

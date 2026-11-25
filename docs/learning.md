@@ -819,8 +819,13 @@ A consolidate job works through the notes of its folder in slices of at most
 512 notes, in note order. The job progress keeps the cursor of the next slice
 outside the stage, so a changed note restarts only the current slice. The job
 is done when the last slice is done. A proposal reply with twelve claims splits
-its unit into two halves, and each half is asked once. A single note that still
-fills a reply is recorded as saturated and does not fail the job. The support
+its unit into two halves, and each half is asked again. A half that also fills a
+reply splits again, so a unit of n notes gives at most 2n-1 units. A single note
+that still fills a reply is recorded as saturated and does not fail the job. A
+note with more than 32 supports, or one whose item is over the input limit, is
+recorded as omitted and does not fail the job. The job result counts the
+slices and the saturated, overflow and omitted records, and lists the claims of
+every slice. The support
 check and the equivalence check see only the unit the claim came from: the notes
 of that unit, and the active claims that cite one of them. A check that still
 does not fit the input limit is recorded as overflow and does not fail the job.

@@ -48,7 +48,9 @@ def learn(
     metadata=None,
     extra=None,
     observed_at="2026-10-13T10:00:00Z",
+    content=None,
 ):
+    content = content or statement
     payload = {
         "batch_id": f"batch-{n}",
         "project": "test",
@@ -59,8 +61,8 @@ def learn(
             {
                 "source_id": f"source-{n}",
                 "role": role,
-                "content": statement,
-                "source_hash": hashlib.sha256(statement.encode()).hexdigest(),
+                "content": content,
+                "source_hash": hashlib.sha256(content.encode()).hexdigest(),
                 "observed_at": observed_at,
                 "metadata": metadata or {"direct_user": role == "user"},
             }
@@ -1454,4 +1456,97 @@ def test_a_note_added_between_runs_restarts_only_the_current_slice(ledgers, monk
     assert second["status"] == "done", (second, job_progress(ledger, ident))
     # The finished first slice was not asked again; the current slice restarted.
     assert provider.proposals() == [[order[0]], [order[1]], [added], [order[1]]]
+    assert job_progress(ledger, ident)[1]["slices_done"] == 3
+
+
+def test_a_retried_stage_of_0_1_48_with_deferred_limit_records_finishes(ledgers):
+    ledger, _, a, b, _ = seeded(ledgers)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    worker = slice_worker(ledger, SliceProvider(fail_on=a["note_id"]))
+    assert worker.run_once()["status"] in {"pending", "failed"}
+    _, progress = job_progress(ledger, ident)
+    # Rewrite the stage to the 0.1.48 shape: units hold the note items, and a
+    # saturation record sits in deferred, so 0.1.48 ended the job exhausted.
+    stage = progress["derivation"]
+    stage["units"] = [[stage["notes"][i] for i in unit] for unit in stage["units"]]
+    for key in ("notes", "unit_of", "proposals"):
+        stage.pop(key, None)
+    stage["next_unit"] = len(stage["units"])
+    stage["deferred"] = [{"unit": 0, "reason": "synthesis proposal saturation"}]
+    ledger.conn.execute(
+        "UPDATE learning_jobs SET status='exhausted',last_error='DerivationCoverageExhausted',"
+        "progress=? WHERE id=?",
+        (json.dumps(progress), ident),
+    )
+    ledger.retry(ident)
+    provider = SliceProvider()
+    result = slice_worker(ledger, provider).run_once()
+    assert result["status"] == "done", (result, job_progress(ledger, ident))
+    # The old stage was rebuilt in the new shape and asked again.
+    assert sorted(provider.proposals()[0]) == sorted([a["note_id"], b["note_id"]])
+
+
+def test_a_note_over_the_support_limit_is_omitted_and_the_job_finishes(ledgers, monkeypatch):
+    ledger, _, a, b, _ = seeded(ledgers)
+    text = "The cobalt otter service logs to stderr."
+    content = text + "\n" + text
+    source = {"source_id": "source-15", "source_hash": hashlib.sha256(content.encode()).hexdigest()}
+    spans = [(0, len(text)), (len(text) + 1, len(content))]
+    evidence = [{**source, "start": s, "end": e, "quote": text} for s, e in spans]
+    wide = learn(ledger, 15, text, content=content, extra={"evidence": evidence})
+    assert len(wide["evidence"]) == 2
+    with_settings(monkeypatch, max_notes=1, max_supports=1)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    provider = SliceProvider()
+    result = slice_worker(ledger, provider).run_once()
+    assert result["status"] == "done", (result, job_progress(ledger, ident))
+    assert sorted(provider.proposals()) == sorted([[a["note_id"]], [b["note_id"]]])
+    status, progress = job_progress(ledger, ident)
+    assert [o["note_id"] for o in progress["omitted"]] == [wide["note_id"]]
+    assert result["omitted"] == 1 and result["slices"] == 3
+
+
+def test_the_result_counts_every_slice_after_a_restart(ledgers, monkeypatch):
+    ledger, store, _, _, _ = seeded(ledgers)
+    with_settings(monkeypatch, max_notes=1)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    order = [n["note_id"] for n in ledger.current_notes("test", "demo")]
+    provider = SliceProvider(fail_on=order[1])
+    worker = slice_worker(ledger, provider)
+    assert worker.run_once()["status"] in {"pending", "failed"}
+    # The last slice gets a full reply, so its single note is saturated.
+    provider.first_claims = 12
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE id=?", (ident,))
+    result = worker.run_once()
+    assert result["status"] == "done", (result, job_progress(ledger, ident))
+    assert result["slices"] == 2 and result["saturated"] == 1
+    assert result["overflow"] == 0 and result["omitted"] == 0
+    cited = {s["note_id"] for cid in result["claim_ids"] for s in store.inspect(cid)["supports"]}
+    assert cited == set(order)
+    assert len(job_progress(ledger, ident)[1]["saturated"]) == 1
+
+
+def test_a_note_added_after_the_cursor_joins_a_later_slice_in_the_same_run(ledgers, monkeypatch):
+    ledger, _, _, _, _ = seeded(ledgers)
+    with_settings(monkeypatch, max_notes=1)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    order = [n["note_id"] for n in ledger.current_notes("test", "demo")]
+
+    class AddingProvider(SliceProvider):
+        def complete(self, messages, **kwargs):
+            data = json.loads(messages[-1]["content"])
+            if (
+                not getattr(self, "added", None)
+                and "claim" in data
+                and data["other_current_notes"][0]["note_id"] == order[0]
+            ):
+                # A new note arrives while slice 1 runs; it sorts into slice 2.
+                self.added = learn(ledger, 15, "The cobalt otter service logs to stderr.")
+            return super().complete(messages, **kwargs)
+
+    provider = AddingProvider()
+    result = slice_worker(ledger, provider).run_once()
+    assert result["status"] == "done", (result, job_progress(ledger, ident))
+    added = provider.added["note_id"]
+    assert provider.proposals() == [[order[0]], [added], [order[1]]]
     assert job_progress(ledger, ident)[1]["slices_done"] == 3
