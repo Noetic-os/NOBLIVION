@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- One consolidate job per folder per night. A new consolidate request on a folder with a pending job that has not started joins that job and adds no row; the job reads the current notes at its first lease. Two consolidate jobs on one folder are never leased at once, and a newer job waits while an older started job on the folder waits for its retry. With a night window, a folder whose consolidate job finished (done or exhausted) in this window waits for the next one. Leasing a job cancels the copies on its folder that have not started, with the last error "folded into the leased consolidate job (NOBLIVION-269)"; the rows stay (NOBLIVION-269).
+
 ## 0.1.47 - 2026-11-25
 
 - A consolidate job no longer fails when the model proposes one claim that a content guard rejects. The job drops that claim, records the fixed reason in its progress and stages the rest. Before, the saved reply failed the same check on every retry until the job was exhausted (NOBLIVION-280).

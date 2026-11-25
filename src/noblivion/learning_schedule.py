@@ -70,6 +70,17 @@ def window_wait(options: dict | None, now: datetime) -> float:
     return max(1.0, min(MAX_WINDOW_WAIT, (options["start"] - second) % DAY))
 
 
+def window_elapsed(options: dict | None, now: datetime) -> float | None:
+    """Seconds since the open window started; None with no window or outside it.
+
+    NOBLIVION-269: one consolidate run per folder in each window counts from here.
+    """
+    if options is None or not window_open(options, now):
+        return None
+    second = now.hour * 3600 + now.minute * 60 + now.second + now.microsecond / 1e6
+    return (second - options["start"]) % DAY
+
+
 def schedule_report(options: dict | None, now: datetime) -> dict:
     """The schedule part of the learning status."""
     if options is None:

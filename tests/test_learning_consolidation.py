@@ -5,16 +5,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 
 import pytest
 
 from noblivion import db
-from noblivion.learning import BudgetLimits, LearningError, LearningLedger, SemanticSnapshotChanged
+from noblivion.learning import (
+    FOLD_REASON,
+    BudgetLimits,
+    LearningError,
+    LearningLedger,
+    SemanticSnapshotChanged,
+)
 from noblivion.learning_consolidation import (
     ConsolidationLedger,
     ConsolidationSettings,
     validate_draft,
 )
+from noblivion.learning_synthesis import run_derivation
 from noblivion.learning_values import ProposalRejected
 from noblivion.learning_worker import LearningWorker, ProviderResponse, WorkerSettings
 
@@ -1075,3 +1083,117 @@ def test_a_stage_refusal_outside_the_guards_still_fails_the_derivation(ledgers, 
         "SELECT last_error FROM learning_jobs WHERE id=?", (ident,)
     ).fetchone()
     assert row[0] == "LearningError: claim dates must come from exact support"
+
+
+# --- NOBLIVION-269: one consolidate job per folder per night -----------------
+
+
+def consolidate_rows(ledger):
+    return [
+        dict(row)
+        for row in ledger.conn.execute(
+            "SELECT id,status,last_error FROM learning_jobs WHERE kind='consolidate' "
+            "AND project='test' AND root='demo' ORDER BY created_at,id"
+        )
+    ]
+
+
+def queued_copy(ledger, n, *, progress="{}"):
+    """A second pending consolidate job on the folder, as earlier releases queued one."""
+    now, batch = time.time(), f"derive:copy-{n}"
+    ledger.conn.execute(
+        "INSERT INTO learning_batches VALUES (?,?,?,?,?,0,?)",
+        (batch, batch, "test", "demo", f"copy-{n}", now),
+    )
+    ledger.conn.execute(
+        "INSERT INTO learning_jobs "
+        "(id,batch_id,project,root,session_id,kind,progress,created_at,updated_at) "
+        "VALUES (?,?,'test','demo',?,'consolidate',?,?,?)",
+        (f"copy-{n}", batch, f"copy-{n}", progress, now, now),
+    )
+    return f"copy-{n}"
+
+
+class Frozen(Exception):
+    pass
+
+
+def test_a_new_enqueue_folds_into_the_pending_job_which_reads_the_current_notes(ledgers):
+    ledger, store, a, b, _ = seeded(ledgers)
+    first = ledger.enqueue_derivation("test", "demo", "B")
+    # Hold the job back, so that learn() claims its own extract job.
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=1e12 WHERE id=?", (first,))
+    c = learn(ledger, 3, "The cobalt otter service writes its log to /var/log/otter.")
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE id=?", (first,))
+    assert ledger.enqueue_derivation("test", "demo", "C") == first
+    assert [row["id"] for row in consolidate_rows(ledger)] == [first]
+    job = ledger.claim("merge")
+    assert job["id"] == first
+
+    def stop(*args, **kwargs):
+        raise Frozen
+
+    with pytest.raises(Frozen):
+        run_derivation(ledger, job, stop)
+    snapshot = derivation_progress(ledger, first)["snapshot"]
+    assert sorted(note["note_id"] for note in (a, b, c)) == sorted(n for n, _ in snapshot)
+
+
+def test_a_started_pending_job_takes_no_fold(ledgers):
+    ledger, _, _, _, _ = seeded(ledgers)
+    first = ledger.enqueue_derivation("test", "demo", "B")
+    ledger.conn.execute(
+        "UPDATE learning_jobs SET progress='{\"derivation\":{}}' WHERE id=?", (first,)
+    )
+    assert ledger.enqueue_derivation("test", "demo", "C") not in {None, first}
+
+
+def test_claim_never_leases_two_consolidate_jobs_on_one_folder(ledgers):
+    ledger, _, _, _, _ = seeded(ledgers)
+    first = ledger.enqueue_derivation("test", "demo", "B")
+    assert ledger.claim("one")["id"] == first
+    copy = queued_copy(ledger, 1)
+    assert ledger.claim("two") is None
+    ledger.conn.execute("UPDATE learning_jobs SET status='done' WHERE id=?", (first,))
+    # No night window given: no per-night limit.
+    assert ledger.claim("two")["id"] == copy
+
+
+@pytest.mark.parametrize("finished", ["done", "exhausted"])
+def test_one_consolidate_run_per_folder_per_night(ledgers, finished):
+    ledger, _, _, _, _ = seeded(ledgers)
+    first = ledger.enqueue_derivation("test", "demo", "B")
+    ledger.claim("one")
+    copy = queued_copy(ledger, 1)
+    now = time.time()
+    ledger.conn.execute(
+        "UPDATE learning_jobs SET status=?,updated_at=? WHERE id=?", (finished, now, first)
+    )
+    assert ledger.claim("two", window_start=now - 60) is None
+    assert ledger.claim("two", window_start=now + 60)["id"] == copy
+
+
+def test_claim_folds_the_queued_copies_into_the_leased_job(ledgers):
+    ledger, _, _, _, _ = seeded(ledgers)
+    first = ledger.enqueue_derivation("test", "demo", "B")
+    copies = [queued_copy(ledger, n) for n in (1, 2, 3)]
+    started = queued_copy(ledger, 4, progress='{"derivation":{}}')
+    assert ledger.claim("one")["id"] == first
+    rows = {row["id"]: row for row in consolidate_rows(ledger)}
+    assert {rows[c]["status"] for c in copies} == {"cancelled"}
+    assert {rows[c]["last_error"] for c in copies} == {FOLD_REASON}
+    assert rows[started]["status"] == "pending"
+
+
+def test_a_started_job_between_attempts_holds_its_folder(ledgers):
+    ledger, _, _, _, _ = seeded(ledgers)
+    first = ledger.enqueue_derivation("test", "demo", "B")
+    ledger.claim("one")
+    # A failed attempt: the job waits for its retry with its stage.
+    ledger.conn.execute(
+        "UPDATE learning_jobs SET status='pending',lease_token=NULL,lease_until=NULL,"
+        "next_attempt=1e12,progress='{\"derivation\":{}}' WHERE id=?",
+        (first,),
+    )
+    queued_copy(ledger, 1)
+    assert ledger.claim("two", window_start=time.time() - 60) is None

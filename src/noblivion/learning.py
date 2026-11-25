@@ -34,6 +34,13 @@ _SUMMARY_RANK = {"preference": 0, "workflow": 1, "decision": 2, "proven_fix": 3,
 MAX_RECORDS = 256
 # The worker error of a job whose sources are gone or changed (NOBLIVION-240).
 SOURCES_CHANGED = "job sources missing or changed"
+# NOBLIVION-269: one consolidate job per folder. A queued copy that has not
+# started is cancelled with this error when another job on the folder is leased.
+# The leased job reads the current notes, so it does the copy's work. To undo:
+# UPDATE learning_jobs SET status='pending',last_error='' WHERE last_error=<this>.
+FOLD_REASON = "folded into the leased consolidate job (NOBLIVION-269)"
+# A consolidate job that has done no work: no derivation stage and no attempt.
+_UNSTARTED = "attempts=0 AND json_extract(progress,'$.derivation') IS NULL"
 # Output token counts per job in provider_metrics (NOBLIVION-261). output_calls
 # and reasoning_calls count the calls that reported each count.
 OUTPUT_METRICS = (
@@ -487,6 +494,17 @@ class LearningLedger:
         ).fetchone()
         if existing:
             return existing[0]
+        if kind == "consolidate":
+            # NOBLIVION-269: a pending job that has not started freezes the notes
+            # at its first lease, so it takes this change too. No second row.
+            pending = self.conn.execute(
+                "SELECT id FROM learning_jobs WHERE kind='consolidate' AND project=? "
+                "AND root=? AND status='pending' AND " + _UNSTARTED + " "
+                "ORDER BY created_at,id LIMIT 1",
+                (project, root),
+            ).fetchone()
+            if pending:
+                return pending[0]
         ident, now = _id(), time.time()
         self.conn.execute(
             "INSERT INTO learning_batches VALUES (?,?,?,?,?,0,?)",
@@ -546,10 +564,15 @@ class LearningLedger:
         max_attempts: int = 4,
         *,
         batch: bool = False,
+        window_start: float | None = None,
     ) -> dict[str, Any] | None:
         """Lease the oldest due job. ``batch`` (NOBLIVION-267) first plans one batch
         item per session with unstarted work and skips the per-capture jobs that
-        wait for it; without it the claim is the same as before."""
+        wait for it; without it the claim is the same as before.
+
+        NOBLIVION-269: a consolidate job waits while another one on its folder is
+        leased, and, with ``window_start``, while one on its folder finished at or
+        after that time. Leasing one cancels the copies that have not started."""
         validate_text(worker_id, "worker_id")
         if lease_seconds <= 0 or max_attempts < 1:
             raise LearningError("invalid lease limits")
@@ -583,6 +606,8 @@ class LearningLedger:
                 controls = self.effective_controls(row["project"], row["root"], row["session_id"])
                 if not controls["contribute"] or controls["paused"]:
                     continue
+                if row["kind"] == "consolidate" and self._folder_busy(row, window_start):
+                    continue
                 sources = self._job_sources(row["id"])
                 if not sources and row["kind"] == "extract":
                     # NOBLIVION-240: say why, so a job that lost its sources is not silent.
@@ -598,8 +623,20 @@ class LearningLedger:
                     "lease_owner=?,lease_until=?,updated_at=? WHERE id=?",
                     (token, worker_id, now + lease_seconds, now, row["id"]),
                 )
+                progress = json.loads(row["progress"])
+                if (
+                    row["kind"] == "consolidate"
+                    and not row["attempts"]
+                    and "derivation" not in progress
+                ):
+                    self.conn.execute(
+                        "UPDATE learning_jobs SET status='cancelled',last_error=?,updated_at=? "
+                        "WHERE kind='consolidate' AND project=? AND root=? AND id<>? "
+                        "AND status='pending' AND " + _UNSTARTED,
+                        (FOLD_REASON, now, row["project"], row["root"], row["id"]),
+                    )
                 result = dict(row)
-                result["progress"] = json.loads(row["progress"])
+                result["progress"] = progress
                 result.update(
                     lease_token=token,
                     lease_owner=worker_id,
@@ -610,6 +647,30 @@ class LearningLedger:
                 )
                 return result
         return None
+
+    def _folder_busy(self, row, window_start: float | None) -> bool:
+        """True while another consolidate job on the folder is leased, or waits for
+        its retry and is older, or finished at or after ``window_start`` (NOBLIVION-269)."""
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM learning_jobs WHERE kind='consolidate' AND project=? AND root=? "
+                "AND id<>? AND (status='leased' OR (status='pending' AND NOT ("
+                + _UNSTARTED
+                + ") AND (created_at<? OR (created_at=? AND id<?))) OR (? IS NOT NULL "
+                "AND status IN ('done','exhausted') AND updated_at>=?))",
+                (
+                    row["project"],
+                    row["root"],
+                    row["id"],
+                    row["created_at"],
+                    row["created_at"],
+                    row["id"],
+                    window_start,
+                    window_start,
+                ),
+            ).fetchone()
+            is not None
+        )
 
     def _job_sources(self, job_id: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(

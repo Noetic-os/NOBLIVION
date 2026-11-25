@@ -20,7 +20,7 @@ from pathlib import Path
 from noblivion.learning import LearningLedger, LeaseLost, StepAside
 from noblivion.learning_batch import batch_options
 from noblivion.learning_probe import LoadProbe, probe_options
-from noblivion.learning_schedule import local_now, schedule_options, window_wait
+from noblivion.learning_schedule import local_now, schedule_options, window_elapsed, window_wait
 
 log = logging.getLogger("noblivion.learning")
 
@@ -295,6 +295,10 @@ class PooledLedger(LearningLedger):
         # (NOBLIVION-267) is planned inside the claim, so also only in the window.
         if self._pool.window_wait() > 0:
             return None
+        # NOBLIVION-269: a folder merged in this window waits for the next one.
+        elapsed = window_elapsed(self._pool.schedule, self._pool.clock())
+        if elapsed is not None:
+            kwargs["window_start"] = time.time() - elapsed
         return super().claim(
             worker_id, lease_seconds=lease_seconds, max_attempts=max_attempts, **kwargs
         )

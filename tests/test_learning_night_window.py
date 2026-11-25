@@ -19,7 +19,7 @@ import test_learning_parallel as pool_fixtures
 from noblivion import learning_probe, learning_runtime, learning_schedule
 from noblivion.learning import BudgetLimits, LearningLedger, StepAside
 from noblivion.learning_probe import LoadProbe, probe_options
-from noblivion.learning_schedule import schedule_options, window_open, window_wait
+from noblivion.learning_schedule import schedule_options, window_elapsed, window_open, window_wait
 from noblivion.learning_worker import LearningWorker, WorkerSettings
 from test_learning_parallel import (
     FakeStore,
@@ -513,3 +513,37 @@ def test_the_status_command_reports_the_settings_beside_the_database(tmp_path, c
     assert isinstance(printed["settings"]["schedule"]["open"], bool)
     with store.connection() as conn:
         assert LearningLedger(conn).status() is not None
+
+
+# --- NOBLIVION-269: one consolidate run per folder per night -----------------
+
+
+def test_window_elapsed_counts_from_the_window_start():
+    night = schedule_options({"schedule": NIGHT})
+    assert window_elapsed(night, INSIDE) == 3600.0
+    assert window_elapsed(night, at(2)) == 4 * 3600.0
+    assert window_elapsed(night, NOON) is None
+    assert window_elapsed(None, INSIDE) is None
+
+
+def test_a_folder_merged_tonight_waits_for_the_next_night(tmp_path):
+    store = FakeStore(tmp_path)
+    pool = manual_pool(store)  # 23:00: the window opened one hour ago
+    now = time.time()
+    with store.connection() as conn:
+        for ident, status in (("merged", "done"), ("queued", "pending")):
+            conn.execute(
+                "INSERT INTO learning_batches VALUES (?,?,'demo','example','s',0,?)",
+                (ident, ident, now),
+            )
+            conn.execute(
+                "INSERT INTO learning_jobs (id,batch_id,project,root,session_id,kind,"
+                "status,progress,created_at,updated_at) "
+                "VALUES (?,?,'demo','example','s','consolidate',?,'{}',?,?)",
+                (ident, ident, status, now, now - 60),
+            )
+        ledger = learning_runtime.PooledLedger(conn, pool)
+        assert ledger.claim("w") is None
+        # The merge ran last night, before this window opened.
+        conn.execute("UPDATE learning_jobs SET updated_at=? WHERE id='merged'", (now - 7200,))
+        assert ledger.claim("w")["id"] == "queued"
