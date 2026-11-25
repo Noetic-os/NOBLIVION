@@ -9,7 +9,13 @@ import time
 from . import db
 from .learning_consolidation import ConsolidationLedger
 from .learning_extract import ResponseFormatError, ValidationError, contains_secret
-from .learning_values import LearningError, SemanticSnapshotChanged, canonical_json, text_hash
+from .learning_values import (
+    LearningError,
+    ProposalRejected,
+    SemanticSnapshotChanged,
+    canonical_json,
+    text_hash,
+)
 from .learning_worker import legacy_configuration, request_configuration
 
 PROPOSAL_PROMPT = """Propose compact conclusions only from the supplied exact note supports.
@@ -373,14 +379,23 @@ def run_derivation(ledger, job, validated_call):
             state.pop("format_repair", None)
             ledger.checkpoint(job["id"], job["lease_token"], state)
         proposals = stage["proposals"]
-        for proposal in proposals:
-            claim = store.stage(
-                proposal,
-                job["project"],
-                job["root"],
-                job_id=job["id"],
-                lease_token=job["lease_token"],
-            )
+        for number, proposal in enumerate(proposals):
+            try:
+                claim = store.stage(
+                    proposal,
+                    job["project"],
+                    job["root"],
+                    job_id=job["id"],
+                    lease_token=job["lease_token"],
+                )
+            except ProposalRejected as exc:
+                # One bad claim must not fail the job: its saved reply replays
+                # on every retry with no model call (NOBLIVION-280). Keep the
+                # fixed reason only, never the generated statement.
+                record = {"unit": index, "proposal": number, "reason": str(exc)}
+                if record not in stage.setdefault("rejected", []):
+                    stage["rejected"].append(record)
+                continue
             if claim["claim_id"] not in stage["staged"]:
                 stage["staged"].append(claim["claim_id"])
         if len(proposals) == store.settings.max_claims:

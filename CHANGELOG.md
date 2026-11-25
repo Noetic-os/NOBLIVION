@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- A consolidate job no longer fails when the model proposes one claim that a content guard rejects. The job drops that claim, records the fixed reason in its progress and stages the rest. Before, the saved reply failed the same check on every retry until the job was exhausted (NOBLIVION-280).
+
 ## 0.1.46 - 2026-11-24
 
 - A failed learning job now keeps the fixed message of a LearningError in its last error, so the cause of a failed consolidate job can be read (NOBLIVION-280).

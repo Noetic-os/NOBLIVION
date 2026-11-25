@@ -12,6 +12,10 @@ class LearningError(ValueError):
     """Invalid input or a refused learning operation."""
 
 
+class ProposalRejected(LearningError):
+    """A generated claim failed a content guard; drop that one proposal, not the job."""
+
+
 class SemanticSnapshotChanged(LearningError):
     """Managed memories changed after semantic comparison; retry the comparison."""
 

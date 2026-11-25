@@ -15,6 +15,7 @@ from noblivion.learning_consolidation import (
     ConsolidationSettings,
     validate_draft,
 )
+from noblivion.learning_values import ProposalRejected
 from noblivion.learning_worker import LearningWorker, ProviderResponse, WorkerSettings
 
 
@@ -977,3 +978,75 @@ def test_new_provider_stages_fail_closed_on_accounting_and_budget(ledgers, failu
     assert store.inspect(claim["claim_id"])["status"] == "staged"
     if failure == "accounting_outage":
         assert ledger.conn.execute("SELECT count(*) FROM learning_budget").fetchone()[0] == 0
+
+
+class RejectingProvider(ScriptedProvider):
+    """Adds a non-extractive observation after the good claim (NOBLIVION-280)."""
+
+    def __init__(self, *, good=True, on_propose=None):
+        super().__init__()
+        self.good, self.on_propose = good, on_propose
+
+    def complete(self, messages, **kwargs):
+        response = super().complete(messages, **kwargs)
+        data = json.loads(messages[-1]["content"])
+        if "notes" not in data:
+            return response
+        if self.on_propose:
+            self.on_propose()
+        claims = json.loads(response.content)["claims"]
+        bad = {**claims[0], "kind": "observation", "statement": "The otter likes cobalt paint."}
+        claims = (claims if self.good else []) + [bad]
+        return ProviderResponse(json.dumps({"claims": claims}), 100)
+
+
+def derivation_worker(ledger, provider):
+    return LearningWorker(
+        ledger,
+        provider,
+        WorkerSettings(retry_delay=0.01),
+        BudgetLimits(max_calls=10, max_tokens=500000, max_seconds=1000),
+    )
+
+
+def derivation_progress(ledger, ident):
+    row = ledger.conn.execute("SELECT progress FROM learning_jobs WHERE id=?", (ident,)).fetchone()
+    return json.loads(row[0])["derivation"]
+
+
+def test_a_rejected_proposal_is_dropped_and_recorded_not_fatal(ledgers):
+    ledger, store, _, _, _ = seeded(ledgers)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    provider = RejectingProvider()
+    result = derivation_worker(ledger, provider).run_once()
+    assert result["status"] == "done" and provider.calls == 2
+    stage = derivation_progress(ledger, ident)
+    assert len(stage["staged"]) == 1
+    assert stage["rejected"] == [
+        {
+            "unit": 0,
+            "proposal": 1,
+            "reason": "observation requires an extractive native user or tool passage",
+        }
+    ]
+    assert "otter likes" not in json.dumps(stage["rejected"])
+
+
+def test_a_derivation_whose_every_proposal_is_rejected_ends_clean(ledgers):
+    ledger, store, _, _, _ = seeded(ledgers)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    provider = RejectingProvider(good=False)
+    result = derivation_worker(ledger, provider).run_once()
+    assert result["status"] == "done" and provider.calls == 1
+    stage = derivation_progress(ledger, ident)
+    assert stage["staged"] == [] and len(stage["rejected"]) == 1
+
+
+def test_only_a_guard_refusal_is_a_proposal_rejection(ledgers):
+    ledger, store, a, b, _ = seeded(ledgers)
+    with pytest.raises(ProposalRejected, match="extractive"):
+        store.stage(proposal(store, [a, b], kind="observation"), "test", "demo")
+    ledger.set_controls("test", "demo", "", contribute=False)
+    with pytest.raises(LearningError, match="contribution is disabled") as refused:
+        store.stage(proposal(store, [a, b]), "test", "demo")
+    assert not isinstance(refused.value, ProposalRejected)

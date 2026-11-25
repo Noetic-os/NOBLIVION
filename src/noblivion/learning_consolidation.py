@@ -26,6 +26,7 @@ from .learning_extract import (
 )
 from .learning_values import (
     LearningError,
+    ProposalRejected,
     SemanticSnapshotChanged,
     canonical_json,
     text_hash,
@@ -265,7 +266,10 @@ class ConsolidationLedger:
                 if (job["project"], job["root"]) != (project, root):
                     raise LearningError("claim job scope mismatch")
             supports = self.validate_supports(proposal.get("supports"), project, root)
-            statement = self._guards({**proposal, "root": root}, supports)
+            try:
+                statement = self._guards({**proposal, "root": root}, supports)
+            except LearningError as exc:
+                raise ProposalRejected(str(exc)) from exc
             parents = proposal.get("parents", [])
             if (
                 not isinstance(parents, list)
