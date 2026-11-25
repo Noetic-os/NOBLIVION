@@ -1324,6 +1324,13 @@ class LearningWorker:
             # NOBLIVION-250: a stage whose note set changed keeps its valid
             # comparisons; the next run compares only the new or revised notes.
             # Any other cause (the note set did not change) drops the stage.
+            if job.get("kind", "extract") != "extract":
+                # A derivation keeps its own copy of the progress. Its stored
+                # row holds the slice cursor, which must survive (NOBLIVION-284).
+                row = self.ledger.conn.execute(
+                    "SELECT progress FROM learning_jobs WHERE id=?", (ident,)
+                ).fetchone()
+                state = json.loads(row[0])
             stage = state.get("semantic")
             if not isinstance(stage, dict) or stage.get("snapshot") == self._semantic_snapshot(job):
                 state.pop("semantic", None)

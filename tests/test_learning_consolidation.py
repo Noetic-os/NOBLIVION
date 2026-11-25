@@ -1255,3 +1255,178 @@ def test_a_request_after_the_folded_job_exhausted_queues_a_new_job(ledgers):
     again = ledger.enqueue_derivation("test", "demo", "C")
     status = ledger.conn.execute("SELECT status FROM learning_jobs WHERE id=?", (again,))
     assert status.fetchone()[0] == "pending"
+
+
+class SliceProvider(ScriptedProvider):
+    """Records every request; answers proposal, support and equivalence (NOBLIVION-284)."""
+
+    def __init__(self, *, first_claims=1, fail_on=None):
+        super().__init__()
+        self.first_claims = first_claims
+        self.fail_on = fail_on
+        self.requests = []
+
+    def complete(self, messages, **kwargs):
+        data = json.loads(messages[-1]["content"])
+        self.requests.append(data)
+        if "candidate" in data:
+            self.calls += 1
+            relations = [
+                {
+                    "target_id": c["claim_id"],
+                    "target_revision": c["revision"],
+                    "relation": "distinct",
+                }
+                for c in data["targets"]
+            ]
+            return ProviderResponse(json.dumps({"relations": relations}), 100)
+        if "notes" in data and self.fail_on in {n["note_id"] for n in data["notes"]}:
+            self.fail_on = None
+            self.calls += 1
+            raise RuntimeError("injected provider outage")
+        response = super().complete(messages, **kwargs)
+        if "notes" not in data or self.first_claims == 1:
+            return response
+        claim = json.loads(response.content)["claims"][0]
+        count, self.first_claims = self.first_claims, 1
+        claims = [
+            {**claim, "statement": f"The cobalt otter service uses loopback port {4300 + n}."}
+            for n in range(count)
+        ]
+        return ProviderResponse(json.dumps({"claims": claims}), 100)
+
+    def proposals(self):
+        return [[n["note_id"] for n in r["notes"]] for r in self.requests if "notes" in r]
+
+
+def slice_worker(ledger, provider):
+    return LearningWorker(
+        ledger,
+        provider,
+        WorkerSettings(retry_delay=0.01),
+        BudgetLimits(max_calls=100, max_tokens=10**7, max_seconds=10**5),
+    )
+
+
+def with_settings(monkeypatch, **changes):
+    import noblivion.learning_synthesis as synthesis
+
+    settings = ConsolidationSettings(**changes)
+    monkeypatch.setattr(
+        synthesis, "ConsolidationLedger", lambda ledger: ConsolidationLedger(ledger, settings)
+    )
+
+
+def job_progress(ledger, ident):
+    row = ledger.conn.execute("SELECT status,progress FROM learning_jobs WHERE id=?", (ident,))
+    status, progress = row.fetchone()
+    return status, json.loads(progress)
+
+
+def test_a_full_proposal_reply_splits_its_unit_and_the_job_finishes(ledgers):
+    ledger, _, a, b, _ = seeded(ledgers)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    provider = SliceProvider(first_claims=12)
+    result = slice_worker(ledger, provider).run_once()
+    assert result["status"] == "done"
+    # The full reply of twelve claims asked each half of its unit once more.
+    first = provider.proposals()[0]
+    assert sorted(first) == sorted([a["note_id"], b["note_id"]])
+    assert provider.proposals()[1:] == [[first[0]], [first[1]]]
+    status, progress = job_progress(ledger, ident)
+    assert status == "done" and progress["derivation"]["deferred"] == []
+    assert len(progress["derivation"]["units"]) == 3
+
+
+def test_a_folder_over_the_note_limit_runs_in_slices_and_finishes(ledgers, monkeypatch):
+    ledger, _, a, b, _ = seeded(ledgers)
+    with_settings(monkeypatch, max_notes=1)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    provider = SliceProvider()
+    result = slice_worker(ledger, provider).run_once()
+    assert result["status"] == "done"
+    assert sorted(provider.proposals()) == sorted([[a["note_id"]], [b["note_id"]]])
+    status, progress = job_progress(ledger, ident)
+    assert status == "done" and progress["slices_done"] == 2
+
+
+def test_a_restart_in_a_later_slice_does_not_repeat_finished_proposals(ledgers, monkeypatch):
+    ledger, _, _, _, _ = seeded(ledgers)
+    with_settings(monkeypatch, max_notes=1)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    order = [n["note_id"] for n in ledger.current_notes("test", "demo")]
+    provider = SliceProvider(fail_on=order[1])
+    worker = slice_worker(ledger, provider)
+    assert worker.run_once()["status"] in {"pending", "failed"}
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE id=?", (ident,))
+    assert worker.run_once()["status"] == "done"
+    # The first slice was asked once; the failed proposal of the second slice once more.
+    assert provider.proposals() == [[order[0]], [order[1]], [order[1]]]
+
+
+def test_the_support_check_holds_only_the_notes_of_the_claim_unit(ledgers, monkeypatch):
+    from noblivion.learning_values import canonical_json
+
+    ledger, store, _, _, _ = seeded(ledgers)
+    items = []
+    for note in ledger.current_notes("test", "demo"):
+        item = {
+            k: note[k]
+            for k in (
+                "note_id",
+                "revision",
+                "statement",
+                "category",
+                "scope",
+                "observed_at",
+                "effective_at",
+            )
+        }
+        item["supports"] = store.note_supports(note)
+        items.append(item)
+    # Two notes no longer fit one unit, so each note is its own unit.
+    with_settings(monkeypatch, max_input_chars=len(canonical_json(items)) - 1)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    provider = SliceProvider()
+    assert slice_worker(ledger, provider).run_once()["status"] == "done"
+    assert len(provider.proposals()) == 2
+    checks = [r for r in provider.requests if "claim" in r]
+    assert len(checks) == 2
+    for check in checks:
+        cited = {s["note_id"] for s in check["claim"]["supports"]}
+        assert {n["note_id"] for n in check["other_current_notes"]} == cited
+    assert job_progress(ledger, ident)[0] == "done"
+
+
+def test_a_snapshot_reset_restarts_only_the_current_slice(ledgers, monkeypatch):
+    ledger, _, _, _, _ = seeded(ledgers)
+    with_settings(monkeypatch, max_notes=1)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    order = [n["note_id"] for n in ledger.current_notes("test", "demo")]
+
+    class ForgettingProvider(SliceProvider):
+        def complete(self, messages, **kwargs):
+            data = json.loads(messages[-1]["content"])
+            added = getattr(self, "added", None)
+            if (
+                not added
+                and "claim" in data
+                and data["other_current_notes"][0]["note_id"] == order[1]
+            ):
+                # A new note between the two slices joins the current slice.
+                self.added = learn(ledger, 15, "The cobalt otter service logs to stderr.")
+            return super().complete(messages, **kwargs)
+
+    provider = ForgettingProvider()
+    worker = slice_worker(ledger, provider)
+    first = worker.run_once()
+    assert first.get("error") == "SemanticSnapshotChanged", first
+    status, progress = job_progress(ledger, ident)
+    assert "derivation" not in progress and progress["slices_done"] == 1
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE id=?", (ident,))
+    second = worker.run_once()
+    assert second["status"] == "done", (second, job_progress(ledger, ident))
+    # The finished first slice was not asked again; the current slice restarted.
+    added = provider.added["note_id"]
+    assert provider.proposals() == [[order[0]], [order[1]], [added], [order[1]]]
+    assert job_progress(ledger, ident)[1]["slices_done"] == 3

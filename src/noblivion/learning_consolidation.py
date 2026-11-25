@@ -72,6 +72,16 @@ class ConsolidationSettings:
         return text_hash(canonical_json(asdict(self)))
 
 
+def note_slice(notes, after=None, limit=None):
+    """The notes after the cursor key [logical_key, note_id], at most limit (NOBLIVION-284).
+
+    ``notes`` come in current_notes order. A consolidate job works on one such
+    slice at a time, and its fences compare only that slice.
+    """
+    rest = [n for n in notes if after is None or [n["logical_key"], n["note_id"]] > after]
+    return rest if limit is None else rest[:limit]
+
+
 def support_id(reference):
     return text_hash(
         canonical_json(
@@ -425,19 +435,28 @@ class ConsolidationLedger:
             (claim_id, item["revision"], action, canonical_json(item), time.time()),
         )
 
-    def admit(self, claim_id, verdict, *, job_id=None, lease_token=None, expected_snapshot=None):
+    def admit(
+        self,
+        claim_id,
+        verdict,
+        *,
+        job_id=None,
+        lease_token=None,
+        expected_snapshot=None,
+        slice_after=None,
+    ):
         """A distinct complete semantic verdict may admit a reference-valid claim."""
         with db.write_tx(self.conn):
             if job_id is not None:
                 self.ledger.validate_lease(job_id, lease_token)
             claim = self.inspect(claim_id)
             if expected_snapshot is not None:
-                current = sorted(
-                    [
-                        [n["note_id"], n["revision"]]
-                        for n in self.ledger.current_notes(claim["project"], claim["root"])
-                    ]
+                notes = note_slice(
+                    self.ledger.current_notes(claim["project"], claim["root"]),
+                    slice_after,
+                    self.settings.max_notes,
                 )
+                current = sorted([[n["note_id"], n["revision"]] for n in notes])
                 if current != expected_snapshot:
                     raise SemanticSnapshotChanged("complete semantic support snapshot changed")
             if claim["status"] != "staged":
@@ -495,20 +514,24 @@ class ConsolidationLedger:
         expected_notes,
         job_id=None,
         lease_token=None,
+        slice_after=None,
     ):
         """Merge only independently supported claims with a complete semantic comparison.
 
-        The entire current claim/note snapshot is fenced inside the same write
+        The note slice and the compared claims are fenced inside the same write
         transaction as the canonical revision. Every predecessor keeps history.
+        The comparison covers the claims in ``expected_claims`` only (NOBLIVION-284).
         """
         with db.write_tx(self.conn):
             if job_id is not None:
                 self.ledger.validate_lease(job_id, lease_token)
             candidate = self.inspect(candidate_id)
             project, root = candidate["project"], candidate["root"]
-            current_notes = sorted(
-                [[n["note_id"], n["revision"]] for n in self.ledger.current_notes(project, root)]
+            notes = note_slice(
+                self.ledger.current_notes(project, root), slice_after, self.settings.max_notes
             )
+            current_notes = sorted([[n["note_id"], n["revision"]] for n in notes])
+            compared = {ident for ident, _ in expected_claims}
             current_claims = sorted(
                 [
                     [r["claim_id"], r["revision"]]
@@ -517,6 +540,7 @@ class ConsolidationLedger:
                         "root=? AND status='active'",
                         (project, root),
                     )
+                    if r["claim_id"] in compared
                 ]
             )
             if current_notes != expected_notes or current_claims != expected_claims:

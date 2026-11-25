@@ -814,6 +814,17 @@ The canonical claim receives a new revision and the union of all exact support.
 Merged predecessors retain their revisions and an equivalence lineage edge.
 Current note and claim snapshots are checked inside the merge transaction.
 Different applicability, contradictions and uncertain equivalence do not merge.
+
+A consolidate job works through the notes of its folder in slices of at most
+512 notes, in note order. The job progress keeps the cursor of the next slice
+outside the stage, so a changed note restarts only the current slice. The job
+is done when the last slice is done. A proposal reply with twelve claims splits
+its unit into two halves, and each half is asked once. A single note that still
+fills a reply is recorded as saturated and does not fail the job. The support
+check and the equivalence check see only the unit the claim came from: the notes
+of that unit, and the active claims that cite one of them. A check that still
+does not fit the input limit is recorded as overflow and does not fail the job.
+So a claim that contradicts a note outside its unit can pass (NOBLIVION-284).
 Correction, supersession, exclusion, forgetting and root use-off synchronously
 withdraw transitive descendants before returning. Reads independently validate
 current note revisions, source eligibility, hashes and exact spans. A session
@@ -850,7 +861,7 @@ that disposition. The note that a conflict targets stays in the default context.
 a superficially complete claim to meet a size limit.
 
 Default hard limits are twelve proposals per call, 32 exact supports per claim
-(configured internal ceiling 64), 512 notes per derivation, 24,000 input characters,
+(configured internal ceiling 64), 512 notes per derivation slice, 24,000 input characters,
 2,000 characters per generated statement, 32 context claims, 12,000 context
 characters and eight drafts per pass. Query input is limited to 8,000 characters.
 Request settings and the model are frozen before calls; budget and scheduling

@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- A consolidate job finishes in a large folder instead of failing with DerivationCoverageExhausted. The job works in slices of at most 512 notes and keeps the slice cursor across a restart. A proposal reply with twelve claims splits its unit in two halves instead of failing the job. The support check and the equivalence check see only the unit the claim came from; a check that does not fit, or a single note that still fills a reply, is recorded and does not fail the job (NOBLIVION-284).
+
 ## 0.1.48 - 2026-11-25
 
 - One consolidate job per folder per night. A new consolidate request on a folder with a pending job that has not started joins that job and adds no row; the job reads the current notes at its first lease. Two consolidate jobs on one folder are never leased at once, and a newer job waits while an older started job on the folder waits for its retry. With a night window, a folder whose consolidate job finished (done or exhausted) in this window waits for the next one. Leasing a job cancels the copies on its folder that have not started, with the last error "folded into the leased consolidate job (NOBLIVION-269)"; the rows stay. A consolidate job follows the folder controls, so a pause or opt-out of one session does not stop it; a folder pause or opt-out still does (NOBLIVION-269).

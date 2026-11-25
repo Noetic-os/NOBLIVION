@@ -7,7 +7,7 @@ import json
 import time
 
 from . import db
-from .learning_consolidation import ConsolidationLedger
+from .learning_consolidation import ConsolidationLedger, note_slice
 from .learning_extract import ResponseFormatError, ValidationError, contains_secret
 from .learning_values import (
     LearningError,
@@ -295,7 +295,6 @@ def run_derivation(ledger, job, validated_call):
     configuration = owner._configuration() if owner is not None else None
     runtime_fingerprint = _runtime_fingerprint(store.settings.fingerprint, configuration)
     state = dict(job.get("progress") or {})
-    stage = state.get("derivation")
     with db.write_tx(ledger.conn):
         ledger.validate_lease(job["id"], job["lease_token"])
         current = ledger.current_notes(job["project"], job["root"])
@@ -307,53 +306,126 @@ def run_derivation(ledger, job, validated_call):
                 "INSERT OR IGNORE INTO learning_job_sources VALUES (?,?,?)",
                 (job["id"], source_id, index),
             )
-    snapshot = sorted([[n["note_id"], n["revision"]] for n in current])
-    if stage is None:
-        notes, units, omitted, part = [], [], [], []
-        for note in current:
-            if len(notes) >= store.settings.max_notes:
-                omitted.append({"note_id": note["note_id"], "reason": "derivation note limit"})
-                continue
-            refs = store.note_supports(note)
-            item = {
-                k: note[k]
-                for k in (
-                    "note_id",
-                    "revision",
-                    "statement",
-                    "category",
-                    "scope",
-                    "observed_at",
-                    "effective_at",
-                )
-            }
-            item["supports"] = refs
-            if (
-                len(canonical_json([item])) > store.settings.max_input_chars
-                or len(refs) > store.settings.max_supports
-            ):
-                omitted.append(
-                    {"note_id": note["note_id"], "reason": "derivation support/input limit"}
-                )
-                continue
-            notes.append(item)
-            if part and len(canonical_json([*part, item])) > store.settings.max_input_chars:
-                units.append(part)
-                part = []
-            part.append(item)
-        if part:
-            units.append(part)
-        stage = {
-            "snapshot": snapshot,
-            "fingerprint": runtime_fingerprint,
-            "units": units,
-            "next_unit": 0,
-            "staged": [],
-            "next_support": 0,
-            "deferred": omitted,
+    while True:
+        # NOBLIVION-284: one slice of at most max_notes notes at a time. The
+        # cursor lives outside the stage, so a snapshot reset restarts only
+        # the current slice.
+        after = state.get("slice_after")
+        rest = note_slice(current, after)
+        part_notes = rest[: store.settings.max_notes]
+        snapshot = sorted([[n["note_id"], n["revision"]] for n in part_notes])
+        stage = state.get("derivation")
+        if stage is None:
+            stage = _new_stage(store, part_notes, snapshot, runtime_fingerprint)
+            if len(rest) > len(part_notes):
+                last = part_notes[-1]
+                stage["slice_end"] = [last["logical_key"], last["note_id"]]
+            state["derivation"] = stage
+            ledger.checkpoint(job["id"], job["lease_token"], state)
+        _run_stage(
+            ledger,
+            job,
+            store,
+            state,
+            stage,
+            snapshot,
+            after,
+            configuration,
+            runtime_fingerprint,
+            validated_call,
+        )
+        if stage["deferred"]:
+            # Completed bounded units remain durable; never claim complete coverage.
+            ledger.fail(
+                job["id"], job["lease_token"], "DerivationCoverageExhausted", permanent=True
+            )
+            return {"status": "exhausted", "job_id": job["id"], "deferred": stage["deferred"]}
+        state["slices_done"] = state.get("slices_done", 0) + 1
+        if stage.get("slice_end") is None:
+            break
+        for key in ("saturated", "overflow"):
+            state.setdefault(key, []).extend(stage.get(key, []))
+        state["slice_after"] = stage["slice_end"]
+        # The next pass checkpoints the new stage together with the cursor.
+        state.pop("derivation")
+    _complete(ledger, job, state, next_kind="draft")
+    return {"status": "done", "job_id": job["id"], "claim_ids": stage["staged"]}
+
+
+def _new_stage(store, part_notes, snapshot, runtime_fingerprint):
+    """Units hold indexes into the slice notes, so a split adds no note copy."""
+    notes, units, omitted, part = [], [], [], []
+    for note in part_notes:
+        refs = store.note_supports(note)
+        item = {
+            k: note[k]
+            for k in (
+                "note_id",
+                "revision",
+                "statement",
+                "category",
+                "scope",
+                "observed_at",
+                "effective_at",
+            )
         }
-        state["derivation"] = stage
-        ledger.checkpoint(job["id"], job["lease_token"], state)
+        item["supports"] = refs
+        if (
+            len(canonical_json([item])) > store.settings.max_input_chars
+            or len(refs) > store.settings.max_supports
+        ):
+            omitted.append({"note_id": note["note_id"], "reason": "derivation support/input limit"})
+            continue
+        if (
+            part
+            and len(canonical_json([*(notes[i] for i in part), item]))
+            > store.settings.max_input_chars
+        ):
+            units.append(part)
+            part = []
+        part.append(len(notes))
+        notes.append(item)
+    if part:
+        units.append(part)
+    return {
+        "snapshot": snapshot,
+        "fingerprint": runtime_fingerprint,
+        "notes": notes,
+        "units": units,
+        "unit_of": {},
+        "next_unit": 0,
+        "staged": [],
+        "next_support": 0,
+        "deferred": omitted,
+    }
+
+
+def _items(stage, unit):
+    """The note items of one unit. A stage of 0.1.48 or earlier holds the items."""
+    return [stage["notes"][i] for i in unit] if "notes" in stage else unit
+
+
+def _claim_unit(stage, claim_id):
+    """The notes of the unit that proposed the claim; every stage note when unknown."""
+    index = stage.get("unit_of", {}).get(claim_id)
+    if index is not None:
+        return _items(stage, stage["units"][index])
+    return list({n["note_id"]: n for u in stage["units"] for n in _items(stage, u)}.values())
+
+
+def _run_stage(
+    ledger,
+    job,
+    store,
+    state,
+    stage,
+    snapshot,
+    after,
+    configuration,
+    runtime_fingerprint,
+    validated_call,
+):
+    """Propose, check and compare the claims of one slice stage."""
     if stage["fingerprint"] != runtime_fingerprint and _legacy_runtime_matches(
         stage["fingerprint"], store.settings.fingerprint, configuration, state
     ):
@@ -362,8 +434,9 @@ def run_derivation(ledger, job, validated_call):
         ledger.checkpoint(job["id"], job["lease_token"], state)
     if stage["fingerprint"] != runtime_fingerprint or stage["snapshot"] != snapshot:
         raise ValidationError("derivation settings or support revisions changed")
-    for index in range(stage["next_unit"], len(stage["units"])):
-        unit = stage["units"][index]
+    index = stage["next_unit"]
+    while index < len(stage["units"]):
+        unit = _items(stage, stage["units"][index])
         if "proposals" not in stage:
             stage["proposals"] = validated_call(
                 job,
@@ -398,15 +471,29 @@ def run_derivation(ledger, job, validated_call):
                 continue
             if claim["claim_id"] not in stage["staged"]:
                 stage["staged"].append(claim["claim_id"])
+            stage.setdefault("unit_of", {}).setdefault(claim["claim_id"], index)
         if len(proposals) == store.settings.max_claims:
-            stage["deferred"].append({"unit": index, "reason": "synthesis proposal saturation"})
+            # A full reply may have cut claims off: ask each half once more
+            # (NOBLIVION-284). A single note that still fills a reply is kept
+            # as saturated; it does not fail the job.
+            whole = stage["units"][index]
+            if len(whole) > 1:
+                half = len(whole) // 2
+                stage["units"] += [whole[:half], whole[half:]]
+            else:
+                stage.setdefault("saturated", []).append(
+                    {"unit": index, "reason": "synthesis proposal saturation"}
+                )
         stage.pop("proposals", None)
         stage["next_unit"] = index + 1
         ledger.checkpoint(job["id"], job["lease_token"], state)
+        index += 1
     for index in range(stage["next_support"], len(stage["staged"])):
         claim = store.inspect(stage["staged"][index])
         if claim["status"] == "staged":
             store.validate_supports(claim["supports"], job["project"], job["root"])
+            # The check sees the notes of the claim's own unit only (NOBLIVION-284).
+            # The key keeps its name: the prompt text is pinned to its contract.
             task = {
                 "claim": {
                     k: claim[k]
@@ -423,11 +510,11 @@ def run_derivation(ledger, job, validated_call):
                 },
                 "other_current_notes": [
                     {k: n[k] for k in ("note_id", "revision", "statement", "observed_at")}
-                    for n in current
+                    for n in _claim_unit(stage, claim["claim_id"])
                 ],
             }
             if len(canonical_json(task)) > store.settings.max_input_chars:
-                stage["deferred"].append(
+                stage.setdefault("overflow", []).append(
                     {"claim_id": claim["claim_id"], "reason": "complete support input limit"}
                 )
             else:
@@ -442,11 +529,12 @@ def run_derivation(ledger, job, validated_call):
                     f"synthesis:support:{index}",
                     SUPPORT_SCHEMA,
                 )[0]
+                notes = ledger.current_notes(job["project"], job["root"])
                 if (
                     sorted(
                         [
                             [n["note_id"], n["revision"]]
-                            for n in ledger.current_notes(job["project"], job["root"])
+                            for n in note_slice(notes, after, store.settings.max_notes)
                         ]
                     )
                     != snapshot
@@ -460,6 +548,7 @@ def run_derivation(ledger, job, validated_call):
                     job_id=job["id"],
                     lease_token=job["lease_token"],
                     expected_snapshot=snapshot,
+                    slice_after=after,
                 )
         stage["next_support"] = index + 1
         state.pop("format_repair", None)
@@ -467,13 +556,21 @@ def run_derivation(ledger, job, validated_call):
     for index in range(stage.get("next_equivalence", 0), len(stage["staged"])):
         candidate = store.inspect(stage["staged"][index])
         if candidate["status"] == "active":
+            # Compare with the active claims that cite a note of the
+            # candidate's unit (NOBLIVION-284).
+            unit_ids = {n["note_id"] for n in _claim_unit(stage, candidate["claim_id"])}
             active = [
-                store.inspect(r[0])
-                for r in ledger.conn.execute(
-                    "SELECT claim_id FROM learning_claims WHERE project=? AND root=? AND "
-                    "status='active' ORDER BY claim_id",
-                    (job["project"], job["root"]),
+                c
+                for c in (
+                    store.inspect(r[0])
+                    for r in ledger.conn.execute(
+                        "SELECT claim_id FROM learning_claims WHERE project=? AND root=? AND "
+                        "status='active' ORDER BY claim_id",
+                        (job["project"], job["root"]),
+                    )
                 )
+                if c["claim_id"] == candidate["claim_id"]
+                or any(s["note_id"] in unit_ids for s in c["supports"])
             ]
             targets = [c for c in active if c["claim_id"] != candidate["claim_id"]]
             claim_snapshot = sorted([[c["claim_id"], c["revision"]] for c in active])
@@ -494,7 +591,7 @@ def run_derivation(ledger, job, validated_call):
                     "targets": [{k: target[k] for k in keys} for target in targets],
                 }
                 if len(canonical_json(task)) > store.settings.max_input_chars or len(targets) > 64:
-                    stage["deferred"].append(
+                    stage.setdefault("overflow", []).append(
                         {
                             "claim_id": candidate["claim_id"],
                             "reason": "complete equivalence input limit",
@@ -519,13 +616,8 @@ def run_derivation(ledger, job, validated_call):
                         expected_notes=snapshot,
                         job_id=job["id"],
                         lease_token=job["lease_token"],
+                        slice_after=after,
                     )
         stage["next_equivalence"] = index + 1
         state.pop("format_repair", None)
         ledger.checkpoint(job["id"], job["lease_token"], state)
-    if stage["deferred"]:
-        # Completed bounded units remain durable; never claim complete coverage.
-        ledger.fail(job["id"], job["lease_token"], "DerivationCoverageExhausted", permanent=True)
-        return {"status": "exhausted", "job_id": job["id"], "deferred": stage["deferred"]}
-    _complete(ledger, job, state, next_kind="draft")
-    return {"status": "done", "job_id": job["id"], "claim_ids": stage["staged"]}
