@@ -1430,3 +1430,28 @@ def test_a_snapshot_reset_restarts_only_the_current_slice(ledgers, monkeypatch):
     added = provider.added["note_id"]
     assert provider.proposals() == [[order[0]], [order[1]], [added], [order[1]]]
     assert job_progress(ledger, ident)[1]["slices_done"] == 3
+
+
+def test_a_note_added_between_runs_restarts_only_the_current_slice(ledgers, monkeypatch):
+    ledger, _, _, _, _ = seeded(ledgers)
+    with_settings(monkeypatch, max_notes=1)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    order = [n["note_id"] for n in ledger.current_notes("test", "demo")]
+    provider = SliceProvider(fail_on=order[1])
+    worker = slice_worker(ledger, provider)
+    assert worker.run_once()["status"] in {"pending", "failed"}
+    status, progress = job_progress(ledger, ident)
+    assert progress["slices_done"] == 1 and "derivation" in progress
+    # The job waits in slice 2; a new note joins the folder of that slice.
+    added = learn(ledger, 15, "The cobalt otter service logs to stderr.")["note_id"]
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE id=?", (ident,))
+    first = worker.run_once()
+    assert first.get("error") == "SemanticSnapshotChanged", (first, job_progress(ledger, ident))
+    status, progress = job_progress(ledger, ident)
+    assert "derivation" not in progress and progress["slices_done"] == 1
+    ledger.conn.execute("UPDATE learning_jobs SET next_attempt=0 WHERE id=?", (ident,))
+    second = worker.run_once()
+    assert second["status"] == "done", (second, job_progress(ledger, ident))
+    # The finished first slice was not asked again; the current slice restarted.
+    assert provider.proposals() == [[order[0]], [order[1]], [added], [order[1]]]
+    assert job_progress(ledger, ident)[1]["slices_done"] == 3

@@ -432,8 +432,12 @@ def _run_stage(
         # A stage frozen by 0.1.24 or earlier moves to the request-only shape.
         stage["fingerprint"] = runtime_fingerprint
         ledger.checkpoint(job["id"], job["lease_token"], state)
-    if stage["fingerprint"] != runtime_fingerprint or stage["snapshot"] != snapshot:
+    if stage["fingerprint"] != runtime_fingerprint:
         raise ValidationError("derivation settings or support revisions changed")
+    if stage["snapshot"] != snapshot:
+        # A note changed in the folder of this slice while the job waited:
+        # restart only the current slice (NOBLIVION-284).
+        raise SemanticSnapshotChanged("slice support snapshot changed")
     index = stage["next_unit"]
     while index < len(stage["units"]):
         unit = _items(stage, stage["units"][index])
