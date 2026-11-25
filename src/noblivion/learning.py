@@ -159,6 +159,12 @@ class LearningLedger:
             "paused": any(row["paused"] == 1 for row in rows),
         }
 
+    def job_controls(self, row) -> dict[str, bool]:
+        """The controls a job runs under. A consolidate job reads all notes of its
+        folder, so it follows the folder controls, not one session's (NOBLIVION-269)."""
+        session = "" if row["kind"] == "consolidate" else row["session_id"]
+        return self.effective_controls(row["project"], row["root"], session)
+
     def read_allowed(self, project: str, root: str, session_id: str = "") -> bool:
         """Unknown clients cannot bypass any session's explicit memory-use opt-out.
 
@@ -603,7 +609,7 @@ class LearningLedger:
             for row in rows:
                 if row["id"] in waiting:
                     continue
-                controls = self.effective_controls(row["project"], row["root"], row["session_id"])
+                controls = self.job_controls(row)
                 if not controls["contribute"] or controls["paused"]:
                     continue
                 if row["kind"] == "consolidate" and self._folder_busy(row, window_start):
@@ -700,7 +706,7 @@ class LearningLedger:
             or row["lease_until"] <= time.time()
         ):
             raise LeaseLost("learning lease is no longer current")
-        controls = self.effective_controls(row["project"], row["root"], row["session_id"])
+        controls = self.job_controls(row)
         if not controls["contribute"] or controls["paused"]:
             raise LeaseLost("learning contribution is paused or disabled")
         return row
@@ -957,14 +963,14 @@ class LearningLedger:
         # The held jobs are left out before the limit: they sort before every item.
         held = " AND id NOT IN (" + learning_batch.HELD + ")" if batch else ""
         for row in self.conn.execute(
-            "SELECT project,root,session_id FROM learning_jobs WHERE status='pending' "
+            "SELECT project,root,session_id,kind FROM learning_jobs WHERE status='pending' "
             "AND (next_attempt<=? OR last_error='StepAside') AND attempts<?" + held + " "
             "ORDER BY created_at,id LIMIT 64",
             (now, max_attempts),
         ).fetchall():
             if (row["project"], row["root"]) not in scopes:
                 continue
-            controls = self.effective_controls(row["project"], row["root"], row["session_id"])
+            controls = self.job_controls(row)
             if controls["contribute"] and not controls["paused"]:
                 return True
         return False

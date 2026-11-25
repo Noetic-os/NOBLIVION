@@ -1197,3 +1197,61 @@ def test_a_started_job_between_attempts_holds_its_folder(ledgers):
     )
     queued_copy(ledger, 1)
     assert ledger.claim("two", window_start=time.time() - 60) is None
+
+
+def test_a_paused_session_does_not_stop_the_folded_consolidate_job(ledgers):
+    ledger, _, _, _, _ = seeded(ledgers)
+    first = ledger.enqueue_derivation("test", "demo", "A")
+    ledger.set_controls("test", "demo", "A", paused=True)
+    assert ledger.enqueue_derivation("test", "demo", "B") == first
+    assert ledger.claim("w")["id"] == first
+
+
+def test_a_session_opt_out_does_not_stop_the_folded_consolidate_job(ledgers):
+    ledger, _, _, _, _ = seeded(ledgers)
+    first = ledger.enqueue_derivation("test", "demo", "A")
+    ledger.set_controls("test", "demo", "A", contribute=False)
+    assert ledger.enqueue_derivation("test", "demo", "B") == first
+    job = ledger.claim("w")
+    assert job["id"] == first
+    ledger.validate_lease(first, job["lease_token"])
+
+
+def test_a_paused_session_with_a_started_job_does_not_block_the_folder(ledgers):
+    ledger, _, _, _, _ = seeded(ledgers)
+    first = ledger.enqueue_derivation("test", "demo", "A")
+    ledger.claim("w")
+    # The started job waits for its retry, and its session pauses.
+    ledger.conn.execute(
+        "UPDATE learning_jobs SET status='pending',lease_token=NULL,lease_until=NULL,"
+        "progress='{\"derivation\":{}}' WHERE id=?",
+        (first,),
+    )
+    ledger.set_controls("test", "demo", "A", paused=True)
+    assert ledger.enqueue_derivation("test", "demo", "B") != first
+    # The folder is not blocked: the older started job runs first.
+    assert ledger.claim("w2")["id"] == first
+
+
+@pytest.mark.parametrize("control", [{"paused": True}, {"contribute": False}])
+def test_a_folder_pause_or_opt_out_still_stops_consolidate(ledgers, control):
+    ledger, _, _, _, _ = seeded(ledgers)
+    ledger.enqueue_derivation("test", "demo", "A")
+    ledger.set_controls("test", "demo", "", **control)
+    assert ledger.claim("w") is None
+
+
+def test_a_request_after_the_folded_job_exhausted_queues_a_new_job(ledgers):
+    ledger, _, _, _, _ = seeded(ledgers)
+    first = ledger.enqueue_derivation("test", "demo", "A")
+    job = ledger.claim("w")
+    second = ledger.enqueue_derivation("test", "demo", "B")
+    assert second != first
+    ledger.fail(first, job["lease_token"], "boom", permanent=True)
+    assert ledger.enqueue_derivation("test", "demo", "C") == second
+    job = ledger.claim("w2")
+    assert job["id"] == second
+    ledger.fail(second, job["lease_token"], "boom", permanent=True)
+    again = ledger.enqueue_derivation("test", "demo", "C")
+    status = ledger.conn.execute("SELECT status FROM learning_jobs WHERE id=?", (again,))
+    assert status.fetchone()[0] == "pending"
