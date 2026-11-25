@@ -983,19 +983,18 @@ def test_new_provider_stages_fail_closed_on_accounting_and_budget(ledgers, failu
 class RejectingProvider(ScriptedProvider):
     """Adds a non-extractive observation after the good claim (NOBLIVION-280)."""
 
-    def __init__(self, *, good=True, on_propose=None):
+    def __init__(self, *, good=True, bad=None):
         super().__init__()
-        self.good, self.on_propose = good, on_propose
+        self.good = good
+        self.bad = bad or {"kind": "observation", "statement": "The otter likes cobalt paint."}
 
     def complete(self, messages, **kwargs):
         response = super().complete(messages, **kwargs)
         data = json.loads(messages[-1]["content"])
         if "notes" not in data:
             return response
-        if self.on_propose:
-            self.on_propose()
         claims = json.loads(response.content)["claims"]
-        bad = {**claims[0], "kind": "observation", "statement": "The otter likes cobalt paint."}
+        bad = {**claims[0], **self.bad}
         claims = (claims if self.good else []) + [bad]
         return ProviderResponse(json.dumps({"claims": claims}), 100)
 
@@ -1050,3 +1049,29 @@ def test_only_a_guard_refusal_is_a_proposal_rejection(ledgers):
     with pytest.raises(LearningError, match="contribution is disabled") as refused:
         store.stage(proposal(store, [a, b]), "test", "demo")
     assert not isinstance(refused.value, ProposalRejected)
+
+
+def test_a_claim_field_of_the_wrong_type_is_a_rejected_proposal(ledgers):
+    ledger, store, _, _, _ = seeded(ledgers)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    provider = RejectingProvider(bad={"kind": ["inference"]})
+    assert derivation_worker(ledger, provider).run_once()["status"] == "done"
+    assert derivation_progress(ledger, ident)["rejected"] == [
+        {"unit": 0, "proposal": 1, "reason": "invalid claim kind, category or scope"}
+    ]
+
+
+def test_a_stage_refusal_outside_the_guards_still_fails_the_derivation(ledgers, monkeypatch):
+    ledger, store, _, _, _ = seeded(ledgers)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+
+    def refuse(*args, **kwargs):
+        raise LearningError("claim dates must come from exact support")
+
+    monkeypatch.setattr(type(store), "stage", refuse)
+    result = derivation_worker(ledger, RejectingProvider()).run_once()
+    assert result["status"] == "failed"
+    row = ledger.conn.execute(
+        "SELECT last_error FROM learning_jobs WHERE id=?", (ident,)
+    ).fetchone()
+    assert row[0] == "LearningError: claim dates must come from exact support"

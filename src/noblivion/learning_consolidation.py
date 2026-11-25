@@ -206,6 +206,8 @@ class ConsolidationLedger:
         )
         validate_safe_text(canonical_json(proposal))
         kind, category, scope = (proposal.get(k) for k in ("kind", "category", "scope"))
+        if not all(isinstance(value, str) for value in (kind, category, scope)):
+            raise LearningError("invalid claim kind, category or scope")
         if kind not in {"explicit_statement", "observation", "inference"}:
             raise LearningError("invalid claim kind")
         if category not in {"fact", "preference", "workflow", "decision", "proven_fix"}:

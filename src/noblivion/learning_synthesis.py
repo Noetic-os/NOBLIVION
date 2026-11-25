@@ -392,9 +392,9 @@ def run_derivation(ledger, job, validated_call):
                 # One bad claim must not fail the job: its saved reply replays
                 # on every retry with no model call (NOBLIVION-280). Keep the
                 # fixed reason only, never the generated statement.
-                record = {"unit": index, "proposal": number, "reason": str(exc)}
-                if record not in stage.setdefault("rejected", []):
-                    stage["rejected"].append(record)
+                stage.setdefault("rejected", []).append(
+                    {"unit": index, "proposal": number, "reason": str(exc)}
+                )
                 continue
             if claim["claim_id"] not in stage["staged"]:
                 stage["staged"].append(claim["claim_id"])
