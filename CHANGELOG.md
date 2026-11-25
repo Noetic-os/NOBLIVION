@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+## 0.1.47 - 2026-11-25
+
 - A consolidate job no longer fails when the model proposes one claim that a content guard rejects. The job drops that claim, records the fixed reason in its progress and stages the rest. Before, the saved reply failed the same check on every retry until the job was exhausted (NOBLIVION-280).
 
 ## 0.1.46 - 2026-11-24
