@@ -8,6 +8,8 @@ All notable changes to NOBLIVION. The format follows
 
 ## Unreleased
 
+- An extract job whose source text fails the secret check in a later window now fails permanently before the first model call, with the same error "unsafe final provider context". Before, the earlier windows used model time first. The worker checks the first request of every pending window up front; the check before each call stays, because a continuation also holds model output (NOBLIVION-285).
+
 ## 0.1.49 - 2026-11-26
 
 - A consolidate job finishes in a large folder instead of failing with DerivationCoverageExhausted. The job works in slices of at most 512 notes and keeps the slice cursor across a restart. A proposal reply with twelve claims splits its unit in two halves instead of failing the job. The support check and the equivalence check see only the unit the claim came from; a check that does not fit, or a single note that still fills a reply, is recorded and does not fail the job (NOBLIVION-284).

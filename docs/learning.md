@@ -363,7 +363,9 @@ without storing or submitting its body. A claim that could depend on that hidden
 statement waits for the dependency to be resolved. A title or keyword mismatch
 alone does not prove that hidden material is unrelated. Corrections whose old
 evidence is withheld become visible conflicts; they never replace the old note.
-All provider inputs still pass the complete secret check.
+All provider inputs still pass the complete secret check. Before the first
+model call of an extract job, the worker checks the first request of every
+pending window, so a secret in a later window fails the job with no model call.
 
 A `Provider:length` result means the model output reached the output token
 cap. The cut-off output is never kept. For an extraction window, the worker

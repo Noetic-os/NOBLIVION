@@ -409,6 +409,39 @@ def piece_leaves(splits, slot: int = 0):
         yield slot
 
 
+def extraction_messages(piece, existing, returned, continuation) -> list[dict]:
+    """The provider request for one extraction piece."""
+    return [
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT + CONTINUATION_PROMPT,
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "sources": piece,
+                    "existing_notes": existing,
+                    "already_returned": returned,
+                    "continuation": continuation,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        },
+    ]
+
+
+def unsafe_request(messages) -> bool:
+    """The secret check of a provider request, as encoded and as raw text.
+
+    NOBLIVION-259: as raw text too. In JSON a line break is "\\n", so a rule
+    that needs a real line start does not match the encoded text.
+    """
+    submitted = json.dumps(messages, ensure_ascii=False)
+    return contains_secret(submitted) or secret_in_text(messages) is not None
+
+
 class DependencyDeferred(RuntimeError):
     """A hidden existing statement may change a proposed write."""
 
@@ -1240,6 +1273,18 @@ class LearningWorker:
             start_window = progress.get("next_window", 0)
             if type(start_window) is not int or not 0 <= start_window <= len(windows):
                 raise ValidationError("invalid durable window progress")
+            # NOBLIVION-285: the first request of every pending piece is known
+            # now, so check it before the first model call. A piece slices a
+            # source, so it can fail where the whole source passed. _call still
+            # checks each request: a continuation also holds model output.
+            for unit_index in range(start_window, len(windows)):
+                splits = set(state.get("length_splits", {}).get(str(unit_index), []))
+                for slot in piece_leaves(splits):
+                    piece = window_piece(windows[unit_index], slot)
+                    if contract >= 2 and not learnable_window(piece):
+                        continue
+                    if unsafe_request(extraction_messages(piece, existing, [], 0)):
+                        raise ValidationError("unsafe final provider context")
             state.update(
                 fingerprint=fingerprint,
                 next_window=start_window,
@@ -1604,25 +1649,9 @@ class LearningWorker:
                     if row["unit_index"] == unit_index
                     for d in row["candidates"]
                 ]
-                messages = [
-                    {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT + CONTINUATION_PROMPT,
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "sources": piece,
-                                "existing_notes": existing,
-                                "already_returned": [d["statement"] for d in previous],
-                                "continuation": continuation,
-                            },
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ),
-                    },
-                ]
+                messages = extraction_messages(
+                    piece, existing, [d["statement"] for d in previous], continuation
+                )
                 try:
                     outcome = self._validated_call(
                         job,
@@ -1885,9 +1914,7 @@ class LearningWorker:
         """One reservation per extraction or semantic call, including retries."""
         cfg = self.settings
         submitted = json.dumps(messages, ensure_ascii=False)
-        # NOBLIVION-259: as raw text too. In JSON a line break is "\n", so a
-        # rule that needs a real line start does not match the encoded text.
-        if contains_secret(submitted) or secret_in_text(messages) is not None:
+        if unsafe_request(messages):
             raise ValidationError("unsafe final provider context")
         call_key = hashlib.sha256(
             json.dumps(
