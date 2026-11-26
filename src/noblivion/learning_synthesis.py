@@ -350,7 +350,9 @@ def run_derivation(ledger, job, validated_call):
         state["slices_done"] = state.get("slices_done", 0) + 1
         for key in ("saturated", "overflow", "omitted"):
             state.setdefault(key, []).extend(stage.get(key, []))
-        state.setdefault("claim_ids", []).extend(stage["staged"])
+        # A count, not the ids: the saved progress must not grow with each
+        # slice toward the checkpoint size cap (NOBLIVION-284).
+        state["claims"] = state.get("claims", 0) + len(stage["staged"])
         if stage.get("slice_end") is None:
             break
         state["slice_after"] = stage["slice_end"]
@@ -360,7 +362,7 @@ def run_derivation(ledger, job, validated_call):
     return {
         "status": "done",
         "job_id": job["id"],
-        "claim_ids": state["claim_ids"],
+        "claims": state["claims"],
         "slices": state["slices_done"],
         **{key: len(state[key]) for key in ("saturated", "overflow", "omitted")},
     }

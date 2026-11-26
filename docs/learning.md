@@ -824,8 +824,8 @@ reply splits again, so a unit of n notes gives at most 2n-1 units. A single note
 that still fills a reply is recorded as saturated and does not fail the job. A
 note with more than 32 supports, or one whose item is over the input limit, is
 recorded as omitted and does not fail the job. The job result counts the
-slices and the saturated, overflow and omitted records, and lists the claims of
-every slice. The support
+slices, the claims of every slice, and the saturated, overflow and omitted
+records. The support
 check and the equivalence check see only the unit the claim came from: the notes
 of that unit, and the active claims that cite one of them. A check that still
 does not fit the input limit is recorded as overflow and does not fail the job.

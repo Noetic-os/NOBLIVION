@@ -1521,8 +1521,9 @@ def test_the_result_counts_every_slice_after_a_restart(ledgers, monkeypatch):
     assert result["status"] == "done", (result, job_progress(ledger, ident))
     assert result["slices"] == 2 and result["saturated"] == 1
     assert result["overflow"] == 0 and result["omitted"] == 0
-    cited = {s["note_id"] for cid in result["claim_ids"] for s in store.inspect(cid)["supports"]}
-    assert cited == set(order)
+    # Both slices count: the claims the job staged, not the seeded claim.
+    staged = ledger.conn.execute("SELECT count(*) FROM learning_claims").fetchone()[0] - 1
+    assert result["claims"] == staged and staged > 12
     assert len(job_progress(ledger, ident)[1]["saturated"]) == 1
 
 
@@ -1550,3 +1551,20 @@ def test_a_note_added_after_the_cursor_joins_a_later_slice_in_the_same_run(ledge
     added = provider.added["note_id"]
     assert provider.proposals() == [[order[0]], [added], [order[1]]]
     assert job_progress(ledger, ident)[1]["slices_done"] == 3
+
+
+def test_the_saved_progress_keeps_a_claim_count_not_the_claim_ids(ledgers, monkeypatch):
+    ledger, _, _, _, claim = seeded(ledgers)
+    for n in range(21, 27):
+        learn(ledger, n, f"The cobalt otter worker {n} runs on host {n}.")
+    with_settings(monkeypatch, max_notes=1)
+    ident = ledger.enqueue_derivation("test", "demo", "B")
+    result = slice_worker(ledger, SliceProvider()).run_once()
+    assert result["status"] == "done" and result["slices"] == 8
+    _, progress = job_progress(ledger, ident)
+    # A claim id outside the current stage would grow the progress with every
+    # slice, toward the 1 MiB checkpoint cap (NOBLIVION-284).
+    outside = json.dumps({k: v for k, v in progress.items() if k != "derivation"})
+    ids = [r[0] for r in ledger.conn.execute("SELECT claim_id FROM learning_claims")]
+    assert [i for i in ids if i != claim["claim_id"] and i in outside] == []
+    assert progress["claims"] == result["claims"] == len(ids) - 1
